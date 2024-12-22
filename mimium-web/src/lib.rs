@@ -1,6 +1,8 @@
 use mimium_audiodriver::backends::local_buffer::LocalBufferDriver;
 use mimium_audiodriver::driver::Driver;
+use mimium_lang::interner::ToSymbol;
 use mimium_lang::log;
+use mimium_lang::utils::error::report;
 use mimium_lang::ExecContext;
 use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
@@ -54,27 +56,20 @@ impl Context {
     #[wasm_bindgen]
     pub fn compile(&mut self, src: String) {
         let mut ctx = get_default_context();
-
-        if let Err(e) = ctx.prepare_machine(src.as_str()) {
-            e.iter().for_each(|e| {
-                eprintln!("{}", e);
-            });
-        }
         let mut driver = LocalBufferDriver::new(self.config.buffer_size as usize);
         ctx.add_plugin(driver.get_as_plugin());
+
+        if let Err(e) = ctx.prepare_machine(src.as_str()) {
+            report(&src, "".to_symbol(), &e);
+        }
         ctx.run_main();
-        driver.init(
+        let iochannels = driver.init(
             ctx,
             Some(mimium_audiodriver::driver::SampleRate::from(
                 self.config.sample_rate as u32,
             )),
         );
-        let (ichannels, ochannels) = driver.vmdata.as_ref().map_or((0, 0), |data| {
-            data.vm
-                .prog
-                .iochannels
-                .map_or((0, 0), |io| (io.input, io.output))
-        });
+        let (ichannels, ochannels) = iochannels.map_or((0, 0), |io| (io.input, io.output));
         self.config.input_channels = ichannels; //todo;
         self.config.output_channels = ochannels;
         let out_ch = self.config.output_channels;
