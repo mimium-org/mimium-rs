@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## v2.2.5
+
+### Bugfix
+
+This release fixes several degradations introduces in the web platform.
+
+- Fixed audio driver crash
+- Fixed file loader is not working on native platform
+
 ## v2.2.4
 
 ### New Features
