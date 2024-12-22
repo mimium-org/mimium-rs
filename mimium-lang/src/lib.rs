@@ -12,7 +12,7 @@ pub mod runtime;
 
 pub mod plugin;
 
-use compiler::ExtFunTypeInfo;
+use compiler::{ExtFunTypeInfo, IoChannelInfo};
 use interner::Symbol;
 pub use log;
 use plugin::{to_ext_cls_info, DynSystemPlugin, Plugin, SystemPlugin};
@@ -125,6 +125,9 @@ impl ExecContext {
             log::warn!("more than 2 main loops in system plugins found")
         }
         res
+    }
+    pub fn get_iochannel_count(&self) -> Option<IoChannelInfo> {
+        self.vm.as_ref().and_then(|vm| vm.prog.iochannels)
     }
     pub fn run_main(&mut self) -> ReturnCode {
         if let Some(vm) = self.vm.as_mut() {

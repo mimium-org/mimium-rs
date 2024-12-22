@@ -103,6 +103,13 @@ pub struct Context {
     ext_fns: Vec<ExtFunTypeInfo>,
     file_path: Option<Symbol>,
 }
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct IoChannelInfo {
+    pub input: u32,
+    pub output: u32,
+}
+
 impl Context {
     pub fn new(
         ext_fns: impl IntoIterator<Item = ExtFunTypeInfo>,
@@ -121,6 +128,7 @@ impl Context {
             .map(|ExtFunTypeInfo { name, ty }| (name, ty))
             .collect()
     }
+
     pub fn emit_mir(&self, src: &str) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
         let path = self.file_path.map(|sym| PathBuf::from(sym.to_string()));
         let (ast, mut parse_errs) = parser::parse(src, path);

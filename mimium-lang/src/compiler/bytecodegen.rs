@@ -718,6 +718,7 @@ impl ByteCodeGenerator {
         (mirfunc.label, func)
     }
     pub fn generate(&mut self, mir: Mir) -> vm::Program {
+        self.program.iochannels = mir.get_dsp_iochannels();
         self.program.global_fn_table = mir
             .functions
             .iter()

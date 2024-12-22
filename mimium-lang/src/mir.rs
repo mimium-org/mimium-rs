@@ -1,6 +1,7 @@
 // Mid-level intermediate representation that is more like imperative form than hir.
 use crate::{
-    interner::{Symbol, TypeNodeId},
+    compiler::IoChannelInfo,
+    interner::{Symbol, ToSymbol, TypeNodeId},
     types::TypeSize,
 };
 use std::{cell::OnceCell, sync::Arc};
@@ -208,5 +209,22 @@ impl Mir {
             file_path,
             ..Default::default()
         }
+    }
+    pub fn get_dsp_iochannels(&self) -> Option<IoChannelInfo> {
+        self.functions
+            .iter()
+            .find(|f| f.label == "dsp".to_symbol())
+            .and_then(|f| {
+                let input = match f.argtypes.as_slice() {
+                    [] => Some(0),
+                    [t] => t.to_type().get_iochannel_count(),
+                    _ => None,
+                };
+                let output = f
+                    .return_type
+                    .get()
+                    .and_then(|t| t.to_type().get_iochannel_count());
+                input.and_then(|input| output.map(|output| IoChannelInfo { input, output }))
+            })
     }
 }

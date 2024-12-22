@@ -69,6 +69,14 @@ impl Context {
                 self.config.sample_rate as u32,
             )),
         );
+        let (ichannels, ochannels) = driver.vmdata.as_ref().map_or((0, 0), |data| {
+            data.vm
+                .prog
+                .iochannels
+                .map_or((0, 0), |io| (io.input, io.output))
+        });
+        self.config.input_channels = ichannels; //todo;
+        self.config.output_channels = ochannels;
         let out_ch = self.config.output_channels;
         let mut out_buf = vec![0.0; (out_ch * self.config.buffer_size) as usize];
         self.processor = Some(Box::new(move |_input, output: Output| -> u64 {
