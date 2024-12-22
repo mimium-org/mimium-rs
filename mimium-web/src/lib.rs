@@ -70,7 +70,7 @@ impl Context {
             )),
         );
         let (ichannels, ochannels) = iochannels.map_or((0, 0), |io| (io.input, io.output));
-        self.config.input_channels = ichannels; //todo;
+        self.config.input_channels = ichannels;
         self.config.output_channels = ochannels;
         let out_ch = self.config.output_channels;
         let mut out_buf = vec![0.0; (out_ch * self.config.buffer_size) as usize];
@@ -87,6 +87,14 @@ impl Context {
             output.copy_from_slice(&out_buf);
             0
         }));
+    }
+    #[wasm_bindgen]
+    pub fn get_input_channels(&self) -> u32 {
+        self.config.input_channels
+    }
+    #[wasm_bindgen]
+    pub fn get_output_channels(&self) -> u32 {
+        self.config.input_channels
     }
     /// .
     ///

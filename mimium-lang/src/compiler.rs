@@ -159,3 +159,37 @@ pub fn interpret_top(
         vec![eb]
     })
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    fn get_source()->&'static str{
+       r#"
+fn counter(){
+    self + 1
+}
+fn dsp(input){
+    let res = input + counter()
+    (0,res)
+}
+"#
+    }
+    #[test]
+    fn mir_channelcount() {
+        let src = &get_source();
+        let ctx = Context::new([], None);
+        let mir = ctx.emit_mir(src).unwrap();
+        let iochannels = mir.get_dsp_iochannels().unwrap();
+        assert_eq!(iochannels.input, 1);
+        assert_eq!(iochannels.output, 2);
+    }
+    #[test]
+    fn bytecode_channelcount(){
+        let src = &get_source();
+        let ctx = Context::new([], None);
+        let prog = ctx.emit_bytecode(src).unwrap();
+        let iochannels = prog.iochannels.unwrap();
+        assert_eq!(iochannels.input, 1);
+        assert_eq!(iochannels.output, 2);
+    }
+}
