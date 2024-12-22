@@ -15,7 +15,7 @@ pub struct Config {
 }
 #[wasm_bindgen]
 impl Config {
-    #[wasm_bindgen(constructor)]
+    #[wasm_bindgen]
     pub fn new() -> Self {
         Self::default()
     }
