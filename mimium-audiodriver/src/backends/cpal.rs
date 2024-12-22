@@ -218,10 +218,10 @@ impl Driver for NativeDriver {
     fn init(&mut self, ctx: ExecContext, sample_rate: Option<SampleRate>) -> Option<IoChannelInfo> {
         let host = cpal::default_host();
         let iochannels = ctx.get_iochannel_count();
-        let ichannels = iochannels.map_or(0, |io| io.input) as _;
-        // let ochannels = iochannels.map_or(0, |io| io.output) as _;
+        // let ichannels = iochannels.map_or(0, |io| io.input) as _;
+        let ochannels: usize = iochannels.map_or(0, |io| io.output) as _;
 
-        let (prod, cons) = HeapRb::<Self::Sample>::new(ichannels * self.buffer_size).split();
+        let (prod, cons) = HeapRb::<Self::Sample>::new(ochannels * self.buffer_size).split();
 
         let idevice = host.default_input_device();
         let in_stream = if let Some(idevice) = idevice {
@@ -232,7 +232,7 @@ impl Driver for NativeDriver {
                 idevice.name().unwrap_or_default(),
                 iconfig.buffer_size
             );
-            let mut receiver = NativeAudioReceiver::new(ichannels, prod);
+            let mut receiver = NativeAudioReceiver::new(ochannels, prod);
             self.hardware_ichannels = iconfig.channels as usize;
             let h_ichannels = self.hardware_ichannels;
             let in_stream = idevice.build_input_stream(
