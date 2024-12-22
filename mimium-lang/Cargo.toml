@@ -11,6 +11,7 @@ readme.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [features]
+default = ["native"]
 native = ["dep:mimalloc", "dep:homedir"]
 
 
