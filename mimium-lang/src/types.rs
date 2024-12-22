@@ -80,7 +80,23 @@ impl Type {
             _ => None,
         }
     }
-
+    pub fn get_iochannel_count(&self) -> Option<u32> {
+        match self {
+            Type::Tuple(ts) => {
+                if ts
+                    .iter()
+                    .all(|t| t.to_type() == Type::Primitive(PType::Numeric))
+                {
+                    Some(ts.len() as _)
+                } else {
+                    None
+                }
+            }
+            Type::Primitive(PType::Numeric) => Some(1),
+            Type::Primitive(PType::Unit) => Some(0),
+            _ => None,
+        }
+    }
     pub fn into_id(self) -> TypeNodeId {
         with_session_globals(|session_globals| session_globals.store_type(self))
     }

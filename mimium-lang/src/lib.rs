@@ -12,7 +12,7 @@ pub mod runtime;
 
 pub mod plugin;
 
-use compiler::ExtFunTypeInfo;
+use compiler::{ExtFunTypeInfo, IoChannelInfo};
 use interner::Symbol;
 pub use log;
 use plugin::{to_ext_cls_info, DynSystemPlugin, Plugin, SystemPlugin};
@@ -23,23 +23,24 @@ use runtime::vm::{
 };
 use utils::error::ReportableError;
 
-#[cfg(feature = "mimalloc")]
+#[cfg(feature = "native")]
 use mimalloc::MiMalloc;
-#[cfg(feature = "mimalloc")]
+#[cfg(feature = "native")]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
 /// A set of compiler and external functions (plugins).
 /// From this information, user can generate VM with [`Self::prepare_machine`].
 pub struct ExecContext {
-    pub compiler: Option<compiler::Context>,
-    pub vm: Option<runtime::vm::Machine>,
-    pub plugins: Vec<Box<dyn Plugin>>,
-    pub sys_plugins: Vec<DynSystemPlugin>,
+    compiler: Option<compiler::Context>,
+    vm: Option<runtime::vm::Machine>,
+    plugins: Vec<Box<dyn Plugin>>,
+    sys_plugins: Vec<DynSystemPlugin>,
     path: Option<Symbol>,
     extclsinfos_reserve: Vec<ExtClsInfo>,
     extfuntypes: Vec<ExtFunTypeInfo>,
 }
+
 impl ExecContext {
     //The Argument will be changed to the plugins, when the plugin system is introduced
     pub fn new(plugins: impl Iterator<Item = Box<dyn Plugin>>, path: Option<Symbol>) -> Self {
@@ -62,6 +63,9 @@ impl ExecContext {
     pub fn add_plugin<T: Plugin + 'static>(&mut self, plug: T) {
         self.plugins.push(Box::new(plug))
     }
+    pub fn get_system_plugins(&self) -> impl Iterator<Item = &DynSystemPlugin> {
+        self.sys_plugins.iter()
+    }
     //todo: make it to builder pattern
     pub fn add_system_plugin<T: SystemPlugin + 'static>(&mut self, plug: T) {
         let (plugin_dyn, sysplug_info) = to_ext_cls_info(plug);
@@ -72,6 +76,21 @@ impl ExecContext {
         self.extfuntypes.extend(sysplug_typeinfo);
         self.extclsinfos_reserve.extend(sysplug_info);
         self.sys_plugins.push(plugin_dyn)
+    }
+    pub fn get_compiler(&self) -> Option<&compiler::Context> {
+        self.compiler.as_ref()
+    }
+    pub fn take_vm(&mut self) -> Option<runtime::vm::Machine> {
+        self.vm.take()
+    }
+    pub fn get_vm(&self) -> Option<&runtime::vm::Machine> {
+        self.vm.as_ref()
+    }
+    pub fn get_compiler_mut(&mut self) -> Option<&mut compiler::Context> {
+        self.compiler.as_mut()
+    }
+    pub fn get_vm_mut(&mut self) -> Option<&mut runtime::vm::Machine> {
+        self.vm.as_mut()
     }
     pub fn prepare_compiler(&mut self) {
         self.compiler = Some(compiler::Context::new(self.extfuntypes.clone(), self.path));
@@ -107,6 +126,9 @@ impl ExecContext {
         }
         res
     }
+    pub fn get_iochannel_count(&self) -> Option<IoChannelInfo> {
+        self.vm.as_ref().and_then(|vm| vm.prog.iochannels)
+    }
     pub fn run_main(&mut self) -> ReturnCode {
         if let Some(vm) = self.vm.as_mut() {
             self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
@@ -126,7 +148,6 @@ impl ExecContext {
         }
     }
 }
-
 //todo: remove
 pub mod ast_interpreter;
 pub mod repl;

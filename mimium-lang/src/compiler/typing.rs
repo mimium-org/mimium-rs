@@ -308,6 +308,7 @@ impl InferContext {
         }
         (res, errs)
     }
+    // if used in let expression, tl1 means lefthand value
     fn unify_types(
         tl1: (TypeNodeId, Location),
         tl2: (TypeNodeId, Location),
@@ -327,10 +328,8 @@ impl InferContext {
                     return Err(vec![Error::CircularType(loc1, loc2)]);
                 }
                 let tv2 = &mut i2.borrow_mut() as &mut TypeVar;
-                if tv1.level != tv2.level {
-                    let l = tv1.level.min(tv2.level);
-                    tv1.level = l;
-                    tv2.level = l;
+                if tv2.level > tv1.level {
+                    tv2.level = tv1.level
                 }
                 match (tv1.parent, tv2.parent) {
                     (None, None) => {
@@ -443,12 +442,12 @@ impl InferContext {
         body: (TypeNodeId, Location),
     ) -> Result<TypeNodeId, Vec<Error>> {
         let (TypedPattern { pat, ty }, loc_p) = pat;
-        let (t, loc_b) = body.clone();
+        let (body_t, loc_b) = body.clone();
         let pat_t = match pat {
             Pattern::Single(id) => {
-                let gt = self.generalize(t);
-                self.env.add_bind(&[(id, gt)]);
-                Ok::<TypeNodeId, Vec<Error>>(t)
+                let pat_t = self.convert_unknown_to_intermediate(ty);
+                self.env.add_bind(&[(id, pat_t)]);
+                Ok::<TypeNodeId, Vec<Error>>(pat_t)
             }
             Pattern::Tuple(pats) => {
                 let res = pats
@@ -465,13 +464,16 @@ impl InferContext {
                         };
                         self.bind_pattern((p, newloc.clone()), (ity, newloc))
                     })
-                    .try_collect()?; //todo
-                Ok(Type::Tuple(res).into_id())
+                    .try_collect()?; //todo multiple errors
+                let res = Self::unify_types(
+                    (Type::Tuple(res).into_id(), loc_p.clone()),
+                    (self.convert_unknown_to_intermediate(ty), loc_p.clone()),
+                )?;
+                Ok(res)
             }
         }?;
-        let ty = self.convert_unknown_to_intermediate(ty);
-        let t2 = Self::unify_types((ty, loc_b.clone()), (pat_t, loc_p.clone()))?;
-        Self::unify_types((t2, loc_p), body)
+        let t2 = Self::unify_types((pat_t, loc_p.clone()), (body_t, loc_b.clone()))?;
+        Ok(self.generalize(t2))
     }
 
     pub fn lookup(&self, name: Symbol, loc: Location) -> Result<TypeNodeId, Error> {
@@ -611,7 +613,12 @@ impl InferContext {
             }
             Expr::Var(name) => {
                 let res = self.unwrap_result(self.lookup(*name, loc).map_err(|e| vec![e]));
-                // log::debug!("{} {} /level{}", name.as_str(), res, self.level);
+                log::trace!(
+                    "{} {} /level{}",
+                    name.as_str(),
+                    res.to_type().to_string_for_error(),
+                    self.level
+                );
                 Ok(self.instantiate(res))
             }
             Expr::Apply(fun, callee) => {

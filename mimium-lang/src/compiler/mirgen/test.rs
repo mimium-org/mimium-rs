@@ -1,7 +1,5 @@
 use crate::{app, assign, ast::builder::*, lambda, let_, number, then, var};
 
-use self::typing::infer_type;
-
 use super::*;
 
 #[test]
@@ -50,9 +48,8 @@ fn closure_test() {
             )
         )
     );
-    let mut ictx = InferContext::new();
-    let _res = infer_type(expr.0.clone(), &mut ictx).unwrap();
-    let prog = compile(expr, ictx).unwrap();
+
+    let prog = compile(expr, &[], None).unwrap();
     let mirstr = format!("{:?}", prog);
     println!("{}", mirstr);
 }

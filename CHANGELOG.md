@@ -2,7 +2,7 @@
 
 ## v2.2.3
 
-## Library update
+### Library update
 
 - added `delay.mmm` which contains ping-pong delay
 - added `reverb.mmm` which contains freeverb

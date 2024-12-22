@@ -5,7 +5,9 @@
     }
   ],
   "settings": {
-    "rust-analyzer.check.command": "clippy"
+    "rust-analyzer.check.command": "clippy",
+    // Uncomment when debugging wasm target!
+    // "rust-analyzer.cargo.target": "wasm32-unknown-unknown",
   },
   "launch": {
     "version": "0.2.0",

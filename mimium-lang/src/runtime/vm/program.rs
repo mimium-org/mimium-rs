@@ -1,4 +1,5 @@
 use super::{ConstPos, Instruction, RawVal};
+use crate::compiler::IoChannelInfo;
 use crate::interner::{Symbol, ToSymbol, TypeNodeId};
 use crate::mir;
 pub use mir::OpenUpValue;
@@ -40,6 +41,7 @@ pub struct Program {
     pub global_vals: Vec<RawVal>,
     pub strings: Vec<Symbol>,
     pub file_path: Option<Symbol>,
+    pub iochannels: Option<IoChannelInfo>,
 }
 impl Program {
     pub fn get_fun_index(&self, name: &Symbol) -> Option<usize> {

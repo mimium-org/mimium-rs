@@ -4,40 +4,37 @@ use std::sync::{
 };
 
 use mimium_lang::{
-    interner::ToSymbol,
-    plugin::{DynSystemPlugin, InstantPlugin},
-    runtime::{
+    compiler::IoChannelInfo, interner::ToSymbol, plugin::{DynSystemPlugin, InstantPlugin}, runtime::{
         vm::{self, ExtClsInfo, FuncProto, ReturnCode},
         Time,
-    },
-    ExecContext,
+    }, ExecContext
 };
 use num_traits::Float;
 
-#[derive(Clone)]
-pub struct PlaybackInfo {
-    pub sample_rate: u32,
-    pub current_time: usize,
-    pub frame_per_buffer: u64,
-    pub channels: u64,
-}
+// #[derive(Clone)]
+// pub struct PlaybackInfo {
+//     pub sample_rate: u32,
+//     pub current_time: usize,
+//     pub frame_per_buffer: u64,
+//     pub channels: u64,
+// }
 
-impl PlaybackInfo {
-    pub fn get_current_realtime(&self) -> f32 {
-        self.current_time as f32 / self.sample_rate as f32
-    }
-    pub fn rewind(&mut self) {
-        self.current_time = 0;
-    }
-}
+// impl PlaybackInfo {
+//     pub fn get_current_realtime(&self) -> f32 {
+//         self.current_time as f32 / self.sample_rate as f32
+//     }
+//     pub fn rewind(&mut self) {
+//         self.current_time = 0;
+//     }
+// }
 
-pub trait Component {
-    type Sample: Float;
-    fn get_input_channels(&self) -> u64;
-    fn get_output_channels(&self) -> u64;
-    fn prepare_play(&mut self, info: &PlaybackInfo);
-    fn render(&mut self, input: &[Self::Sample], output: &mut [Self::Sample], info: &PlaybackInfo);
-}
+// pub trait Component {
+//     type Sample: Float;
+//     fn get_input_channels(&self) -> u64;
+//     fn get_output_channels(&self) -> u64;
+//     fn prepare_play(&mut self, info: &PlaybackInfo);
+//     fn render(&mut self, input: &[Self::Sample], output: &mut [Self::Sample], info: &PlaybackInfo);
+// }
 
 #[derive(Clone)]
 pub struct SampleRate(pub Arc<AtomicU32>);
@@ -52,7 +49,6 @@ impl SampleRate {
     }
 }
 
-
 /// Note: `Driver` trait doesn't have `new()` so that the struct can have its own
 /// `new()` with any parameters specific to the type. With this in mind, `init()`
 /// can accept only common parameters.
@@ -60,7 +56,7 @@ pub trait Driver {
     type Sample: Float;
     fn get_runtimefn_infos(&self) -> Vec<ExtClsInfo>;
     /// Call ctx.run_main() before moving ctx to Driver with this function.
-    fn init(&mut self, ctx: ExecContext, sample_rate: Option<SampleRate>) -> bool;
+    fn init(&mut self, ctx: ExecContext, sample_rate: Option<SampleRate>) -> Option<IoChannelInfo>;
     fn play(&mut self) -> bool;
     fn pause(&mut self) -> bool;
     fn get_samplerate(&self) -> u32;
@@ -117,8 +113,4 @@ impl RuntimeData {
         });
         self.vm.execute_idx(self.dsp_i)
     }
-}
-
-pub fn load_default_runtime() -> Box<dyn Driver<Sample = f64>> {
-    crate::backends::cpal::native_driver(4096)
 }

@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use mimium_lang::{
+    compiler::IoChannelInfo,
     interner::ToSymbol,
     runtime::{vm, Time},
     ExecContext,
@@ -18,8 +19,6 @@ pub struct LocalBufferDriver {
     samplerate: SampleRate,
     localbuffer: Vec<f64>,
     times: usize,
-    _ichannels: u64,
-    ochannels: u64,
 }
 
 impl Default for LocalBufferDriver {
@@ -32,8 +31,6 @@ impl Default for LocalBufferDriver {
             samplerate: SampleRate::from(48000),
             localbuffer: vec![],
             times: 0,
-            _ichannels: 0,
-            ochannels: 0,
         }
     }
 }
@@ -48,13 +45,7 @@ impl LocalBufferDriver {
             samplerate: SampleRate::from(48000),
             localbuffer: vec![],
             times,
-            _ichannels: 0,
-            ochannels: 0,
         }
-    }
-
-    pub fn get_ochannels(&self) -> usize {
-        self.ochannels as _
     }
 
     pub fn get_generated_samples(&self) -> &[<LocalBufferDriver as Driver>::Sample] {
@@ -72,32 +63,40 @@ impl Driver for LocalBufferDriver {
         vec![getnow, getsamplerate]
     }
 
-    fn init(&mut self, ctx: ExecContext, sample_rate: Option<crate::driver::SampleRate>) -> bool {
-        let vm = ctx.vm.expect("vm is not prepared yet");
+    fn init(
+        &mut self,
+        mut ctx: ExecContext,
+        sample_rate: Option<crate::driver::SampleRate>,
+    ) -> Option<IoChannelInfo> {
+        let iochannels = ctx.get_iochannel_count();
+        let vm = ctx.take_vm().expect("vm is not prepared yet");
         let dsp_i = vm
             .prog
             .get_fun_index(&"dsp".to_symbol())
             .expect("no dsp function found");
         let (_, dsp_func) = &vm.prog.global_fn_table[dsp_i];
-        self.ochannels = dsp_func.nret as u64;
+
         self.localbuffer = Vec::with_capacity(dsp_func.nret * self.times);
         self.samplerate = sample_rate.unwrap_or(SampleRate::from(48000));
 
-        self.vmdata = Some(RuntimeData::new(vm, ctx.sys_plugins));
-
-        true
+        self.vmdata = Some(RuntimeData::new(
+            vm,
+            ctx.get_system_plugins().cloned().collect(),
+        ));
+        iochannels
     }
 
     fn play(&mut self) -> bool {
         let vmdata = self.vmdata.as_mut().expect("Not initialized yet?");
+        let iochannels = vmdata.vm.prog.iochannels;
+        let (_ichannels, ochannels) = iochannels.map_or((0, 0), |io| (io.input, io.output));
         // let _ = vmdata.run_main();
         self.localbuffer.clear();
         for _ in 0..self.times {
             let now = self.count.load(Ordering::Relaxed);
-
             let _ = vmdata.run_dsp(Time(now));
             let res = vm::Machine::get_as_array::<<LocalBufferDriver as Driver>::Sample>(
-                vmdata.vm.get_top_n(self.ochannels as _),
+                vmdata.vm.get_top_n(ochannels as _),
             );
             self.localbuffer.extend_from_slice(res);
             //update current time.

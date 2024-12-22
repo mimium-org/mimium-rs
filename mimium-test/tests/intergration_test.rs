@@ -390,3 +390,12 @@ fn error_include_itself() {
         .get_message()
         .contains("File tried to include itself recusively:"))
 }
+
+#[test]
+fn typing_tuple_fail() {
+    let res = run_error_test("typing_tuple_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+    assert!(res[0]
+        .get_message()
+        .contains("Type mismatch"))
+}

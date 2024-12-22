@@ -728,6 +728,9 @@ impl ByteCodeGenerator {
             })
             .collect();
         self.program.file_path = mir.file_path;
+        self.program.iochannels = mir.get_dsp_iochannels();
+        // log::info!("iochannels: {:?}", self.program.iochannels.unwrap());
+        let _io = self.program.iochannels.unwrap();
         self.program.clone()
     }
 }
@@ -791,7 +794,8 @@ pub fn gen_bytecode(mir: mir::Mir) -> vm::Program {
 
 #[cfg(test)]
 mod test {
-    use crate::interner::ToSymbol;
+
+    use crate::{compiler::IoChannelInfo, interner::ToSymbol};
 
     #[test]
     fn build() {
@@ -812,7 +816,7 @@ mod test {
             Arc::new(mir::Argument("hoge".to_symbol(), numeric!())),
         ));
         let mut func =
-            mir::Function::new(0, "test".to_symbol(), &[arg.clone()], &[numeric!()], None);
+            mir::Function::new(0, "dsp".to_symbol(), &[arg.clone()], &[numeric!()], None);
         func.return_type.get_or_init(|| numeric!());
         let mut block = mir::Block::default();
         let resint = Arc::new(mir::Value::Register(1));
@@ -830,16 +834,22 @@ mod test {
         let mut generator = ByteCodeGenerator::default();
         let res = generator.generate(src);
 
-        let mut answer = vm::Program::default();
-        let mut main = vm::FuncProto::new(1, 1);
+        let mut answer = vm::Program {
+            iochannels: Some(IoChannelInfo {
+                input: 1,
+                output: 1,
+            }),
+            ..Default::default()
+        };
 
+        let mut main = vm::FuncProto::new(1, 1);
         main.constants.push(1);
         main.bytecodes = vec![
             VmInstruction::MoveConst(1, 0),
             VmInstruction::AddF(1, 0, 1),
             VmInstruction::Return(1, 1),
         ];
-        answer.global_fn_table.push(("test".to_symbol(), main));
+        answer.global_fn_table.push(("dsp".to_symbol(), main));
         assert_eq!(res, answer);
     }
 }
