@@ -68,6 +68,7 @@ impl Driver for LocalBufferDriver {
         mut ctx: ExecContext,
         sample_rate: Option<crate::driver::SampleRate>,
     ) -> Option<IoChannelInfo> {
+        let iochannels = ctx.get_iochannel_count();
         let vm = ctx.take_vm().expect("vm is not prepared yet");
         let dsp_i = vm
             .prog
@@ -77,7 +78,7 @@ impl Driver for LocalBufferDriver {
 
         self.localbuffer = Vec::with_capacity(dsp_func.nret * self.times);
         self.samplerate = sample_rate.unwrap_or(SampleRate::from(48000));
-        let iochannels = vm.prog.iochannels;
+
         self.vmdata = Some(RuntimeData::new(
             vm,
             ctx.get_system_plugins().cloned().collect(),
@@ -92,7 +93,6 @@ impl Driver for LocalBufferDriver {
         // let _ = vmdata.run_main();
         self.localbuffer.clear();
         for _ in 0..self.times {
-
             let now = self.count.load(Ordering::Relaxed);
             let _ = vmdata.run_dsp(Time(now));
             let res = vm::Machine::get_as_array::<<LocalBufferDriver as Driver>::Sample>(

@@ -213,7 +213,7 @@ impl Mir {
     pub fn get_dsp_iochannels(&self) -> Option<IoChannelInfo> {
         self.functions
             .iter()
-            .find(|f| f.label == "dsp".to_symbol())
+            .find(|f| f.label.as_str() == "dsp")
             .and_then(|f| {
                 let input = match f.argtypes.as_slice() {
                     [] => Some(0),

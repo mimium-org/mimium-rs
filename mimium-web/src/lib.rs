@@ -94,7 +94,7 @@ impl Context {
     }
     #[wasm_bindgen]
     pub fn get_output_channels(&self) -> u32 {
-        self.config.input_channels
+        self.config.output_channels
     }
     /// .
     ///
@@ -104,5 +104,22 @@ impl Context {
     #[wasm_bindgen]
     pub fn process(&mut self, input: &[f32], output: &mut [f32]) -> u64 {
         unsafe { self.processor.as_mut().unwrap_unchecked()(input, output) }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    #[test]
+    fn test_iochannels() {
+        let mut ctx = Context::new(Config::default());
+        ctx.compile(
+            r#"fn dsp(input:float){
+        (0,input)
+        }"#
+            .to_string(),
+        );
+        assert_eq!(1, ctx.get_input_channels());
+        assert_eq!(2, ctx.get_output_channels());
     }
 }
