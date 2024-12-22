@@ -6,6 +6,7 @@ version.workspace = true
 repository.workspace = true
 readme.workspace = true
 authors.workspace = true
+description = "mimium wasm binding package."
 
 [lib]
 crate-type = ["cdylib", "rlib"]
