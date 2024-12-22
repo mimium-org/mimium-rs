@@ -23,9 +23,9 @@ use runtime::vm::{
 };
 use utils::error::ReportableError;
 
-#[cfg(feature = "native")]
+#[cfg(not(target_arch="wasm32"))]
 use mimalloc::MiMalloc;
-#[cfg(feature = "native")]
+#[cfg(not(target_arch="wasm32"))]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
