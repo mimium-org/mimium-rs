@@ -17,19 +17,19 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "MPL-2.0"
-version = "2.2.4"
+version = "2.2.5"
 repository = "https://github.com/tomoyanonymous/mimium-rs/"
 readme = "Readme.md"
 authors = ["Tomoya Matsuura <me@matsuuratomoya.com>"]
 
 [workspace.dependencies]
-mimium-lang = { path = "mimium-lang", version = "2.2.4" }
-mimium-audiodriver = { path = "mimium-audiodriver", version = "2.2.4" }
-mimium-midi = { path = "mimium-midi", version = "2.2.4" }
-mimium-symphonia = { path = "mimium-symphonia", version = "2.2.4" }
-mimium-scheduler = { path = "mimium-scheduler", version = "2.2.4" }
-mimium-guitools = { path = "mimium-guitools", version = "2.2.4" }
-mimium-web = { path = "mimium-web", version = "2.2.4" }
+mimium-lang = { path = "mimium-lang", version = "2.2.5" }
+mimium-audiodriver = { path = "mimium-audiodriver", version = "2.2.5" }
+mimium-midi = { path = "mimium-midi", version = "2.2.5" }
+mimium-symphonia = { path = "mimium-symphonia", version = "2.2.5" }
+mimium-scheduler = { path = "mimium-scheduler", version = "2.2.5" }
+mimium-guitools = { path = "mimium-guitools", version = "2.2.5" }
+mimium-web = { path = "mimium-web", version = "2.2.5" }
 mimium-test = { path = "mimium-test" }
 itertools = "0.13.0"
 
