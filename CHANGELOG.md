@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## v2.2.4
+
+### New Features
+
+- Basic setting for WASM build is completed(#112). The actual entrypoint for webaudio is [mimium-webaudio](https://github.com/mimium-org/mimium-webaudio). The editor webcomponent is now working on [mimium-web-component](https://github.com/tomoyanonymous/mimium-web-component). Example of the mimium-webaudio usage is on there.
+
+### Bug fix
+
+- Fixed the type inference bug in the let declaration.(#114)
+
 ## v2.2.3
 
 ### Library update
