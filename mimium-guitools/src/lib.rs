@@ -63,31 +63,36 @@ impl GuiToolPlugin {
 }
 impl SystemPlugin for GuiToolPlugin {
     fn try_get_main_loop(&mut self) -> Option<Box<dyn FnOnce()>> {
-        let make_window = self.window.as_ref().is_some_and(|w| !w.is_empty());
-
-        make_window
-            .then(|| {
-                self.window.take().map(|window| -> Box<dyn FnOnce()> {
-                    Box::new(move || {
-                        let native_options = eframe::NativeOptions {
-                            viewport: egui::ViewportBuilder::default()
-                                .with_inner_size([400.0, 300.0])
-                                .with_min_inner_size([300.0, 220.0]), // .with_icon(
-                            //     // NOTE: Adding an icon is optional
-                            //     eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon-256.png")[..])
-                            //         .expect("Failed to load icon"),)
-                            ..Default::default()
-                        };
-                        let _ = eframe::run_native(
-                            "mimium guitools",
-                            native_options,
-                            Box::new(|_cc| Ok(Box::new(window))),
-                        )
-                        .inspect_err(|e| log::error!("{e}"));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let make_window = self.window.as_ref().is_some_and(|w| !w.is_empty());
+            make_window
+                .then(|| {
+                    self.window.take().map(|window| -> Box<dyn FnOnce()> {
+                        Box::new(move || {
+                            let native_options = eframe::NativeOptions {
+                                viewport: egui::ViewportBuilder::default()
+                                    .with_inner_size([400.0, 300.0])
+                                    .with_min_inner_size([300.0, 220.0]), // .with_icon(
+                                //     // NOTE: Adding an icon is optional
+                                //     eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon-256.png")[..])
+                                //         .expect("Failed to load icon"),)
+                                ..Default::default()
+                            };
+                            let _ = eframe::run_native(
+                                "mimium guitools",
+                                native_options,
+                                Box::new(|_cc| Ok(Box::new(window))),
+                            )
+                            .inspect_err(|e| log::error!("{e}"));
+                        })
                     })
                 })
-            })
-            .flatten()
+                .flatten()
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        None
     }
     fn gen_interfaces(&self) -> Vec<SysPluginSignature> {
         let ty = function!(vec![string_t!()], Self::get_closure_type());

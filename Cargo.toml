@@ -9,6 +9,7 @@ members = [
     "mimium-symphonia",
     "mimium-midi",
     "mimium-guitools",
+    "mimium-web",
 ]
 
 resolver = "2"
@@ -22,14 +23,16 @@ readme = "Readme.md"
 authors = ["Tomoya Matsuura <me@matsuuratomoya.com>"]
 
 [workspace.dependencies]
-mimium-cli = { path = "mimium-cli", version = "2.2.3" }
 mimium-lang = { path = "mimium-lang", version = "2.2.3" }
 mimium-audiodriver = { path = "mimium-audiodriver", version = "2.2.3" }
 mimium-midi = { path = "mimium-midi", version = "2.2.3" }
 mimium-symphonia = { path = "mimium-symphonia", version = "2.2.3" }
 mimium-scheduler = { path = "mimium-scheduler", version = "2.2.3" }
 mimium-guitools = { path = "mimium-guitools", version = "2.2.3" }
+mimium-web = { path = "mimium-web", version = "2.2.3" }
 mimium-test = { path = "mimium-test" }
+itertools = "0.13.0"
+
 
 # do not add git tag for each crates on release.
 [workspace.metadata.release]

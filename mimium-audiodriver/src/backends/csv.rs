@@ -4,7 +4,7 @@ use std::{
     path::Path,
 };
 
-use mimium_lang::{runtime::vm, ExecContext};
+use mimium_lang::{compiler::IoChannelInfo, runtime::vm, ExecContext};
 
 use crate::driver::Driver;
 
@@ -37,10 +37,14 @@ impl Driver for CsvDriver {
         self.driver.get_runtimefn_infos()
     }
 
-    fn init(&mut self, ctx: ExecContext, sample_rate: Option<crate::driver::SampleRate>) -> bool {
+    fn init(
+        &mut self,
+        ctx: ExecContext,
+        sample_rate: Option<crate::driver::SampleRate>,
+    ) -> Option<IoChannelInfo> {
         let res = self.driver.init(ctx, sample_rate);
 
-        let chunk_size = self.driver.get_ochannels();
+        let chunk_size = res.map_or(0, |io| io.output);
         let mut header = String::new();
         for i in 0..chunk_size {
             header.push_str(&format!("ch{i}"));
@@ -65,7 +69,9 @@ impl Driver for CsvDriver {
     fn play(&mut self) -> bool {
         let res = self.driver.play();
 
-        let chunk_size = self.driver.get_ochannels();
+        let chunk_size = self.driver.vmdata.as_ref().map_or(0, |vmdata| {
+            vmdata.vm.prog.iochannels.map_or(0, |io| io.output)
+        }) as _;
         let mut line = String::new();
         for sample in self.driver.get_generated_samples().chunks(chunk_size) {
             for (i, v) in sample.iter().enumerate() {

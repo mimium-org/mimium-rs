@@ -1,4 +1,3 @@
-extern crate mimium_lang;
 use std::{collections::HashMap, path::PathBuf};
 
 use mimium_audiodriver::{backends::local_buffer::LocalBufferDriver, driver::Driver};
@@ -36,12 +35,12 @@ pub fn run_bytecode_test_multiple(
 ) -> Result<Vec<f64>, Vec<Box<dyn ReportableError>>> {
     let mut ctx = ExecContext::new([].into_iter(), None);
     ctx.prepare_machine_with_bytecode(bytecodes);
-    let mut machine = ctx.vm.unwrap();
+    let machine = ctx.get_vm_mut().unwrap();
     let _retcode = machine.execute_main();
     let n = if stereo { 2 } else { 1 };
     let mut ret = Vec::with_capacity(times as usize * n);
     for i in 0..times {
-        let res = run_bytecode_test(&mut machine, n)?;
+        let res = run_bytecode_test(machine, n)?;
         ret.extend_from_slice(res);
         println!("time:{}, res: {:?}", i, res)
     }
@@ -88,7 +87,7 @@ pub fn run_source_test(
     let mut ctx = ExecContext::new([].into_iter(), path);
 
     ctx.prepare_machine(src)?;
-    let bytecode = ctx.vm.unwrap().prog;
+    let bytecode = ctx.take_vm().unwrap().prog;
     run_bytecode_test_multiple(bytecode, times, stereo)
 }
 
@@ -175,7 +174,7 @@ pub fn test_state_sizes<T: IntoIterator<Item = (&'static str, u64)>>(path: &str,
     let (file, src) = load_src(path);
     let mut ctx = ExecContext::new([].into_iter(), Some(file.to_str().unwrap().to_symbol()));
     ctx.prepare_machine(&src).unwrap();
-    let bytecode = ctx.vm.expect("failed to emit bytecode").prog;
+    let bytecode = ctx.take_vm().expect("failed to emit bytecode").prog;
     // let bytecode = match ctx.compiler.emit_bytecode(&src) {
     //     Ok(res) => res,
     //     Err(errs) => {

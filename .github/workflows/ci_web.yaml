@@ -1,4 +1,4 @@
-name: Tests for Native App
+name: Test for Web
 
 on:
   pull_request:
@@ -12,28 +12,18 @@ permissions:
 
 jobs:
   cargo_test:
-    name: "cargo test (OS: ${{ matrix.config.os }}"
-    runs-on: ${{ matrix.config.os }}
+    name: "cargo test for web"
+    runs-on: ubuntu-latest 
     strategy:
       fail-fast: false
-      matrix:
-        config:
-          - { os: ubuntu-latest }
-          - { os: macOS-latest }
-          - { os: windows-latest }
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
-      - name: Install system requirements for Linux
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt update -y
-          sudo apt install -y libasound2-dev
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -45,4 +35,5 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - run: cargo test
+      - run: wasm-pack test --headless --chrome
+        working-directory: mimium-web

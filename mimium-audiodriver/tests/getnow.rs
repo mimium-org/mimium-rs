@@ -3,6 +3,7 @@ use mimium_audiodriver::{
     driver::{Driver, SampleRate},
 };
 use mimium_lang::{
+    compiler::IoChannelInfo,
     function,
     interner::ToSymbol as _,
     numeric,
@@ -40,6 +41,10 @@ fn getnow_test() {
     let prog = Program {
         global_fn_table: fns,
         ext_fun_table: vec![("_mimium_getnow".to_symbol(), function!(vec![], numeric!()))],
+        iochannels: Some(IoChannelInfo {
+            input: 0,
+            output: 1,
+        }),
         ..Default::default()
     };
 
@@ -48,7 +53,7 @@ fn getnow_test() {
     let p: Box<dyn Plugin> = Box::new(driver.get_as_plugin());
     let mut ctx = ExecContext::new([p].into_iter(), None);
     ctx.prepare_machine_with_bytecode(prog);
-    driver.init(ctx, Some(SampleRate::from(48000)));
+    let _iochannels = driver.init(ctx, Some(SampleRate::from(48000)));
     driver.play();
 
     let res = driver.get_generated_samples();
