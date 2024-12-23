@@ -32,21 +32,17 @@ mod test {
     use super::*;
     use crate::utils::fileloader;
     use wasm_bindgen_test::*;
-    // #[wasm_bindgen_test]
-    // fn test_resolve_include() {
-    //     let ans = r#"include("./error_include_itself.mmm")
-    //     fn dsp(){
-    //         0.0 
-    //     }"#;
-    //     let file = format!(
-    //         "{}/../mimium-test/tests/mmm/{}",
-    //         file_loaderget_env("TEST_ROOT").expect("TEST_ROOT is not set"),
-    //         "error_include_itself.mmm"
-    //     );
-
-    //     let (id, errs) = resolve_include("test.mmm", "test.mmm", Span::new(0, 0));
-    //     assert_eq!(errs.len(), 0);
-    //     assert_ne!(id, Expr::Error.into_id(Location::new("test.mmm")));
-    // }
-
+    #[wasm_bindgen_test]
+    fn test_resolve_include() {
+        let file = format!(
+            "{}/../mimium-test/tests/mmm/{}",
+            fileloader::get_env("TEST_ROOT").expect("TEST_ROOT is not set"),
+            "error_include_itself.mmm"
+        );
+        let (id, errs) = resolve_include(&file, &file, 0..0);
+        assert_eq!(errs.len(), 1);
+        assert!(errs[0]
+            .get_message()
+            .contains("File tried to include itself recusively"));
+    }
 }

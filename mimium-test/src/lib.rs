@@ -169,7 +169,7 @@ pub fn load_src(path: &'static str) -> (PathBuf, String) {
     );
 
     println!("{}", file);
-    let src = fileloader::load(&file).expect("failed to load gile");
+    let src = fileloader::load(&file).expect("failed to load file");
     (PathBuf::from(file), src)
 }
 
