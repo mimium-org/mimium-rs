@@ -11,8 +11,8 @@ permissions:
   contents: read
 
 jobs:
-  cargo_test:
-    name: "cargo test for web"
+  cargo_test_setup:
+    name: "setup test for web"
     runs-on: ubuntu-latest 
     strategy:
       fail-fast: false
@@ -34,6 +34,21 @@ jobs:
             ~/.cargo/git/db/
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - run: wasm-pack test --headless --chrome
-        working-directory: mimium-web
+  integration_test:
+    needs: cargo_test_setup
+    name: "mimium-lang test for web"
+    runs-on: ubuntu-latest 
+    strategy:
+      fail-fast: false
+    steps:
+      - run: wasm-pack test --node
+        working-directory: mimium-test
+  lang_unit_test:
+    needs: cargo_test_setup
+    name: "mimium-lang test for web"
+    runs-on: ubuntu-latest 
+    strategy:
+      fail-fast: false
+    steps:
+      - run: wasm-pack test --node
+        working-directory: mimium-lang
