@@ -92,7 +92,7 @@ pub fn run_source_test(
 }
 
 pub fn run_file_with_plugins(
-    path: &str,
+    path: &'static str,
     times: u64,
     plugins: impl Iterator<Item = Box<dyn Plugin>>,
     with_scheduler: bool,
@@ -113,10 +113,10 @@ pub fn run_file_with_plugins(
         }
     }
 }
-pub fn run_file_with_scheduler(path: &str, times: u64) -> Option<Vec<f64>> {
+pub fn run_file_with_scheduler(path: &'static str, times: u64) -> Option<Vec<f64>> {
     run_file_with_plugins(path, times, [].into_iter(), true)
 }
-pub fn run_file_test(path: &str, times: u64, stereo: bool) -> Option<Vec<f64>> {
+pub fn run_file_test(path: &'static str, times: u64, stereo: bool) -> Option<Vec<f64>> {
     let (file, src) = load_src(path);
     let path_sym = file.to_string_lossy().to_symbol();
     let res = run_source_test(&src, times, stereo, Some(path_sym));
@@ -129,7 +129,7 @@ pub fn run_file_test(path: &str, times: u64, stereo: bool) -> Option<Vec<f64>> {
     }
 }
 
-pub fn run_error_test(path: &str, stereo: bool) -> Vec<Box<dyn ReportableError>> {
+pub fn run_error_test(path: &'static str, stereo: bool) -> Vec<Box<dyn ReportableError>> {
     let (file, src) = load_src(path);
     let path_sym = file.to_string_lossy().to_symbol();
     let res = run_source_test(&src, 1, stereo, Some(path_sym));
@@ -141,7 +141,7 @@ pub fn run_error_test(path: &str, stereo: bool) -> Vec<Box<dyn ReportableError>>
     }
 }
 
-pub fn load_src(path: &str) -> (PathBuf, String) {
+pub fn load_src(path: &'static str) -> (PathBuf, String) {
     let crate_root = std::env::var("TEST_ROOT").expect(
         r#"You must set TEST_ROOT environment variable to run test.
 You should put the line like below to your build.rs.
@@ -161,15 +161,15 @@ fn main() {
     (file, src)
 }
 
-pub fn run_file_test_mono(path: &str, times: u64) -> Option<Vec<f64>> {
+pub fn run_file_test_mono(path: &'static str, times: u64) -> Option<Vec<f64>> {
     run_file_test(path, times, false)
 }
 
-pub fn run_file_test_stereo(path: &str, times: u64) -> Option<Vec<f64>> {
+pub fn run_file_test_stereo(path: &'static str, times: u64) -> Option<Vec<f64>> {
     run_file_test(path, times, true)
 }
 
-pub fn test_state_sizes<T: IntoIterator<Item = (&'static str, u64)>>(path: &str, ans: T) {
+pub fn test_state_sizes<T: IntoIterator<Item = (&'static str, u64)>>(path: &'static str, ans: T) {
     let state_sizes: HashMap<&str, u64> = HashMap::from_iter(ans);
     let (file, src) = load_src(path);
     let mut ctx = ExecContext::new([].into_iter(), Some(file.to_str().unwrap().to_symbol()));
