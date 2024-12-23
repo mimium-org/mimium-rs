@@ -142,23 +142,34 @@ pub fn run_error_test(path: &'static str, stereo: bool) -> Vec<Box<dyn Reportabl
 }
 
 pub fn load_src(path: &'static str) -> (PathBuf, String) {
-    let crate_root = std::env::var("TEST_ROOT").expect(
-        r#"You must set TEST_ROOT environment variable to run test.
-You should put the line like below to your build.rs.
-fn main() {
-    println!("cargo:rustc-env=TEST_ROOT={}", env!("CARGO_MANIFEST_DIR"));
-}
-"#,
-    );
-    let file = [crate_root.as_str(), "tests/mmm", path]
-        .iter()
-        .collect::<PathBuf>()
-        .canonicalize()
-        .unwrap();
-    let file_str = file.to_str().unwrap();
-    println!("{}", file_str);
-    let src = fileloader::load(file_str).unwrap();
-    (file, src)
+    let file = if !cfg!(target_arch = "wasm32") {
+        let crate_root = std::env::var("TEST_ROOT").expect(
+            r#"You must set TEST_ROOT environment variable to run test.
+            You should put the line like below to your build.rs.
+            fn main() {
+                println!("cargo:rustc-env=TEST_ROOT={}", env!("CARGO_MANIFEST_DIR"));
+                }
+                "#,
+        );
+        [crate_root.as_str(), "tests/mmm", path]
+            .iter()
+            .collect::<PathBuf>()
+            .canonicalize()
+            .expect("canonicalize failed")
+            .to_str()
+            .expect("canonicalize failed")
+            .to_string()
+    } else {
+        format!(
+            "{}/tests/mmm/{}",
+            fileloader::get_env("TEST_ROOT").expect("TEST_ROOT is not set"),
+            path
+        )
+    };
+
+    println!("{}", file);
+    let src = fileloader::load(&file).expect("failed to load gile");
+    (PathBuf::from(file), src)
 }
 
 pub fn run_file_test_mono(path: &'static str, times: u64) -> Option<Vec<f64>> {

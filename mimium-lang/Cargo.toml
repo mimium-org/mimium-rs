@@ -24,6 +24,9 @@ itertools.workspace = true
 homedir = { version = "0.3.4" }
 mimalloc = { version = "0.1.43" }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2.93"
+
 [lints.clippy]
 useless_format = "allow"
 expect_fun_call = "allow"

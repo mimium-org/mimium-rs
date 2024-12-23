@@ -1,9 +1,12 @@
 use std::{env, fmt, path::PathBuf};
 
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
+
 #[derive(Debug)]
 pub enum Error {
     IoError(std::io::Error),
-    FileNotFound(std::io::Error, PathBuf),
+    FileNotFound(String, PathBuf),
     UtfConversionError(std::string::FromUtf8Error),
     PathJoinError(env::JoinPathsError),
     SelfReference(PathBuf),
@@ -43,9 +46,9 @@ impl From<env::JoinPathsError> for Error {
     }
 }
 fn get_default_library_path() -> Option<PathBuf> {
-    #[cfg(not(target_arch="wasm32"))]
+    #[cfg(not(target_arch = "wasm32"))]
     let home = homedir::my_home().ok().flatten();
-    #[cfg(target_arch="wasm32")]
+    #[cfg(target_arch = "wasm32")]
     let home: Option<PathBuf> = None;
     if home.is_none() {
         log::warn!("default library search path is not available on this platform.");
@@ -65,7 +68,9 @@ pub fn get_canonical_path(current_file_or_dir: &str, relpath: &str) -> Result<Pa
         //canonicalize is platform-dependent and always returns Err on wasm32
         Ok(abspath)
     } else {
-        abspath.canonicalize().map_err(|e| Error::FileNotFound(e, abspath))
+        abspath
+            .canonicalize()
+            .map_err(|e| Error::FileNotFound(e.to_string(), abspath))
     }
 }
 
@@ -106,11 +111,28 @@ pub fn load_mmmlibfile(current_file_or_dir: &str, path: &str) -> Result<(String,
     Ok((content, cpath))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn load(canonical_path: &str) -> Result<String, Error> {
     // debug_assert!(std::path::Path::new(canonical_path).is_absolute());
     let content = std::fs::read(canonical_path)
-        .map_err(|e| Error::FileNotFound(e, PathBuf::from(canonical_path)))?;
+        .map_err(|e| Error::FileNotFound(e.to_string(), PathBuf::from(canonical_path)))?;
 
     let content_r = String::from_utf8(content).map_err(Error::from)?;
     Ok(content_r)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn load(canonical_path: &str) -> Result<String, Error> {
+    let content_r = read_file(canonical_path)
+        .map_err(|e| Error::FileNotFound(format!("{:?}", e), canonical_path.into()))?;
+    Ok(content_r)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(module = "/src/utils/fileloader.js")]
+extern "C" {
+    #[wasm_bindgen(catch)]
+    fn read_file(path: &str) -> Result<String, JsValue>;
+    #[wasm_bindgen(catch)]
+    pub fn get_env(key: &str) -> Result<String, JsValue>;
 }
