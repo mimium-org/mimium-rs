@@ -1584,6 +1584,7 @@ dependencies = [
  "slotmap",
  "string-interner",
  "wasm-bindgen",
+ "wasm-bindgen-test",
 ]
 
 [[package]]

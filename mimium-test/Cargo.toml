@@ -18,4 +18,5 @@ release = false
 mimium-lang = { workspace = true }
 mimium-scheduler = { workspace = true }
 mimium-audiodriver = { workspace = true }
-wasm-bindgen-test = "0.3"
+[dev-dependencies]
+wasm-bindgen-test = {workspace = true }

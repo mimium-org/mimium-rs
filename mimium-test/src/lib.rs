@@ -142,7 +142,8 @@ pub fn run_error_test(path: &'static str, stereo: bool) -> Vec<Box<dyn Reportabl
 }
 
 pub fn load_src(path: &'static str) -> (PathBuf, String) {
-    let file = if !cfg!(target_arch = "wasm32") {
+    #[cfg(not(target_arch = "wasm32"))]
+    let file = {
         let crate_root = std::env::var("TEST_ROOT").expect(
             r#"You must set TEST_ROOT environment variable to run test.
             You should put the line like below to your build.rs.
@@ -159,13 +160,13 @@ pub fn load_src(path: &'static str) -> (PathBuf, String) {
             .to_str()
             .expect("canonicalize failed")
             .to_string()
-    } else {
-        format!(
-            "{}/tests/mmm/{}",
-            fileloader::get_env("TEST_ROOT").expect("TEST_ROOT is not set"),
-            path
-        )
     };
+    #[cfg(target_arch = "wasm32")]
+    let file = format!(
+        "{}/tests/mmm/{}",
+        fileloader::get_env("TEST_ROOT").expect("TEST_ROOT is not set"),
+        path
+    );
 
     println!("{}", file);
     let src = fileloader::load(&file).expect("failed to load gile");

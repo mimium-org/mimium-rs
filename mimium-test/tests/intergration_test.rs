@@ -383,20 +383,23 @@ fn hof_typefail() {
     //todo! check error types
     assert_eq!(res.len(), 1);
 }
+
 #[wasm_bindgen_test(unsupported = test)]
 fn error_include_itself() {
     let res = run_error_test("error_include_itself.mmm", false);
     assert_eq!(res.len(), 1);
-    assert!(res[0]
-        .get_message()
-        .contains("File tried to include itself recusively:"))
+    assert!(
+        res[0]
+            .get_message()
+            .contains("File tried to include itself recusively:"),
+        "{:?}",
+        res[0]
+    )
 }
 
 #[wasm_bindgen_test(unsupported = test)]
 fn typing_tuple_fail() {
     let res = run_error_test("typing_tuple_fail.mmm", false);
     assert_eq!(res.len(), 1);
-    assert!(res[0]
-        .get_message()
-        .contains("Type mismatch"))
+    assert!(res[0].get_message().contains("Type mismatch"))
 }

@@ -136,3 +136,42 @@ extern "C" {
     #[wasm_bindgen(catch)]
     pub fn get_env(key: &str) -> Result<String, JsValue>;
 }
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod test {
+    use super::*;
+    use wasm_bindgen_test::*;
+    fn setup_file() -> (String, String) {
+        let ans = r#"include("./error_include_itself.mmm")
+fn dsp(){
+    0.0
+}"#;
+        let file = format!(
+            "{}/../mimium-test/tests/mmm/{}",
+            get_env("TEST_ROOT").expect("TEST_ROOT is not set"),
+            "error_include_itself.mmm"
+        );
+        (ans.to_string(), file)
+    }
+    #[wasm_bindgen_test] //wasm only test
+    fn fileloader_test() {
+        let (ans, file) = setup_file();
+        let res = load(&file).expect("failed to load file");
+        assert_eq!(res, ans);
+    }
+    #[wasm_bindgen_test] //wasm only test
+    fn loadlib_test() {
+        use super::*;
+        let (ans, file) = setup_file();
+        let (res, _path) = load_mmmlibfile("/", &file).expect("failed to load file");
+        assert_eq!(res, ans);
+    }
+    #[wasm_bindgen_test] //wasm only test
+    fn loadlib_test_selfinclude() {
+        use super::*;
+        let (_, file) = setup_file();
+        let err = load_mmmlibfile(&file, &file).expect_err("should be an error");
+
+        assert!(matches!(err,Error::SelfReference(_)));
+    }
+}

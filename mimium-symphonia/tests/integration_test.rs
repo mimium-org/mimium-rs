@@ -2,7 +2,7 @@ use mimium_lang::plugin::Plugin;
 use mimium_symphonia::SamplerPlugin;
 use mimium_test::*;
 
-fn run_file_with_symphonia(path: &str, times: u64) -> Option<Vec<f64>> {
+fn run_file_with_symphonia(path: &'static str, times: u64) -> Option<Vec<f64>> {
     let plugins: [Box<dyn Plugin>; 1] = [Box::new(SamplerPlugin)];
     run_file_with_plugins(path, times, plugins.into_iter(), false)
 }
