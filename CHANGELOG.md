@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## v2.2.6
+
+### Bugfix
+
+- Fixed an incorrect lookup order of local variables(#116)
+- Fixed type checker so that the block with curly brace creates local variable scope(#117)
+
+### Other
+
+- Now integration test is done in wasm build too, using node.js as filesystem host
+
 ## v2.2.5
 
 ### Bugfix
