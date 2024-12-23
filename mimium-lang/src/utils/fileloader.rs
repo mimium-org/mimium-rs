@@ -129,7 +129,7 @@ pub fn load(canonical_path: &str) -> Result<String, Error> {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[wasm_bindgen(module = "/src/utils/fileloader.mjs")]
+#[wasm_bindgen(module = "/src/utils/fileloader.cjs")]
 extern "C" {
     #[wasm_bindgen(catch)]
     fn read_file(path: &str) -> Result<String, JsValue>;
