@@ -32,7 +32,8 @@ mimium-guitools = { path = "mimium-guitools", version = "2.2.5" }
 mimium-web = { path = "mimium-web", version = "2.2.5" }
 mimium-test = { path = "mimium-test" }
 itertools = "0.13.0"
-
+wasm-bindgen = "0.2.93"
+wasm-bindgen-test = "0.3"
 
 # do not add git tag for each crates on release.
 [workspace.metadata.release]

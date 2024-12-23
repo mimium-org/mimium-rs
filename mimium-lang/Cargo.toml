@@ -20,9 +20,13 @@ colog = "1.3.0"
 half = "2.4.1"
 intx = "0.1.0"
 itertools.workspace = true
+wasm-bindgen.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 homedir = { version = "0.3.4" }
 mimalloc = { version = "0.1.43" }
+
+[dev-dependencies]
+wasm-bindgen-test = { workspace = true }
 
 [lints.clippy]
 useless_format = "allow"
