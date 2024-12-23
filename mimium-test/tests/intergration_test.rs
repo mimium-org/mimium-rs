@@ -407,7 +407,19 @@ fn error_include_itself() {
 fn typing_tuple_fail() {
     let res = run_error_test("typing_tuple_fail.mmm", false);
     assert_eq!(res.len(), 1);
-    assert!(res[0]
-        .get_message()
-        .contains("Type mismatch"))
+    assert!(res[0].get_message().contains("Type mismatch"))
+}
+#[test]
+fn block_local_scope() {
+    let res = run_file_test_mono("block_local_scope.mmm", 1).unwrap();
+    let ans = vec![3.0];
+    assert_eq!(res, ans);
+}
+
+
+#[test]
+fn block_local_scope_fail() {
+    let res = run_error_test("block_local_scope_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+    assert!(res[0].get_message().contains("Variable local1 not found in this scope"))
 }

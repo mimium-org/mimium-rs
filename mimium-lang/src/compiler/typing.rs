@@ -657,7 +657,10 @@ impl InferContext {
                 Self::unify_types((thent, then_loc), (elset, else_loc))
             }
             Expr::Block(expr) => expr.map_or(Ok(Type::Primitive(PType::Unit).into_id()), |e| {
-                self.infer_type(e)
+                self.env.extend(); //block creates local scope.
+                let res= self.infer_type(e);
+                self.env.to_outer();
+                res
             }),
             _ => Ok(Type::Primitive(PType::Unit).into_id()),
         };
