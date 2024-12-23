@@ -369,6 +369,18 @@ fn if_state() {
     ];
     assert_eq!(res, ans);
 }
+#[test]
+fn shadowing() {
+    let res = run_file_test_mono("shadowing.mmm", 1).unwrap();
+    let ans = vec![2.0];
+    assert_eq!(res, ans);
+}
+#[test]
+fn shadowing_assign() {
+    let res = run_file_test_mono("shadowing_assign.mmm", 1).unwrap();
+    let ans = vec![7.0];
+    assert_eq!(res, ans);
+}
 
 #[wasm_bindgen_test(unsupported = test)]
 fn many_errors() {
@@ -402,4 +414,18 @@ fn typing_tuple_fail() {
     let res = run_error_test("typing_tuple_fail.mmm", false);
     assert_eq!(res.len(), 1);
     assert!(res[0].get_message().contains("Type mismatch"))
+}
+#[wasm_bindgen_test(unsupported = test)]
+fn block_local_scope() {
+    let res = run_file_test_mono("block_local_scope.mmm", 1).unwrap();
+    let ans = vec![3.0];
+    assert_eq!(res, ans);
+}
+
+
+#[wasm_bindgen_test(unsupported = test)]
+fn block_local_scope_fail() {
+    let res = run_error_test("block_local_scope_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+    assert!(res[0].get_message().contains("Variable local1 not found in this scope"))
 }

@@ -1,0 +1,9 @@
+//Curly brace creates local scope. should be 3.0
+fn dsp(){
+    let test = 0
+    {
+        let local = 1.0
+    }
+    let local = 3.0
+    test + local
+}

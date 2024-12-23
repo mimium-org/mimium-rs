@@ -1,0 +1,6 @@
+//answer should be 2
+fn dsp(){
+    let phase = 1.0
+    let phase = 2.0
+    phase
+}
