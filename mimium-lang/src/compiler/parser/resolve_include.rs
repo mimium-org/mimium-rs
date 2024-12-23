@@ -26,3 +26,23 @@ pub(super) fn resolve_include(
         Err(err) => (Expr::Error.into_id(loc), err),
     }
 }
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod test {
+    use super::*;
+    use crate::utils::fileloader;
+    use wasm_bindgen_test::*;
+    #[wasm_bindgen_test]
+    fn test_resolve_include() {
+        let file = format!(
+            "{}/../mimium-test/tests/mmm/{}",
+            fileloader::get_env("TEST_ROOT").expect("TEST_ROOT is not set"),
+            "error_include_itself.mmm"
+        );
+        let (id, errs) = resolve_include(&file, &file, 0..0);
+        assert_eq!(errs.len(), 1);
+        assert!(errs[0]
+            .get_message()
+            .contains("File tried to include itself recusively"));
+    }
+}
