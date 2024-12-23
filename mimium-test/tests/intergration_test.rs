@@ -368,6 +368,18 @@ fn if_state() {
     ];
     assert_eq!(res, ans);
 }
+#[test]
+fn shadowing() {
+    let res = run_file_test_mono("shadowing.mmm", 1).unwrap();
+    let ans = vec![2.0];
+    assert_eq!(res, ans);
+}
+#[test]
+fn shadowing_assign() {
+    let res = run_file_test_mono("shadowing_assign.mmm", 1).unwrap();
+    let ans = vec![7.0];
+    assert_eq!(res, ans);
+}
 
 #[test]
 fn many_errors() {
