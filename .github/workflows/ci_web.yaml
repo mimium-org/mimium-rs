@@ -22,8 +22,6 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
-      - name: Install wasm-pack
-        run: cargo install wasm-pack
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -34,21 +32,11 @@ jobs:
             ~/.cargo/git/db/
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-  integration_test:
-    needs: cargo_test_setup
-    name: "mimium-test for web"
-    runs-on: ubuntu-latest 
-    strategy:
-      fail-fast: false
-    steps:
-      - run: wasm-pack test --node
-        working-directory: ./mimium-test
-  lang_unit_test:
-    needs: cargo_test_setup
-    name: "mimium-lang test for web"
-    runs-on: ubuntu-latest 
-    strategy:
-      fail-fast: false
-    steps:
-      - run: wasm-pack test --node
-        working-directory: /mimium-lang
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
+      - name: "mimium-test for web"
+        run: wasm-pack test --node
+        working-directory: mimium-test
+      - name: "mimium-lang test for web"
+        run: wasm-pack test --node
+        working-directory: mimium-lang
