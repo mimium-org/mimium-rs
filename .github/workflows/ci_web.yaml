@@ -36,13 +36,13 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
   integration_test:
     needs: cargo_test_setup
-    name: "mimium-lang test for web"
+    name: "mimium-test for web"
     runs-on: ubuntu-latest 
     strategy:
       fail-fast: false
     steps:
       - run: wasm-pack test --node
-        working-directory: mimium-test
+        working-directory: ./mimium-test
   lang_unit_test:
     needs: cargo_test_setup
     name: "mimium-lang test for web"
@@ -51,4 +51,4 @@ jobs:
       fail-fast: false
     steps:
       - run: wasm-pack test --node
-        working-directory: mimium-lang
+        working-directory: /mimium-lang
