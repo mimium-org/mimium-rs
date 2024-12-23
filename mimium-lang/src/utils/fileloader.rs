@@ -142,7 +142,7 @@ mod test {
     use super::*;
     use wasm_bindgen_test::*;
     fn setup_file() -> (String, String) {
-        let ans = r#"include("./error_include_itself.mmm")
+        let ans = r#"include("error_include_itself.mmm")
 fn dsp(){
     0.0
 }"#;
