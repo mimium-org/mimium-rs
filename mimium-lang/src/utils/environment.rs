@@ -43,7 +43,7 @@ impl<T: Clone> Environment<T> {
             .iter()
             .enumerate()
             .find(|(_level, vec)| vec.iter().any(|(n, _)| n == name))
-            .and_then(|(level, vec)| vec.iter().find(|(n, _)| n == name).map(|(_, v)| (level, v)))
+            .and_then(|(level, vec)| vec.iter().rfind(|(n, _)| n == name).map(|(_, v)| (level, v)))
         {
             None => LookupRes::None,
             Some((level, e)) if level >= self.0.len() - 1 => LookupRes::Global(e),
