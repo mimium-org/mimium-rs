@@ -43,7 +43,7 @@ jobs:
       - name: Run cargo release
         run: |
           cargo install cargo-release
-          cargo release --execute --no-confirm --token ${{ secrets.CRATEIO_TOKEN }} ${{ inputs.release_version }}
+          cargo release --execute --no-confirm -- --token ${{ secrets.CRATEIO_TOKEN }} ${{ inputs.release_version }}
       - name: Run wasm-pack publish
         run: |
           cargo install wasm-pack
