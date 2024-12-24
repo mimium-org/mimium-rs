@@ -18,7 +18,7 @@ resolver = "2"
 edition = "2021"
 license = "MPL-2.0"
 version = "2.2.7"
-repository = "https://github.com/tomoyanonymous/mimium-rs/"
+repository = "https://github.com/mimium-org/mimium-rs/"
 readme = "Readme.md"
 authors = ["Tomoya Matsuura <me@matsuuratomoya.com>"]
 
