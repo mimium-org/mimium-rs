@@ -430,3 +430,13 @@ fn block_local_scope_fail() {
         .get_message()
         .contains("Variable local1 not found in this scope"))
 }
+
+#[wasm_bindgen_test(unsupported = test)]
+fn test_phase_reset() {
+    let res = run_file_test_stereo("test_phase_reset.mmm", 10).unwrap();
+    let ans = vec![
+        0.0, 1.0, 0.0, 2.0, 0.0, 3.0, 0.0, 4.0, 0.0, 5.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+        1.0, 0.0,
+    ];
+    assert_eq!(res, ans);
+}
