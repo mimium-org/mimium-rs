@@ -3,7 +3,7 @@
 // ch1: 1,2,3,4,5,0,0,0,0,0
 // if run with --self-init-0 from a command line, the result will be:
 // ch0: 0,0,0,0,0,0,1,1,1,1
-// ch1: 0,1,2,3,4,5,0,0,0,0
+// ch1: 0,1,2,3,4,5,6,0,0,0
 fn counter(){
     self+1
 }
