@@ -7,17 +7,18 @@ use mimium_audiodriver::backends::csv::csv_driver;
 use mimium_audiodriver::backends::local_buffer::LocalBufferDriver;
 use mimium_audiodriver::driver::{Driver, SampleRate};
 use mimium_audiodriver::load_default_runtime;
+use mimium_lang::compiler::bytecodegen::SelfEvalMode;
 use mimium_lang::compiler::emit_ast;
 use mimium_lang::interner::{ExprNodeId, Symbol, ToSymbol};
-use mimium_lang::log;
 use mimium_lang::plugin::Plugin;
 use mimium_lang::utils::error::ReportableError;
 use mimium_lang::utils::miniprint::MiniPrint;
 use mimium_lang::utils::{error::report, fileloader};
 use mimium_lang::ExecContext;
 use mimium_lang::{compiler::mirgen::convert_pronoun, repl};
+use mimium_lang::{log, Config};
 use mimium_symphonia::{self, SamplerPlugin};
-#[derive(clap::Parser, Debug)]
+#[derive(clap::Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     #[command(flatten)]
@@ -31,6 +32,11 @@ pub struct Args {
     #[arg(long, short)]
     pub output: Option<PathBuf>,
 
+    /// How many times to execute the code. This is only effective when --output
+    /// is specified.
+    #[arg(long, default_value_t = 10)]
+    pub times: usize,
+
     /// Output format
     #[arg(long, value_enum)]
     pub output_format: Option<OutputFileFormat>,
@@ -39,10 +45,23 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub no_gui: bool,
 
-    /// How many times to execute the code. This is only effective when --output
-    /// is specified.
-    #[arg(long, default_value_t = 10)]
-    pub times: usize,
+    /// Change the behavior of `self` in the code. It this is set to true, `| | {self+1}` will return 0 at t=0, which normally returns 1.
+    #[arg(long, default_value_t = false)]
+    pub self_init_0: bool,
+}
+
+impl Args {
+    pub fn to_execctx_config(self) -> mimium_lang::Config {
+        mimium_lang::Config {
+            compiler: mimium_lang::compiler::Config {
+                self_eval_mode: if self.self_init_0 {
+                    SelfEvalMode::ZeroAtInit
+                } else {
+                    SelfEvalMode::SimpleState
+                },
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -50,7 +69,7 @@ pub enum OutputFileFormat {
     Csv,
 }
 
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args, Debug, Clone, Copy)]
 #[group(required = false, multiple = false)]
 pub struct Mode {
     /// Print AST and exit
@@ -80,14 +99,17 @@ enum RunMode {
 struct RunOptions {
     mode: RunMode,
     with_gui: bool,
+    config: Config,
 }
 
 impl RunOptions {
     fn from_args(args: &Args) -> Self {
+        let config = args.clone().to_execctx_config();
         if args.mode.emit_ast {
             return Self {
                 mode: RunMode::EmitAst,
-                with_gui: false,
+                with_gui: true,
+                config,
             };
         }
 
@@ -95,13 +117,15 @@ impl RunOptions {
             return Self {
                 mode: RunMode::EmitMir,
                 with_gui: false,
+                config,
             };
         }
 
         if args.mode.emit_bytecode {
             return Self {
                 mode: RunMode::EmitByteCode,
-                with_gui: false,
+                with_gui: true,
+                config,
             };
         }
 
@@ -130,7 +154,11 @@ impl RunOptions {
             _ => false,
         };
 
-        Self { mode, with_gui }
+        Self {
+            mode,
+            with_gui,
+            config,
+        }
     }
 
     fn get_driver(&self) -> Box<dyn Driver<Sample = f64>> {
@@ -142,9 +170,9 @@ impl RunOptions {
     }
 }
 
-fn get_default_context(path: Option<Symbol>, with_gui: bool) -> ExecContext {
+fn get_default_context(path: Option<Symbol>, with_gui: bool, config: Config) -> ExecContext {
     let plugins: Vec<Box<dyn Plugin>> = vec![Box::new(SamplerPlugin)];
-    let mut ctx = ExecContext::new(plugins.into_iter(), path);
+    let mut ctx = ExecContext::new(plugins.into_iter(), path, config);
     ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
     if let Some(midi_plug) = mimium_midi::MidiPlugin::try_new() {
         ctx.add_system_plugin(midi_plug);
@@ -216,7 +244,7 @@ fn run_file(
 ) -> Result<(), Vec<Box<dyn ReportableError>>> {
     log::debug!("Filename: {}", fullpath.display());
     let path_sym = fullpath.to_string_lossy().to_symbol();
-    let mut ctx = get_default_context(Some(path_sym), options.with_gui);
+    let mut ctx = get_default_context(Some(path_sym), options.with_gui, options.config);
 
     match options.mode {
         RunMode::EmitAst => {

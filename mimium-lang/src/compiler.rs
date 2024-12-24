@@ -99,9 +99,15 @@ pub struct ExtFunTypeInfo {
     pub ty: TypeNodeId,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Config {
+    pub self_eval_mode: bytecodegen::SelfEvalMode,
+}
+
 pub struct Context {
     ext_fns: Vec<ExtFunTypeInfo>,
     file_path: Option<Symbol>,
+    config: Config,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -114,11 +120,12 @@ impl Context {
     pub fn new(
         ext_fns: impl IntoIterator<Item = ExtFunTypeInfo>,
         file_path: Option<Symbol>,
+        config: Config,
     ) -> Self {
         Self {
             ext_fns: ext_fns.into_iter().collect(),
-
             file_path,
+            config,
         }
     }
     fn get_ext_typeinfos(&self) -> Vec<(Symbol, TypeNodeId)> {
@@ -145,7 +152,10 @@ impl Context {
     }
     pub fn emit_bytecode(&self, src: &str) -> Result<vm::Program, Vec<Box<dyn ReportableError>>> {
         let mir = self.emit_mir(src)?;
-        Ok(bytecodegen::gen_bytecode(mir))
+        let config = bytecodegen::Config {
+            self_eval_mode: self.config.self_eval_mode,
+        };
+        Ok(bytecodegen::gen_bytecode(mir, config))
     }
 }
 
@@ -163,8 +173,8 @@ pub fn interpret_top(
 #[cfg(test)]
 mod test {
     use super::*;
-    fn get_source()->&'static str{
-       r#"
+    fn get_source() -> &'static str {
+        r#"
 fn counter(){
     self + 1
 }
@@ -177,16 +187,16 @@ fn dsp(input){
     #[test]
     fn mir_channelcount() {
         let src = &get_source();
-        let ctx = Context::new([], None);
+        let ctx = Context::new([], None, Config::default());
         let mir = ctx.emit_mir(src).unwrap();
         let iochannels = mir.get_dsp_iochannels().unwrap();
         assert_eq!(iochannels.input, 1);
         assert_eq!(iochannels.output, 2);
     }
     #[test]
-    fn bytecode_channelcount(){
+    fn bytecode_channelcount() {
         let src = &get_source();
-        let ctx = Context::new([], None);
+        let ctx = Context::new([], None, Config::default());
         let prog = ctx.emit_bytecode(src).unwrap();
         let iochannels = prog.iochannels.unwrap();
         assert_eq!(iochannels.input, 1);

@@ -10,7 +10,7 @@ use mimium_lang::{
     plugin::Plugin,
     runtime::vm::{FuncProto, Instruction, Program},
     types::{PType, Type},
-    ExecContext,
+    Config, ExecContext,
 };
 
 #[test]
@@ -51,7 +51,7 @@ fn getnow_test() {
     let times = 10;
     let mut driver = LocalBufferDriver::new(times);
     let p: Box<dyn Plugin> = Box::new(driver.get_as_plugin());
-    let mut ctx = ExecContext::new([p].into_iter(), None);
+    let mut ctx = ExecContext::new([p].into_iter(), None, Config::default());
     ctx.prepare_machine_with_bytecode(prog);
     let _iochannels = driver.init(ctx, Some(SampleRate::from(48000)));
     driver.play();

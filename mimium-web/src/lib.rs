@@ -33,7 +33,7 @@ pub struct Context {
 }
 
 fn get_default_context() -> ExecContext {
-    let mut ctx = ExecContext::new([].into_iter(), None);
+    let mut ctx = ExecContext::new([].into_iter(), None, Default::default());
     ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
     if let Some(midi_plug) = mimium_midi::MidiPlugin::try_new() {
         ctx.add_system_plugin(midi_plug);

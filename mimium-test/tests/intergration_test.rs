@@ -76,33 +76,33 @@ fn pipe() {
 #[wasm_bindgen_test(unsupported = test)]
 fn counter() {
     let res = run_file_test_mono("counter.mmm", 10).unwrap();
-    let ans = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+    let ans = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
     assert_eq!(res, ans);
 }
 #[wasm_bindgen_test(unsupported = test)]
 fn statefn() {
     let res = run_file_test_mono("statefn.mmm", 10).unwrap();
-    let ans = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+    let ans = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
     assert_eq!(res, ans);
 }
 #[wasm_bindgen_test(unsupported = test)]
 fn statefn2_same() {
     let res = run_file_test_mono("statefn2_same.mmm", 3).unwrap();
-    let ans = vec![0.0, 6.0, 12.0];
+    let ans = vec![6.0, 12.0, 18.0];
     assert_eq!(res, ans);
 }
 
 #[wasm_bindgen_test(unsupported = test)]
 fn statefn2() {
     let res = run_file_test_mono("statefn2.mmm", 3).unwrap();
-    let ans = vec![0.0, 8.0, 16.0];
+    let ans = vec![8.0, 16.0, 24.];
     assert_eq!(res, ans);
 }
 
 #[wasm_bindgen_test(unsupported = test)]
 fn loopcounter() {
     let res = run_file_test_mono("loopcounter.mmm", 10).unwrap();
-    let ans = vec![0.0, 1.0, 2.0, 3.0, 4.0, 0.0, 1.0, 2.0, 3.0, 4.0];
+    let ans = vec![1.0, 2.0, 3.0, 4.0, 0.0, 1.0, 2.0, 3.0, 4.0, 0.0];
     assert_eq!(res, ans);
 }
 #[wasm_bindgen_test(unsupported = test)]
@@ -168,7 +168,7 @@ fn closure_tuple_escape() {
 #[wasm_bindgen_test(unsupported = test)]
 fn state_tuple() {
     let res = run_file_test_stereo("state_tuple.mmm", 3).unwrap();
-    let ans = vec![0.0, 0.0, 1.0, 2.0, 2.0, 4.0];
+    let ans = vec![1.0, 2.0, 2.0, 4.0, 3.0, 6.0];
     assert_eq!(res, ans);
 }
 #[wasm_bindgen_test(unsupported = test)]
@@ -209,7 +209,6 @@ fn closure_argument() {
 fn stateful_closure() {
     let res = run_file_test_mono("stateful_closure.mmm", 10).unwrap();
     let ans = vec![
-        20.0,
         20.3,
         20.599999999999998,
         20.900000000000002,
@@ -219,6 +218,7 @@ fn stateful_closure() {
         22.099999999999998,
         22.400000000000002,
         22.7,
+        23.0,
     ];
     assert_eq!(res, ans);
 }
@@ -258,7 +258,6 @@ fn closure_counter_tuple() {
 fn hof_state() {
     let res = run_file_test_mono("hof_state.mmm", 10).unwrap();
     let ans = vec![
-        0.0,
         0.6000000000000001,
         1.2000000000000002,
         1.8000000000000003,
@@ -268,6 +267,7 @@ fn hof_state() {
         4.199999999999999,
         4.8,
         5.3999999999999995,
+        5.999999999999999,
     ];
     assert_eq!(res, ans);
 }
@@ -276,7 +276,6 @@ fn hof_state() {
 fn hof_infer() {
     let res = run_file_test_mono("hof_infer.mmm", 10).unwrap();
     let ans = vec![
-        0.0,
         0.6000000000000001,
         1.2000000000000002,
         1.8000000000000003,
@@ -286,6 +285,7 @@ fn hof_infer() {
         4.199999999999999,
         4.8,
         5.3999999999999995,
+        5.999999999999999,
     ];
     assert_eq!(res, ans);
 }
@@ -309,8 +309,8 @@ fn tuple_args() {
 fn fb_mem() {
     let res = run_file_test_stereo("fb_mem.mmm", 10).unwrap();
     let ans = vec![
-        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 1.0, 3.0, 2.0, 4.0, 3.0, 5.0, 4.0, 6.0, 5.0, 7.0, 6.0,
-        8.0, 7.0,
+        1.0, 0.0, 2.0, 1.0, 3.0, 2.0, 4.0, 3.0, 5.0, 4.0, 6.0, 5.0, 7.0, 6.0, 8.0, 7.0, 9.0, 8.0,
+        10.0, 9.0,
     ];
     assert_eq!(res, ans);
 }
@@ -319,8 +319,8 @@ fn fb_mem() {
 fn fb_mem2() {
     let res = run_file_test_stereo("fb_mem2.mmm", 10).unwrap();
     let ans = vec![
-        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 0.0, 3.0, 1.0, 4.0, 2.0, 5.0, 3.0, 6.0, 4.0, 7.0, 5.0,
-        8.0, 6.0,
+        1.0, 0.0, 2.0, 0.0, 3.0, 1.0, 4.0, 2.0, 5.0, 3.0, 6.0, 4.0, 7.0, 5.0, 8.0, 6.0, 9.0, 7.0,
+        10.0, 8.0,
     ];
     assert_eq!(res, ans);
 }
@@ -336,27 +336,27 @@ fn fb_mem3_state_size() {
 #[wasm_bindgen_test(unsupported = test)]
 fn fb_and_stateful_call() {
     let res = run_file_test_mono("fb_and_stateful_call.mmm", 10).unwrap();
-    let ans = vec![0.0, 0.0, 1.0, 3.0, 6.0, 10.0, 15.0, 21.0, 28.0, 36.0];
+    let ans = vec![1.0, 3.0, 6.0, 10.0, 15.0, 21.0, 28.0, 36.0, 45.0, 55.0];
     assert_eq!(res, ans);
 }
 
 #[wasm_bindgen_test(unsupported = test)]
 fn delay() {
     let res = run_file_test_mono("delay.mmm", 10).unwrap();
-    let ans = vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0];
+    let ans = vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
     assert_eq!(res, ans);
 }
 #[wasm_bindgen_test(unsupported = test)]
 fn delay2() {
     let res = run_file_test_mono("delay2.mmm", 10).unwrap();
-    let ans = vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0];
+    let ans = vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
     assert_eq!(res, ans);
 }
 
 #[wasm_bindgen_test(unsupported = test)]
 fn include_file() {
     let res = run_file_test_mono("test_include.mmm", 10).unwrap();
-    let ans = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+    let ans = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
     assert_eq!(res, ans);
 }
 
@@ -364,8 +364,8 @@ fn include_file() {
 fn if_state() {
     let res = run_file_test_stereo("if_state.mmm", 10).unwrap();
     let ans = vec![
-        0.0, 0.0, 1.0, 0.0, 2.0, 0.0, 3.0, 0.0, 4.0, 0.0, 5.0, 0.0, 6.0, 0.0, 7.0, 0.0, 8.0, 0.0,
-        9.0, 0.0,
+        1.0, 0.0, 2.0, 0.0, 3.0, 0.0, 4.0, 0.0, 5.0, 0.0, 6.0, 0.0, 7.0, 0.0, 8.0, 0.0, 9.0, 0.0,
+        10.0, 0.0,
     ];
     assert_eq!(res, ans);
 }
@@ -422,10 +422,28 @@ fn block_local_scope() {
     assert_eq!(res, ans);
 }
 
-
 #[wasm_bindgen_test(unsupported = test)]
 fn block_local_scope_fail() {
     let res = run_error_test("block_local_scope_fail.mmm", false);
     assert_eq!(res.len(), 1);
-    assert!(res[0].get_message().contains("Variable local1 not found in this scope"))
+    assert!(res[0]
+        .get_message()
+        .contains("Variable local1 not found in this scope"))
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn test_phase_reset() {
+    let res = run_file_test_stereo("test_phase_reset.mmm", 10).unwrap();
+    let ans = vec![
+        0.0, 1.0, 0.0, 2.0, 0.0, 3.0, 0.0, 4.0, 0.0, 5.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+        1.0, 0.0,
+    ];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn many_comments() {
+    let res = run_file_test_mono("many_comments.mmm", 1).unwrap();
+    let ans = vec![0.0];
+    assert_eq!(res, ans);
 }

@@ -1,0 +1,22 @@
+// run this test with self_eval_mode=simplestate.
+// ch0: 0,0,0,0,0,1,1,1,1,1
+// ch1: 1,2,3,4,5,0,0,0,0,0
+// if run with --self-init-0 from a command line, the result will be:
+// ch0: 0,0,0,0,0,0,1,1,1,1
+// ch1: 0,1,2,3,4,5,0,0,0,0
+fn counter(){
+    self+1
+}
+fn integ(x, reset) {
+  if (reset) {
+    0
+  } else {
+    self + x
+  }
+}
+fn dsp(){
+    let count  = counter()
+    let reset = count > 5
+    let r = integ(1,reset)
+    (reset,r)
+}

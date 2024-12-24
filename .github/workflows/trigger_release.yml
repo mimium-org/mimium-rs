@@ -1,0 +1,54 @@
+# This action is triggered by a manual workflow_dispatch event.
+# It takes input of release version number like "2.3.4".
+# This action executes `cargo-release` and `wasm-pack publish` and pushes the changes to the repository.
+name: Trigger Release
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Release version number (You must write CHANGELOG.md before running this action. Also this action must be done only in main branch.)"
+        required: true
+        type: string
+jobs:
+  release:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - name: Install system requirements for Linux
+        run: |
+          sudo apt update -y
+          sudo apt install -y libasound2-dev
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Add git config
+        run: |
+          git config --global user.email me@matsuuratomoya.com"
+          git config --global user.name "GitHub Actions[Bot]"
+      - name: Run cargo release
+        run: |
+          cargo install cargo-release
+          cargo release --execute --no-confirm --token ${{ secrets.CRATEIO_TOKEN }} ${{ inputs.release_version }}
+      - name: Run wasm-pack publish
+        run: |
+          cargo install wasm-pack
+          wasm-pack build --target web
+          wasm-pack publish --target web
+          working-directory: mimium-web
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}

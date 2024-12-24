@@ -39,7 +39,7 @@ fn scheduler_counter_indirect() {
 #[wasm_bindgen_test(unsupported = test)]
 fn scheduler_reactive() {
     let res = run_file_with_scheduler("scheduler_reactive.mmm", 10).unwrap();
-    let ans = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0];
+    let ans = vec![0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0];
     assert_eq!(res, ans);
 }
 
@@ -47,7 +47,7 @@ fn scheduler_reactive() {
 fn prep_gc_test_machine(times: usize, src: &str) -> LocalBufferDriver {
     let mut driver = LocalBufferDriver::new(times);
     let driverplug: Box<dyn Plugin> = Box::new(driver.get_as_plugin());
-    let mut ctx = ExecContext::new([driverplug].into_iter(), None);
+    let mut ctx = ExecContext::new([driverplug].into_iter(), None, Default::default());
     ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
     let _ = ctx.prepare_machine(src);
     let _ = ctx.run_main();
