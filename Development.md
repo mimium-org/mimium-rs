@@ -54,7 +54,13 @@ You can also debug the binary with LLDB from the debug menu on the left sidebar 
 
 ## How to bump release (for the core maintainer)
 
-Merge `dev` branch into `main` on your local repository, and execute the command like below.
+Merge `dev` branch into `main` on your local repository, and write changelog.
+
+You should write the version at h2 level. It should be reflected on release note on succeeding action.
+
+You can trigger Github Actions Workflow to trigger release manually.
+
+It internally execute `cargo-release`. You have to specify newer version number like `2.0.0-alpha2` as a workflow input.
 
 ```sh
 cargo release 2.0.0-alpha2 --execute
@@ -64,9 +70,13 @@ The version should follow SemVer rule and do not require `v` prefix.
 
 Note that this command will modify the version in the root `Cargo.toml` and make a commit and tag for them, and pushes it onto the remote.
 
-Also it internally executes `cargo publish` to upload crates into crate.io, so make sure you have a permission to publish.
+Also it internally executes `cargo publish` to upload crates into crate.io, so make sure you have a write permission token to publish. (Set `CRATEIO_TOKEN` for repository secrets.)
 
-If tagged commit is pushed to github, `cargo-dist` automatically publish binary on a github release.
+For the wasm build, it executes `wasm-pack publish --target web`. It also requires npm publish token. (Set `NPM_PUBLISH_TOKEN` secret.)
 
-Do not forget re-merge commits on `main` into `dev` branch
+If tagged commit is pushed to github, the another workflow is triggered.
+
+The workflow uses `cargo-dist` to publish binary on a github release.
+
+Do not forget re-merge commits on `main` into `dev` branch after main release is done.
 
