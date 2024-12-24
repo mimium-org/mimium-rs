@@ -49,6 +49,6 @@ jobs:
           cargo install wasm-pack
           wasm-pack build --target web
           wasm-pack publish --target web
-          working-directory: mimium-web
+        working-directory: mimium-web
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}
