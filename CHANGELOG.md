@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## v2.2.7
+
+### Bugfix
+
+- Added option to control the initial return value of the function which uses `self` and changed the default behavior.(#118)
+- Fixed singe-line comment lexer consumes linebreak and causes parse error (#119)
+
+### Other
+
+- Added manually triggerable release workflow for Github Action CI
+
 ## v2.2.6
 
 ### Bugfix
