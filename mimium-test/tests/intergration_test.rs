@@ -429,3 +429,10 @@ fn block_local_scope_fail() {
     assert_eq!(res.len(), 1);
     assert!(res[0].get_message().contains("Variable local1 not found in this scope"))
 }
+
+#[wasm_bindgen_test(unsupported = test)]
+fn many_comments() {
+    let res = run_file_test_mono("many_comments.mmm", 1).unwrap();
+    let ans = vec![0.0];
+    assert_eq!(res, ans);
+}
