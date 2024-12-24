@@ -38,7 +38,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Add git config
         run: |
-          git config --global user.email me@matsuuratomoya.com"
+          git config --global user.email "me@matsuuratomoya.com"
           git config --global user.name "GitHub Actions[Bot]"
       - name: Run cargo release
         run: |
