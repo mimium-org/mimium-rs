@@ -10,7 +10,7 @@ use mimium_lang::{
         fileloader,
         metadata::Location,
     },
-    ExecContext,
+    Config, ExecContext,
 };
 
 pub fn run_bytecode_test(
@@ -33,7 +33,7 @@ pub fn run_bytecode_test_multiple(
     times: u64,
     stereo: bool,
 ) -> Result<Vec<f64>, Vec<Box<dyn ReportableError>>> {
-    let mut ctx = ExecContext::new([].into_iter(), None);
+    let mut ctx = ExecContext::new([].into_iter(), None, Config::default());
     ctx.prepare_machine_with_bytecode(bytecodes);
     let machine = ctx.get_vm_mut().unwrap();
     let _retcode = machine.execute_main();
@@ -59,6 +59,7 @@ pub fn run_source_with_plugins(
     let mut ctx = ExecContext::new(
         plugins.chain([audiodriverplug]),
         path.map(|s| s.to_symbol()),
+        Config::default(),
     );
     if with_scheduler {
         ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
@@ -84,7 +85,7 @@ pub fn run_source_test(
     stereo: bool,
     path: Option<Symbol>,
 ) -> Result<Vec<f64>, Vec<Box<dyn ReportableError>>> {
-    let mut ctx = ExecContext::new([].into_iter(), path);
+    let mut ctx = ExecContext::new([].into_iter(), path, Config::default());
 
     ctx.prepare_machine(src)?;
     let bytecode = ctx.take_vm().unwrap().prog;
@@ -184,7 +185,11 @@ pub fn run_file_test_stereo(path: &'static str, times: u64) -> Option<Vec<f64>> 
 pub fn test_state_sizes<T: IntoIterator<Item = (&'static str, u64)>>(path: &'static str, ans: T) {
     let state_sizes: HashMap<&str, u64> = HashMap::from_iter(ans);
     let (file, src) = load_src(path);
-    let mut ctx = ExecContext::new([].into_iter(), Some(file.to_str().unwrap().to_symbol()));
+    let mut ctx = ExecContext::new(
+        [].into_iter(),
+        Some(file.to_str().unwrap().to_symbol()),
+        Config::default(),
+    );
     ctx.prepare_machine(&src).unwrap();
     let bytecode = ctx.take_vm().expect("failed to emit bytecode").prog;
     // let bytecode = match ctx.compiler.emit_bytecode(&src) {
