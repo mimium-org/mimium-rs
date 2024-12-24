@@ -3,5 +3,5 @@ fn counter(){
     self+1.0
 }
 fn dsp(){
-    counter()+0.5 |> sampler
+    counter()-1.0+0.5 |> sampler
 }

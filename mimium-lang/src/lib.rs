@@ -23,11 +23,18 @@ use runtime::vm::{
 };
 use utils::error::ReportableError;
 
-#[cfg(not(target_arch="wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 use mimalloc::MiMalloc;
-#[cfg(not(target_arch="wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
+
+/// Configuration for the compiler and runtime.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Config {
+    pub compiler: compiler::Config,
+    // pub runtime: runtime::Config,
+}
 
 /// A set of compiler and external functions (plugins).
 /// From this information, user can generate VM with [`Self::prepare_machine`].
@@ -39,11 +46,16 @@ pub struct ExecContext {
     path: Option<Symbol>,
     extclsinfos_reserve: Vec<ExtClsInfo>,
     extfuntypes: Vec<ExtFunTypeInfo>,
+    config: Config,
 }
 
 impl ExecContext {
     //The Argument will be changed to the plugins, when the plugin system is introduced
-    pub fn new(plugins: impl Iterator<Item = Box<dyn Plugin>>, path: Option<Symbol>) -> Self {
+    pub fn new(
+        plugins: impl Iterator<Item = Box<dyn Plugin>>,
+        path: Option<Symbol>,
+        config: Config,
+    ) -> Self {
         let plugins = plugins.collect::<Vec<_>>();
         let extfuntypes = plugin::get_extfun_types(&plugins)
             .chain(get_builtin_fn_types())
@@ -58,6 +70,7 @@ impl ExecContext {
             path,
             extclsinfos_reserve: vec![],
             extfuntypes,
+            config,
         }
     }
     pub fn add_plugin<T: Plugin + 'static>(&mut self, plug: T) {
@@ -93,7 +106,11 @@ impl ExecContext {
         self.vm.as_mut()
     }
     pub fn prepare_compiler(&mut self) {
-        self.compiler = Some(compiler::Context::new(self.extfuntypes.clone(), self.path));
+        self.compiler = Some(compiler::Context::new(
+            self.extfuntypes.clone(),
+            self.path,
+            self.config.compiler,
+        ));
     }
     pub fn prepare_machine(&mut self, src: &str) -> Result<(), Vec<Box<dyn ReportableError>>> {
         if self.compiler.is_none() {

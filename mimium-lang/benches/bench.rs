@@ -10,7 +10,7 @@ fn main() {
 mod tests {
 
     mod runtime {
-        use mimium_lang::compiler;
+        use mimium_lang::compiler::{self, Config};
         use mimium_lang::interner::ToSymbol;
         use mimium_lang::runtime::vm::Machine;
         use test::Bencher;
@@ -46,7 +46,7 @@ fn dsp(){{
         }
 
         fn bench_runtime(b: &mut Bencher, content: &str, times: usize) {
-            let compiler = compiler::Context::new([], None);
+            let compiler = compiler::Context::new([], None, Config::default());
             let program = compiler.emit_bytecode(content).expect("ok");
             let idx = program.get_fun_index(&"dsp".to_symbol()).expect("ok");
             let mut machine = Machine::new(program, [].into_iter(), [].into_iter());
@@ -105,7 +105,7 @@ fn dsp(){{
         }
     }
     mod parse {
-        use mimium_lang::compiler;
+        use mimium_lang::compiler::{self, Config};
         use test::Bencher;
 
         fn gen_fn(fn_name: &str, n: usize) -> String {
@@ -154,7 +154,7 @@ fn dsp() {{
 
         fn bench_many_symbols(b: &mut Bencher, n: usize) {
             let content = make_many_symbols_src(n);
-            let compiler = compiler::Context::new([], None);
+            let compiler = compiler::Context::new([], None, Config::default());
             b.iter(move || {
                 let _mir = compiler.emit_mir(&content);
             });
