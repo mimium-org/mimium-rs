@@ -33,7 +33,7 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Install wasm-pack
-        run: cargo install wasm-pack
+        run: which wasm-pack || cargo install wasm-pack
       - name: "mimium-test for web"
         run: wasm-pack test --node
         working-directory: mimium-test
