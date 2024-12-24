@@ -667,14 +667,14 @@ fn preprocess_parser(
 fn parser(
     current_file: Option<PathBuf>,
 ) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone {
-    let ignored = just(Token::LineBreak)
+    let separator = just(Token::LineBreak)
         .ignored()
         .or(just(Token::SemiColon).ignored());
     let ctx = ParseContext {
         file_path: current_file.map_or("".to_symbol(), |p| p.to_string_lossy().to_symbol()),
     };
     func_parser(ctx)
-        .padded_by(ignored.repeated())
+        .padded_by(separator.repeated())
         .then_ignore(end())
 }
 
@@ -710,10 +710,15 @@ pub fn parse(
                 .to_symbol(),
         })
     });
-
     if let Some(t) = tokens {
-        let (ast, parse_errs) = parser(current_file.clone())
-            .parse_recovery(chumsky::Stream::from_iter(len..len + 1, t.into_iter()));
+        let tokens_comment_filtered = t.into_iter().filter_map(|(tkn, span)| match tkn {
+            Token::Comment(token::Comment::SingleLine(_)) => Some((Token::LineBreak, span)),
+            Token::Comment(token::Comment::MultiLine(_)) => None,
+            _ => Some((tkn.clone(), span)),
+        });
+        let (ast, parse_errs) = parser(current_file.clone()).parse_recovery(
+            chumsky::Stream::from_iter(len..len + 1, tokens_comment_filtered),
+        );
         let errs = parse_errs
             .into_iter()
             .map(|e| -> Box<dyn ReportableError> {

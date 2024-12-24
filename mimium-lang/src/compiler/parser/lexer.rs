@@ -117,6 +117,7 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
 
     // A single token can be one of the above
     let token = choice((
+        comment_parser().map(Token::Comment),
         float,
         int,
         str_,
@@ -133,7 +134,6 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
 
     token
         .map_with_span(|tok, span| (tok, span))
-        .padded_by(comment_parser().repeated())
         .padded_by(whitespaces)
         .repeated()
 }
