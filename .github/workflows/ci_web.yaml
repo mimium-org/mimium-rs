@@ -5,7 +5,7 @@ on:
     branches: [main, dev]
   push:
     # branches: [main, dev]
-    branches: "*"
+    branches: ["ci/cache-crates2.json"]
   workflow_dispatch:
 
 permissions:
