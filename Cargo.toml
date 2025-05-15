@@ -10,6 +10,7 @@ members = [
     "mimium-midi",
     "mimium-guitools",
     "mimium-web",
+    "mimium-lsp",
 ]
 
 resolver = "2"
