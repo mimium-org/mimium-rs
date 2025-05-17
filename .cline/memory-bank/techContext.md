@@ -50,6 +50,10 @@ The project includes:
 - Integration tests for the language features
 - Example programs to demonstrate functionality
 
+## Code Management
+
+- Before finishiing working, you must run `cargo fmt`, and `cargo clippy`, then fix the warnings raised by clippy (You need to fix warnings, only the part you modified or newly added in your tasks).
+
 ## Performance Considerations
 
 As an audio programming language, mimium has strict performance requirements:
