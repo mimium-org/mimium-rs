@@ -4,6 +4,14 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
+use crate::capabilities::{
+    diagnostics,
+    semantic_tokens::{
+        self,
+        KEYWORD, TYPE, OPERATOR, COMMENT, STRING, NUMBER, VARIABLE,
+    },
+};
+
 /// The mimium language server implementation.
 pub struct MimiumLanguageServer {
     /// The LSP client.
@@ -23,9 +31,8 @@ impl MimiumLanguageServer {
 
     /// Parse a document and return diagnostics.
     async fn parse_document(&self, uri: &Url, text: &str) -> Vec<Diagnostic> {
-        use crate::capabilities::diagnostics;
         use std::path::PathBuf;
-
+        
         // Convert URI to path
         let path = uri.to_file_path().ok();
         
@@ -50,7 +57,28 @@ impl LanguageServer for MimiumLanguageServer {
                     all_commit_characters: None,
                     completion_item: None,
                 }),
-                // Add more capabilities as they are implemented
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensRegistrationOptions(
+                        SemanticTokensRegistrationOptions {
+                            text_document_registration_options: {
+                                TextDocumentRegistrationOptions {
+                                    document_selector: Some(vec![DocumentFilter {
+                                        language: Some("mimium".to_string()),
+                                        scheme: Some("file".to_string()),
+                                        pattern: None,
+                                    }]),
+                                }
+                            },
+                            semantic_tokens_options: SemanticTokensOptions {
+                                work_done_progress_options: WorkDoneProgressOptions::default(),
+                                legend: semantic_tokens::semantic_token_legend(),
+                                range: Some(true),
+                                full: Some(SemanticTokensFullOptions::Bool(true)),
+                            },
+                            static_registration_options: StaticRegistrationOptions { id: None },
+                        },
+                    ),
+                ),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -137,6 +165,114 @@ impl LanguageServer for MimiumLanguageServer {
         } else {
             Ok(None)
         }
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        if let Some(doc) = self.documents.get(&params.text_document.uri) {
+            // Parse document and generate tokens using lexer method from mimium_lang
+            let text = doc.value();
+            let mut builder = semantic_tokens::SemanticTokensBuilder::new();
+            let mut line = 0;
+            let mut char = 0;
+            let mut text_iter = text.chars().peekable();
+            let mut current_word = String::new();
+
+            while let Some(c) = text_iter.next() {
+                if c == '\n' {
+                    if !current_word.is_empty() {
+                        let token_type = match current_word.as_str() {
+                            "fn" | "let" | "if" | "else" | "return" | "while" | "include" | "self" => KEYWORD,
+                            "float" | "int" | "string" | "struct" | "void" | "time" | "audio" => TYPE,
+                            "+" | "-" | "*" | "/" | "=" | "->" | "=>" | "<" | ">" | "<=" | ">=" | "==" | "!=" => OPERATOR,
+                            _ => {
+                                if current_word.starts_with("//") {
+                                    COMMENT
+                                } else if current_word.starts_with('"') && current_word.ends_with('"') {
+                                    STRING
+                                } else if current_word.chars().all(|c| c.is_digit(10)) {
+                                    NUMBER
+                                } else {
+                                    VARIABLE
+                                }
+                            }
+                        };
+                        builder.push(line, char - current_word.chars().count() as u32, current_word.chars().count() as u32, token_type, 0);
+                        current_word.clear();
+                    }
+                    line += 1;
+                    char = 0;
+                } else if c.is_whitespace() {
+                    if !current_word.is_empty() {
+                        let token_type = match current_word.as_str() {
+                            "fn" | "let" | "if" | "else" | "return" | "while" | "include" | "self" => KEYWORD,
+                            "float" | "int" | "string" | "struct" | "void" | "time" | "audio" => TYPE,
+                            "+" | "-" | "*" | "/" | "=" | "->" | "=>" | "<" | ">" | "<=" | ">=" | "==" | "!=" => OPERATOR,
+                            _ => {
+                                if current_word.starts_with("//") {
+                                    COMMENT
+                                } else if current_word.starts_with('"') && current_word.ends_with('"') {
+                                    STRING
+                                } else if current_word.chars().all(|c| c.is_digit(10)) {
+                                    NUMBER
+                                } else {
+                                    VARIABLE
+                                }
+                            }
+                        };
+                        builder.push(line, char - current_word.chars().count() as u32, current_word.chars().count() as u32, token_type, 0);
+                        current_word.clear();
+                    }
+                    char += 1;
+                } else {
+                    current_word.push(c);
+                    char += 1;
+                }
+            }
+
+            // Handle last word if any
+            if !current_word.is_empty() {
+                let token_type = match current_word.as_str() {
+                    "fn" | "let" | "if" | "else" | "return" | "while" | "include" | "self" => KEYWORD,
+                    "float" | "int" | "string" | "struct" | "void" | "time" | "audio" => TYPE,
+                    "+" | "-" | "*" | "/" | "=" | "->" | "=>" | "<" | ">" | "<=" | ">=" | "==" | "!=" => OPERATOR,
+                    _ => {
+                        if current_word.starts_with("//") {
+                            COMMENT
+                        } else if current_word.starts_with('"') && current_word.ends_with('"') {
+                            STRING
+                        } else if current_word.chars().all(|c| c.is_digit(10)) {
+                            NUMBER
+                        } else {
+                            VARIABLE
+                        }
+                    }
+                };
+                builder.push(line, char - current_word.chars().count() as u32, current_word.chars().count() as u32, token_type, 0);
+            }
+
+            return Ok(Some(SemanticTokensResult::Tokens(builder.build())));
+        }
+        Ok(None)
+    }
+
+    async fn semantic_tokens_range(
+        &self,
+        params: SemanticTokensRangeParams,
+    ) -> Result<Option<SemanticTokensRangeResult>> {
+        // For simplicity, we'll just return full tokens for now
+        Ok(self.semantic_tokens_full(SemanticTokensParams {
+            text_document: params.text_document,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        })
+        .await?
+        .map(|tokens| match tokens {
+            SemanticTokensResult::Tokens(t) => SemanticTokensRangeResult::Tokens(t),
+            _ => unreachable!(),
+        }))
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {

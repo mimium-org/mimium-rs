@@ -24,3 +24,6 @@ crate-type = ["cdylib", "rlib"]
 [[bin]]
 name = "mimium-lsp"
 path = "src/main.rs"
+
+[dev-dependencies]
+tokio = { version = "1.35.1", features = ["rt-multi-thread", "macros"] }
