@@ -1,3 +1,9 @@
+//! Command line interface for the mimium language.
+//!
+//! This binary compiles and executes mimium programs using various audio
+//! backends.  It can also emit intermediate representations such as the AST or
+//! MIR for debugging purposes.
+
 use std::io::stdin;
 use std::path::{Path, PathBuf};
 
@@ -96,6 +102,7 @@ enum RunMode {
     },
 }
 
+/// Execution options derived from CLI arguments.
 struct RunOptions {
     mode: RunMode,
     with_gui: bool,
@@ -103,6 +110,7 @@ struct RunOptions {
 }
 
 impl RunOptions {
+    /// Convert parsed command line arguments into [`RunOptions`].
     fn from_args(args: &Args) -> Self {
         let config = args.clone().to_execctx_config();
         if args.mode.emit_ast {
@@ -170,6 +178,7 @@ impl RunOptions {
     }
 }
 
+/// Construct an [`ExecContext`] with the default set of plugins.
 fn get_default_context(path: Option<Symbol>, with_gui: bool, config: Config) -> ExecContext {
     let plugins: Vec<Box<dyn Plugin>> = vec![Box::new(SamplerPlugin)];
     let mut ctx = ExecContext::new(plugins.into_iter(), path, config);
@@ -188,6 +197,7 @@ fn get_default_context(path: Option<Symbol>, with_gui: bool, config: Config) -> 
     ctx
 }
 
+/// Parse `src` into an AST and run pronoun conversion.
 fn emit_ast_local(src: &str, filepath: &Path) -> Result<ExprNodeId, Vec<Box<dyn ReportableError>>> {
     let path = filepath.to_str().unwrap().to_symbol();
     let ast1 = emit_ast(src, Some(path))?;
@@ -237,6 +247,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Compile and run a single source file according to the provided options.
 fn run_file(
     options: RunOptions,
     content: &str,

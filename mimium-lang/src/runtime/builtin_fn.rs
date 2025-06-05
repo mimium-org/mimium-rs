@@ -1,3 +1,8 @@
+//! Built-in numeric functions used by the interpreter and standard library.
+//!
+//! These are mostly thin wrappers around Rust arithmetic which are exposed to
+//! mimium code when no external implementation is provided.
+
 use crate::{function, integer, interner::TypeNodeId, numeric, types::*, unit};
 
 fn b_to_f(b: bool) -> f64 {
