@@ -72,7 +72,10 @@ impl<T: Clone> Environment<T> {
             Some((level, e)) => LookupRes::UpValue(level, e),
         }
     }
-    /// Simple lookup that only returns the value, discarding its location.
+    /// Look up `name` and return the associated value if it exists.
+    ///
+    /// This helper ignores where the binding was found in the environment and
+    /// simply returns its value.
     pub fn lookup(&self, name: &Symbol) -> Option<&T> {
         match self.lookup_cls(name) {
             LookupRes::None => None,

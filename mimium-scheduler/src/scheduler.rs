@@ -28,7 +28,7 @@ pub trait SchedulerInterface {
     fn set_cur_time(&mut self, time: Time);
 }
 
-/// Scheduler implementation that executes tasks synchronously on every sample.
+/// Scheduler that checks for ready tasks on every sample and executes them.
 #[derive(Clone)]
 pub struct SyncScheduler {
     tasks: BinaryHeap<Reverse<Task>>,
