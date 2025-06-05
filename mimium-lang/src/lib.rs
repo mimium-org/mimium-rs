@@ -36,8 +36,12 @@ pub struct Config {
     // pub runtime: runtime::Config,
 }
 
-/// A set of compiler and external functions (plugins).
-/// From this information, user can generate VM with [`Self::prepare_machine`].
+/// Container for compiler context, virtual machine and plugins.
+///
+/// [`ExecContext`] is used as a high level API when running mimium from other
+/// Rust programs.  After adding desired plugins, call
+/// [`prepare_machine`](ExecContext::prepare_machine) to compile the source and
+/// create a [`vm::Machine`].
 pub struct ExecContext {
     compiler: Option<compiler::Context>,
     vm: Option<runtime::vm::Machine>,
@@ -51,6 +55,7 @@ pub struct ExecContext {
 
 impl ExecContext {
     //The Argument will be changed to the plugins, when the plugin system is introduced
+    /// Create a new execution context with the given plugins and configuration.
     pub fn new(
         plugins: impl Iterator<Item = Box<dyn Plugin>>,
         path: Option<Symbol>,
@@ -112,6 +117,7 @@ impl ExecContext {
             self.config.compiler,
         ));
     }
+    /// Compile `src` and prepare an executable VM.
     pub fn prepare_machine(&mut self, src: &str) -> Result<(), Vec<Box<dyn ReportableError>>> {
         if self.compiler.is_none() {
             self.prepare_compiler();
@@ -121,6 +127,7 @@ impl ExecContext {
         self.prepare_machine_with_bytecode(prog);
         Ok(())
     }
+    /// Build a VM from the given bytecode [`Program`].
     pub fn prepare_machine_with_bytecode(&mut self, prog: Program) {
         self.extclsinfos_reserve
             .extend(plugin::get_extclsinfos(&self.plugins));
@@ -146,6 +153,7 @@ impl ExecContext {
     pub fn get_iochannel_count(&self) -> Option<IoChannelInfo> {
         self.vm.as_ref().and_then(|vm| vm.prog.iochannels)
     }
+    /// Execute the `main` function in the loaded program.
     pub fn run_main(&mut self) -> ReturnCode {
         if let Some(vm) = self.vm.as_mut() {
             self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
