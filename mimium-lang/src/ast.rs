@@ -42,6 +42,7 @@ pub enum Expr {
     Tuple(Vec<ExprNodeId>),
     Proj(ExprNodeId, i64),
     ArrayAccess(ExprNodeId, ExprNodeId),
+    ArrayLiteral(Vec<ExprNodeId>), // Array literal [e1, e2, ..., en]
     Apply(ExprNodeId, Vec<ExprNodeId>),
     PipeApply(ExprNodeId, ExprNodeId), // LHS and RHS
     Lambda(Vec<TypedId>, Option<TypeNodeId>, ExprNodeId), //lambda, maybe information for internal state is needed
@@ -124,6 +125,10 @@ impl MiniPrint for Expr {
             }
             Expr::ArrayAccess(e, i) => {
                 format!("(arrayaccess {} ({}))", e.simple_print(), i.simple_print())
+            }
+            Expr::ArrayLiteral(items) => {
+                let items_str = items.iter().map(|e| e.simple_print()).collect::<Vec<String>>().join(", ");
+                format!("(array [{}])", items_str)
             }
             Expr::PipeApply(lhs, rhs) => {
                 format!("(pipe {} {})", lhs.simple_print(), rhs.simple_print())
