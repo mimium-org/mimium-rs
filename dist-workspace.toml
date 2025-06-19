@@ -4,12 +4,11 @@ members = ["cargo:."]
 # Config for 'dist'
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "0.25.1"
+cargo-dist-version = "0.28.6"
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
-installers = [
-] # we don't use this because the installer script does not copy bundled assets.
+installers = []
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = [
     "aarch64-apple-darwin",
