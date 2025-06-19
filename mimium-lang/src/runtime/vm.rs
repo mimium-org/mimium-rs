@@ -179,6 +179,11 @@ enum ExtFnIdx {
     Fun(usize),
     Cls(usize),
 }
+/// The virtual machine that executes mimium bytecode programs.
+///
+/// A [`Machine`] holds the compiled [`Program`], value stack and all live
+/// closures. External functions and closures installed from plugins are also
+/// managed here.
 pub struct Machine {
     // program will be modified while its execution, e.g., higher-order external closure creates its wrapper.
     pub prog: Program,
@@ -310,6 +315,7 @@ where
 }
 
 impl Machine {
+    /// Create a new VM from a compiled [`Program`] and external functions.
     pub fn new(
         prog: Program,
         extfns: impl Iterator<Item = ExtFnInfo>,
@@ -605,7 +611,12 @@ impl Machine {
     fn get_fnproto(&self, func_i: usize) -> &FuncProto {
         &self.prog.global_fn_table[func_i].1
     }
-    /// Execute function, return retcode.
+    /// Execute a function within the VM.
+    ///
+    /// `func_i` is an index into the program's function table and `cls_i` is an
+    /// optional closure that provides the environment for the call.
+    /// The returned [`ReturnCode`] is the number of values pushed on the stack
+    /// as a result of the call.
     pub fn execute(&mut self, func_i: usize, cls_i: Option<ClosureIdx>) -> ReturnCode {
         let mut local_closures: Vec<ClosureIdx> = vec![];
         let mut upv_map = LocalUpValueMap::default();

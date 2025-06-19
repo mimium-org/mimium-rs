@@ -1,3 +1,8 @@
+//! Storage for interning symbols, expressions and types during compilation.
+//!
+//! The global [`SessionGlobals`] instance keeps track of all identifiers and
+//! AST nodes created while parsing.
+
 use std::{
     cell::RefCell,
     collections::BTreeMap,
@@ -14,6 +19,7 @@ slotmap::new_key_type! {
     pub struct TypeKey;
 }
 
+/// Global storages shared during compilation stages.
 pub struct SessionGlobals {
     pub symbol_interner: StringInterner<StringBackend<usize>>,
     pub expr_storage: SlotMap<ExprKey, Expr>,

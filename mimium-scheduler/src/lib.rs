@@ -1,3 +1,7 @@
+//! Scheduler plugin for mimium.
+//!
+//! This plugin provides a simple synchronous event scheduler which is used by
+//! the runtime to execute scheduled tasks at sample boundaries.
 use mimium_lang::plugin::{SysPluginSignature, SystemPlugin};
 use mimium_lang::runtime::vm::{self, ClosureIdx, Machine, ReturnCode};
 use mimium_lang::runtime::Time;
@@ -9,6 +13,7 @@ use mimium_lang::{
 mod scheduler;
 pub use scheduler::{DummyScheduler, SchedulerInterface, SyncScheduler};
 
+/// Wrapper type implementing [`SystemPlugin`] using a [`SchedulerInterface`].
 pub struct Scheduler<T: SchedulerInterface>(T);
 
 impl<T: SchedulerInterface> Scheduler<T> {
@@ -47,6 +52,7 @@ impl<T: SchedulerInterface + 'static> SystemPlugin for Scheduler<T> {
     }
 }
 
+/// Return a [`SystemPlugin`] with the default synchronous scheduler.
 pub fn get_default_scheduler_plugin() -> impl SystemPlugin {
     Scheduler::<_>(SyncScheduler::new())
 }
