@@ -53,6 +53,13 @@ fn parser_firstbreak() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn array_test() {
+    let res = run_file_test_mono("array_test.mmm", 1).unwrap();
+    let ans = vec![65.0]; // 10.0 + 15.0 + 40.0
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn recursion() {
     let res = run_file_test_mono("recursion.mmm", 1).unwrap();
     let ans = vec![5.0];

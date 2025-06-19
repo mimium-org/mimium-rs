@@ -1,0 +1,20 @@
+//mimium test for array literals and array access
+fn dsp() {
+  // Create an array with 3 elements
+  let arr = [10.0, 20.0, 40.0]
+  
+  // Access the first element
+  let first = arr[0] 
+  
+  // Access with interpolation (should give 15.0)
+  let interp = arr[0.5]
+  
+  // Modify the third element /todo: array assignment
+  // arr[2] = 40.0
+  
+  // Return the values for testing
+  let out = first + interp + arr[2]
+  
+  // Returns 10.0 (first) + 15.0 (interp) + 40.0 (modified arr[2]) = 65.0
+  out
+}
