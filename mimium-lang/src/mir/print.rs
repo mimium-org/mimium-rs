@@ -72,6 +72,16 @@ impl std::fmt::Display for Value {
                 write!(f, "extfun {label} {}", t.to_type())
             }
             Value::State(v) => write!(f, "state({})", *v),
+            Value::Array(items) => {
+                write!(f, "array[")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, "]")
+            },
             Value::None => write!(f, "none"),
         }
     }

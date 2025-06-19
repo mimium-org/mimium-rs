@@ -15,7 +15,7 @@ pub mod print;
 pub struct Argument(pub Symbol, pub TypeNodeId);
 
 pub type VReg = u64;
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Value {
     Global(VPtr),
     Argument(usize, Arc<Argument>), //index,
@@ -26,6 +26,8 @@ pub enum Value {
     Function(usize),
     /// native function (Rust function item or closure)
     ExtFunction(Symbol, TypeNodeId),
+    /// array value
+    Array(Vec<VPtr>),
     /// internal state
     None,
 }
