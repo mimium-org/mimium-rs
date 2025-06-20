@@ -510,7 +510,26 @@ impl Context {
                 (dst, ty)
             }
             Expr::Proj(_, _) => todo!(),
-            Expr::ArrayAccess(_, _) => todo!(),
+            Expr::ArrayAccess(array, index) => {
+                let (array_v, array_ty) = self.eval_expr(*array);
+                let (index_v, _) = self.eval_expr(*index);
+
+                // Get element at the specified index
+                let result = self.push_inst(Instruction::GetElement {
+                    value: array_v.clone(),
+                    ty: array_ty.clone(),
+                    array_idx: 0, // This will be determined at runtime based on index_v
+                    tuple_offset: 0,
+                });
+
+                // If array_ty is Array(elem_ty), the result type should be elem_ty
+                let result_type = match array_ty.to_type() {
+                    Type::Array(elem_ty) => elem_ty,
+                    _ => numeric!(), // Default to numeric if not an array type
+                };
+
+                (result, result_type)
+            }
 
             Expr::Apply(f, args) => {
                 let (f, ft) = self.eval_expr(*f);
@@ -750,6 +769,22 @@ impl Context {
             Expr::Error => {
                 self.push_inst(Instruction::Error);
                 (Arc::new(Value::None), unit!())
+            }
+            Expr::ArrayLiteral(items) => {
+                // For now, handle array literals similar to tuples
+                let mut values = Vec::with_capacity(items.len());
+                let mut tys = Vec::with_capacity(items.len());
+                for item in items {
+                    let (v, t) = self.eval_expr(*item);
+                    values.push(v);
+                    tys.push(t);
+                }
+                // Assume all array elements have the same type (first element's type)
+                let elem_ty = if !tys.is_empty() { tys[0] } else { numeric!() };
+                (
+                    Arc::new(Value::Array(values)),
+                    Type::Array(elem_ty).into_id(),
+                )
             }
         }
     }
