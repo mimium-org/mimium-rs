@@ -225,7 +225,6 @@ impl Context {
                     let elem_v = self.push_inst(Instruction::GetElement {
                         value: v.clone(),
                         ty,
-                        array_idx: 0,
                         tuple_offset: i as u64,
                     });
                     let tid = Type::Unknown.into_id_with_location(self.get_loc_from_span(&span));
@@ -494,8 +493,7 @@ impl Context {
                     let (v, elem_ty) = self.eval_expr(*e);
                     let ptr = self.push_inst(Instruction::GetElement {
                         value: dst.clone(),
-                        ty, // lazyly set after loops
-                        array_idx: 0,
+                        ty, // lazyly set after loops,
                         tuple_offset: i as u64,
                     });
 
@@ -510,7 +508,37 @@ impl Context {
                 (dst, ty)
             }
             Expr::Proj(_, _) => todo!(),
-            Expr::ArrayAccess(_, _) => todo!(),
+            Expr::ArrayLiteral(items) => {
+                // For now, handle array literals similar to tuples
+
+                let (values, tys): (Vec<_>, Vec<_>) = items
+                    .iter()
+                    .map(|item| {
+                        let (v, t) = self.eval_expr(*item);
+                        (v, t)
+                    })
+                    .unzip();
+                // Assume all array elements have the same type (first element's type)
+                debug_assert!(tys.windows(2).all(|w| w[0] == w[1]));
+                let elem_ty = if !tys.is_empty() { tys[0] } else { numeric!() };
+                let reg = self.push_inst(Instruction::Array(values.clone(), elem_ty));
+                (reg, Type::Array(elem_ty).into_id())
+            }
+            Expr::ArrayAccess(array, index) => {
+                let (array_v, array_ty) = self.eval_expr(*array);
+                let (index_v, _) = self.eval_expr(*index);
+                let elem_ty = match array_ty.to_type() {
+                    Type::Array(elem_ty) => elem_ty,
+                    _ => panic!("Expected array type for array access"),
+                };
+                // Get element at the specified index
+                let result = self.push_inst(Instruction::GetArrayElem(
+                    array_v.clone(),
+                    index_v.clone(),
+                    elem_ty,
+                ));
+                (result, elem_ty)
+            }
 
             Expr::Apply(f, args) => {
                 let (f, ft) = self.eval_expr(*f);

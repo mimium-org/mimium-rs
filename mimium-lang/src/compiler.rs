@@ -14,6 +14,8 @@ pub enum ErrorKind {
     VariableNotFound(String),
     NonPrimitiveInFeed,
     NotApplicable, //need?
+    IndexOutOfBounds,
+    TypeError,
     Unknown,
 }
 #[derive(Debug, Clone)]
@@ -47,6 +49,8 @@ impl std::fmt::Display for ErrorKind {
             }
             ErrorKind::CircularType => write!(f, "Circular loop of type definition"),
             ErrorKind::NonPrimitiveInFeed => write!(f, "Feed can take only non-funtion type."),
+            ErrorKind::IndexOutOfBounds => write!(f, "Array index out of bounds."),
+            ErrorKind::TypeError => write!(f, "Type error in expression."),
             ErrorKind::Unknown => write!(f, "unknwon error."),
         }
     }

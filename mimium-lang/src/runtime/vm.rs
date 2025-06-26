@@ -73,6 +73,43 @@ impl StateStorageStack {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct ArrayHeap {
+    elem_word_size: u64,
+    data: Vec<RawVal>,
+}
+impl ArrayHeap {
+    pub fn get_length_array(&self) -> u64 {
+        self.data.len() as u64 / self.elem_word_size
+    }
+}
+#[derive(Debug, Clone, Default)]
+struct ArrayStorage {
+    data: SlotMap<DefaultKey, ArrayHeap>,
+}
+pub(crate) type ArrayIdx = slotmap::DefaultKey;
+impl ArrayStorage {
+    pub fn alloc_array(&mut self, len: u64, elem_size: u64) -> RawVal {
+        let array = ArrayHeap {
+            elem_word_size: elem_size,
+            data: vec![0u64; (len * elem_size) as usize],
+        };
+        let key = self.data.insert(array);
+        debug_assert!(
+            std::mem::size_of::<ArrayIdx>() == 8,
+            "ArrayIdx size must be 8 bytes"
+        );
+        unsafe { std::mem::transmute_copy::<ArrayIdx, RawVal>(&key) }
+    }
+    pub fn get_array(&self, id: RawVal) -> &ArrayHeap {
+        let key: ArrayIdx = unsafe { std::mem::transmute_copy::<RawVal, ArrayIdx>(&id) };
+        self.data.get(key).expect("Invalid ArrayIdx")
+    }
+    pub fn get_array_mut(&mut self, id: RawVal) -> &mut ArrayHeap {
+        let key: ArrayIdx = unsafe { std::mem::transmute_copy::<RawVal, ArrayIdx>(&id) };
+        self.data.get_mut(key).expect("Invalid ArrayIdx")
+    }
+}
 // Upvalues are used with Rc<RefCell<UpValue>> because it maybe shared between multiple closures
 // Maybe it will be managed with some GC mechanism in the future.
 #[derive(Debug, Clone, PartialEq)]
@@ -192,6 +229,7 @@ pub struct Machine {
     pub closures: ClosureStorage,
     pub ext_fun_table: Vec<(Symbol, ExtFunType)>,
     pub ext_cls_table: Vec<(Symbol, ExtClsType)>,
+    arrays: ArrayStorage,
     fn_map: HashMap<usize, ExtFnIdx>, //index from fntable index of program to it of machine.
     // cls_map: HashMap<usize, usize>, //index from fntable index of program to it of machine.
     global_states: StateStorage,
@@ -330,6 +368,7 @@ impl Machine {
             ext_cls_table: vec![],
             fn_map: HashMap::new(),
             // cls_map: HashMap::new(),
+            arrays: ArrayStorage::default(),
             global_states: Default::default(),
             states_stack: Default::default(),
             delaysizes_pos_stack: vec![0],
@@ -854,6 +893,51 @@ impl Machine {
                     dst as i64,
                     Self::to_value::<bool>(Self::get_as::<i64>(self.get_stack(src as i64)) != 0),
                 ),
+                Instruction::AllocArray(dst, len, elem_size) => {
+                    // Allocate an array of the given length and element size
+                    let key = self.arrays.alloc_array(len as _, elem_size as _);
+                    // Set the stack to point to the start of the new array
+                    self.set_stack(dst as i64, key);
+                }
+                Instruction::GetArrayElem(dst, arr, idx) => {
+                    // Get the array and index values
+                    let array = self.get_stack(arr as i64);
+                    let index = self.get_stack(idx as i64);
+                    let index_val = Self::get_as::<f64>(index);
+                    let adata = self.arrays.get_array(array);
+                    let elem_word_size = adata.elem_word_size as usize;
+                    let buffer = unsafe {
+                        let address = adata
+                            .data
+                            .as_ptr()
+                            .wrapping_add(index_val as usize * elem_word_size);
+                        std::slice::from_raw_parts(address, elem_word_size)
+                    };
+                    set_vec_range(
+                        &mut self.stack,
+                        (self.base_pointer + dst as u64) as usize,
+                        buffer,
+                    );
+                    // todo: implement automatic interpolation and out-of-bounds handling for primitive arrays.
+                }
+                Instruction::SetArrayElem(arr, idx, val) => {
+                    // Get the array, index, and value
+                    let array = self.get_stack(arr as i64);
+                    let index = self.get_stack(idx as i64);
+                    let index_val = Self::get_as::<f64>(index);
+                    let index_int = index_val as usize;
+                    let adata = self.arrays.get_array_mut(array);
+                    let elem_word_size = adata.elem_word_size as usize;
+                    let buffer = unsafe {
+                        let address = adata
+                            .data
+                            .as_mut_ptr()
+                            .wrapping_add(index_int * elem_word_size);
+                        std::slice::from_raw_parts_mut(address, elem_word_size)
+                    };
+                    let (_range, buf_src) = self.get_stack_range(val as _, elem_word_size as _);
+                    buffer.copy_from_slice(buf_src);
+                }
                 Instruction::GetState(dst, size) => {
                     //force borrow because state storage and stack never collisions
                     let v: &[RawVal] = unsafe {
