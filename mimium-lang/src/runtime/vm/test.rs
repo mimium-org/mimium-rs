@@ -5,6 +5,7 @@ use crate::{
     mir::OpenUpValue,
     numeric,
     types::{PType, Type},
+    utils::half_float::HFloat,
 };
 
 #[test]
@@ -276,4 +277,48 @@ fn closure_gc_closed() {
     machine.execute_main();
     //closed closure should be kept.
     assert_eq!(machine.closures.len(), 1);
+}
+
+fn prep_array_program() -> Program {
+    //the main function create array of [10,20,30] and just returns the second element.
+    let inner_insts = vec![
+        Instruction::AllocArray(0, 3, 1), // allocate array of 3 elements
+        Instruction::MoveImmF(1, HFloat::try_from(0.0).unwrap()), // set first element
+        Instruction::MoveImmF(2, HFloat::try_from(10.0).unwrap()),
+        Instruction::SetArrayElem(0, 1, 2),
+        Instruction::MoveImmF(1, HFloat::try_from(1.0).unwrap()), // set first element
+        Instruction::MoveImmF(2, HFloat::try_from(20.0).unwrap()),
+        Instruction::SetArrayElem(0, 1, 2),
+        Instruction::MoveImmF(1, HFloat::try_from(2.0).unwrap()), // set first element
+        Instruction::MoveImmF(2, HFloat::try_from(40.0).unwrap()),
+        Instruction::SetArrayElem(0, 1, 2),
+        Instruction::MoveImmF(3, HFloat::try_from(1.0).unwrap()),
+        Instruction::GetArrayElem(4, 0, 3), // return array at 1
+        Instruction::Return(4, 1),          // return just 0
+    ];
+    let main_f = FuncProto {
+        nparam: 0,
+        nret: 1,
+        bytecodes: inner_insts,
+        constants: vec![],
+        ..Default::default()
+    };
+    let global_fn_table = vec![("main".to_symbol(), main_f)];
+    let prog = Program {
+        global_fn_table,
+        ext_fun_table: vec![],
+        ..Default::default()
+    };
+    prog
+}
+
+#[test]
+fn array_init() {
+    let prog = prep_array_program();
+    let mut machine: Machine =
+        Machine::new(prog, builtin::get_builtin_fns().into_iter(), [].into_iter());
+    machine.execute_main();
+    let res = machine.get_top_n(1)[0];
+    //open closure should be released.
+    assert_eq!(Machine::get_as::<f64>(res), 20.0);
 }
