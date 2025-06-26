@@ -78,11 +78,16 @@ struct ArrayHeap {
     elem_word_size: u64,
     data: Vec<RawVal>,
 }
+impl ArrayHeap {
+    pub fn get_length_array(&self) -> u64 {
+        self.data.len() as u64 / self.elem_word_size
+    }
+}
 #[derive(Debug, Clone, Default)]
 struct ArrayStorage {
     data: SlotMap<DefaultKey, ArrayHeap>,
 }
-type ArrayIdx = slotmap::DefaultKey;
+pub(crate) type ArrayIdx = slotmap::DefaultKey;
 impl ArrayStorage {
     pub fn alloc_array(&mut self, len: u64, elem_size: u64) -> RawVal {
         let array = ArrayHeap {

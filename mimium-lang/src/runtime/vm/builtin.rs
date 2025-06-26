@@ -1,5 +1,6 @@
 use crate::compiler::ExtFunTypeInfo;
 use crate::interner::ToSymbol;
+use crate::runtime::vm::ArrayIdx;
 use crate::types::{PType, Type};
 use crate::{function, numeric};
 
@@ -34,8 +35,21 @@ fn max(machine: &mut Machine) -> ReturnCode {
     machine.set_stack(0, super::Machine::to_value(res));
     1
 }
+// the special generic function to get the length of an array
+fn get_length_array(machine: &mut Machine) -> ReturnCode {
+    let arr = machine.get_stack(0);
+    let array = unsafe {
+        machine
+            .arrays
+            .data
+            .get_unchecked(super::Machine::get_as::<ArrayIdx>(arr))
+    };
+    let res = array.get_length_array() as f64;
+    machine.set_stack(0, super::Machine::to_value(res));
+    1
+}
 
-pub fn get_builtin_fns() -> [ExtFnInfo; 4] {
+pub fn get_builtin_fns() -> [ExtFnInfo; 5] {
     [
         (
             "probe".to_symbol(),
@@ -56,6 +70,15 @@ pub fn get_builtin_fns() -> [ExtFnInfo; 4] {
             "max".to_symbol(),
             max,
             function!(vec![numeric!(), numeric!()], numeric!()),
+        ),
+        //The function is generic but we don't know appropriate typescheme id, so we use u64::MAX for the workaround
+        (
+            "length_array".to_symbol(),
+            get_length_array,
+            function!(
+                vec![Type::Array(Type::TypeScheme(u64::MAX).into_id()).into_id()],
+                numeric!()
+            ),
         ),
     ]
 }
