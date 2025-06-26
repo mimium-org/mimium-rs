@@ -1,7 +1,7 @@
 // Mid-level intermediate representation that is more like imperative form than hir.
 use crate::{
     compiler::IoChannelInfo,
-    interner::{Symbol, ToSymbol, TypeNodeId},
+    interner::{Symbol, TypeNodeId},
     types::TypeSize,
 };
 use std::{cell::OnceCell, sync::Arc};
@@ -26,8 +26,6 @@ pub enum Value {
     Function(usize),
     /// native function (Rust function item or closure)
     ExtFunction(Symbol, TypeNodeId),
-    /// array value
-    Array(Vec<VPtr>),
     /// internal state
     None,
 }
@@ -52,7 +50,6 @@ pub enum Instruction {
     GetElement {
         value: VPtr,
         ty: TypeNodeId,
-        array_idx: u64,
         tuple_offset: u64,
     },
     // call function, arguments, type of return value
@@ -126,6 +123,13 @@ pub enum Instruction {
     CastFtoI(VPtr),
     CastItoF(VPtr),
     CastItoB(VPtr),
+
+    /// Array Literal. Array in mimium is basically variable-length and immutable.
+    /// So VM may allocate array in speacial heap area, or treat it as just as like static data in the program.
+    /// MIR does not distinguish how the vm treats the array.
+    Array(Vec<VPtr>, TypeNodeId), // array literal, values and type of the array
+    GetArrayElem(VPtr, VPtr, TypeNodeId), // get array element, at specific index , type of the element
+    SetArrayElem(VPtr, VPtr, VPtr, TypeNodeId), // set array element at index
     Error,
 }
 

@@ -854,6 +854,56 @@ impl Machine {
                     dst as i64,
                     Self::to_value::<bool>(Self::get_as::<i64>(self.get_stack(src as i64)) != 0),
                 ),
+                Instruction::AllocArray(_, _, _) => todo!(),
+                Instruction::GetArrayElem(dst, arr, idx) => {
+                    // Get the array and index values
+                    let array = self.get_stack(arr as i64);
+                    let index = self.get_stack(idx as i64);
+                    let index_val = Self::get_as::<f64>(index);
+
+                    // Calculate base address (arr) and length of array (we can use array_reg + array.len() - 1)
+                    let array_start = arr as usize;
+
+                    // Get the array length from the stack (assumed to be stored contiguously)
+                    let array_length = self.stack.len() - array_start;
+
+                    // Determine the actual index to use (convert from float to integer index)
+                    let index_int = index_val.floor() as usize;
+                    let index_frac = index_val - index_val.floor();
+
+                    // Check if we need to interpolate (index has a fractional part)
+                    if index_frac > 0.0 && index_int < array_length - 1 {
+                        // Perform linear interpolation between array[index_int] and array[index_int + 1]
+                        let val1 = Self::get_as::<f64>(self.stack[array_start + index_int]);
+                        let val2 = Self::get_as::<f64>(self.stack[array_start + index_int + 1]);
+                        let result = val1 + (val2 - val1) * index_frac;
+                        self.set_stack(dst as i64, Self::to_value::<f64>(result));
+                    } else if index_int < array_length {
+                        // Direct array access (no interpolation needed)
+                        self.set_stack(dst as i64, self.stack[array_start + index_int]);
+                    } else {
+                        // Index out of bounds, return 0.0 or handle as appropriate
+                        self.set_stack(dst as i64, Self::to_value::<f64>(0.0));
+                    }
+                }
+                Instruction::SetArrayElem(arr, idx, val) => {
+                    // Get the array, index, and value
+                    let index = self.get_stack(idx as i64);
+                    let value = self.get_stack(val as i64);
+                    let index_val = Self::get_as::<f64>(index);
+                    let index_int = index_val as usize;
+
+                    // Calculate base address (arr)
+                    let array_start = arr as usize;
+                    let array_length = self.stack.len() - array_start;
+
+                    // Check if index is valid
+                    if index_int < array_length {
+                        // Set the array element
+                        self.stack[array_start + index_int] = value;
+                    }
+                    // Note: If index is out of bounds, we silently ignore the operation
+                }
                 Instruction::GetState(dst, size) => {
                     //force borrow because state storage and stack never collisions
                     let v: &[RawVal] = unsafe {

@@ -72,16 +72,6 @@ impl std::fmt::Display for Value {
                 write!(f, "extfun {label} {}", t.to_type())
             }
             Value::State(v) => write!(f, "state({})", *v),
-            Value::Array(items) => {
-                write!(f, "array[")?;
-                for (i, item) in items.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", item)?;
-                }
-                write!(f, "]")
-            },
             Value::None => write!(f, "none"),
         }
     }
@@ -100,11 +90,10 @@ impl std::fmt::Display for Instruction {
             Instruction::GetElement {
                 value,
                 ty,
-                array_idx,
                 tuple_offset,
             } => {
                 let ty = ty.to_type();
-                write!(f, "getelement {value}, {ty}, {tuple_offset}[{array_idx}]")
+                write!(f, "getelement {value}, {ty}, {tuple_offset}")
             }
             Instruction::Call(fptr, args, rty) => {
                 write!(
@@ -155,7 +144,6 @@ impl std::fmt::Display for Instruction {
             Instruction::PopStateOffset(v) => {
                 write!(f, "popstateidx  {}", display_state_sizes(v))
             }
-
             Instruction::GetState(ty) => write!(f, "getstate {}", ty.to_type()),
             Instruction::JmpIf(cond, tbb, ebb, pbb) => write!(f, "jmpif {cond} {tbb} {ebb} {pbb}"),
             Instruction::Jmp(bb) => write!(f, "jmp {bb}"),
@@ -198,6 +186,24 @@ impl std::fmt::Display for Instruction {
             Instruction::CastItoF(_) => todo!(),
             Instruction::CastItoB(_) => todo!(),
             Instruction::Error => write!(f, "error"),
+            Instruction::Array(values, ty) => {
+                write!(f, "array[")?;
+                for (i, value) in values.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{value}")?;
+                }
+                write!(f, "]({})", ty.to_type())
+            }
+            Instruction::GetArrayElem(value, value1, type_node_id) => {
+                let type_str = type_node_id.to_type();
+                write!(f, "getarrayelem {value} {value1} {type_str}")
+            }
+            Instruction::SetArrayElem(value, value1, value2, type_node_id) => {
+                let type_str = type_node_id.to_type();
+                write!(f, "setarrayelem {value} {value1} {value2} {type_str}")
+            }
         }
     }
 }
