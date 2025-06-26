@@ -375,6 +375,81 @@ fn test_tuple() {
 }
 
 #[test]
+fn test_array_literal() {
+    // Basic array with multiple elements
+    let array_items = vec![
+        Expr::Literal(Literal::Float("1.0".to_symbol())).into_id(loc(1..4)),
+        Expr::Literal(Literal::Float("2.0".to_symbol())).into_id(loc(6..9)),
+        Expr::Literal(Literal::Float("3.0".to_symbol())).into_id(loc(11..14)),
+    ];
+    let ans = Expr::ArrayLiteral(array_items).into_id(loc(0..15));
+    test_string!("[1.0, 2.0, 3.0]", ans);
+
+    // Empty array
+    let ans = Expr::ArrayLiteral(vec![]).into_id(loc(0..2));
+    test_string!("[]", ans);
+
+    // Array with single element
+    let ans = Expr::ArrayLiteral(vec![
+        Expr::Literal(Literal::Float("42.0".to_symbol())).into_id(loc(1..5))
+    ]).into_id(loc(0..6));
+    test_string!("[42.0]", ans);
+
+    // Array with trailing comma
+    let array_items = vec![
+        Expr::Literal(Literal::Float("10.0".to_symbol())).into_id(loc(1..5)),
+        Expr::Literal(Literal::Float("20.0".to_symbol())).into_id(loc(7..11)),
+    ];
+    let ans = Expr::ArrayLiteral(array_items).into_id(loc(0..13));
+    test_string!("[10.0, 20.0,]", ans);
+}
+
+#[test]
+fn test_array_access() {
+    // Basic array access with integer index
+    let ans = Expr::ArrayAccess(
+        Expr::Var("arr".to_symbol()).into_id(loc(0..3)),
+        Expr::Literal(Literal::Float("0".to_symbol())).into_id(loc(4..5))
+    ).into_id(loc(0..6));
+    test_string!("arr[0]", ans);
+
+    // Array access with float index for interpolation
+    let ans = Expr::ArrayAccess(
+        Expr::Var("arr".to_symbol()).into_id(loc(0..3)),
+        Expr::Literal(Literal::Float("0.5".to_symbol())).into_id(loc(4..7))
+    ).into_id(loc(0..8));
+    test_string!("arr[0.5]", ans);
+
+    // Array access with expression index
+    let index_expr = Expr::Apply(
+        Expr::Var("add".to_symbol()).into_id(loc(5..6)),
+        vec![
+            Expr::Literal(Literal::Float("1".to_symbol())).into_id(loc(4..5)),
+            Expr::Literal(Literal::Float("2".to_symbol())).into_id(loc(6..7)),
+        ]
+    ).into_id(loc(4..7));
+    
+    let ans = Expr::ArrayAccess(
+        Expr::Var("arr".to_symbol()).into_id(loc(0..3)),
+        index_expr
+    ).into_id(loc(0..8));
+    test_string!("arr[1+2]", ans);
+
+    // Nested array access
+    let inner_access = Expr::ArrayAccess(
+        Expr::Var("inner".to_symbol()).into_id(loc(6..11)),
+        Expr::Literal(Literal::Float("0".to_symbol())).into_id(loc(12..13))
+    ).into_id(loc(6..14));
+    
+    let ans = Expr::ArrayAccess(
+        Expr::Var("outer".to_symbol()).into_id(loc(0..5)),
+        inner_access
+    ).into_id(loc(0..15));
+    test_string!("outer[inner[0]]", ans);
+}
+
+
+#[test]
 fn test_stmt_without_return() {
     let ans = Expr::LetRec(
         TypedId {

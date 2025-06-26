@@ -31,7 +31,7 @@ pub enum Error {
         idx: u16,
         loc: Location,
     },
-    IndexForNonTuple(Location),
+    IndexForNonTuple(Location, TypeNodeId),
     VariableNotFound(Symbol, Location),
     NonPrimitiveInFeed(Location),
 }
@@ -56,7 +56,9 @@ impl ReportableError for Error {
             Error::IndexOutOfRange { len, idx, .. } => {
                 format!("Length of tuple elements is {len} but index was {idx}")
             }
-            Error::IndexForNonTuple(_) => format!("Index access for non-tuple variable."),
+            Error::IndexForNonTuple(_, ty) => {
+                format!("Index access for non-tuple variable.")
+            }
             Error::VariableNotFound(symbol, _) => {
                 format!("Variable {} not found in this scope", symbol)
             }
@@ -98,7 +100,15 @@ impl ReportableError for Error {
             Error::IndexOutOfRange { loc, len, .. } => {
                 vec![(loc.clone(), format!("Length for this tuple is {len}"))]
             }
-            Error::IndexForNonTuple(loc) => vec![(loc.clone(), format!("This is not tuple type."))],
+            Error::IndexForNonTuple(loc, ty) => {
+                vec![(
+                    loc.clone(),
+                    format!(
+                        "This is not tuple type but {}",
+                        ty.to_type().to_string_for_error()
+                    ),
+                )]
+            }
             Error::VariableNotFound(symbol, loc) => {
                 vec![(loc.clone(), format!("{} is not defined", symbol))]
             }
@@ -507,6 +517,43 @@ impl InferContext {
         let res: Result<TypeNodeId, Vec<Error>> = match &e.to_expr() {
             Expr::Literal(l) => Self::infer_type_literal(l).map_err(|e| vec![e]),
             Expr::Tuple(e) => Ok(Type::Tuple(self.infer_vec(e.as_slice())?).into_id()),
+            Expr::ArrayLiteral(e) => {
+                let elem_types = self.infer_vec(e.as_slice())?;
+                let first = elem_types
+                    .first()
+                    .copied()
+                    .unwrap_or(Type::Unknown.into_id());
+                let arr_t = elem_types.iter().try_fold(first, |acc, t| {
+                    Self::unify_types((acc, loc.clone()), (*t, loc.clone()))
+                })?;
+                Ok(Type::Array(arr_t).into_id())
+            }
+            Expr::ArrayAccess(e, idx) => {
+                let arr = self.infer_type(*e);
+                let idx_i = self.infer_type(*idx);
+                let loc_e = Location::new(e.to_span(), loc.path);
+                let ntype = Type::Primitive(PType::Numeric);
+                match (arr, idx_i) {
+                    (Ok(arr_t), Ok(idx_t)) => {
+                        let elem_t = self.gen_intermediate_type_with_location(loc_e.clone());
+                        let _ = Self::unify_types(
+                            (idx_t, loc.clone()),
+                            (ntype.into_id(), loc.clone()),
+                        )?;
+                        let _ = Self::unify_types(
+                            (
+                                Type::Array(elem_t).into_id_with_location(loc_e.clone()),
+                                loc_e.clone(),
+                            ),
+                            (arr_t, loc_e.clone()),
+                        );
+                        Ok(elem_t)
+                    }
+                    (Err(e1), Err(e2)) => Err(e1.into_iter().chain(e2).collect()),
+                    (Err(e), _) => Err(e),
+                    (_, Err(e)) => Err(e),
+                }
+            }
             Expr::Proj(e, idx) => {
                 let tup = self.infer_type(*e)?;
                 match tup.to_type() {
@@ -521,7 +568,7 @@ impl InferContext {
                             Ok(vec[*idx as usize])
                         }
                     }
-                    _ => Err(vec![Error::IndexForNonTuple(loc)]),
+                    _ => Err(vec![Error::IndexForNonTuple(loc, tup)]),
                 }
             }
             Expr::Feed(id, body) => {
@@ -658,7 +705,7 @@ impl InferContext {
             }
             Expr::Block(expr) => expr.map_or(Ok(Type::Primitive(PType::Unit).into_id()), |e| {
                 self.env.extend(); //block creates local scope.
-                let res= self.infer_type(e);
+                let res = self.infer_type(e);
                 self.env.to_outer();
                 res
             }),

@@ -25,6 +25,7 @@ pub enum Value {
     Primitive(PValue),
     String(String),
     Tuple(Vec<Value>),
+    Array(Vec<Value>),  // Added Array variant
     //Function value holds return type
     Function(Vec<TypedId>, ExprNodeId, Context, Option<TypeNodeId>),
     FixPoint(TypedId, ExprNodeId),
@@ -49,6 +50,15 @@ impl Value {
             Value::Primitive(p) => p.get_type_id(),
             Value::String(_) => string_t!(),
             Value::Tuple(v) => Type::Tuple(v.iter().map(|t| t.get_type_id()).collect()).into_id(),
+            Value::Array(v) => {
+                // If array is empty, default to numeric elements
+                if v.is_empty() {
+                    Type::Array(numeric!()).into_id()
+                } else {
+                    // Assume all elements have the same type as the first one
+                    Type::Array(v[0].get_type_id()).into_id()
+                }
+            },
             Value::Function(a, _e, _ctx, r_type) => Type::Function(
                 a.iter()
                     .map(|tid| {
@@ -371,6 +381,36 @@ pub fn eval_ast(e_meta: ExprNodeId, ctx: &mut Context) -> Result<Value, CompileE
         ast::Expr::Error => panic!("Some Error happend in previous stages"),
         ast::Expr::Assign(_, _) => todo!(),
         ast::Expr::Then(_, _) => todo!(),
-        ast::Expr::ArrayAccess(_, _) => todo!(),
+        ast::Expr::ArrayAccess(array, index) => {
+            let array_v = eval_ast(*array, ctx)?;
+            let index_v = eval_ast(*index, ctx)?;
+            
+            // Extract the index as a numeric value
+            let idx = match index_v {
+                Value::Primitive(PValue::Numeric(n)) => n as usize,
+                Value::Primitive(PValue::Integer(i)) => i as usize,
+                _ => return Err(CompileError(ErrorKind::TypeError, span.clone())),
+            };
+            
+            // Access the array at the specified index
+            match array_v {
+                Value::Array(items) => {
+                    if idx < items.len() {
+                        Ok(items[idx].clone())
+                    } else {
+                        Err(CompileError(ErrorKind::IndexOutOfBounds, span.clone()))
+                    }
+                },
+                _ => Err(CompileError(ErrorKind::TypeError, span.clone())),
+            }
+        },
+        ast::Expr::ArrayLiteral(items) => {
+            // Create a vector of evaluated items
+            let mut values = Vec::new();
+            for item in items {
+                values.push(eval_ast(*item, ctx)?);
+            }
+            Ok(Value::Array(values))
+        },
     }
 }

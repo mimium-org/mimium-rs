@@ -49,8 +49,18 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
             .boxed()
             .labelled("Tuple");
 
+        // Parse array type [T]
+        let array = ty
+            .clone()
+            .delimited_by(just(Token::ArrayBegin), just(Token::ArrayEnd))
+            .map_with_span(move |element_type, span: Span| {
+                Type::Array(element_type).into_id_with_location(Location::new(span, path))
+            })
+            .boxed()
+            .labelled("Array");
+
         // let _struct_t = todo!();
-        let atom = primitive.or(tuple);
+        let atom = primitive.or(tuple).or(array);
         let func = atom
             .clone()
             .separated_by(just(Token::Comma))
@@ -322,6 +332,21 @@ fn atom_parser<'a>(
             })
         })
         .labelled("tuple");
+
+    // Add parser for array literals
+    let array_literal = items_parser(expr.clone())
+        .delimited_by(just(Token::ArrayBegin), just(Token::ArrayEnd))
+        .map_with_span(move |items, span| {
+            // Create a nested expression that constructs an array with the given items
+            // For now, we create a special AST node type for array literals
+            let loc = Location {
+                span,
+                path: ctx.file_path,
+            };
+            Expr::ArrayLiteral(items).into_id(loc)
+        })
+        .labelled("array_literal");
+
     let parenexpr = expr
         .clone()
         .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
@@ -334,6 +359,7 @@ fn atom_parser<'a>(
         macro_expand,
         parenexpr,
         tuple,
+        array_literal, // Add the array literal parser to the choice
     ))
 }
 fn expr_parser(expr_group: ExprParser<'_>, ctx: ParseContext) -> ExprParser<'_> {

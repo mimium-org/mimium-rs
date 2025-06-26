@@ -1,0 +1,7 @@
+let arr = [10,20,30,40,50]
+
+let len = length_array(arr);
+
+fn dsp(){
+    probeln(len) // should be:5
+}

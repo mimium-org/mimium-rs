@@ -1,3 +1,8 @@
+//! Audio driver abstraction used by mimium.
+//!
+//! Drivers provide an interface between the runtime and concrete audio backends
+//! such as cpal or the CSV writer used for testing.
+
 use std::sync::{
     atomic::{AtomicU32, Ordering},
     Arc,
@@ -37,6 +42,7 @@ use num_traits::Float;
 // }
 
 #[derive(Clone)]
+/// Shared sample rate value used by audio drivers.
 pub struct SampleRate(pub Arc<AtomicU32>);
 impl From<u32> for SampleRate {
     fn from(value: u32) -> Self {
@@ -49,9 +55,11 @@ impl SampleRate {
     }
 }
 
-/// Note: `Driver` trait doesn't have `new()` so that the struct can have its own
-/// `new()` with any parameters specific to the type. With this in mind, `init()`
-/// can accept only common parameters.
+/// Abstraction over audio backends used by the runtime.
+///
+/// Note: the trait does not define `new()`, allowing each backend to expose a
+/// constructor with custom parameters.  The [`init`] method is called after the
+/// VM is prepared to pass it ownership along with the sample rate.
 pub trait Driver {
     type Sample: Float;
     fn get_runtimefn_infos(&self) -> Vec<ExtClsInfo>;
@@ -70,6 +78,7 @@ pub trait Driver {
     }
 }
 
+/// Objects required to execute a compiled program.
 pub struct RuntimeData {
     pub vm: vm::Machine,
     pub sys_plugins: Vec<DynSystemPlugin>,
@@ -105,6 +114,7 @@ impl RuntimeData {
     pub fn get_dsp_fn(&self) -> &FuncProto {
         &self.vm.prog.global_fn_table[self.dsp_i].1
     }
+    /// Execute the compiled `dsp` function for one sample.
     pub fn run_dsp(&mut self, time: Time) -> ReturnCode {
         self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
             //todo: encapsulate unsafety within SystemPlugin functionality

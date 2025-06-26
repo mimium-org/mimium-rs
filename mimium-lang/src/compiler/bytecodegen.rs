@@ -90,6 +90,7 @@ impl VStack {
 #[derive(Debug, Default)]
 pub struct ByteCodeGenerator {
     vregister: VStack,
+    varray: Vec<Arc<mir::Value>>,
     fnmap: HashMap<Symbol, usize>,
     globals: Vec<Arc<mir::Value>>,
     program: vm::Program,
@@ -137,7 +138,7 @@ impl ByteCodeGenerator {
             Type::Primitive(PType::Unit) => 0,
             Type::Primitive(PType::String) => 1,
             Type::Primitive(_) => 1,
-            Type::Array(_ty) => todo!(),
+            Type::Array(_) => 1, //array is represented as a pointer to the special storage
             Type::Tuple(types) => types.iter().map(|t| Self::word_size_for_type(*t)).sum(),
             Type::Struct(types) => types
                 .iter()
@@ -212,6 +213,7 @@ impl ByteCodeGenerator {
         self.vregister
             .find(v)
             .or_else(|| self.globals.iter().position(|gv| v == gv).map(|v| v as Reg))
+            .or_else(|| self.varray.iter().position(|av| v == av).map(|v| v as Reg))
             .expect(format!("value {v} not found").as_str())
     }
     fn find_keep(&mut self, v: &Arc<mir::Value>) -> Reg {
@@ -402,11 +404,9 @@ impl ByteCodeGenerator {
             mir::Instruction::GetElement {
                 value,
                 ty,
-                array_idx,
                 tuple_offset,
             } => {
                 let ptr = self.find_keep(&value) as usize;
-                let t_size = Self::word_size_for_type(ty);
                 let ty = ty.to_type();
                 let tvec = ty.get_as_tuple().unwrap();
                 let tsize = Self::word_size_for_type(tvec[tuple_offset as usize]);
@@ -414,8 +414,7 @@ impl ByteCodeGenerator {
                     .iter()
                     .map(|t| Self::word_size_for_type(*t) as u64)
                     .sum();
-                let offset = t_size as u64 * array_idx + t_offset;
-                let address = (ptr + offset as usize) as Reg;
+                let address = (ptr + t_offset as usize) as Reg;
                 self.vregister
                     .get_top()
                     .0
@@ -597,9 +596,9 @@ impl ByteCodeGenerator {
                 let (phidst, pinst) = phiblock.first().unwrap();
                 let phi = self.vregister.add_newvalue(phidst);
                 if let mir::Instruction::Phi(t, e) = pinst {
-                    let t = self.find(&t);
+                    let t = self.find(t);
                     then_bytecodes.push(VmInstruction::Move(phi, t));
-                    let e = self.find(&e);
+                    let e = self.find(e);
                     else_bytecodes.push(VmInstruction::Move(phi, e));
                 } else {
                     unreachable!("Unexpected inst: {pinst:?}");
@@ -710,6 +709,41 @@ impl ByteCodeGenerator {
             mir::Instruction::Ne(v1, v2) => self.emit_binop2(VmInstruction::Ne, dst, v1, v2),
             mir::Instruction::And(v1, v2) => self.emit_binop2(VmInstruction::And, dst, v1, v2),
             mir::Instruction::Or(v1, v2) => self.emit_binop2(VmInstruction::Or, dst, v1, v2),
+
+            mir::Instruction::Array(values, ty) => {
+                let elem_ty_size = Self::word_size_for_type(ty);
+                let size = values.len();
+                // Move each value into the array
+                let bytecodes_dst = bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut());
+                let dst_reg = self.get_destination(dst.clone(), 1 as _); //address for array is always 1 word;
+                bytecodes_dst.push(VmInstruction::AllocArray(dst_reg, size as _, elem_ty_size));
+                for (i, val) in values.iter().enumerate() {
+                    let tmp_idx_ref = Arc::new(mir::Value::None);
+                    let idx = self.vregister.add_newvalue(&tmp_idx_ref);
+                    bytecodes_dst.push(VmInstruction::MoveImmF(
+                        idx,
+                        HFloat::try_from(i as f64).unwrap(),
+                    ));
+                    let idx = self.find(&tmp_idx_ref);
+                    let src = self.find(val);
+                    bytecodes_dst.push(VmInstruction::SetArrayElem(dst_reg, idx, src));
+                }
+                self.varray.push(dst);
+                None // Instructions already added to bytecodes_dst
+            }
+
+            mir::Instruction::GetArrayElem(array, index, elem_ty) => {
+                let array_reg = self.find(&array);
+                let index_reg = self.find(&index);
+                let dst_reg = self.get_destination(dst, Self::word_size_for_type(elem_ty));
+                let bytecodes_dst = bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut());
+                bytecodes_dst.push(VmInstruction::GetArrayElem(dst_reg, array_reg, index_reg));
+                None
+            }
+
+            mir::Instruction::SetArrayElem(_array, _index, _value, _elem_ty) => {
+                todo!("SetArrayElem is not used in the current implementation");
+            }
 
             _ => {
                 unimplemented!()

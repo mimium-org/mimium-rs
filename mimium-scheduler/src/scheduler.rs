@@ -3,6 +3,7 @@ use std::{cmp::Reverse, collections::BinaryHeap};
 use mimium_lang::runtime::{vm::ClosureIdx, Time};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Scheduled task to be executed at a specific time.
 pub struct Task {
     when: Time,
     cls: ClosureIdx,
@@ -17,6 +18,7 @@ impl Ord for Task {
         self.when.cmp(&other.when)
     }
 }
+/// Trait representing a scheduling strategy.
 pub trait SchedulerInterface {
     fn new() -> Self
     where
@@ -26,6 +28,7 @@ pub trait SchedulerInterface {
     fn set_cur_time(&mut self, time: Time);
 }
 
+/// Scheduler that checks for ready tasks on every sample and executes them.
 #[derive(Clone)]
 pub struct SyncScheduler {
     tasks: BinaryHeap<Reverse<Task>>,
