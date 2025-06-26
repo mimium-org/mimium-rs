@@ -58,6 +58,12 @@ fn array_test() {
     let ans = vec![70.0]; // 10.0 + 15.0 + 40.0
     assert_eq!(res, ans);
 }
+#[wasm_bindgen_test(unsupported = test)]
+fn array_tuple() {
+    let res = run_file_test_mono("array_tuple.mmm", 1).unwrap();
+    let ans = vec![21.0]; // 1.0+ 2.0 + 3.0 + 4.0 + 5.0 + 6.0
+    assert_eq!(res, ans);
+}
 
 #[wasm_bindgen_test(unsupported = test)]
 fn recursion() {
