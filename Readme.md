@@ -8,7 +8,7 @@ A programming language as an infrastructure for sound and music.
 <img src = "mimium_logo_slant.svg" width="300" alt="An icon of the mimium. The word “mimium” is written in small caps, white letters at an angle on a gray diamond-shaped background with a gradient. The vertical bars of the letters are evenly spaced, making it look like a pedestrian crossing." />
 </p>
 
-https://mimium.org (A documentation for v2 is under preparation!)
+https://mimium.org
 
 ---
 
@@ -69,7 +69,7 @@ See [Development](./Development) section.
 
 There's no concrete way for contributing to the mimium project for now but any type of contribution (bugfix, code refactoring, documentation, showing the usecases, etc).
 
-(However, because the mimium is still early stage of the development and there's much things to do, the proposal or request for new feature without Pull Request will not be accepted.)
+(However, because the mimium is still early stage of the development and there's much things to do, the proposal or request for new feature without Pull Request may not be accepted.)
 
 Take a look at [Code of Conduct](./CODE_OF_CONDUCT) before you make contribution.
 

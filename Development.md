@@ -49,7 +49,7 @@ Note that the binary with debug configuration is slow, you may hear the glitch n
 
 You can also debug the binary with LLDB from the debug menu on the left sidebar of VSCode. It has several config options but mostly you use "Debug executable 'mimium-CLI'". You can change target `.mmm` file and optional arguments by modifying the line of `"args": ["mimium-cli/examples/sinewave.mmm"].`.
 
-(Do not commit this change.)
+(Make sure not committing this change.)
 
 
 ## How to bump release (for the core maintainer)
@@ -80,3 +80,6 @@ The workflow uses `cargo-dist` to publish binary on a github release.
 
 Do not forget re-merge commits on `main` into `dev` branch after main release is done.
 
+## Versioning Strategy
+
+We generally follow the rules of [Semantic Versioning](https://semver.org/), but for software such as compilers, it is unclear whether a major update should be performed when destructive changes are included in the **language specification (syntax or semantics)** or when they are included in the **public API of the software toolchain (compiler and runtime)**. In mimium, minor upgrades may currently include changes that break compatibility with the software's public API. This is because there are still few use cases where this toolchain is integrated into other systems.

@@ -3,7 +3,9 @@
 
 ## For version 3
 
-- [ ] Web Platform
+- [x] Array Type
+- [ ] Record Type(https://github.com/mimium-org/mimium-rs/issues/99)
+- [ ] More stable support for web platform
 - [ ] Multi-stage computation (Hygienic Macro)
 - [ ] Generics
 - [ ] Module System
