@@ -1,11 +1,14 @@
 # CHANGELOG
 
-## v2.3.0
+## v2.3.1
+
+(2.3.0 is skipped due to the release workflow)
 
 ### Added feature
 
 - Basic implementation for Array has done(#124)
 - `cargo-dist` is switched to the forked version by Astral(#125 by @yutannihilation)
+- Now minimal rust edition is required to be **2024**(due to the limitation by `coreaudio-sys` crate).
 
 ### Others
 
