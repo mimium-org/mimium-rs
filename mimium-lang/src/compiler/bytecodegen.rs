@@ -718,8 +718,15 @@ impl ByteCodeGenerator {
                 let dst_reg = self.get_destination(dst.clone(), 1 as _); //address for array is always 1 word;
                 bytecodes_dst.push(VmInstruction::AllocArray(dst_reg, size as _, elem_ty_size));
                 for (i, val) in values.iter().enumerate() {
+                    let tmp_idx_ref = Arc::new(mir::Value::None);
+                    let idx = self.vregister.add_newvalue(&tmp_idx_ref);
+                    bytecodes_dst.push(VmInstruction::MoveImmF(
+                        idx,
+                        HFloat::try_from(i as f64).unwrap(),
+                    ));
+                    let idx = self.find(&tmp_idx_ref);
                     let src = self.find(val);
-                    bytecodes_dst.push(VmInstruction::SetArrayElem(dst_reg, i as Reg, src));
+                    bytecodes_dst.push(VmInstruction::SetArrayElem(dst_reg, idx, src));
                 }
                 self.varray.push(dst);
                 None // Instructions already added to bytecodes_dst
