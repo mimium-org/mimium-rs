@@ -98,6 +98,16 @@ pub enum Instruction {
     CastFtoI(Reg, Reg),
     CastItoF(Reg, Reg),
     CastItoB(Reg, Reg),
+    /// Allocate new array in the heap.
+    /// Destination, size of array, type size of each element
+    AllocArray(Reg, Reg, TypeSize),
+    /// Get array element: destination, array, index
+    GetArrayElem(Reg, Reg, Reg),
+    /// Set array element. Because the array is immutable, this instruction is mostly used for initialization.
+    /// array, index, value.
+    SetArrayElem(Reg, Reg, Reg),
+
+    /// Dummy instruction for testing
     Dummy,
 }
 
@@ -110,7 +120,6 @@ impl std::fmt::Display for Instruction {
             Instruction::SetState(src, size) => write!(f, "{:<10} {} {}", "setstate", src, size),
             Instruction::PushStatePos(v) => write!(f, "{:<10} {}", "pushsttpos", v),
             Instruction::PopStatePos(v) => write!(f, "{:<10} {}", "popsttpos", v),
-
             Instruction::Move(dst, src) => write!(f, "{:<10} {} {}", "mov", dst, src),
             Instruction::MoveConst(dst, num) => write!(f, "{:<10} {} {}", "movc", dst, num),
             Instruction::MoveImmF(dst, v) => write!(f, "{:<10} {} {}", "movimmF", dst, v),
@@ -125,7 +134,6 @@ impl std::fmt::Display for Instruction {
                     src + n - 1
                 )
             }
-
             Instruction::Closure(dst, src) => {
                 write!(f, "{:<10} {} {}", "closure", dst, src)
             }
@@ -158,14 +166,12 @@ impl std::fmt::Display for Instruction {
             Instruction::CosF(dst, src) => write!(f, "{:<10} {} {}", "cos", dst, src),
             Instruction::SqrtF(dst, src) => write!(f, "{:<10} {} {}", "sqrt", dst, src),
             Instruction::LogF(dst, src) => write!(f, "{:<10} {} {} ", "logf", dst, src),
-
             Instruction::AbsI(dst, src) => write!(f, "{:<10} {} {}", "abs", dst, src),
             Instruction::NegI(dst, src) => write!(f, "{:<10} {} {}", "neg", dst, src),
             Instruction::Not(dst, src) => write!(f, "{:<10} {} {}", "not", dst, src),
             Instruction::CastFtoI(dst, src) => write!(f, "{:<10} {} {}", "f2i", dst, src),
             Instruction::CastItoF(dst, src) => write!(f, "{:<10} {} {}", "i2f", dst, src),
             Instruction::CastItoB(dst, src) => write!(f, "{:<10} {} {}", "i2b", dst, src),
-            //3 arguments
             Instruction::Call(func, nargs, nret_req) => {
                 write!(f, "{:<10} {} {} {}", "call", func, nargs, nret_req)
             }
@@ -196,6 +202,15 @@ impl std::fmt::Display for Instruction {
             Instruction::Le(dst, lhs, rhs) => write!(f, "{:<10} {} {} {}", "lt", dst, lhs, rhs),
             Instruction::And(dst, lhs, rhs) => write!(f, "{:<10} {} {} {}", "and", dst, lhs, rhs),
             Instruction::Or(dst, lhs, rhs) => write!(f, "{:<10} {} {} {}", "or", dst, lhs, rhs),
+            Instruction::AllocArray(dst, size, typesize) => {
+                write!(f, "{:<10} {} {} {}", "array", dst, size, typesize)
+            }
+            Instruction::GetArrayElem(dst, arr, idx) => {
+                write!(f, "{:<10} {} {} {}", "getarray", dst, arr, idx)
+            }
+            Instruction::SetArrayElem(arr, idx, val) => {
+                write!(f, "{:<10} {} {} {}", "setarray", arr, idx, val)
+            }
             Instruction::Dummy => write!(f, "dummy"),
         }
     }

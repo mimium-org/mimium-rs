@@ -216,7 +216,7 @@ fn emit_ast_local(src: &str, filepath: &Path) -> Result<ExprNodeId, Vec<Box<dyn 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     if cfg!(debug_assertions) | cfg!(test) {
         colog::default_builder()
-            .filter_level(log::LevelFilter::Debug)
+            .filter_level(log::LevelFilter::Trace)
             .init();
     } else {
         colog::default_builder().init();
