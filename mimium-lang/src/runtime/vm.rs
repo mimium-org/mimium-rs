@@ -795,11 +795,7 @@ impl Machine {
                     let (_range, v) = self.get_stack_range(src as i64, size);
                     let rv = &mut *upvalues[index as usize].borrow_mut();
                     match rv {
-                        UpValue::Open(OpenUpValue {
-                            pos: ref i,
-                            ref mut size,
-                            ..
-                        }) => {
+                        UpValue::Open(OpenUpValue { pos: i, size, .. }) => {
                             let (range, _v) = self.get_stack_range(src as i64, *size);
                             let dest = upper_base + *i;
                             unsafe {
@@ -813,7 +809,7 @@ impl Machine {
                                 dst.copy_within(range, dest);
                             }
                         }
-                        UpValue::Closed(ref mut uv, _) => {
+                        UpValue::Closed(uv, _) => {
                             uv.as_mut_slice().copy_from_slice(v);
                         }
                     };
