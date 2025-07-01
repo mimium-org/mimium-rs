@@ -190,7 +190,7 @@ impl TypeNodeId {
     pub fn flatten(&self) -> Vec<Self> {
         match self.to_type() {
             Type::Tuple(t) => t.iter().flat_map(|t| t.flatten()).collect::<Vec<_>>(),
-            Type::Struct(t) => t.iter().flat_map(|(_, t)| t.flatten()).collect::<Vec<_>>(),
+            Type::Record(t) => t.iter().flat_map(|(_, t)| t.flatten()).collect::<Vec<_>>(),
             _ => vec![*self],
         }
     }

@@ -264,7 +264,7 @@ impl InferContext {
                     && cls(*r)
                     && cls(s.map(|x| x).unwrap_or_else(|| Type::Unknown.into_id()))
             }
-            Type::Struct(_s) => todo!(),
+            Type::Record(_s) => todo!(),
             _ => false,
         }
     }
@@ -385,7 +385,7 @@ impl InferContext {
                     Err(err) //todo:return both partial result and err
                 }
             }
-            (Type::Struct(_a1), Type::Struct(_a2)) => todo!(), //todo
+            (Type::Record(_a1), Type::Record(_a2)) => todo!(), //todo
             (Type::Function(p1, r1, _s1), Type::Function(p2, r2, _s2)) => {
                 let (param, errs) = Self::unify_vec(p1, loc1.clone(), p2, loc2.clone());
                 let ret = Self::unify_types((*r1, loc1), (*r2, loc2));
