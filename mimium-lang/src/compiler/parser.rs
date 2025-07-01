@@ -6,7 +6,7 @@ use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::types::{PType, Type};
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::*;
-use chumsky::{prelude::*, Parser};
+use chumsky::{Parser, prelude::*};
 // use chumsky::Parser;
 mod token;
 use resolve_include::resolve_include;
@@ -15,7 +15,7 @@ mod error;
 mod lexer;
 mod resolve_include;
 mod statement;
-use statement::{into_then_expr, stmt_from_expr_top, Statement};
+use statement::{Statement, into_then_expr, stmt_from_expr_top};
 
 use super::intrinsics;
 
@@ -48,7 +48,16 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
             })
             .boxed()
             .labelled("Tuple");
-
+        let record = (ident_parser().clone().then_ignore(just(Token::Colon)))
+            .then(ty.clone())
+            .separated_by(just(Token::Comma))
+            .allow_trailing()
+            .delimited_by(just(Token::BlockBegin), just(Token::BlockEnd))
+            .map_with_span(move |fields, span| {
+                Type::Record(fields).into_id_with_location(Location::new(span, path))
+            })
+            .boxed()
+            .labelled("Record");
         // Parse array type [T]
         let array = ty
             .clone()
@@ -60,7 +69,7 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
             .labelled("Array");
 
         // let _struct_t = todo!();
-        let atom = primitive.or(tuple).or(array);
+        let atom = choice((primitive, record, tuple, array));
         let func = atom
             .clone()
             .separated_by(just(Token::Comma))
@@ -280,6 +289,14 @@ where
         binop_folder(acc, x, ctx.clone())
     })
 }
+fn record_fields(
+    expr: ExprParser<'_>,
+) -> impl Parser<Token, RecordField, Error = ParseError> + Clone + '_ {
+    ident_parser()
+        .then_ignore(just(Token::Colon))
+        .then(expr.clone())
+        .map(move |(name, expr)| RecordField { name, expr })
+}
 fn atom_parser<'a>(
     expr: ExprParser<'a>,
     expr_group: ExprParser<'a>,
@@ -333,7 +350,6 @@ fn atom_parser<'a>(
         })
         .labelled("tuple");
 
-    // Add parser for array literals
     let array_literal = items_parser(expr.clone())
         .delimited_by(just(Token::ArrayBegin), just(Token::ArrayEnd))
         .map_with_span(move |items, span| {
@@ -346,7 +362,17 @@ fn atom_parser<'a>(
             Expr::ArrayLiteral(items).into_id(loc)
         })
         .labelled("array_literal");
-
+    let record_literal = record_fields(expr.clone())
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .delimited_by(just(Token::BlockBegin), just(Token::BlockEnd))
+        .map_with_span(move |fields, span| {
+            Expr::RecordLiteral(fields).into_id(Location {
+                span,
+                path: ctx.file_path,
+            })
+        })
+        .labelled("record_literal");
     let parenexpr = expr
         .clone()
         .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
@@ -359,7 +385,8 @@ fn atom_parser<'a>(
         macro_expand,
         parenexpr,
         tuple,
-        array_literal, // Add the array literal parser to the choice
+        record_literal,
+        array_literal,
     ))
 }
 fn expr_parser(expr_group: ExprParser<'_>, ctx: ParseContext) -> ExprParser<'_> {
