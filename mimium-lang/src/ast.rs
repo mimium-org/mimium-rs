@@ -35,6 +35,12 @@ impl Expr {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct RecordField {
+    pub name: Symbol,
+    pub expr: ExprNodeId,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     Literal(Literal), // literal, or special symbols (self, now, _)
     Var(Symbol),
@@ -43,6 +49,8 @@ pub enum Expr {
     Proj(ExprNodeId, i64),
     ArrayAccess(ExprNodeId, ExprNodeId),
     ArrayLiteral(Vec<ExprNodeId>), // Array literal [e1, e2, ..., en]
+    RecordLiteral(Vec<RecordField>), // Record literal {field1: expr1, field2: expr2, ...}
+    FieldAccess(ExprNodeId, Symbol), // Record field access: record.field
     Apply(ExprNodeId, Vec<ExprNodeId>),
     PipeApply(ExprNodeId, ExprNodeId), // LHS and RHS
     Lambda(Vec<TypedId>, Option<TypeNodeId>, ExprNodeId), //lambda, maybe information for internal state is needed
@@ -107,6 +115,12 @@ impl MiniPrint for Option<ExprNodeId> {
     }
 }
 
+impl MiniPrint for RecordField {
+    fn simple_print(&self) -> String {
+        format!("{}: {}", self.name, self.expr.simple_print())
+    }
+}
+
 impl MiniPrint for Expr {
     fn simple_print(&self) -> String {
         match self {
@@ -129,6 +143,13 @@ impl MiniPrint for Expr {
             Expr::ArrayLiteral(items) => {
                 let items_str = items.iter().map(|e| e.simple_print()).collect::<Vec<String>>().join(", ");
                 format!("(array [{}])", items_str)
+            }
+            Expr::RecordLiteral(fields) => {
+                let fields_str = fields.iter().map(|f| f.simple_print()).collect::<Vec<String>>().join(", ");
+                format!("(record {{{}}}", fields_str)
+            }
+            Expr::FieldAccess(record, field) => {
+                format!("(field-access {} {})", record.simple_print(), field)
             }
             Expr::PipeApply(lhs, rhs) => {
                 format!("(pipe {} {})", lhs.simple_print(), rhs.simple_print())
