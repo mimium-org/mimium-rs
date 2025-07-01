@@ -1,5 +1,5 @@
 use super::intrinsics;
-use super::typing::{infer_root, InferContext};
+use super::typing::{InferContext, infer_root};
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::{function, numeric, unit};
@@ -374,7 +374,9 @@ impl Context {
             LookupRes::Local(v) => match v.as_ref() {
                 Value::Argument(_i, _a) => {
                     //todo: collect warning for the language server
-                    log::warn!("assignment to argument {name} does not affect to the external environments.");
+                    log::warn!(
+                        "assignment to argument {name} does not affect to the external environments."
+                    );
                     self.push_inst(Instruction::Store(v.clone(), src, t));
                 }
                 _ => {
@@ -539,7 +541,8 @@ impl Context {
                 ));
                 (result, elem_ty)
             }
-
+            Expr::RecordLiteral(record_fields) => todo!(),
+            Expr::FieldAccess(expr_node_id, symbol) => todo!(),
             Expr::Apply(f, args) => {
                 let (f, ft) = self.eval_expr(*f);
                 let del = self.try_make_delay(&f, args);
@@ -720,6 +723,7 @@ impl Context {
                     (Arc::new(Value::None), unit!())
                 }
             }
+
             Expr::Assign(assignee, body) => {
                 let (src, ty) = self.eval_expr(*body);
                 self.eval_assign(*assignee, src, ty, &span);
