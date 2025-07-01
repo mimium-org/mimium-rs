@@ -28,6 +28,11 @@ struct ParseContext {
 }
 pub(crate) type ParseError = Simple<Token>;
 
+fn breakable_comma() -> impl Parser<Token, (), Error = ParseError> + Clone {
+    just(Token::Comma)
+        .then(just(Token::LineBreak).or_not())
+        .map(|_| ())
+}
 fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = ParseError> + Clone {
     let path = ctx.file_path;
     recursive(move |ty| {
@@ -50,7 +55,7 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
             .labelled("Tuple");
         let record = (ident_parser().clone().then_ignore(just(Token::Colon)))
             .then(ty.clone())
-            .separated_by(just(Token::Comma))
+            .separated_by(breakable_comma())
             .allow_trailing()
             .delimited_by(just(Token::BlockBegin), just(Token::BlockEnd))
             .map_with_span(move |fields, span| {
@@ -363,7 +368,7 @@ fn atom_parser<'a>(
         })
         .labelled("array_literal");
     let record_literal = record_fields(expr.clone())
-        .separated_by(just(Token::Comma))
+        .separated_by(breakable_comma())
         .allow_trailing()
         .delimited_by(just(Token::BlockBegin), just(Token::BlockEnd))
         .map_with_span(move |fields, span| {
