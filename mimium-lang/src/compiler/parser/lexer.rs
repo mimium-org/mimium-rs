@@ -29,8 +29,9 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
 
     let float = text::int(10)
         .then(just('.'))
-        .then(text::digits(10).or_not())
-        .map(|((s, _dot), opt_n)| Token::Float(format!("{}.{}", s, opt_n.unwrap_or_default())));
+        .then(text::digits(10))
+        .then_ignore(just('.').not().rewind())
+        .map(|((s, _dot), n)| Token::Float(format!("{s}.{n}")));
 
     // A parser for strings
     let str_ = just('"')
@@ -216,6 +217,33 @@ another line
             let (res, errs) = lexer().parse_recovery(c);
             assert!(errs.is_empty(), "failed to parse");
             assert_eq!(res.unwrap()[0], (Token::Ident("foo".to_symbol()), 0..3))
+        }
+    }
+    #[test]
+    fn test_dotoperator() {
+        // Test for dot operator with index and field access.
+        // The source contains "1.0" but it should not be parsed as a float.
+        // The float tokenizer read one character ahead and ensure the dot operator do not comes next.
+        let src = "x.0.field1.1.0.field2";
+        let (res, _errs) = lexer().parse_recovery(src);
+        let ans = vec![
+            (Token::Ident("x".to_symbol()), 0..1),
+            (Token::Op(Op::Dot), 1..2),
+            (Token::Int(0), 2..3),
+            (Token::Op(Op::Dot), 3..4),
+            (Token::Ident("field1".to_symbol()), 4..10),
+            (Token::Op(Op::Dot), 10..11),
+            (Token::Int(1), 11..12),
+            (Token::Op(Op::Dot), 12..13),
+            (Token::Int(0), 13..14),
+            (Token::Op(Op::Dot), 14..15),
+            (Token::Ident("field2".to_symbol()), 15..21),
+        ];
+        // dbg!(res.clone());
+        if let Some(tok) = res {
+            assert_eq!(tok, ans);
+        } else {
+            panic!("failed to parse dot operator");
         }
     }
 }
