@@ -194,11 +194,13 @@ fn test_assign2() {
 fn test_applynested() {
     let ans = Expr::Apply(
         Expr::Var("myfun".to_symbol()).into_id(loc(0..5)),
-        vec![Expr::Apply(
-            Expr::Var("myfun2".to_symbol()).into_id(loc(6..12)),
-            vec![Expr::Var("callee".to_symbol()).into_id(loc(13..19))],
-        )
-        .into_id(loc(6..20))],
+        vec![
+            Expr::Apply(
+                Expr::Var("myfun2".to_symbol()).into_id(loc(6..12)),
+                vec![Expr::Var("callee".to_symbol()).into_id(loc(13..19))],
+            )
+            .into_id(loc(6..20)),
+        ],
     )
     .into_id(loc(0..20));
     test_string!("myfun(myfun2(callee))", ans);
@@ -391,8 +393,9 @@ fn test_array_literal() {
 
     // Array with single element
     let ans = Expr::ArrayLiteral(vec![
-        Expr::Literal(Literal::Float("42.0".to_symbol())).into_id(loc(1..5))
-    ]).into_id(loc(0..6));
+        Expr::Literal(Literal::Float("42.0".to_symbol())).into_id(loc(1..5)),
+    ])
+    .into_id(loc(0..6));
     test_string!("[42.0]", ans);
 
     // Array with trailing comma
@@ -409,15 +412,17 @@ fn test_array_access() {
     // Basic array access with integer index
     let ans = Expr::ArrayAccess(
         Expr::Var("arr".to_symbol()).into_id(loc(0..3)),
-        Expr::Literal(Literal::Float("0".to_symbol())).into_id(loc(4..5))
-    ).into_id(loc(0..6));
+        Expr::Literal(Literal::Float("0".to_symbol())).into_id(loc(4..5)),
+    )
+    .into_id(loc(0..6));
     test_string!("arr[0]", ans);
 
     // Array access with float index for interpolation
     let ans = Expr::ArrayAccess(
         Expr::Var("arr".to_symbol()).into_id(loc(0..3)),
-        Expr::Literal(Literal::Float("0.5".to_symbol())).into_id(loc(4..7))
-    ).into_id(loc(0..8));
+        Expr::Literal(Literal::Float("0.5".to_symbol())).into_id(loc(4..7)),
+    )
+    .into_id(loc(0..8));
     test_string!("arr[0.5]", ans);
 
     // Array access with expression index
@@ -426,28 +431,63 @@ fn test_array_access() {
         vec![
             Expr::Literal(Literal::Float("1".to_symbol())).into_id(loc(4..5)),
             Expr::Literal(Literal::Float("2".to_symbol())).into_id(loc(6..7)),
-        ]
-    ).into_id(loc(4..7));
-    
-    let ans = Expr::ArrayAccess(
-        Expr::Var("arr".to_symbol()).into_id(loc(0..3)),
-        index_expr
-    ).into_id(loc(0..8));
+        ],
+    )
+    .into_id(loc(4..7));
+
+    let ans = Expr::ArrayAccess(Expr::Var("arr".to_symbol()).into_id(loc(0..3)), index_expr)
+        .into_id(loc(0..8));
     test_string!("arr[1+2]", ans);
 
     // Nested array access
     let inner_access = Expr::ArrayAccess(
         Expr::Var("inner".to_symbol()).into_id(loc(6..11)),
-        Expr::Literal(Literal::Float("0".to_symbol())).into_id(loc(12..13))
-    ).into_id(loc(6..14));
-    
+        Expr::Literal(Literal::Float("0".to_symbol())).into_id(loc(12..13)),
+    )
+    .into_id(loc(6..14));
+
     let ans = Expr::ArrayAccess(
         Expr::Var("outer".to_symbol()).into_id(loc(0..5)),
-        inner_access
-    ).into_id(loc(0..15));
+        inner_access,
+    )
+    .into_id(loc(0..15));
     test_string!("outer[inner[0]]", ans);
 }
-
+#[test]
+fn test_record_type_decl() {
+    let x_s = "x".to_symbol();
+    let y_s = "y".to_symbol();
+    let ans = Expr::Let(
+        TypedPattern {
+            pat: Pattern::Single("r".to_symbol()),
+            ty: Type::Record(vec![
+                (
+                    x_s,
+                    Type::Primitive(PType::Numeric).into_id_with_location(loc(12..17)),
+                ),
+                (
+                    y_s,
+                    Type::Primitive(PType::Numeric).into_id_with_location(loc(22..27)),
+                ),
+            ])
+            .into_id_with_location(loc(8..28)),
+        },
+        Expr::RecordLiteral(vec![
+            RecordField {
+                name: x_s,
+                expr: Expr::Literal(Literal::Float("0.0".to_symbol())).into_id(loc(34..37)),
+            },
+            RecordField {
+                name: y_s,
+                expr: Expr::Literal(Literal::Float("2.0".to_symbol())).into_id(loc(40..43)),
+            },
+        ])
+        .into_id(loc(31..44)),
+        None,
+    )
+    .into_id(loc(0..44));
+    test_string!("let r : {x: float, y: float} = {x:0.0,y:2.0}", ans);
+}
 
 #[test]
 fn test_stmt_without_return() {

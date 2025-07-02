@@ -53,7 +53,9 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
             })
             .boxed()
             .labelled("Tuple");
-        let record = (ident_parser().clone().then_ignore(just(Token::Colon)))
+        let record = ident_parser()
+            .clone()
+            .then_ignore(just(Token::Colon))
             .then(ty.clone())
             .separated_by(breakable_comma())
             .allow_trailing()
