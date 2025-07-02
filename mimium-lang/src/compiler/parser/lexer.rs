@@ -28,10 +28,10 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
     let int = text::int(10).map(|s: String| Token::Int(s.parse().unwrap()));
 
     let float = text::int(10)
-        .then(just('.'))
+        .then_ignore(just('.'))
         .then(text::digits(10))
-        .then_ignore(just('.').not().rewind())
-        .map(|((s, _dot), n)| Token::Float(format!("{s}.{n}")));
+        .then_ignore(just('.').not().ignored().or(end()).rewind())
+        .map(|(s, n)| Token::Float(format!("{s}.{n}")));
 
     // A parser for strings
     let str_ = just('"')
@@ -238,6 +238,23 @@ another line
             (Token::Int(0), 13..14),
             (Token::Op(Op::Dot), 14..15),
             (Token::Ident("field2".to_symbol()), 15..21),
+        ];
+        // dbg!(res.clone());
+        if let Some(tok) = res {
+            assert_eq!(tok, ans);
+        } else {
+            panic!("failed to parse dot operator");
+        }
+    }
+    #[test]
+    fn test_dotoperator2() {
+        //test if the normal float parser works
+        let src = "3466.0+2000.0 ";
+        let (res, _errs) = lexer().parse_recovery(src);
+        let ans = vec![
+            (Token::Float("3466.0".to_string()), 0..6),
+            (Token::Op(Op::Sum), 6..7),
+            (Token::Float("2000.0".to_string()), 7..13),
         ];
         // dbg!(res.clone());
         if let Some(tok) = res {
