@@ -7,7 +7,6 @@ use crate::types::{PType, Type};
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::*;
 use chumsky::{Parser, prelude::*};
-// use chumsky::Parser;
 mod token;
 use resolve_include::resolve_include;
 use token::{Op, Token};
@@ -228,16 +227,16 @@ fn items_parser(
         .collect::<Vec<_>>()
 }
 enum DotField {
-    Ident(Symbol),
     Index(i64),
+    Ident(Symbol),
 }
 fn dot_field() -> impl Parser<Token, (DotField, Span), Error = ParseError> + Clone {
     select! {
-        Token::Ident(s) => DotField::Ident(s),
         Token::Int(i) => DotField::Index(i),
+        Token::Ident(s) => DotField::Ident(s),
     }
-    .labelled("dot_field")
     .map_with_span(|field, span| (field, span))
+    .labelled("dot_field")
 }
 fn op_parser<'a, I>(
     apply: I,
@@ -247,27 +246,7 @@ where
     I: Parser<Token, ExprNodeId, Error = ParseError> + Clone + 'a,
 {
     let ctx = ctx.clone();
-
-    let unary = just(Token::Op(Op::Minus))
-        .map_with_span(|e, s| (e, s))
-        .repeated()
-        .then(apply.clone())
-        .foldr(move |(_op, op_span), rhs| {
-            let rhs_span = rhs.to_span();
-            let loc = Location {
-                span: op_span.start..rhs_span.start,
-                path: ctx.file_path,
-            };
-            let neg_op = Expr::Var("neg".to_symbol()).into_id(loc);
-            let loc = Location {
-                span: op_span.start..rhs_span.end,
-                path: ctx.file_path,
-            };
-            Expr::Apply(neg_op, vec![rhs]).into_id(loc)
-        })
-        .labelled("unary");
-    let dot = unary
-        .clone()
+    let dot = apply
         .then(just(Token::Op(Op::Dot)).ignore_then(dot_field()).repeated())
         .foldl(move |lhs, (rhs, rspan)| {
             let span = lhs.to_span().start..rspan.end;
@@ -282,6 +261,25 @@ where
             }
         })
         .labelled("dot");
+
+    let unary = just(Token::Op(Op::Minus))
+        .map_with_span(|e, s| (e, s))
+        .repeated()
+        .then(dot.clone())
+        .foldr(move |(_op, op_span), rhs| {
+            let rhs_span = rhs.to_span();
+            let loc = Location {
+                span: op_span.start..rhs_span.start,
+                path: ctx.file_path,
+            };
+            let neg_op = Expr::Var("neg".to_symbol()).into_id(loc);
+            let loc = Location {
+                span: op_span.start..rhs_span.end,
+                path: ctx.file_path,
+            };
+            Expr::Apply(neg_op, vec![rhs]).into_id(loc)
+        })
+        .labelled("unary");
     let optoken = move |o: Op| {
         just(Token::Op(o))
             .try_map(|e, s| match e {
@@ -322,7 +320,7 @@ where
         optoken(Op::At),
     ];
     ops.into_iter()
-        .fold(dot.boxed(), move |acc, x| binop_folder(acc, x, ctx.clone()))
+        .fold(unary.boxed(), move |acc, x| binop_folder(acc, x, ctx.clone()))
 }
 fn record_fields(
     expr: ExprParser<'_>,

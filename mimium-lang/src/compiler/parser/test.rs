@@ -3,6 +3,7 @@ use itertools::Itertools;
 use super::*;
 use crate::pattern::TypedId;
 use crate::utils;
+use crate::utils::miniprint::MiniPrint;
 
 macro_rules! test_string {
     ($src:literal, $ans:expr) => {
@@ -12,8 +13,8 @@ macro_rules! test_string {
             assert!(
                 ast.to_expr() == $ans.to_expr(),
                 "res:{:?}\nans:{:?}",
-                ast,
-                $ans
+                ast.simple_print(),
+                $ans.simple_print()
             );
         } else {
             utils::error::report(&srcstr, "".to_symbol(), &errs);
@@ -507,7 +508,27 @@ fn test_record_type_decl() {
     ]);
     test_expr_string("{x:0.0,y:2.0}", ans.into_id(loc(0..9)));
 }
-
+#[test]
+fn test_field_access() {
+    let ans = Expr::FieldAccess(
+        Expr::Proj(
+            Expr::Proj(
+                Expr::FieldAccess(
+                    Expr::Proj(Expr::Var("x".to_symbol()).into_id(loc(0..1)), 0).into_id(loc(0..3)),
+                    "field1".to_symbol(),
+                )
+                .into_id(loc(0..5)),
+                1,
+            )
+            .into_id(loc(0..7)),
+            0,
+        )
+        .into_id(loc(0..9)),
+        "field2".to_symbol(),
+    )
+    .into_id(loc(0..11));
+    test_expr_string("x.0.field1.1.0.field2", ans);
+}
 #[test]
 fn test_stmt_without_return() {
     let ans = Expr::LetRec(
