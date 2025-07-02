@@ -23,7 +23,7 @@ use super::intrinsics;
 mod test;
 
 #[derive(Clone)]
-struct ParseContext {
+pub(super) struct ParseContext {
     file_path: Symbol,
 }
 pub(crate) type ParseError = Simple<Token>;
@@ -91,7 +91,7 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
         func.or(atom).labelled("Type")
     })
 }
-fn ident_parser() -> impl Parser<Token, Symbol, Error = ParseError> + Clone {
+pub(super) fn ident_parser() -> impl Parser<Token, Symbol, Error = ParseError> + Clone {
     select! { Token::Ident(s) => s }.labelled("ident")
 }
 fn literals_parser(
@@ -201,6 +201,7 @@ where
             };
             let arg = match op {
                 Op::Pipe => return Expr::PipeApply(x, y).into_id(loc.clone()),
+                Op::Dot => unreachable!("Dot operator should be handled in the previous step"),
                 // A@B is a syntactic sugar of _mimium_schedule_at(B, A)
                 Op::At => vec![y, x],
                 _ => vec![x, y],
@@ -226,7 +227,18 @@ fn items_parser(
         .allow_trailing()
         .collect::<Vec<_>>()
 }
-
+enum DotField {
+    Ident(Symbol),
+    Index(i64),
+}
+fn dot_field() -> impl Parser<Token, (DotField, Span), Error = ParseError> + Clone {
+    select! {
+        Token::Ident(s) => DotField::Ident(s),
+        Token::Int(i) => DotField::Index(i),
+    }
+    .labelled("dot_field")
+    .map_with_span(|field, span| (field, span))
+}
 fn op_parser<'a, I>(
     apply: I,
     ctx: ParseContext,
@@ -235,7 +247,8 @@ where
     I: Parser<Token, ExprNodeId, Error = ParseError> + Clone + 'a,
 {
     let ctx = ctx.clone();
-    let unary = select! { Token::Op(Op::Minus) => {} }
+
+    let unary = just(Token::Op(Op::Minus))
         .map_with_span(|e, s| (e, s))
         .repeated()
         .then(apply.clone())
@@ -253,7 +266,22 @@ where
             Expr::Apply(neg_op, vec![rhs]).into_id(loc)
         })
         .labelled("unary");
+    let dot = unary
+        .clone()
+        .then(just(Token::Op(Op::Dot)).ignore_then(dot_field()).repeated())
+        .foldl(move |lhs, (rhs, rspan)| {
+            let span = lhs.to_span().start..rspan.end;
 
+            let loc = Location {
+                span,
+                path: ctx.file_path,
+            };
+            match rhs {
+                DotField::Ident(name) => Expr::FieldAccess(lhs, name).into_id(loc),
+                DotField::Index(idx) => Expr::Proj(lhs, idx).into_id(loc),
+            }
+        })
+        .labelled("dot");
     let optoken = move |o: Op| {
         just(Token::Op(o))
             .try_map(|e, s| match e {
@@ -270,6 +298,7 @@ where
         .map_with_span(|_, s| (Op::Pipe, s))
         .boxed();
     //defining binary operators in order of precedence.
+    // The order of precedence is from the lowest to the highest.
     let ops = [
         optoken(Op::Exponent),
         choice((
@@ -292,9 +321,8 @@ where
         pipe,
         optoken(Op::At),
     ];
-    ops.into_iter().fold(unary.boxed(), move |acc, x| {
-        binop_folder(acc, x, ctx.clone())
-    })
+    ops.into_iter()
+        .fold(dot.boxed(), move |acc, x| binop_folder(acc, x, ctx.clone()))
 }
 fn record_fields(
     expr: ExprParser<'_>,
@@ -304,7 +332,8 @@ fn record_fields(
         .then(expr.clone())
         .map(move |(name, expr)| RecordField { name, expr })
 }
-fn atom_parser<'a>(
+
+pub(super) fn atom_parser<'a>(
     expr: ExprParser<'a>,
     expr_group: ExprParser<'a>,
     ctx: ParseContext,
@@ -391,9 +420,9 @@ fn atom_parser<'a>(
         lambda,
         macro_expand,
         parenexpr,
-        tuple,
         record_literal,
         array_literal,
+        tuple,
     ))
 }
 fn expr_parser(expr_group: ExprParser<'_>, ctx: ParseContext) -> ExprParser<'_> {

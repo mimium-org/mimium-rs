@@ -1,8 +1,8 @@
-use super::token::*;
 use super::ToSymbol;
+use super::token::*;
 use crate::utils::metadata::*;
-use chumsky::prelude::*;
 use chumsky::Parser;
+use chumsky::prelude::*;
 
 fn comment_parser() -> impl Parser<char, Comment, Error = Simple<char>> + Clone {
     // comment parser that keep its contents length, not to break line number for debugging.
@@ -74,7 +74,7 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
         });
     let separator = one_of(",.:;").map(|c| match c {
         ',' => Token::Comma,
-        '.' => Token::Dot,
+        '.' => Token::Op(Op::Dot),
         ':' => Token::Colon,
         ';' => Token::SemiColon,
         _ => Token::Ident(c.to_string().to_symbol()),
