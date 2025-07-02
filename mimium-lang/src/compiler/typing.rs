@@ -1,4 +1,4 @@
-use crate::ast::{Expr, Literal};
+use crate::ast::{Expr, Literal, RecordField};
 use crate::compiler::intrinsics;
 use crate::interner::{ExprKey, ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
@@ -32,6 +32,16 @@ pub enum Error {
         loc: Location,
     },
     IndexForNonTuple(Location, TypeNodeId),
+    FieldForNonRecord(Location, TypeNodeId),
+    FieldNotExist {
+        field: Symbol,
+        loc: Location,
+        et: TypeNodeId,
+    },
+    DuplicateKeyInRecord {
+        key: Vec<Symbol>,
+        loc: Location,
+    },
     VariableNotFound(Symbol, Location),
     NonPrimitiveInFeed(Location),
 }
@@ -64,6 +74,15 @@ impl ReportableError for Error {
             }
             Error::NonPrimitiveInFeed(_) => {
                 format!("Function that uses `self` cannot return function type.")
+            }
+            Error::DuplicateKeyInRecord { .. } => {
+                format!("Duplicate keys found in record type")
+            }
+            Error::FieldForNonRecord { .. } => {
+                format!("Field access for non-record variable.")
+            }
+            Error::FieldNotExist { field, .. } => {
+                format!("Field `{}` does not exist in the record  type", field,)
             }
         }
     }
@@ -110,11 +129,40 @@ impl ReportableError for Error {
                 )]
             }
             Error::VariableNotFound(symbol, loc) => {
-                vec![(loc.clone(), format!("{} is not defined", symbol))]
+                vec![(loc.clone(), format!("{symbol} is not defined"))]
             }
             Error::NonPrimitiveInFeed(loc) => {
                 vec![(loc.clone(), format!("This cannot be function type."))]
             }
+            Error::DuplicateKeyInRecord { key, loc } => {
+                vec![(
+                    loc.clone(),
+                    format!(
+                        "Duplicate keys `{}` found in record type",
+                        key.iter()
+                            .map(|s| s.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )]
+            }
+            Error::FieldForNonRecord(location, ty) => {
+                vec![(
+                    location.clone(),
+                    format!(
+                        "Field access for non-record type {}.",
+                        ty.to_type().to_string_for_error()
+                    ),
+                )]
+            }
+            Error::FieldNotExist { field, loc, et } => vec![(
+                loc.clone(),
+                format!(
+                    "Field `{}` does not exist in the type {}",
+                    field,
+                    et.to_type().to_string_for_error()
+                ),
+            )],
         }
     }
 }
@@ -571,6 +619,37 @@ impl InferContext {
                     _ => Err(vec![Error::IndexForNonTuple(loc, tup)]),
                 }
             }
+            Expr::RecordLiteral(kvs) => {
+                let duplicate_keys = kvs
+                    .iter()
+                    .map(|RecordField { name, .. }| *name)
+                    .duplicates();
+                if duplicate_keys.clone().count() > 0 {
+                    Err(vec![Error::DuplicateKeyInRecord {
+                        key: duplicate_keys.collect(),
+                        loc,
+                    }])
+                } else {
+                    let kts: Vec<_> = kvs
+                        .iter()
+                        .map(|RecordField { name, expr }| {
+                            let t = self.infer_type(*expr);
+                            t.map(|t| (*name, t))
+                        })
+                        .try_collect()?;
+                    Ok(Type::Record(kts).into_id())
+                }
+            }
+            Expr::FieldAccess(expr, field) => {
+                let et = self.infer_type(*expr)?;
+                match et.to_type() {
+                    Type::Record(fields) => fields
+                        .iter()
+                        .find_map(|(name, t)| if *name == *field { Some(*t) } else { None })
+                        .ok_or_else(|| vec![Error::VariableNotFound(*field, loc.clone())]),
+                    _ => Err(vec![Error::FieldForNonRecord(loc, et)]),
+                }
+            }
             Expr::Feed(id, body) => {
                 //todo: add span to Feed expr for keeping the location of `self`.
                 let feedv = self.gen_intermediate_type();
@@ -709,7 +788,7 @@ impl InferContext {
                 self.env.to_outer();
                 res
             }),
-            _ => Ok(Type::Primitive(PType::Unit).into_id()),
+            _ => Ok(Type::Failure.into_id_with_location(loc)),
         };
         res.inspect(|ty| {
             self.result_map.insert(e.0, *ty);
