@@ -236,7 +236,7 @@ impl fmt::Display for Type {
                     "{{{}}}",
                     format_vec!(
                         v.iter()
-                            .map(|(k, v)| format!("{k}: {v}"))
+                            .map(|(k, v)| format!("{}: {}", k, v.to_type()))
                             .collect::<Vec<_>>(),
                         ", "
                     )
