@@ -783,11 +783,10 @@ pub(crate) fn add_global_context(ast: ExprNodeId, file_path: Symbol) -> ExprNode
     );
     res.into_id(loc)
 }
-pub fn parse(
+pub fn lex(
     src: &str,
     current_file: Option<PathBuf>,
-) -> (ExprNodeId, Vec<Box<dyn ReportableError>>) {
-    let len = src.chars().count();
+) -> (Option<Vec<(Token, Span)>>, Vec<Box<dyn ReportableError>>) {
     let (tokens, lex_errs) = lexer::lexer().parse_recovery(src);
     let lex_errs = lex_errs.into_iter().map(|e| -> Box<dyn ReportableError> {
         Box::new(error::ParseError::<char> {
@@ -799,31 +798,39 @@ pub fn parse(
                 .to_symbol(),
         })
     });
+    (tokens, lex_errs.collect())
+}
+pub(super) fn convert_parse_errors(
+    errs: &[Simple<Token>],
+) -> impl Iterator<Item = Box<dyn ReportableError>> {
+    errs.iter().map(|e| -> Box<dyn ReportableError> {
+        Box::new(error::ParseError {
+            content: e.clone(),
+            file: Symbol::default(),
+        })
+    })
+}
+
+pub fn parse(
+    src: &str,
+    current_file: Option<PathBuf>,
+) -> (ExprNodeId, Vec<Box<dyn ReportableError>>) {
+    let (tokens, lex_errs) = lex(src, current_file.clone());
     if let Some(t) = tokens {
         let tokens_comment_filtered = t.into_iter().filter_map(|(tkn, span)| match tkn {
             Token::Comment(token::Comment::SingleLine(_)) => Some((Token::LineBreak, span)),
             Token::Comment(token::Comment::MultiLine(_)) => None,
             _ => Some((tkn.clone(), span)),
         });
+        let len = tokens_comment_filtered.clone().count();
         let (ast, parse_errs) = parser(current_file.clone()).parse_recovery(
             chumsky::Stream::from_iter(len..len + 1, tokens_comment_filtered),
         );
-        let errs = parse_errs
-            .into_iter()
-            .map(|e| -> Box<dyn ReportableError> {
-                Box::new(error::ParseError {
-                    content: e,
-                    file: current_file
-                        .clone()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_symbol(),
-                })
-            })
+        let errs = convert_parse_errors(&parse_errs)
             .chain(lex_errs)
             .collect::<Vec<_>>();
         (ast.unwrap_or(Expr::Error.into_id_without_span()), errs)
     } else {
-        (Expr::Error.into_id_without_span(), lex_errs.collect())
+        (Expr::Error.into_id_without_span(), lex_errs)
     }
 }

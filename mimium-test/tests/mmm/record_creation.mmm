@@ -1,3 +1,3 @@
-let myrec:{test:float,testb:float} = {test: 100.0, testb:2000.0}
+let myrec:{test:float,testb:(float,float)} = {test: 100.0, testb:(2000.0,79.0)}
 
-let elem1 = myrec.test // should be 100
+let elem1 = myrec.testb.1 // should be 79

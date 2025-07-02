@@ -1,3 +1,5 @@
+use itertools::Itertools;
+
 use super::*;
 use crate::pattern::TypedId;
 use crate::utils;
@@ -19,6 +21,41 @@ macro_rules! test_string {
         }
     };
 }
+fn test_lex(src: &str) -> Vec<Token> {
+    let (tokens, errs) = lex(src, None);
+    if errs.is_empty() {
+        tokens
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect()
+    } else {
+        panic!("lex error: {errs:?}");
+    }
+}
+fn test_expr_parser() -> impl Parser<Token, ExprNodeId, Error = Simple<Token>> {
+    let ctx = ParseContext {
+        file_path: "/".to_symbol(),
+    };
+    chumsky::prelude::recursive(|e| expr_parser(e, ctx))
+}
+fn test_expr_string(src: &str, expr: ExprNodeId) {
+    let (ast, errs) = test_expr_parser().parse_recovery(test_lex(src));
+    if errs.is_empty() && ast.is_some() {
+        assert!(
+            ast.unwrap().to_expr() == expr.to_expr(),
+            "res:{ast:?}\nans:{expr:?}",
+        );
+    } else {
+        utils::error::report(
+            src,
+            "".to_symbol(),
+            &convert_parse_errors(&errs).collect_vec(),
+        );
+        panic!();
+    }
+}
+
 //dummy location
 fn loc(span: Span) -> Location {
     Location {
@@ -453,40 +490,22 @@ fn test_array_access() {
     .into_id(loc(0..15));
     test_string!("outer[inner[0]]", ans);
 }
+
 #[test]
 fn test_record_type_decl() {
     let x_s = "x".to_symbol();
     let y_s = "y".to_symbol();
-    let ans = Expr::Let(
-        TypedPattern {
-            pat: Pattern::Single("r".to_symbol()),
-            ty: Type::Record(vec![
-                (
-                    x_s,
-                    Type::Primitive(PType::Numeric).into_id_with_location(loc(12..17)),
-                ),
-                (
-                    y_s,
-                    Type::Primitive(PType::Numeric).into_id_with_location(loc(22..27)),
-                ),
-            ])
-            .into_id_with_location(loc(8..28)),
+    let ans = Expr::RecordLiteral(vec![
+        RecordField {
+            name: x_s,
+            expr: Expr::Literal(Literal::Float("0.0".to_symbol())).into_id(loc(3..4)),
         },
-        Expr::RecordLiteral(vec![
-            RecordField {
-                name: x_s,
-                expr: Expr::Literal(Literal::Float("0.0".to_symbol())).into_id(loc(34..37)),
-            },
-            RecordField {
-                name: y_s,
-                expr: Expr::Literal(Literal::Float("2.0".to_symbol())).into_id(loc(40..43)),
-            },
-        ])
-        .into_id(loc(31..44)),
-        None,
-    )
-    .into_id(loc(0..44));
-    test_string!("let r : {x: float, y: float} = {x:0.0,y:2.0}", ans);
+        RecordField {
+            name: y_s,
+            expr: Expr::Literal(Literal::Float("2.0".to_symbol())).into_id(loc(7..8)),
+        },
+    ]);
+    test_expr_string("{x:0.0,y:2.0}", ans.into_id(loc(0..9)));
 }
 
 #[test]
