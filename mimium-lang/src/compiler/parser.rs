@@ -267,7 +267,7 @@ where
         .labelled("unary");
     let dot = unary
         .clone()
-        .then(just(Token::Op(Op::Dot)).ignore_then(dot_field()).repeated())
+        .then(just(Token::Arrow).ignore_then(dot_field()).repeated())
         .foldl(move |lhs, (rhs, rspan)| {
             let span = lhs.to_span().start..rspan.end;
             let loc = Location {
