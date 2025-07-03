@@ -269,15 +269,7 @@ where
         .clone()
         .then(just(Token::Arrow).ignore_then(dot_field()).repeated())
         .foldl(move |lhs, (rhs, rspan)| {
-            let span = lhs.to_span().start..rspan.end;
-            let loc = Location {
-                span,
-                path: ctx.file_path,
-            };
-            match rhs {
-                DotField::Ident(name) => Expr::FieldAccess(lhs, name).into_id(loc),
-                DotField::Index(idx) => Expr::Proj(lhs, idx).into_id(loc),
-            }
+            Expr::Error.into_id_without_span()
         })
         .labelled("dot");
     let optoken = move |o: Op| {
