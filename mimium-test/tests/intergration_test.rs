@@ -479,3 +479,10 @@ fn record_infer() {
     let ans = vec![81.5];
     assert_eq!(res, ans);
 }
+
+#[test]
+fn record_pattern_capture() {
+    let res = run_file_test_mono("record_pattern_capture.mmm", 1).unwrap();
+    let ans = vec![300.0]; // v1 + v2
+    assert_eq!(res, ans);
+}
