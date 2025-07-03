@@ -23,7 +23,7 @@ use super::intrinsics;
 mod test;
 
 #[derive(Clone)]
-pub(super) struct ParseContext {
+pub struct ParseContext {
     file_path: Symbol,
 }
 pub(crate) type ParseError = Simple<Token>;
@@ -91,7 +91,7 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
         func.or(atom).labelled("Type")
     })
 }
-pub(super) fn ident_parser() -> impl Parser<Token, Symbol, Error = ParseError> + Clone {
+pub fn ident_parser() -> impl Parser<Token, Symbol, Error = ParseError> + Clone {
     select! { Token::Ident(s) => s }.labelled("ident")
 }
 fn literals_parser(
@@ -333,7 +333,7 @@ fn record_fields(
         .map(move |(name, expr)| RecordField { name, expr })
 }
 
-pub(super) fn atom_parser<'a>(
+pub fn atom_parser<'a>(
     expr: ExprParser<'a>,
     expr_group: ExprParser<'a>,
     ctx: ParseContext,
