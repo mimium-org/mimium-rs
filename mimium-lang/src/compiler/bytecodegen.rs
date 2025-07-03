@@ -140,7 +140,7 @@ impl ByteCodeGenerator {
             Type::Primitive(_) => 1,
             Type::Array(_) => 1, //array is represented as a pointer to the special storage
             Type::Tuple(types) => types.iter().map(|t| Self::word_size_for_type(*t)).sum(),
-            Type::Struct(types) => types
+            Type::Record(types) => types
                 .iter()
                 .map(|(_s, t)| Self::word_size_for_type(*t))
                 .sum(),

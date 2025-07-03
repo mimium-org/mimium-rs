@@ -1,5 +1,5 @@
 use super::intrinsics;
-use super::typing::{infer_root, InferContext};
+use super::typing::{InferContext, infer_root};
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::{function, numeric, unit};
@@ -235,6 +235,26 @@ impl Context {
                     self.add_bind_pattern(&tpat, elem_v, *cty, is_global);
                 }
             }
+            (Pattern::Record(patterns), Type::Record(kvvec)) => {
+                for (k, pat) in patterns.iter() {
+                    let i = kvvec.iter().position(|(kk, _)| kk == k);
+                    if let Some(offset) = i {
+                        let elem_v = self.push_inst(Instruction::GetElement {
+                            value: v.clone(),
+                            ty,
+                            tuple_offset: offset as u64,
+                        });
+                        let tid =
+                            Type::Unknown.into_id_with_location(self.get_loc_from_span(&span));
+                        let tpat = TypedPattern {
+                            pat: pat.clone(),
+                            ty: tid,
+                        };
+                        let elem_t = kvvec[offset].1;
+                        self.add_bind_pattern(&tpat, elem_v, elem_t, is_global);
+                    };
+                }
+            }
             _ => {
                 panic!("typing error in the previous stage")
             }
@@ -374,7 +394,9 @@ impl Context {
             LookupRes::Local(v) => match v.as_ref() {
                 Value::Argument(_i, _a) => {
                     //todo: collect warning for the language server
-                    log::warn!("assignment to argument {name} does not affect to the external environments.");
+                    log::warn!(
+                        "assignment to argument {name} does not affect to the external environments."
+                    );
                     self.push_inst(Instruction::Store(v.clone(), src, t));
                 }
                 _ => {
@@ -464,6 +486,31 @@ impl Context {
         };
         (e, rt)
     }
+    fn alloc_aggregates(&mut self, items: &[ExprNodeId], ty: TypeNodeId) -> (VPtr, TypeNodeId) {
+        let len = items.len();
+        if len == 0 {
+            unreachable!("0-length tuple is not supported");
+        }
+        let alloc_insert_point = self.get_current_basicblock().0.len();
+        let dst = self.gen_new_register();
+        for (i, e) in items.iter().enumerate() {
+            let (v, elem_ty) = self.eval_expr(*e);
+            let ptr = self.push_inst(Instruction::GetElement {
+                value: dst.clone(),
+                ty, // lazyly set after loops,
+                tuple_offset: i as u64,
+            });
+
+            self.push_inst(Instruction::Store(ptr, v, elem_ty));
+        }
+        self.get_current_basicblock()
+            .0
+            .insert(alloc_insert_point, (dst.clone(), Instruction::Alloc(ty)));
+
+        // pass only the head of the tuple, and the length can be known
+        // from the type information.
+        (dst, ty)
+    }
     pub fn eval_expr(&mut self, e: ExprNodeId) -> (VPtr, TypeNodeId) {
         let span = e.to_span();
         let ty = self.typeenv.lookup_res(e);
@@ -482,32 +529,45 @@ impl Context {
                     (Arc::new(Value::None), unit!())
                 }
             }
-            Expr::Tuple(items) => {
-                let len = items.len();
-                if len == 0 {
-                    unreachable!("0-length tuple is not supported");
-                }
-                let alloc_insert_point = self.get_current_basicblock().0.len();
-                let dst = self.gen_new_register();
-                for (i, e) in items.iter().enumerate() {
-                    let (v, elem_ty) = self.eval_expr(*e);
-                    let ptr = self.push_inst(Instruction::GetElement {
-                        value: dst.clone(),
-                        ty, // lazyly set after loops,
-                        tuple_offset: i as u64,
-                    });
-
-                    self.push_inst(Instruction::Store(ptr, v, elem_ty));
-                }
-                self.get_current_basicblock()
-                    .0
-                    .insert(alloc_insert_point, (dst.clone(), Instruction::Alloc(ty)));
-
-                // pass only the head of the tuple, and the length can be known
-                // from the type information.
-                (dst, ty)
+            Expr::Tuple(items) => self.alloc_aggregates(items, ty),
+            Expr::Proj(tup, idx) => {
+                let i = *idx as usize;
+                let (tup_v, tup_ty) = self.eval_expr(*tup);
+                let elem_ty = match tup_ty.to_type() {
+                    Type::Tuple(tys) if i < tys.len() => tys[i],
+                    _ => panic!(
+                        "expected tuple type for projection,perhaps type error bugs in the previous stage"
+                    ),
+                };
+                let res = self.push_inst(Instruction::GetElement {
+                    value: tup_v.clone(),
+                    ty: tup_ty,
+                    tuple_offset: i as u64,
+                });
+                (res, elem_ty)
             }
-            Expr::Proj(_, _) => todo!(),
+            Expr::RecordLiteral(fields) => {
+                self.alloc_aggregates(&fields.iter().map(|f| f.expr).collect::<Vec<_>>(), ty)
+            }
+            Expr::FieldAccess(expr, key) => {
+                let (expr_v, expr_ty) = self.eval_expr(*expr);
+                match expr_ty.to_type() {
+                    Type::Record(fields) => {
+                        let offset = fields
+                            .iter()
+                            .position(|(k, _)| *k == *key)
+                            .expect("field access to non-existing field");
+
+                        let res = self.push_inst(Instruction::GetElement {
+                            value: expr_v.clone(),
+                            ty: expr_ty,
+                            tuple_offset: offset as u64,
+                        });
+                        (res, fields[offset].1)
+                    }
+                    _ => panic!("expected record type for field access"),
+                }
+            }
             Expr::ArrayLiteral(items) => {
                 // For now, handle array literals similar to tuples
 
@@ -720,6 +780,7 @@ impl Context {
                     (Arc::new(Value::None), unit!())
                 }
             }
+
             Expr::Assign(assignee, body) => {
                 let (src, ty) = self.eval_expr(*body);
                 self.eval_assign(*assignee, src, ty, &span);

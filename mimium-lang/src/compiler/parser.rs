@@ -6,8 +6,7 @@ use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::types::{PType, Type};
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::*;
-use chumsky::{prelude::*, Parser};
-// use chumsky::Parser;
+use chumsky::{Parser, prelude::*};
 mod token;
 use resolve_include::resolve_include;
 use token::{Op, Token};
@@ -15,7 +14,7 @@ mod error;
 mod lexer;
 mod resolve_include;
 mod statement;
-use statement::{into_then_expr, stmt_from_expr_top, Statement};
+use statement::{Statement, into_then_expr, stmt_from_expr_top};
 
 use super::intrinsics;
 
@@ -23,11 +22,28 @@ use super::intrinsics;
 mod test;
 
 #[derive(Clone)]
-struct ParseContext {
+pub(super) struct ParseContext {
     file_path: Symbol,
 }
 pub(crate) type ParseError = Simple<Token>;
 
+fn breakable_comma() -> impl Parser<Token, (), Error = ParseError> + Clone {
+    just(Token::Comma)
+        .then(just(Token::LineBreak).or_not())
+        .map(|_| ())
+}
+fn breakable_blockbegin() -> impl Parser<Token, (), Error = ParseError> + Clone {
+    just(Token::BlockBegin)
+        .then_ignore(just(Token::LineBreak).or(just(Token::SemiColon)).repeated())
+        .map(|_| ())
+}
+fn breakable_blockend() -> impl Parser<Token, (), Error = ParseError> + Clone {
+    just(Token::LineBreak)
+        .or(just(Token::SemiColon))
+        .repeated()
+        .ignore_then(just(Token::BlockEnd))
+        .map(|_| ())
+}
 fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = ParseError> + Clone {
     let path = ctx.file_path;
     recursive(move |ty| {
@@ -41,6 +57,7 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
         let tuple = ty
             .clone()
             .separated_by(just(Token::Comma))
+            .at_least(1)
             .allow_trailing()
             .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
             .map_with_span(move |t: Vec<TypeNodeId>, span: Span| {
@@ -48,7 +65,24 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
             })
             .boxed()
             .labelled("Tuple");
-
+        let record = ident_parser()
+            .clone()
+            .then_ignore(just(Token::Colon))
+            .then(ty.clone())
+            .separated_by(breakable_comma())
+            .allow_trailing()
+            .delimited_by(breakable_blockbegin(), breakable_blockend())
+            .map_with_span(move |fields, span| {
+                Type::Record(fields).into_id_with_location(Location::new(span, path))
+            })
+            .recover_with(nested_delimiters(
+                Token::BlockBegin,
+                Token::BlockEnd,
+                [],
+                |_| Type::Failure.into_id(),
+            ))
+            .boxed()
+            .labelled("Record");
         // Parse array type [T]
         let array = ty
             .clone()
@@ -60,7 +94,7 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
             .labelled("Array");
 
         // let _struct_t = todo!();
-        let atom = primitive.or(tuple).or(array);
+        let atom = choice((primitive, record, tuple, array));
         let func = atom
             .clone()
             .separated_by(just(Token::Comma))
@@ -75,7 +109,7 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
         func.or(atom).labelled("Type")
     })
 }
-fn ident_parser() -> impl Parser<Token, Symbol, Error = ParseError> + Clone {
+pub(super) fn ident_parser() -> impl Parser<Token, Symbol, Error = ParseError> + Clone {
     select! { Token::Ident(s) => s }.labelled("ident")
 }
 fn literals_parser(
@@ -137,19 +171,39 @@ fn lvar_parser_typed(ctx: ParseContext) -> impl Parser<Token, TypedId, Error = P
 fn pattern_parser(
     ctx: ParseContext,
 ) -> impl Parser<Token, TypedPattern, Error = ParseError> + Clone {
+    let single_pat = select! {
+        Token::Ident(s) => Pattern::Single(s),
+        // Note: _ represents an unused variable, but it is treated as
+        // an ordinary symbol here.
+        Token::PlaceHolder => Pattern::Single("_".to_symbol())
+
+    }
+    .labelled("single pattern");
     let pat = recursive(|pat| {
-        pat.clone()
+        let tup = pat
+            .clone()
             .separated_by(just(Token::Comma))
+            .at_least(1)
             .allow_trailing()
             .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
             .map(Pattern::Tuple)
-            .or(select! {
-                Token::Ident(s) => Pattern::Single(s),
-                // Note: _ represents an unused variable, but it is treated as
-                // an ordinary symbol here.
-                Token::PlaceHolder => Pattern::Single("_".to_symbol()),
-            })
-            .labelled("Pattern")
+            .labelled("tuple pattern");
+        let record = (ident_parser()
+            .then_ignore(just(Token::Assign))
+            .then(pat.clone()))
+        .separated_by(breakable_comma())
+        .at_least(1)
+        .allow_trailing()
+        .delimited_by(breakable_blockbegin(), breakable_blockend())
+        .map(Pattern::Record)
+        .recover_with(nested_delimiters(
+            Token::BlockBegin,
+            Token::BlockEnd,
+            [],
+            |_| Pattern::Error,
+        ))
+        .labelled("record pattern");
+        choice((single_pat, tup, record)).labelled("pattern")
     });
     with_type_annotation(pat, ctx.clone()).map_with_span(move |(pat, ty), span| match ty {
         Some(ty) => TypedPattern { pat, ty },
@@ -205,12 +259,26 @@ type ExprParser<'a> = Recursive<'a, Token, ExprNodeId, ParseError>;
 
 fn items_parser(
     expr: ExprParser<'_>,
+    allow_empty: bool,
 ) -> impl Parser<Token, Vec<ExprNodeId>, Error = ParseError> + Clone + '_ {
-    expr.separated_by(just(Token::Comma))
+    let least_repeat = if allow_empty { 0 } else { 1 };
+    expr.separated_by(breakable_comma())
         .allow_trailing()
+        .at_least(least_repeat)
         .collect::<Vec<_>>()
 }
-
+enum DotField {
+    Index(i64),
+    Ident(Symbol),
+}
+fn dot_field() -> impl Parser<Token, (DotField, Span), Error = ParseError> + Clone {
+    select! {
+        Token::Int(i) => DotField::Index(i),
+        Token::Ident(s) => DotField::Ident(s),
+    }
+    .map_with_span(|field, span| (field, span))
+    .labelled("dot_field")
+}
 fn op_parser<'a, I>(
     apply: I,
     ctx: ParseContext,
@@ -219,10 +287,27 @@ where
     I: Parser<Token, ExprNodeId, Error = ParseError> + Clone + 'a,
 {
     let ctx = ctx.clone();
-    let unary = select! { Token::Op(Op::Minus) => {} }
+    let dot = apply
+        .then(just(Token::Dot).ignore_then(dot_field()).repeated())
+        .boxed() // this boxing is necessary for windows CI environment
+        .foldl(move |lhs, (rhs, rspan)| {
+            let span = lhs.to_span().start..rspan.end;
+
+            let loc = Location {
+                span,
+                path: ctx.file_path,
+            };
+            match rhs {
+                DotField::Ident(name) => Expr::FieldAccess(lhs, name).into_id(loc),
+                DotField::Index(idx) => Expr::Proj(lhs, idx).into_id(loc),
+            }
+        })
+        .labelled("dot");
+
+    let unary = just(Token::Op(Op::Minus))
         .map_with_span(|e, s| (e, s))
         .repeated()
-        .then(apply.clone())
+        .then(dot.clone())
         .foldr(move |(_op, op_span), rhs| {
             let rhs_span = rhs.to_span();
             let loc = Location {
@@ -237,7 +322,6 @@ where
             Expr::Apply(neg_op, vec![rhs]).into_id(loc)
         })
         .labelled("unary");
-
     let optoken = move |o: Op| {
         just(Token::Op(o))
             .try_map(|e, s| match e {
@@ -254,6 +338,7 @@ where
         .map_with_span(|_, s| (Op::Pipe, s))
         .boxed();
     //defining binary operators in order of precedence.
+    // The order of precedence is from the lowest to the highest.
     let ops = [
         optoken(Op::Exponent),
         choice((
@@ -280,7 +365,16 @@ where
         binop_folder(acc, x, ctx.clone())
     })
 }
-fn atom_parser<'a>(
+fn record_fields(
+    expr: ExprParser<'_>,
+) -> impl Parser<Token, RecordField, Error = ParseError> + Clone + '_ {
+    ident_parser()
+        .then_ignore(just(Token::Assign))
+        .then(expr.clone())
+        .map(move |(name, expr)| RecordField { name, expr })
+}
+
+pub(super) fn atom_parser<'a>(
     expr: ExprParser<'a>,
     expr_group: ExprParser<'a>,
     ctx: ParseContext,
@@ -323,7 +417,7 @@ fn atom_parser<'a>(
         })
         .labelled("macroexpand");
 
-    let tuple = items_parser(expr.clone())
+    let tuple = items_parser(expr.clone(), false)
         .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
         .map_with_span(move |e, span| {
             Expr::Tuple(e).into_id(Location {
@@ -333,8 +427,7 @@ fn atom_parser<'a>(
         })
         .labelled("tuple");
 
-    // Add parser for array literals
-    let array_literal = items_parser(expr.clone())
+    let array_literal = items_parser(expr.clone(), true)
         .delimited_by(just(Token::ArrayBegin), just(Token::ArrayEnd))
         .map_with_span(move |items, span| {
             // Create a nested expression that constructs an array with the given items
@@ -346,7 +439,29 @@ fn atom_parser<'a>(
             Expr::ArrayLiteral(items).into_id(loc)
         })
         .labelled("array_literal");
-
+    let record_literal = record_fields(expr.clone())
+        .separated_by(breakable_comma())
+        .at_least(1)
+        .allow_trailing()
+        .delimited_by(breakable_blockbegin(), breakable_blockend())
+        .map_with_span(move |fields, span| {
+            Expr::RecordLiteral(fields).into_id(Location {
+                span,
+                path: ctx.file_path,
+            })
+        })
+        .recover_with(nested_delimiters(
+            Token::BlockBegin,
+            Token::BlockEnd,
+            [],
+            move |_| {
+                Expr::Error.into_id(Location {
+                    span: Span::default(),
+                    path: ctx.file_path,
+                })
+            },
+        ))
+        .labelled("record_literal");
     let parenexpr = expr
         .clone()
         .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
@@ -358,8 +473,9 @@ fn atom_parser<'a>(
         lambda,
         macro_expand,
         parenexpr,
+        record_literal,
+        array_literal,
         tuple,
-        array_literal, // Add the array literal parser to the choice
     ))
 }
 fn expr_parser(expr_group: ExprParser<'_>, ctx: ParseContext) -> ExprParser<'_> {
@@ -368,7 +484,7 @@ fn expr_parser(expr_group: ExprParser<'_>, ctx: ParseContext) -> ExprParser<'_> 
             Args(Vec<ExprNodeId>),
             ArrayIndex(ExprNodeId),
         }
-        let parenitems = items_parser(expr.clone())
+        let parenitems = items_parser(expr.clone(), true)
             .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
             .map_with_span(|args, args_span| (FoldItem::Args(args), args_span));
         let angle_paren_expr = expr
@@ -500,7 +616,7 @@ fn block_parser(
 ) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone + '_ {
     let stmts = statements_parser(expr, ctx.clone());
     stmts
-        .delimited_by(just(Token::BlockBegin), just(Token::BlockEnd))
+        .delimited_by(breakable_blockbegin(), breakable_blockend())
         .map_with_span(move |stmts, span| {
             Expr::Block(stmts).into_id(Location {
                 span,
@@ -720,11 +836,10 @@ pub(crate) fn add_global_context(ast: ExprNodeId, file_path: Symbol) -> ExprNode
     );
     res.into_id(loc)
 }
-pub fn parse(
+pub fn lex(
     src: &str,
     current_file: Option<PathBuf>,
-) -> (ExprNodeId, Vec<Box<dyn ReportableError>>) {
-    let len = src.chars().count();
+) -> (Option<Vec<(Token, Span)>>, Vec<Box<dyn ReportableError>>) {
     let (tokens, lex_errs) = lexer::lexer().parse_recovery(src);
     let lex_errs = lex_errs.into_iter().map(|e| -> Box<dyn ReportableError> {
         Box::new(error::ParseError::<char> {
@@ -736,31 +851,39 @@ pub fn parse(
                 .to_symbol(),
         })
     });
+    (tokens, lex_errs.collect())
+}
+pub(super) fn convert_parse_errors(
+    errs: &[Simple<Token>],
+) -> impl Iterator<Item = Box<dyn ReportableError>> {
+    errs.iter().map(|e| -> Box<dyn ReportableError> {
+        Box::new(error::ParseError {
+            content: e.clone(),
+            file: Symbol::default(),
+        })
+    })
+}
+
+pub fn parse(
+    src: &str,
+    current_file: Option<PathBuf>,
+) -> (ExprNodeId, Vec<Box<dyn ReportableError>>) {
+    let (tokens, lex_errs) = lex(src, current_file.clone());
     if let Some(t) = tokens {
         let tokens_comment_filtered = t.into_iter().filter_map(|(tkn, span)| match tkn {
             Token::Comment(token::Comment::SingleLine(_)) => Some((Token::LineBreak, span)),
             Token::Comment(token::Comment::MultiLine(_)) => None,
             _ => Some((tkn.clone(), span)),
         });
+        let len = tokens_comment_filtered.clone().count();
         let (ast, parse_errs) = parser(current_file.clone()).parse_recovery(
             chumsky::Stream::from_iter(len..len + 1, tokens_comment_filtered),
         );
-        let errs = parse_errs
-            .into_iter()
-            .map(|e| -> Box<dyn ReportableError> {
-                Box::new(error::ParseError {
-                    content: e,
-                    file: current_file
-                        .clone()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_symbol(),
-                })
-            })
+        let errs = convert_parse_errors(&parse_errs)
             .chain(lex_errs)
             .collect::<Vec<_>>();
         (ast.unwrap_or(Expr::Error.into_id_without_span()), errs)
     } else {
-        (Expr::Error.into_id_without_span(), lex_errs.collect())
+        (Expr::Error.into_id_without_span(), lex_errs)
     }
 }

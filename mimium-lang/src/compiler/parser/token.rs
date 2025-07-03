@@ -32,6 +32,7 @@ pub enum Op {
     At, // @
 
     Pipe, // |>
+
     Unknown(String),
 }
 
@@ -54,8 +55,8 @@ pub enum Token {
     Now,
     SampleRate,
     Comma,
-    Dot,
-
+    /// Dot operator, used for field access, which may be concatenated with left associativity
+    Dot, // .
     Colon,
     SemiColon,
 
@@ -81,7 +82,6 @@ pub enum Token {
 
     // Type,
     // Alias,
-
     Include,
 
     LineBreak,

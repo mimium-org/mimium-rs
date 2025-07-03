@@ -1,0 +1,16 @@
+//test for more complex record and tuple type inference
+
+let myrec = { 
+             test  =  100.0,
+             testb = (2000.0,{
+                nested_a = 79.0,
+                nested_b = ("string",(0.5,2.5))
+             })}
+let mytup = myrec.testb
+let elem1 = mytup.1 
+let ans = elem1.nested_a // should be 79
+//you can't write like `myrec.testb.1.nested_b.1.1` without parenthes because the last `1.1` can be parsed into float
+let ans2 = (myrec.testb.1.nested_b.1).1 //should be 2.5 
+fn dsp(){
+    ans+ans2 //should be 81.5
+}

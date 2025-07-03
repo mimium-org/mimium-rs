@@ -25,7 +25,7 @@ pub enum Value {
     Primitive(PValue),
     String(String),
     Tuple(Vec<Value>),
-    Array(Vec<Value>),  // Added Array variant
+    Array(Vec<Value>), // Added Array variant
     //Function value holds return type
     Function(Vec<TypedId>, ExprNodeId, Context, Option<TypeNodeId>),
     FixPoint(TypedId, ExprNodeId),
@@ -58,7 +58,7 @@ impl Value {
                     // Assume all elements have the same type as the first one
                     Type::Array(v[0].get_type_id()).into_id()
                 }
-            },
+            }
             Value::Function(a, _e, _ctx, r_type) => Type::Function(
                 a.iter()
                     .map(|tid| {
@@ -96,7 +96,7 @@ pub struct Context {
     pub extern_syms: Vec<Symbol>,
 }
 impl Default for Context {
-     fn default() -> Self {
+    fn default() -> Self {
         let extern_syms = EXTERN_SYMS
             .iter()
             .map(|s| s.to_symbol())
@@ -384,14 +384,14 @@ pub fn eval_ast(e_meta: ExprNodeId, ctx: &mut Context) -> Result<Value, CompileE
         ast::Expr::ArrayAccess(array, index) => {
             let array_v = eval_ast(*array, ctx)?;
             let index_v = eval_ast(*index, ctx)?;
-            
+
             // Extract the index as a numeric value
             let idx = match index_v {
                 Value::Primitive(PValue::Numeric(n)) => n as usize,
                 Value::Primitive(PValue::Integer(i)) => i as usize,
                 _ => return Err(CompileError(ErrorKind::TypeError, span.clone())),
             };
-            
+
             // Access the array at the specified index
             match array_v {
                 Value::Array(items) => {
@@ -400,10 +400,10 @@ pub fn eval_ast(e_meta: ExprNodeId, ctx: &mut Context) -> Result<Value, CompileE
                     } else {
                         Err(CompileError(ErrorKind::IndexOutOfBounds, span.clone()))
                     }
-                },
+                }
                 _ => Err(CompileError(ErrorKind::TypeError, span.clone())),
             }
-        },
+        }
         ast::Expr::ArrayLiteral(items) => {
             // Create a vector of evaluated items
             let mut values = Vec::new();
@@ -411,6 +411,7 @@ pub fn eval_ast(e_meta: ExprNodeId, ctx: &mut Context) -> Result<Value, CompileE
                 values.push(eval_ast(*item, ctx)?);
             }
             Ok(Value::Array(values))
-        },
+        }
+        _ => todo!(),
     }
 }

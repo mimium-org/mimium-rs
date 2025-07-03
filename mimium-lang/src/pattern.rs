@@ -8,6 +8,8 @@ use crate::utils::miniprint::MiniPrint;
 pub enum Pattern {
     Single(Symbol),
     Tuple(Vec<Self>),
+    Record(Vec<(Symbol, Self)>),
+    Error,
 }
 
 impl std::fmt::Display for Pattern {
@@ -21,6 +23,21 @@ impl std::fmt::Display for Pattern {
                     .collect::<Vec<_>>()
                     .concat();
                 write!(f, "({s})")
+            }
+            Pattern::Record(items) => {
+                if items.is_empty() {
+                    write!(f, "{{}}")
+                } else {
+                    let s = items
+                        .iter()
+                        .map(|(k, v)| format!("{k}: {v}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    write!(f, "{{{s}}}")
+                }
+            }
+            Pattern::Error => {
+                write!(f, "<error pattern>")
             }
         }
     }
@@ -106,7 +123,7 @@ impl TryFrom<TypedPattern> for TypedId {
     fn try_from(value: TypedPattern) -> Result<Self, Self::Error> {
         match value.pat {
             Pattern::Single(id) => Ok(TypedId { id, ty: value.ty }),
-            Pattern::Tuple(_) => Err(ConversionError),
+            _ => Err(ConversionError),
         }
     }
 }

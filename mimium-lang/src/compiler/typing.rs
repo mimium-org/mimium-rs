@@ -1,4 +1,4 @@
-use crate::ast::{Expr, Literal};
+use crate::ast::{Expr, Literal, RecordField};
 use crate::compiler::intrinsics;
 use crate::interner::{ExprKey, ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
@@ -8,7 +8,7 @@ use crate::utils::{environment::Environment, error::ReportableError};
 use crate::{function, integer, numeric, unit};
 use itertools::{EitherOrBoth, Itertools};
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
@@ -32,6 +32,22 @@ pub enum Error {
         loc: Location,
     },
     IndexForNonTuple(Location, TypeNodeId),
+    FieldForNonRecord(Location, TypeNodeId),
+    FieldNotExist {
+        field: Symbol,
+        loc: Location,
+        et: TypeNodeId,
+    },
+    DuplicateKeyInRecord {
+        key: Vec<Symbol>,
+        loc: Location,
+    },
+    /// This is temporary error which is used when the type of 2 records contain different keys.
+    /// If structural subtyping is implemented, this error should be removed.
+    IncompatibleKeyInRecord {
+        key: Vec<Symbol>,
+        loc: Location,
+    },
     VariableNotFound(Symbol, Location),
     NonPrimitiveInFeed(Location),
 }
@@ -64,6 +80,18 @@ impl ReportableError for Error {
             }
             Error::NonPrimitiveInFeed(_) => {
                 format!("Function that uses `self` cannot return function type.")
+            }
+            Error::DuplicateKeyInRecord { .. } => {
+                format!("Duplicate keys found in record type")
+            }
+            Error::FieldForNonRecord { .. } => {
+                format!("Field access for non-record variable.")
+            }
+            Error::FieldNotExist { field, .. } => {
+                format!("Field `{}` does not exist in the record type", field,)
+            }
+            Error::IncompatibleKeyInRecord { .. } => {
+                format!("Record type has incompatible keys.",)
             }
         }
     }
@@ -110,10 +138,51 @@ impl ReportableError for Error {
                 )]
             }
             Error::VariableNotFound(symbol, loc) => {
-                vec![(loc.clone(), format!("{} is not defined", symbol))]
+                vec![(loc.clone(), format!("{symbol} is not defined"))]
             }
             Error::NonPrimitiveInFeed(loc) => {
                 vec![(loc.clone(), format!("This cannot be function type."))]
+            }
+            Error::DuplicateKeyInRecord { key, loc } => {
+                vec![(
+                    loc.clone(),
+                    format!(
+                        "Duplicate keys `{}` found in record type",
+                        key.iter()
+                            .map(|s| s.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )]
+            }
+            Error::FieldForNonRecord(location, ty) => {
+                vec![(
+                    location.clone(),
+                    format!(
+                        "Field access for non-record type {}.",
+                        ty.to_type().to_string_for_error()
+                    ),
+                )]
+            }
+            Error::FieldNotExist { field, loc, et } => vec![(
+                loc.clone(),
+                format!(
+                    "Field `{}` does not exist in the type {}",
+                    field,
+                    et.to_type().to_string_for_error()
+                ),
+            )],
+            Error::IncompatibleKeyInRecord { key, loc } => {
+                vec![(
+                    loc.clone(),
+                    format!(
+                        "Incompatible key `{}` found in record type",
+                        key.iter()
+                            .map(|s| s.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )]
             }
         }
     }
@@ -264,7 +333,7 @@ impl InferContext {
                     && cls(*r)
                     && cls(s.map(|x| x).unwrap_or_else(|| Type::Unknown.into_id()))
             }
-            Type::Struct(_s) => todo!(),
+            Type::Record(s) => vec_cls(s.iter().map(|(_k, v)| *v).collect::<Vec<_>>().as_slice()),
             _ => false,
         }
     }
@@ -385,7 +454,35 @@ impl InferContext {
                     Err(err) //todo:return both partial result and err
                 }
             }
-            (Type::Struct(_a1), Type::Struct(_a2)) => todo!(), //todo
+            (Type::Record(a1), Type::Record(a2)) => {
+                {
+                    let m1 = HashSet::<Symbol>::from_iter(a1.iter().map(|(k, _)| *k));
+                    let m2 = HashSet::<Symbol>::from_iter(a2.iter().map(|(k, _)| *k));
+                    if m1 != m2 {
+                        let key_diffs = m1.difference(&m2).cloned().collect();
+                        return Err(vec![Error::IncompatibleKeyInRecord {
+                            key: key_diffs,
+                            loc: loc1.clone(),
+                        }]);
+                    }
+                }
+                let get_key_val = |v: &Vec<(Symbol, TypeNodeId)>| {
+                    let mut v_c = v.clone();
+                    v_c.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
+                    let (ks, ts): (Vec<_>, Vec<_>) = v_c.into_iter().unzip();
+                    (ks, ts)
+                };
+                let (ks1, ts1) = get_key_val(a1);
+                let (ks2, ts2) = get_key_val(a2);
+                debug_assert_eq!(ks1, ks2);
+                let (vec, err) = Self::unify_vec(&ts1, loc1, &ts2, loc2);
+                let rvec = ks1.into_iter().zip(vec).collect::<Vec<_>>();
+                if err.is_empty() {
+                    Ok(Type::Record(rvec).into_id())
+                } else {
+                    Err(err)
+                }
+            }
             (Type::Function(p1, r1, _s1), Type::Function(p2, r2, _s2)) => {
                 let (param, errs) = Self::unify_vec(p1, loc1.clone(), p2, loc2.clone());
                 let ret = Self::unify_types((*r1, loc1), (*r2, loc2));
@@ -453,34 +550,45 @@ impl InferContext {
     ) -> Result<TypeNodeId, Vec<Error>> {
         let (TypedPattern { pat, ty }, loc_p) = pat;
         let (body_t, loc_b) = body.clone();
+        let mut bind_item = |pat| {
+            let newloc = Location::new(
+                ty.to_span(), // todo: add span to untyped pattern
+                loc_p.path,
+            );
+            let ity = self.gen_intermediate_type_with_location(newloc.clone());
+            let p = TypedPattern { pat, ty: ity };
+            self.bind_pattern((p, newloc.clone()), (ity, newloc))
+        };
         let pat_t = match pat {
             Pattern::Single(id) => {
                 let pat_t = self.convert_unknown_to_intermediate(ty);
+                log::trace!("bind {} : {}", id, pat_t.to_type().to_string());
                 self.env.add_bind(&[(id, pat_t)]);
                 Ok::<TypeNodeId, Vec<Error>>(pat_t)
             }
             Pattern::Tuple(pats) => {
-                let res = pats
-                    .iter()
-                    .map(|p| {
-                        let newloc = Location::new(
-                            ty.to_span(), // todo: add span to untyped pattern
-                            loc_p.path,
-                        );
-                        let ity = self.gen_intermediate_type_with_location(newloc.clone());
-                        let p = TypedPattern {
-                            pat: p.clone(),
-                            ty: ity,
-                        };
-                        self.bind_pattern((p, newloc.clone()), (ity, newloc))
-                    })
-                    .try_collect()?; //todo multiple errors
+                let res = pats.iter().map(|p| bind_item(p.clone())).try_collect()?; //todo multiple errors
                 let res = Self::unify_types(
                     (Type::Tuple(res).into_id(), loc_p.clone()),
                     (self.convert_unknown_to_intermediate(ty), loc_p.clone()),
                 )?;
                 Ok(res)
             }
+            Pattern::Record(items) => {
+                let res = items
+                    .iter()
+                    .map(|(k, v)| bind_item(v.clone()).map(|t| (*k, t)))
+                    .try_collect()?; //todo multiple errors
+                let res = Self::unify_types(
+                    (Type::Record(res).into_id(), loc_p.clone()),
+                    (self.convert_unknown_to_intermediate(ty), loc_p.clone()),
+                )?;
+                Ok(res)
+            }
+            Pattern::Error => Err(vec![Error::PatternMismatch(
+                (Type::Failure.into_id(), loc_b.clone()),
+                (pat, loc_p.clone()),
+            )]),
         }?;
         let t2 = Self::unify_types((pat_t, loc_p.clone()), (body_t, loc_b.clone()))?;
         Ok(self.generalize(t2))
@@ -556,25 +664,90 @@ impl InferContext {
             }
             Expr::Proj(e, idx) => {
                 let tup = self.infer_type(*e)?;
+                // we directly inspect if the intermediate type is a tuple or not.
+                // this is because we can not infer the number of fields in the tuple from the fields access expression.
+                // This rule will be loosened when structural subtyping is implemented.
+                let vec_to_ans = |vec: &[_]| {
+                    if vec.len() < *idx as usize {
+                        Err(vec![Error::IndexOutOfRange {
+                            len: vec.len() as u16,
+                            idx: *idx as u16,
+                            loc: loc.clone(),
+                        }])
+                    } else {
+                        Ok(vec[*idx as usize])
+                    }
+                };
                 match tup.to_type() {
-                    Type::Tuple(vec) => {
-                        if vec.len() < *idx as usize {
-                            Err(vec![Error::IndexOutOfRange {
-                                len: vec.len() as u16,
-                                idx: *idx as u16,
-                                loc,
-                            }])
+                    Type::Tuple(vec) => vec_to_ans(&vec),
+                    Type::Intermediate(tv) => {
+                        let tv = tv.borrow();
+                        if let Some(parent) = tv.parent {
+                            match parent.to_type() {
+                                Type::Tuple(vec) => vec_to_ans(&vec),
+                                _ => Err(vec![Error::IndexForNonTuple(loc, tup)]),
+                            }
                         } else {
-                            Ok(vec[*idx as usize])
+                            Err(vec![Error::IndexForNonTuple(loc, tup)])
                         }
                     }
                     _ => Err(vec![Error::IndexForNonTuple(loc, tup)]),
+                }
+            }
+            Expr::RecordLiteral(kvs) => {
+                let duplicate_keys = kvs
+                    .iter()
+                    .map(|RecordField { name, .. }| *name)
+                    .duplicates();
+                if duplicate_keys.clone().count() > 0 {
+                    Err(vec![Error::DuplicateKeyInRecord {
+                        key: duplicate_keys.collect(),
+                        loc,
+                    }])
+                } else {
+                    let kts: Vec<_> = kvs
+                        .iter()
+                        .map(|RecordField { name, expr }| {
+                            let t = self.infer_type(*expr);
+                            t.map(|t| (*name, t))
+                        })
+                        .try_collect()?;
+                    Ok(Type::Record(kts).into_id())
+                }
+            }
+            Expr::FieldAccess(expr, field) => {
+                let et = self.infer_type(*expr)?;
+                log::trace!("field access {} : {}", field, et.to_type());
+                let fields_to_ans = |fields: &[(Symbol, TypeNodeId)]| {
+                    fields
+                        .iter()
+                        .find_map(|(name, t)| if *name == *field { Some(*t) } else { None })
+                        .ok_or_else(|| vec![Error::VariableNotFound(*field, loc.clone())])
+                };
+                // we directly inspect if the intermediate type is a record or not.
+                // this is because we can not infer the number of fields in the record from the fields access expression.
+                // This rule will be loosened when structural subtyping is implemented.
+                match et.to_type() {
+                    Type::Record(fields) => fields_to_ans(&fields),
+                    Type::Intermediate(tv) => {
+                        let tv = tv.borrow();
+                        if let Some(parent) = tv.parent {
+                            match parent.to_type() {
+                                Type::Record(fields) => fields_to_ans(&fields),
+                                _ => Err(vec![Error::FieldForNonRecord(loc, et)]),
+                            }
+                        } else {
+                            Err(vec![Error::FieldForNonRecord(loc, et)])
+                        }
+                    }
+                    _ => Err(vec![Error::FieldForNonRecord(loc, et)]),
                 }
             }
             Expr::Feed(id, body) => {
                 //todo: add span to Feed expr for keeping the location of `self`.
                 let feedv = self.gen_intermediate_type();
                 let loc_b = Location::new(body.to_span(), loc.path);
+
                 self.env.add_bind(&[(*id, feedv)]);
                 let bty = self.infer_type(*body)?;
                 let res = Self::unify_types((bty, loc.clone()), (feedv, loc_b));
@@ -660,12 +833,7 @@ impl InferContext {
             }
             Expr::Var(name) => {
                 let res = self.unwrap_result(self.lookup(*name, loc).map_err(|e| vec![e]));
-                log::trace!(
-                    "{} {} /level{}",
-                    name.as_str(),
-                    res.to_type().to_string_for_error(),
-                    self.level
-                );
+                log::trace!("{} {} /level{}", name.as_str(), res.to_type(), self.level);
                 Ok(self.instantiate(res))
             }
             Expr::Apply(fun, callee) => {
@@ -709,7 +877,7 @@ impl InferContext {
                 self.env.to_outer();
                 res
             }),
-            _ => Ok(Type::Primitive(PType::Unit).into_id()),
+            _ => Ok(Type::Failure.into_id_with_location(loc)),
         };
         res.inspect(|ty| {
             self.result_map.insert(e.0, *ty);
