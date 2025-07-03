@@ -170,19 +170,37 @@ fn lvar_parser_typed(ctx: ParseContext) -> impl Parser<Token, TypedId, Error = P
 fn pattern_parser(
     ctx: ParseContext,
 ) -> impl Parser<Token, TypedPattern, Error = ParseError> + Clone {
+    let single_pat = select! {
+        Token::Ident(s) => Pattern::Single(s),
+        // Note: _ represents an unused variable, but it is treated as
+        // an ordinary symbol here.
+        Token::PlaceHolder => Pattern::Single("_".to_symbol())
+
+    }
+    .labelled("single pattern");
     let pat = recursive(|pat| {
-        pat.clone()
+        let tup = pat
+            .clone()
             .separated_by(just(Token::Comma))
             .allow_trailing()
             .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
             .map(Pattern::Tuple)
-            .or(select! {
-                Token::Ident(s) => Pattern::Single(s),
-                // Note: _ represents an unused variable, but it is treated as
-                // an ordinary symbol here.
-                Token::PlaceHolder => Pattern::Single("_".to_symbol()),
-            })
-            .labelled("Pattern")
+            .labelled("tuple pattern");
+        let record = (ident_parser()
+            .then_ignore(just(Token::Colon))
+            .then(pat.clone()))
+        .separated_by(breakable_comma())
+        .allow_trailing()
+        .delimited_by(breakable_blockbegin(), breakable_blockend())
+        .map(Pattern::Record)
+        .recover_with(nested_delimiters(
+            Token::BlockBegin,
+            Token::BlockEnd,
+            [],
+            |_| Pattern::Error,
+        ))
+        .labelled("record pattern");
+        choice((single_pat, tup, record)).labelled("pattern")
     });
     with_type_annotation(pat, ctx.clone()).map_with_span(move |(pat, ty), span| match ty {
         Some(ty) => TypedPattern { pat, ty },

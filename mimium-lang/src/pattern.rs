@@ -8,7 +8,8 @@ use crate::utils::miniprint::MiniPrint;
 pub enum Pattern {
     Single(Symbol),
     Tuple(Vec<Self>),
-    Record(Vec<(Symbol, Self)>), // Record pattern {field1: pat1, field2: pat2, ...}
+    Record(Vec<(Symbol, Self)>),
+    Error,
 }
 
 impl std::fmt::Display for Pattern {
@@ -34,6 +35,9 @@ impl std::fmt::Display for Pattern {
                         .join(", ");
                     write!(f, "{{{s}}}")
                 }
+            }
+            Pattern::Error => {
+                write!(f, "<error pattern>")
             }
         }
     }

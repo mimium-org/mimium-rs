@@ -585,6 +585,10 @@ impl InferContext {
                 )?;
                 Ok(res)
             }
+            Pattern::Error => Err(vec![Error::PatternMismatch(
+                (Type::Failure.into_id(), loc_b.clone()),
+                (pat, loc_p.clone()),
+            )]),
         }?;
         let t2 = Self::unify_types((pat_t, loc_p.clone()), (body_t, loc_b.clone()))?;
         Ok(self.generalize(t2))
