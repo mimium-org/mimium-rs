@@ -466,3 +466,10 @@ fn many_comments() {
     let ans = vec![0.0];
     assert_eq!(res, ans);
 }
+
+#[test]
+fn record_creation() {
+    let res = run_file_test_mono("record_creation.mmm", 1).unwrap();
+    let ans = vec![79.0]; // myrec.testb.1
+    assert_eq!(res, ans);
+}
