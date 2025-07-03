@@ -268,9 +268,9 @@ where
     let dot = unary
         .clone()
         .then(just(Token::Arrow).ignore_then(dot_field()).repeated())
-        .foldl(move |lhs, (rhs, rspan)| {
-            Expr::Error.into_id_without_span()
-        })
+        // .foldl(move |lhs, (rhs, rspan)| {
+        //     Expr::Error.into_id_without_span()
+        // })
         .labelled("dot");
     let optoken = move |o: Op| {
         just(Token::Op(o))
