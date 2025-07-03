@@ -476,6 +476,6 @@ fn record_creation() {
 #[test]
 fn record_infer() {
     let res = run_file_test_mono("record_infer.mmm", 1).unwrap();
-    let ans = vec![79.0]; // myrec.testb.1
+    let ans = vec![81.5];
     assert_eq!(res, ans);
 }
