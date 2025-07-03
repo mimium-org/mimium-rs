@@ -235,6 +235,26 @@ impl Context {
                     self.add_bind_pattern(&tpat, elem_v, *cty, is_global);
                 }
             }
+            (Pattern::Record(patterns), Type::Record(kvvec)) => {
+                for (k, pat) in patterns.iter() {
+                    let i = kvvec.iter().position(|(kk, _)| kk == k);
+                    if let Some(offset) = i {
+                        let elem_v = self.push_inst(Instruction::GetElement {
+                            value: v.clone(),
+                            ty,
+                            tuple_offset: offset as u64,
+                        });
+                        let tid =
+                            Type::Unknown.into_id_with_location(self.get_loc_from_span(&span));
+                        let tpat = TypedPattern {
+                            pat: pat.clone(),
+                            ty: tid,
+                        };
+                        let elem_t = kvvec[offset].1;
+                        self.add_bind_pattern(&tpat, elem_v, elem_t, is_global);
+                    };
+                }
+            }
             _ => {
                 panic!("typing error in the previous stage")
             }
