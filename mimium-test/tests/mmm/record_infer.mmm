@@ -1,0 +1,7 @@
+let myrec = {test: 100.0,
+             testb:(2000.0,79.0)}
+let mytup = myrec.testb
+let elem1 = mytup.1 // should be 79
+fn dsp(){
+    elem1
+}
