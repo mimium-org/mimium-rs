@@ -1,9 +1,10 @@
 //test for more complex record and tuple type inference
 
-let myrec = {test: 100.0,
-             testb:(2000.0,{
-                nested_a:79.0,
-                nested_b:("string",(0.5,2.5))
+let myrec = { 
+             test  =  100.0,
+             testb = (2000.0,{
+                nested_a = 79.0,
+                nested_b = ("string",(0.5,2.5))
              })}
 let mytup = myrec.testb
 let elem1 = mytup.1 

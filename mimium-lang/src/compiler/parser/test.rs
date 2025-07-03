@@ -506,7 +506,7 @@ fn test_record_type_decl() {
             expr: Expr::Literal(Literal::Float("2.0".to_symbol())).into_id(loc(7..8)),
         },
     ]);
-    test_expr_string("{x:0.0,y:2.0}", ans.into_id(loc(0..9)));
+    test_expr_string("{x = 0.0,y = 2.0}", ans.into_id(loc(0..9)));
 }
 #[test]
 fn test_field_access() {

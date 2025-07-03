@@ -189,7 +189,7 @@ fn pattern_parser(
             .map(Pattern::Tuple)
             .labelled("tuple pattern");
         let record = (ident_parser()
-            .then_ignore(just(Token::Colon))
+            .then_ignore(just(Token::Assign))
             .then(pat.clone()))
         .separated_by(breakable_comma())
         .at_least(1)
@@ -368,7 +368,7 @@ fn record_fields(
     expr: ExprParser<'_>,
 ) -> impl Parser<Token, RecordField, Error = ParseError> + Clone + '_ {
     ident_parser()
-        .then_ignore(just(Token::Colon))
+        .then_ignore(just(Token::Assign))
         .then(expr.clone())
         .map(move |(name, expr)| RecordField { name, expr })
 }
