@@ -32,6 +32,18 @@ fn breakable_comma() -> impl Parser<Token, (), Error = ParseError> + Clone {
         .then(just(Token::LineBreak).or_not())
         .map(|_| ())
 }
+fn breakable_blockbegin() -> impl Parser<Token, (), Error = ParseError> + Clone {
+    just(Token::BlockBegin)
+        .then_ignore(just(Token::LineBreak).or(just(Token::SemiColon)).repeated())
+        .map(|_| ())
+}
+fn breakable_blockend() -> impl Parser<Token, (), Error = ParseError> + Clone {
+    just(Token::LineBreak)
+        .or(just(Token::SemiColon))
+        .repeated()
+        .ignore_then(just(Token::BlockEnd))
+        .map(|_| ())
+}
 fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = ParseError> + Clone {
     let path = ctx.file_path;
     recursive(move |ty| {
@@ -58,10 +70,16 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
             .then(ty.clone())
             .separated_by(breakable_comma())
             .allow_trailing()
-            .delimited_by(just(Token::BlockBegin), just(Token::BlockEnd))
+            .delimited_by(breakable_blockbegin(), breakable_blockend())
             .map_with_span(move |fields, span| {
                 Type::Record(fields).into_id_with_location(Location::new(span, path))
             })
+            .recover_with(nested_delimiters(
+                Token::BlockBegin,
+                Token::BlockEnd,
+                [],
+                |_| Type::Failure.into_id(),
+            ))
             .boxed()
             .labelled("Record");
         // Parse array type [T]
@@ -200,7 +218,6 @@ where
             };
             let arg = match op {
                 Op::Pipe => return Expr::PipeApply(x, y).into_id(loc.clone()),
-                Op::Dot => unreachable!("Dot operator should be handled in the previous step"),
                 // A@B is a syntactic sugar of _mimium_schedule_at(B, A)
                 Op::At => vec![y, x],
                 _ => vec![x, y],
@@ -222,7 +239,7 @@ type ExprParser<'a> = Recursive<'a, Token, ExprNodeId, ParseError>;
 fn items_parser(
     expr: ExprParser<'_>,
 ) -> impl Parser<Token, Vec<ExprNodeId>, Error = ParseError> + Clone + '_ {
-    expr.separated_by(just(Token::Comma))
+    expr.separated_by(breakable_comma())
         .allow_trailing()
         .collect::<Vec<_>>()
 }
@@ -247,7 +264,7 @@ where
 {
     let ctx = ctx.clone();
     let dot = apply
-        .then(just(Token::Op(Op::Dot)).ignore_then(dot_field()).repeated())
+        .then(just(Token::Dot).ignore_then(dot_field()).repeated())
         .foldl(move |lhs, (rhs, rspan)| {
             let span = lhs.to_span().start..rspan.end;
 
@@ -319,8 +336,9 @@ where
         pipe,
         optoken(Op::At),
     ];
-    ops.into_iter()
-        .fold(unary.boxed(), move |acc, x| binop_folder(acc, x, ctx.clone()))
+    ops.into_iter().fold(unary.boxed(), move |acc, x| {
+        binop_folder(acc, x, ctx.clone())
+    })
 }
 fn record_fields(
     expr: ExprParser<'_>,
@@ -399,13 +417,24 @@ pub(super) fn atom_parser<'a>(
     let record_literal = record_fields(expr.clone())
         .separated_by(breakable_comma())
         .allow_trailing()
-        .delimited_by(just(Token::BlockBegin), just(Token::BlockEnd))
+        .delimited_by(breakable_blockbegin(), breakable_blockend())
         .map_with_span(move |fields, span| {
             Expr::RecordLiteral(fields).into_id(Location {
                 span,
                 path: ctx.file_path,
             })
         })
+        .recover_with(nested_delimiters(
+            Token::BlockBegin,
+            Token::BlockEnd,
+            [],
+            move |_| {
+                Expr::Error.into_id(Location {
+                    span: Span::default(),
+                    path: ctx.file_path,
+                })
+            },
+        ))
         .labelled("record_literal");
     let parenexpr = expr
         .clone()
@@ -561,7 +590,7 @@ fn block_parser(
 ) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone + '_ {
     let stmts = statements_parser(expr, ctx.clone());
     stmts
-        .delimited_by(just(Token::BlockBegin), just(Token::BlockEnd))
+        .delimited_by(breakable_blockbegin(), breakable_blockend())
         .map_with_span(move |stmts, span| {
             Expr::Block(stmts).into_id(Location {
                 span,

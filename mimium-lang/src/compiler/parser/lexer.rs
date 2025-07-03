@@ -75,7 +75,7 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
         });
     let separator = one_of(",.:;").map(|c| match c {
         ',' => Token::Comma,
-        '.' => Token::Op(Op::Dot),
+        '.' => Token::Dot,
         ':' => Token::Colon,
         ';' => Token::SemiColon,
         _ => Token::Ident(c.to_string().to_symbol()),
@@ -228,15 +228,15 @@ another line
         let (res, _errs) = lexer().parse_recovery(src);
         let ans = vec![
             (Token::Ident("x".to_symbol()), 0..1),
-            (Token::Op(Op::Dot), 1..2),
+            (Token::Dot, 1..2),
             (Token::Int(0), 2..3),
-            (Token::Op(Op::Dot), 3..4),
+            (Token::Dot, 3..4),
             (Token::Ident("field1".to_symbol()), 4..10),
-            (Token::Op(Op::Dot), 10..11),
+            (Token::Dot, 10..11),
             (Token::Int(1), 11..12),
-            (Token::Op(Op::Dot), 12..13),
+            (Token::Dot, 12..13),
             (Token::Int(0), 13..14),
-            (Token::Op(Op::Dot), 14..15),
+            (Token::Dot, 14..15),
             (Token::Ident("field2".to_symbol()), 15..21),
         ];
         // dbg!(res.clone());

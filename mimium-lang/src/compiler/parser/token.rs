@@ -32,8 +32,7 @@ pub enum Op {
     At, // @
 
     Pipe, // |>
-    /// Dot operator, used for field access, which may be concatenated with left associativity
-    Dot, // .
+
     Unknown(String),
 }
 
@@ -56,7 +55,8 @@ pub enum Token {
     Now,
     SampleRate,
     Comma,
-
+    /// Dot operator, used for field access, which may be concatenated with left associativity
+    Dot, // .
     Colon,
     SemiColon,
 
@@ -106,7 +106,7 @@ impl Op {
             Op::And => intrinsics::AND,
             Op::Or => intrinsics::OR,
             Op::At => "_mimium_schedule_at",
-            Op::Pipe | Op::Dot => unreachable!(), // pipe is a syntax sugar, not a function
+            Op::Pipe => unreachable!(), // pipe is a syntax sugar, not a function
             Op::Unknown(x) => x.as_str(),
         }
         .to_symbol()
@@ -132,7 +132,6 @@ impl fmt::Display for Op {
             Op::Or => write!(f, "||"),
             Op::At => write!(f, "@"),
             Op::Pipe => write!(f, "|>"),
-            Op::Dot => write!(f, "."),
             Op::Unknown(x) => write!(f, "{}", x),
         }
     }
@@ -155,6 +154,7 @@ impl fmt::Display for Token {
             Token::Now => write!(f, "now"),
             Token::SampleRate => write!(f, "samplerate"),
             Token::Comma => write!(f, ","),
+            Token::Dot => write!(f, "."),
             Token::Colon => write!(f, ":"),
             Token::SemiColon => write!(f, ";"),
             Token::Let => write!(f, "let"),
