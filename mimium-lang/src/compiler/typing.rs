@@ -550,6 +550,15 @@ impl InferContext {
     ) -> Result<TypeNodeId, Vec<Error>> {
         let (TypedPattern { pat, ty }, loc_p) = pat;
         let (body_t, loc_b) = body.clone();
+        let mut bind_item = |pat| {
+            let newloc = Location::new(
+                ty.to_span(), // todo: add span to untyped pattern
+                loc_p.path,
+            );
+            let ity = self.gen_intermediate_type_with_location(newloc.clone());
+            let p = TypedPattern { pat, ty: ity };
+            self.bind_pattern((p, newloc.clone()), (ity, newloc))
+        };
         let pat_t = match pat {
             Pattern::Single(id) => {
                 let pat_t = self.convert_unknown_to_intermediate(ty);
@@ -558,23 +567,20 @@ impl InferContext {
                 Ok::<TypeNodeId, Vec<Error>>(pat_t)
             }
             Pattern::Tuple(pats) => {
-                let res = pats
-                    .iter()
-                    .map(|p| {
-                        let newloc = Location::new(
-                            ty.to_span(), // todo: add span to untyped pattern
-                            loc_p.path,
-                        );
-                        let ity = self.gen_intermediate_type_with_location(newloc.clone());
-                        let p = TypedPattern {
-                            pat: p.clone(),
-                            ty: ity,
-                        };
-                        self.bind_pattern((p, newloc.clone()), (ity, newloc))
-                    })
-                    .try_collect()?; //todo multiple errors
+                let res = pats.iter().map(|p| bind_item(p.clone())).try_collect()?; //todo multiple errors
                 let res = Self::unify_types(
                     (Type::Tuple(res).into_id(), loc_p.clone()),
+                    (self.convert_unknown_to_intermediate(ty), loc_p.clone()),
+                )?;
+                Ok(res)
+            }
+            Pattern::Record(items) => {
+                let res = items
+                    .iter()
+                    .map(|(k, v)| bind_item(v.clone()).map(|t| (*k, t)))
+                    .try_collect()?; //todo multiple errors
+                let res = Self::unify_types(
+                    (Type::Record(res).into_id(), loc_p.clone()),
                     (self.convert_unknown_to_intermediate(ty), loc_p.clone()),
                 )?;
                 Ok(res)
