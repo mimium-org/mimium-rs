@@ -8,7 +8,7 @@ use crate::utils::{environment::Environment, error::ReportableError};
 use crate::{function, integer, numeric, unit};
 use itertools::{EitherOrBoth, Itertools};
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
@@ -39,6 +39,12 @@ pub enum Error {
         et: TypeNodeId,
     },
     DuplicateKeyInRecord {
+        key: Vec<Symbol>,
+        loc: Location,
+    },
+    /// This is temporary error which is used when the type of 2 records contain different keys.
+    /// If structural subtyping is implemented, this error should be removed.
+    IncompatibleKeyInRecord {
         key: Vec<Symbol>,
         loc: Location,
     },
@@ -83,6 +89,9 @@ impl ReportableError for Error {
             }
             Error::FieldNotExist { field, .. } => {
                 format!("Field `{}` does not exist in the record  type", field,)
+            }
+            Error::IncompatibleKeyInRecord { .. } => {
+                format!("Record type has incompatible keys.",)
             }
         }
     }
@@ -163,6 +172,18 @@ impl ReportableError for Error {
                     et.to_type().to_string_for_error()
                 ),
             )],
+            Error::IncompatibleKeyInRecord { key, loc } => {
+                vec![(
+                    loc.clone(),
+                    format!(
+                        "Incompatible key `{}` found in record type",
+                        key.iter()
+                            .map(|s| s.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )]
+            }
         }
     }
 }
@@ -433,7 +454,35 @@ impl InferContext {
                     Err(err) //todo:return both partial result and err
                 }
             }
-            (Type::Record(_a1), Type::Record(_a2)) => todo!(), //todo
+            (Type::Record(a1), Type::Record(a2)) => {
+                {
+                    let m1 = HashSet::<Symbol>::from_iter(a1.iter().map(|(k, _)| *k));
+                    let m2 = HashSet::<Symbol>::from_iter(a2.iter().map(|(k, _)| *k));
+                    if m1 != m2 {
+                        let key_diffs = m1.difference(&m2).cloned().collect();
+                        return Err(vec![Error::IncompatibleKeyInRecord {
+                            key: key_diffs,
+                            loc: loc1.clone(),
+                        }]);
+                    }
+                }
+                let get_key_val = |v: &Vec<(Symbol, TypeNodeId)>| {
+                    let mut v_c = v.clone();
+                    v_c.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
+                    let (ks, ts): (Vec<_>, Vec<_>) = v_c.into_iter().unzip();
+                    (ks, ts)
+                };
+                let (ks1, ts1) = get_key_val(a1);
+                let (ks2, ts2) = get_key_val(a2);
+                debug_assert_eq!(ks1, ks2);
+                let (vec, err) = Self::unify_vec(&ts1, loc1, &ts2, loc2);
+                let rvec = ks1.into_iter().zip(vec).collect::<Vec<_>>();
+                if err.is_empty() {
+                    Ok(Type::Record(rvec).into_id())
+                } else {
+                    Err(err)
+                }
+            }
             (Type::Function(p1, r1, _s1), Type::Function(p2, r2, _s2)) => {
                 let (param, errs) = Self::unify_vec(p1, loc1.clone(), p2, loc2.clone());
                 let ret = Self::unify_types((*r1, loc1), (*r2, loc2));
