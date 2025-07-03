@@ -265,22 +265,22 @@ where
             Expr::Apply(neg_op, vec![rhs]).into_id(loc)
         })
         .labelled("unary");
-    let dot = unary
-        .clone()
-        .then(just(Token::Op(Op::Dot)).ignore_then(dot_field()).repeated())
-        .foldl(move |lhs, (rhs, rspan)| {
-            let span = lhs.to_span().start..rspan.end;
+    // let dot = unary
+    //     .clone()
+    //     .then(just(Token::Op(Op::Dot)).ignore_then(dot_field()).repeated())
+    //     .foldl(move |lhs, (rhs, rspan)| {
+    //         let span = lhs.to_span().start..rspan.end;
 
-            let loc = Location {
-                span,
-                path: ctx.file_path,
-            };
-            match rhs {
-                DotField::Ident(name) => Expr::FieldAccess(lhs, name).into_id(loc),
-                DotField::Index(idx) => Expr::Proj(lhs, idx).into_id(loc),
-            }
-        })
-        .labelled("dot");
+    //         let loc = Location {
+    //             span,
+    //             path: ctx.file_path,
+    //         };
+    //         match rhs {
+    //             DotField::Ident(name) => Expr::FieldAccess(lhs, name).into_id(loc),
+    //             DotField::Index(idx) => Expr::Proj(lhs, idx).into_id(loc),
+    //         }
+    //     })
+    //     .labelled("dot");
     let optoken = move |o: Op| {
         just(Token::Op(o))
             .try_map(|e, s| match e {
@@ -320,8 +320,9 @@ where
         pipe,
         optoken(Op::At),
     ];
-    ops.into_iter()
-        .fold(dot.boxed(), move |acc, x| binop_folder(acc, x, ctx.clone()))
+    ops.into_iter().fold(unary.boxed(), move |acc, x| {
+        binop_folder(acc, x, ctx.clone())
+    })
 }
 fn record_fields(
     expr: ExprParser<'_>,
