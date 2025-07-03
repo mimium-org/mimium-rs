@@ -289,6 +289,7 @@ where
     let ctx = ctx.clone();
     let dot = apply
         .then(just(Token::Dot).ignore_then(dot_field()).repeated())
+        .boxed() // this boxing is necessary for windows CI environment
         .foldl(move |lhs, (rhs, rspan)| {
             let span = lhs.to_span().start..rspan.end;
 
