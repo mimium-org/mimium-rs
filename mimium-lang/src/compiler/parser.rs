@@ -57,6 +57,7 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
         let tuple = ty
             .clone()
             .separated_by(just(Token::Comma))
+            .at_least(1)
             .allow_trailing()
             .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
             .map_with_span(move |t: Vec<TypeNodeId>, span: Span| {
@@ -182,6 +183,7 @@ fn pattern_parser(
         let tup = pat
             .clone()
             .separated_by(just(Token::Comma))
+            .at_least(1)
             .allow_trailing()
             .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
             .map(Pattern::Tuple)
@@ -190,6 +192,7 @@ fn pattern_parser(
             .then_ignore(just(Token::Colon))
             .then(pat.clone()))
         .separated_by(breakable_comma())
+        .at_least(1)
         .allow_trailing()
         .delimited_by(breakable_blockbegin(), breakable_blockend())
         .map(Pattern::Record)
@@ -256,9 +259,12 @@ type ExprParser<'a> = Recursive<'a, Token, ExprNodeId, ParseError>;
 
 fn items_parser(
     expr: ExprParser<'_>,
+    allow_empty: bool,
 ) -> impl Parser<Token, Vec<ExprNodeId>, Error = ParseError> + Clone + '_ {
+    let least_repeat = if allow_empty { 0 } else { 1 };
     expr.separated_by(breakable_comma())
         .allow_trailing()
+        .at_least(least_repeat)
         .collect::<Vec<_>>()
 }
 enum DotField {
@@ -410,7 +416,7 @@ pub(super) fn atom_parser<'a>(
         })
         .labelled("macroexpand");
 
-    let tuple = items_parser(expr.clone())
+    let tuple = items_parser(expr.clone(), false)
         .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
         .map_with_span(move |e, span| {
             Expr::Tuple(e).into_id(Location {
@@ -420,7 +426,7 @@ pub(super) fn atom_parser<'a>(
         })
         .labelled("tuple");
 
-    let array_literal = items_parser(expr.clone())
+    let array_literal = items_parser(expr.clone(), true)
         .delimited_by(just(Token::ArrayBegin), just(Token::ArrayEnd))
         .map_with_span(move |items, span| {
             // Create a nested expression that constructs an array with the given items
@@ -434,6 +440,7 @@ pub(super) fn atom_parser<'a>(
         .labelled("array_literal");
     let record_literal = record_fields(expr.clone())
         .separated_by(breakable_comma())
+        .at_least(1)
         .allow_trailing()
         .delimited_by(breakable_blockbegin(), breakable_blockend())
         .map_with_span(move |fields, span| {
@@ -476,7 +483,7 @@ fn expr_parser(expr_group: ExprParser<'_>, ctx: ParseContext) -> ExprParser<'_> 
             Args(Vec<ExprNodeId>),
             ArrayIndex(ExprNodeId),
         }
-        let parenitems = items_parser(expr.clone())
+        let parenitems = items_parser(expr.clone(), true)
             .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
             .map_with_span(|args, args_span| (FoldItem::Args(args), args_span));
         let angle_paren_expr = expr
