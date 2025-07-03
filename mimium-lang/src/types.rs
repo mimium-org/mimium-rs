@@ -74,9 +74,10 @@ impl Type {
         }
     }
 
-    pub fn get_as_tuple(&self) -> Option<&[TypeNodeId]> {
+    pub fn get_as_tuple(&self) -> Option<Vec<TypeNodeId>> {
         match self {
-            Type::Tuple(types) => Some(types),
+            Type::Tuple(types) => Some(types.to_vec()),
+            Type::Record(fields) => Some(fields.iter().map(|(_s, t)| *t).collect::<Vec<_>>()),
             _ => None,
         }
     }
