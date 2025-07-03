@@ -201,7 +201,6 @@ where
             };
             let arg = match op {
                 Op::Pipe => return Expr::PipeApply(x, y).into_id(loc.clone()),
-                Op::Dot => unreachable!("Dot operator should be handled in the previous step"),
                 // A@B is a syntactic sugar of _mimium_schedule_at(B, A)
                 Op::At => vec![y, x],
                 _ => vec![x, y],
@@ -420,9 +419,9 @@ pub fn atom_parser<'a>(
         lambda,
         macro_expand,
         parenexpr,
+        tuple,
         record_literal,
         array_literal,
-        tuple,
     ))
 }
 fn expr_parser(expr_group: ExprParser<'_>, ctx: ParseContext) -> ExprParser<'_> {
