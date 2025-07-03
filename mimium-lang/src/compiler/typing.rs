@@ -333,7 +333,7 @@ impl InferContext {
                     && cls(*r)
                     && cls(s.map(|x| x).unwrap_or_else(|| Type::Unknown.into_id()))
             }
-            Type::Record(_s) => todo!(),
+            Type::Record(s) => vec_cls(s.iter().map(|(_k, v)| *v).collect::<Vec<_>>().as_slice()),
             _ => false,
         }
     }
@@ -553,6 +553,7 @@ impl InferContext {
         let pat_t = match pat {
             Pattern::Single(id) => {
                 let pat_t = self.convert_unknown_to_intermediate(ty);
+                log::trace!("bind {} : {}", id, pat_t.to_type().to_string());
                 self.env.add_bind(&[(id, pat_t)]);
                 Ok::<TypeNodeId, Vec<Error>>(pat_t)
             }
@@ -653,16 +654,31 @@ impl InferContext {
             }
             Expr::Proj(e, idx) => {
                 let tup = self.infer_type(*e)?;
+                // we directly inspect if the intermediate type is a tuple or not.
+                // this is because we can not infer the number of fields in the tuple from the fields access expression.
+                // This rule will be loosened when structural subtyping is implemented.
+                let vec_to_ans = |vec: &[_]| {
+                    if vec.len() < *idx as usize {
+                        Err(vec![Error::IndexOutOfRange {
+                            len: vec.len() as u16,
+                            idx: *idx as u16,
+                            loc: loc.clone(),
+                        }])
+                    } else {
+                        Ok(vec[*idx as usize])
+                    }
+                };
                 match tup.to_type() {
-                    Type::Tuple(vec) => {
-                        if vec.len() < *idx as usize {
-                            Err(vec![Error::IndexOutOfRange {
-                                len: vec.len() as u16,
-                                idx: *idx as u16,
-                                loc,
-                            }])
+                    Type::Tuple(vec) => vec_to_ans(&vec),
+                    Type::Intermediate(tv) => {
+                        let tv = tv.borrow();
+                        if let Some(parent) = tv.parent {
+                            match parent.to_type() {
+                                Type::Tuple(vec) => vec_to_ans(&vec),
+                                _ => Err(vec![Error::IndexForNonTuple(loc, tup)]),
+                            }
                         } else {
-                            Ok(vec[*idx as usize])
+                            Err(vec![Error::IndexForNonTuple(loc, tup)])
                         }
                     }
                     _ => Err(vec![Error::IndexForNonTuple(loc, tup)]),
@@ -691,11 +707,29 @@ impl InferContext {
             }
             Expr::FieldAccess(expr, field) => {
                 let et = self.infer_type(*expr)?;
-                match et.to_type() {
-                    Type::Record(fields) => fields
+                log::trace!("field access {} : {}", field, et.to_type());
+                let fields_to_ans = |fields: &[(Symbol, TypeNodeId)]| {
+                    fields
                         .iter()
                         .find_map(|(name, t)| if *name == *field { Some(*t) } else { None })
-                        .ok_or_else(|| vec![Error::VariableNotFound(*field, loc.clone())]),
+                        .ok_or_else(|| vec![Error::VariableNotFound(*field, loc.clone())])
+                };
+                // we directly inspect if the intermediate type is a record or not.
+                // this is because we can not infer the number of fields in the record from the fields access expression.
+                // This rule will be loosened when structural subtyping is implemented.
+                match et.to_type() {
+                    Type::Record(fields) => fields_to_ans(&fields),
+                    Type::Intermediate(tv) => {
+                        let tv = tv.borrow();
+                        if let Some(parent) = tv.parent {
+                            match parent.to_type() {
+                                Type::Record(fields) => fields_to_ans(&fields),
+                                _ => Err(vec![Error::FieldForNonRecord(loc, et)]),
+                            }
+                        } else {
+                            Err(vec![Error::FieldForNonRecord(loc, et)])
+                        }
+                    }
                     _ => Err(vec![Error::FieldForNonRecord(loc, et)]),
                 }
             }
@@ -703,6 +737,7 @@ impl InferContext {
                 //todo: add span to Feed expr for keeping the location of `self`.
                 let feedv = self.gen_intermediate_type();
                 let loc_b = Location::new(body.to_span(), loc.path);
+
                 self.env.add_bind(&[(*id, feedv)]);
                 let bty = self.infer_type(*body)?;
                 let res = Self::unify_types((bty, loc.clone()), (feedv, loc_b));
@@ -788,12 +823,7 @@ impl InferContext {
             }
             Expr::Var(name) => {
                 let res = self.unwrap_result(self.lookup(*name, loc).map_err(|e| vec![e]));
-                log::trace!(
-                    "{} {} /level{}",
-                    name.as_str(),
-                    res.to_type().to_string_for_error(),
-                    self.level
-                );
+                log::trace!("{} {} /level{}", name.as_str(), res.to_type(), self.level);
                 Ok(self.instantiate(res))
             }
             Expr::Apply(fun, callee) => {
