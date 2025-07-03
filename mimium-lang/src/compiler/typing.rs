@@ -88,7 +88,7 @@ impl ReportableError for Error {
                 format!("Field access for non-record variable.")
             }
             Error::FieldNotExist { field, .. } => {
-                format!("Field `{}` does not exist in the record  type", field,)
+                format!("Field `{}` does not exist in the record type", field,)
             }
             Error::IncompatibleKeyInRecord { .. } => {
                 format!("Record type has incompatible keys.",)
