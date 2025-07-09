@@ -615,16 +615,16 @@ impl Context {
 
                     // Handle parameter packing/unpacking if needed
                     let atvvec = if args.len() == 1 && param_types.len() > 1 {
-                        let (label, ty) = param_types[0];
+                        let (arg_val, ty) = self.eval_expr(args[0]);
+                        log::trace!("Unpacking argument for {:?}", ty);
                         // Check if the argument is a tuple or record that we need to unpack
-                        let arg_val = self.eval_expr(args[0]);
-                        match arg_val.1.to_type() {
+                        match ty.to_type() {
                             Type::Tuple(tys) => tys
                                 .into_iter()
                                 .enumerate()
                                 .map(|(i, t)| {
                                     let elem_val = self.push_inst(Instruction::GetElement {
-                                        value: arg_val.0.clone(),
+                                        value: arg_val.clone(),
                                         ty,
                                         tuple_offset: i as u64,
                                     });
@@ -634,9 +634,10 @@ impl Context {
                             Type::Record(kvs) => kvs
                                 .into_iter()
                                 .enumerate()
-                                .map(|(i, (name, param_type))| {
+                                .map(|(i, (_name, param_type))| {
+                                    //todo: reorder if the keys are different from the order of the parameters defined in function
                                     let field_val = self.push_inst(Instruction::GetElement {
-                                        value: arg_val.0.clone(),
+                                        value: arg_val.clone(),
                                         ty,
                                         tuple_offset: i as u64,
                                     });
