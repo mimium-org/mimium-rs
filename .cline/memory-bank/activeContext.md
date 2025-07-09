@@ -2,9 +2,9 @@
 
 ## Current Work Focus
 
-The current focus is on implementing Record type for the mimium programming language based on GitHub issue #99. This will provide a way to define structured data with named fields, enhancing the language's expressiveness and data modeling capabilities.
+The current focus is on implementing Parameter Pack for the mimium programming language, which will allow functions to accept tuples or records as arguments when the types match. This feature will enhance the language's expressiveness and provide more flexible function calling patterns, especially when combined with pipe operators.
 
-Previous work focused on implementing a Language Server Protocol (LSP) server for the mimium programming language to provide IDE features such as syntax error reporting, code completion, and hover information to improve the developer experience.
+Previous work focused on implementing Record type for the mimium programming language based on GitHub issue #99, providing a way to define structured data with named fields, enhancing the language's expressiveness and data modeling capabilities.
 
 ## Implementation Strategy for Record Type
 
@@ -162,3 +162,146 @@ The implementation of Record type will be divided into four main phases:
 - Functionalities for defining default value of record types.
 - Automatic parameter packing for function using record, when the parameter names matches to the field names of the single record type.
 - Based on these 2 functionalities above, default values for function parameters.
+
+## Implementation Strategy for Parameter Pack
+
+The implementation of Parameter Pack will extend the existing type system and MIR generation to support automatic unpacking of tuples and records when used as function arguments. This feature will be implemented in the following phases:
+
+1. **Type System Updates**: Extend the function type to optionally include parameter names
+2. **Type Checking Extensions**: Update type checking for function applications
+3. **MIR Generation**: Modify MIR generation for function applications to handle parameter packs
+4. **Testing and Documentation**: Add test cases and documentation for the feature
+
+### Phase 1: Type System Updates
+
+1. **Function Type Extension**: Extend the function type representation to optionally include parameter names
+   ```rust
+   // Conceptual representation
+   struct FunctionType {
+       parameter_types: Vec<(Option<Symbol>,TypeNodeId)>,
+       return_type: TypeNodeId,
+   }
+   ```
+
+2. **Type Unification Rules**: Modify the type unification algorithm to handle named parameters:
+   - When unifying a function type with named parameters and one without, preserve the names
+   - When unifying two function types with different parameter names, choose one set of names (preferably from the context that's more specific)
+   - When a function is passed as an argument to another function, parameter names might be dropped as they're not relevant in that context
+
+### Phase 2: Type Checking Extensions
+
+1. **Function Application Rules**:
+   - Extend function application type checking to allow a tuple or record as a single argument to a multi-parameter function
+   - For tuples, check that the number of elements and their types match the function parameters
+   - For records, check that field names match parameter names and their types are compatible
+   - Implement structural subtyping for records to allow extra fields
+
+2. **Error Reporting**:
+   - Provide clear error messages for mismatched parameter names or types
+   - Suggest corrections when there's a close match (e.g., parameter name typos)
+
+### Phase 3: MIR Generation
+
+1. **App Node Processing**:
+   - Modify the MIR generation for `App` nodes to detect parameter pack cases
+   - When a tuple is passed to a multi-parameter function:
+     ```
+     // From: add((100, 200))
+     // To: add(get_element(tuple, 0), get_element(tuple, 1))
+     ```
+   
+   - When a record is passed to a multi-parameter function:
+     ```
+     // From: add({a: 100, b: 200})
+     // To: add(get_field(record, "a"), get_field(record, "b"))
+     ```
+
+2. **Optimization**:
+   - If the tuple or record is a literal constructed at the call site, potentially optimize to avoid creating the intermediate structure
+   - When parameter packs are used with the pipe operator, ensure efficient code generation
+
+### Phase 4: Testing and Documentation
+
+1. **Test Cases**:
+   - Basic function calls with tuple and record parameter packs
+   - Parameter packs with pipe operators
+   - Higher-order functions with parameter packs
+   - Edge cases and error conditions
+
+2. **Documentation**:
+   - Add parameter pack feature documentation
+   - Provide examples showing the different ways to call functions
+   - Document type system changes and any performance implications
+
+## Active Decisions and Considerations for Parameter Pack
+
+1. **Design Decisions**:
+   - **Implicit vs. Explicit**: Parameter packing will be implicit, meaning the compiler automatically detects and unpacks tuples and records
+   - **Type Checking Strategy**: Using structural compatibility to determine if a tuple or record can be unpacked as function arguments
+   - **Relationship with Pipe Operators**: Optimizing for the common case of using parameter packs with pipe operators
+
+2. **Performance Considerations**:
+   - **Runtime Efficiency**: Ensuring parameter unpacking doesn't introduce significant overhead
+   - **Compile-time Impact**: Minimizing the impact on type checking and compilation times
+   - **MIR Optimization**: Implementing optimizations to eliminate unnecessary intermediate structures
+
+3. **Usability Considerations**:
+   - **Error Messages**: Providing clear and helpful error messages for parameter pack mismatches
+   - **IDE Support**: Ensuring LSP can provide appropriate hints and completions for parameter packs
+   - **Documentation**: Clearly documenting the feature to prevent confusion
+
+## Example Use Cases for Parameter Pack
+
+```mimium
+// Define a function with multiple parameters
+fn mix(input: float, dry: float, wet: float) -> float {
+  input * dry + input * wet
+}
+
+// Traditional call
+let result1 = mix(signal, 0.7, 0.3)
+
+// Using tuple parameter pack
+let params = (signal, 0.7, 0.3)
+let result2 = mix(params) // Equivalent to mix(signal, 0.7, 0.3)
+
+// Using record parameter pack
+let settings = {input: signal, dry: 0.7, wet: 0.3}
+let result3 = mix(settings) // Equivalent to mix(signal, 0.7, 0.3)
+
+// Using with pipe operator for enhanced readability
+let result4 = (signal, 0.7, 0.3) |> mix
+let result5 = {input: signal, dry: 0.7, wet: 0.3} |> mix
+
+// Using with function that takes a function as parameter
+fn process_audio(audio_fn: (float, float, float) -> float, signal: float) -> float {
+  audio_fn(signal, 0.5, 0.5)
+}
+```
+
+## Next Steps for Parameter Pack Implementation
+
+1. **Type System Updates**:
+   - Update function type representation to include parameter names
+   - Implement updated type unification rules
+   - Add test cases for type system changes
+
+2. **Type Checker Extensions**:
+   - Implement parameter pack type checking for function applications
+   - Update error reporting for parameter pack mismatches
+   - Add test cases for type checking
+
+3. **MIR Generation**:
+   - Implement parameter unpacking in MIR generation
+   - Add optimizations for parameter packs
+   - Add test cases for MIR generation
+
+4. **Integration Testing**:
+   - Test parameter packs with existing language features
+   - Benchmark performance impact
+   - Test edge cases and error conditions
+
+5. **Documentation**:
+   - Update language reference with parameter pack documentation
+   - Add examples demonstrating parameter pack usage
+   - Document design decisions and implementation details
