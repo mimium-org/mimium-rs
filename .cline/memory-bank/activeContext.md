@@ -279,6 +279,110 @@ fn process_audio(audio_fn: (float, float, float) -> float, signal: float) -> flo
 }
 ```
 
+## Integration Testing for Parameter Pack
+
+To ensure the Parameter Pack feature works correctly across the entire compiler pipeline, we need comprehensive integration tests. These tests should cover different usage scenarios and verify that parameter packs work correctly with existing language features.
+
+### Test Case Categories
+
+1. **Basic Function Calls with Parameter Pack**:
+   - Test calling multi-parameter functions with tuple parameter packs
+   - Test calling multi-parameter functions with record parameter packs
+   - Test error handling for mismatched parameter types or names
+
+2. **Parameter Pack with Pipe Operators**:
+   - Test using tuples with pipe operators: `(a, b) |> function`
+   - Test using records with pipe operators: `{x: a, y: b} |> function`
+   - Test chaining multiple pipe operations with parameter packs
+
+3. **Higher-order Functions**:
+   - Test passing functions that accept parameter packs to higher-order functions
+   - Test returning functions that accept parameter packs from other functions
+
+4. **Mixed Parameter Usage**:
+   - Test functions that have a mix of regular parameters and parameter packs
+   - Test nested parameter packs (parameter packs within parameter packs)
+
+5. **Edge Cases**:
+   - Test with empty tuples or records
+   - Test with tuples/records containing complex types (e.g., functions, other tuples/records)
+   - Test with large numbers of parameters
+
+### Example Integration Test
+
+```mimium
+// Integration test for parameter pack
+fn test_parameter_pack() -> bool {
+  // Test function that takes multiple parameters
+  fn add3(a: float, b: float, c: float) -> float {
+    a + b + c
+  }
+
+  // Test basic tuple parameter pack
+  let result1 = add3((1.0, 2.0, 3.0))
+  
+  // Test basic record parameter pack
+  let result2 = add3({a: 1.0, b: 2.0, c: 3.0})
+  
+  // Test pipe operator with tuple
+  let result3 = (1.0, 2.0, 3.0) |> add3
+  
+  // Test pipe operator with record
+  let result4 = {a: 1.0, b: 2.0, c: 3.0} |> add3
+  
+  // All results should be 6.0
+  let all_pass = result1 == 6.0 && result2 == 6.0 && result3 == 6.0 && result4 == 6.0
+  
+  // Test higher-order function
+  fn apply_to_values(f: (float, float, float) -> float, values: (float, float, float)) -> float {
+    f(values)  // Double parameter pack: f is called with unpacked values
+  }
+  
+  let result5 = apply_to_values(add3, (1.0, 2.0, 3.0))
+  
+  return all_pass && result5 == 6.0
+}
+
+// Test error cases (these should generate compile-time errors)
+fn test_parameter_pack_errors() {
+  fn add2(a: float, b: float) -> float {
+    a + b
+  }
+  
+  // Error: wrong number of elements in tuple
+  // let error1 = add2((1.0, 2.0, 3.0))
+  
+  // Error: missing parameter in record
+  // let error2 = add2({a: 1.0})
+  
+  // Error: wrong parameter name in record
+  // let error3 = add2({x: 1.0, y: 2.0})
+}
+```
+
+### Test Implementation Plan
+
+1. **Create a dedicated test file**:
+   - Create a new test file at `/tests/parameter_pack.rs` for unit tests
+   - Create a new test file at `/tests/integration/parameter_pack_test.mm` for integration tests
+
+2. **Test Types**:
+   - Unit tests for type system changes
+   - Unit tests for MIR generation
+   - Integration tests using complete mimium programs
+
+3. **Test Environment**:
+   - Use the existing test infrastructure to compile and run mimium programs
+   - Add assertions to verify expected results
+   - Test both compilation and runtime behavior
+
+4. **Performance Testing**:
+   - Benchmark parameter pack overhead compared to regular function calls
+   - Test performance impact of complex parameter pack usage
+   - Verify optimizations work correctly
+
+The integration tests will be a crucial part of verifying that the parameter pack feature works correctly and meets the design requirements. They will help identify any issues with type inference, MIR generation, or runtime behavior before the feature is released.
+
 ## Next Steps for Parameter Pack Implementation
 
 1. **Type System Updates**:
