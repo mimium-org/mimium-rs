@@ -49,7 +49,7 @@ pub enum Instruction {
     // This instruction does no actual computation on runtime.
     GetElement {
         value: VPtr,
-        ty: TypeNodeId,
+        ty: TypeNodeId, // type of the composite value like tuple or struct
         tuple_offset: u64,
     },
     // call function, arguments, type of return value

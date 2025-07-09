@@ -1,6 +1,9 @@
+use itertools::Itertools;
+
 use super::*;
 use crate::pattern::TypedId;
 use crate::utils;
+use crate::utils::miniprint::MiniPrint;
 
 macro_rules! test_string {
     ($src:literal, $ans:expr) => {
@@ -10,8 +13,8 @@ macro_rules! test_string {
             assert!(
                 ast.to_expr() == $ans.to_expr(),
                 "res:{:?}\nans:{:?}",
-                ast,
-                $ans
+                ast.simple_print(),
+                $ans.simple_print()
             );
         } else {
             utils::error::report(&srcstr, "".to_symbol(), &errs);
@@ -19,6 +22,41 @@ macro_rules! test_string {
         }
     };
 }
+fn test_lex(src: &str) -> Vec<Token> {
+    let (tokens, errs) = lex(src, None);
+    if errs.is_empty() {
+        tokens
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect()
+    } else {
+        panic!("lex error: {errs:?}");
+    }
+}
+fn test_expr_parser() -> impl Parser<Token, ExprNodeId, Error = Simple<Token>> {
+    let ctx = ParseContext {
+        file_path: "/".to_symbol(),
+    };
+    chumsky::prelude::recursive(|e| expr_parser(e, ctx))
+}
+fn test_expr_string(src: &str, expr: ExprNodeId) {
+    let (ast, errs) = test_expr_parser().parse_recovery(test_lex(src));
+    if errs.is_empty() && ast.is_some() {
+        assert!(
+            ast.unwrap().to_expr() == expr.to_expr(),
+            "res:{ast:?}\nans:{expr:?}",
+        );
+    } else {
+        utils::error::report(
+            src,
+            "".to_symbol(),
+            &convert_parse_errors(&errs).collect_vec(),
+        );
+        panic!();
+    }
+}
+
 //dummy location
 fn loc(span: Span) -> Location {
     Location {
@@ -194,11 +232,13 @@ fn test_assign2() {
 fn test_applynested() {
     let ans = Expr::Apply(
         Expr::Var("myfun".to_symbol()).into_id(loc(0..5)),
-        vec![Expr::Apply(
-            Expr::Var("myfun2".to_symbol()).into_id(loc(6..12)),
-            vec![Expr::Var("callee".to_symbol()).into_id(loc(13..19))],
-        )
-        .into_id(loc(6..20))],
+        vec![
+            Expr::Apply(
+                Expr::Var("myfun2".to_symbol()).into_id(loc(6..12)),
+                vec![Expr::Var("callee".to_symbol()).into_id(loc(13..19))],
+            )
+            .into_id(loc(6..20)),
+        ],
     )
     .into_id(loc(0..20));
     test_string!("myfun(myfun2(callee))", ans);
@@ -391,8 +431,9 @@ fn test_array_literal() {
 
     // Array with single element
     let ans = Expr::ArrayLiteral(vec![
-        Expr::Literal(Literal::Float("42.0".to_symbol())).into_id(loc(1..5))
-    ]).into_id(loc(0..6));
+        Expr::Literal(Literal::Float("42.0".to_symbol())).into_id(loc(1..5)),
+    ])
+    .into_id(loc(0..6));
     test_string!("[42.0]", ans);
 
     // Array with trailing comma
@@ -409,15 +450,17 @@ fn test_array_access() {
     // Basic array access with integer index
     let ans = Expr::ArrayAccess(
         Expr::Var("arr".to_symbol()).into_id(loc(0..3)),
-        Expr::Literal(Literal::Float("0".to_symbol())).into_id(loc(4..5))
-    ).into_id(loc(0..6));
+        Expr::Literal(Literal::Float("0".to_symbol())).into_id(loc(4..5)),
+    )
+    .into_id(loc(0..6));
     test_string!("arr[0]", ans);
 
     // Array access with float index for interpolation
     let ans = Expr::ArrayAccess(
         Expr::Var("arr".to_symbol()).into_id(loc(0..3)),
-        Expr::Literal(Literal::Float("0.5".to_symbol())).into_id(loc(4..7))
-    ).into_id(loc(0..8));
+        Expr::Literal(Literal::Float("0.5".to_symbol())).into_id(loc(4..7)),
+    )
+    .into_id(loc(0..8));
     test_string!("arr[0.5]", ans);
 
     // Array access with expression index
@@ -426,29 +469,66 @@ fn test_array_access() {
         vec![
             Expr::Literal(Literal::Float("1".to_symbol())).into_id(loc(4..5)),
             Expr::Literal(Literal::Float("2".to_symbol())).into_id(loc(6..7)),
-        ]
-    ).into_id(loc(4..7));
-    
-    let ans = Expr::ArrayAccess(
-        Expr::Var("arr".to_symbol()).into_id(loc(0..3)),
-        index_expr
-    ).into_id(loc(0..8));
+        ],
+    )
+    .into_id(loc(4..7));
+
+    let ans = Expr::ArrayAccess(Expr::Var("arr".to_symbol()).into_id(loc(0..3)), index_expr)
+        .into_id(loc(0..8));
     test_string!("arr[1+2]", ans);
 
     // Nested array access
     let inner_access = Expr::ArrayAccess(
         Expr::Var("inner".to_symbol()).into_id(loc(6..11)),
-        Expr::Literal(Literal::Float("0".to_symbol())).into_id(loc(12..13))
-    ).into_id(loc(6..14));
-    
+        Expr::Literal(Literal::Float("0".to_symbol())).into_id(loc(12..13)),
+    )
+    .into_id(loc(6..14));
+
     let ans = Expr::ArrayAccess(
         Expr::Var("outer".to_symbol()).into_id(loc(0..5)),
-        inner_access
-    ).into_id(loc(0..15));
+        inner_access,
+    )
+    .into_id(loc(0..15));
     test_string!("outer[inner[0]]", ans);
 }
 
-
+#[test]
+fn test_record_type_decl() {
+    let x_s = "x".to_symbol();
+    let y_s = "y".to_symbol();
+    let ans = Expr::RecordLiteral(vec![
+        RecordField {
+            name: x_s,
+            expr: Expr::Literal(Literal::Float("0.0".to_symbol())).into_id(loc(3..4)),
+        },
+        RecordField {
+            name: y_s,
+            expr: Expr::Literal(Literal::Float("2.0".to_symbol())).into_id(loc(7..8)),
+        },
+    ]);
+    test_expr_string("{x = 0.0,y = 2.0}", ans.into_id(loc(0..9)));
+}
+#[test]
+fn test_field_access() {
+    let ans = Expr::FieldAccess(
+        Expr::Proj(
+            Expr::Proj(
+                Expr::FieldAccess(
+                    Expr::Proj(Expr::Var("x".to_symbol()).into_id(loc(0..1)), 0).into_id(loc(0..3)),
+                    "field1".to_symbol(),
+                )
+                .into_id(loc(0..5)),
+                1,
+            )
+            .into_id(loc(0..7)),
+            0,
+        )
+        .into_id(loc(0..9)),
+        "field2".to_symbol(),
+    )
+    .into_id(loc(0..11));
+    test_expr_string("x.0.field1.1.0.field2", ans);
+}
 #[test]
 fn test_stmt_without_return() {
     let ans = Expr::LetRec(

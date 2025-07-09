@@ -1,0 +1,10 @@
+//order of keys for record type does not matters.
+//In this assignment of swapped-ordered record,the key should be automatically unpacked and re-packed in order to be matched
+
+let a = {keya:100.0, keyb:(200.0,300.0)}
+let b = {keyb:(0.0,0.0), keya: 0.0}
+b = a
+
+fn dsp(){
+    b.keya //should be 100.0
+}

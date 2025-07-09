@@ -1,8 +1,8 @@
-use super::token::*;
 use super::ToSymbol;
+use super::token::*;
 use crate::utils::metadata::*;
-use chumsky::prelude::*;
 use chumsky::Parser;
+use chumsky::prelude::*;
 
 fn comment_parser() -> impl Parser<char, Comment, Error = Simple<char>> + Clone {
     // comment parser that keep its contents length, not to break line number for debugging.
@@ -28,9 +28,10 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
     let int = text::int(10).map(|s: String| Token::Int(s.parse().unwrap()));
 
     let float = text::int(10)
-        .then(just('.'))
-        .then(text::digits(10).or_not())
-        .map(|((s, _dot), opt_n)| Token::Float(format!("{}.{}", s, opt_n.unwrap_or_default())));
+        .then_ignore(just('.'))
+        .then(text::digits(10))
+        .then_ignore(just('.').not().ignored().or(end()).rewind())
+        .map(|(s, n)| Token::Float(format!("{s}.{n}")));
 
     // A parser for strings
     let str_ = just('"')
@@ -216,6 +217,50 @@ another line
             let (res, errs) = lexer().parse_recovery(c);
             assert!(errs.is_empty(), "failed to parse");
             assert_eq!(res.unwrap()[0], (Token::Ident("foo".to_symbol()), 0..3))
+        }
+    }
+    #[test]
+    fn test_dotoperator() {
+        // Test for dot operator with index and field access.
+        // The source contains "1.0" but it should not be parsed as a float.
+        // The float tokenizer read one character ahead and ensure the dot operator do not comes next.
+        let src = "x.0.field1.1.0.field2";
+        let (res, _errs) = lexer().parse_recovery(src);
+        let ans = vec![
+            (Token::Ident("x".to_symbol()), 0..1),
+            (Token::Dot, 1..2),
+            (Token::Int(0), 2..3),
+            (Token::Dot, 3..4),
+            (Token::Ident("field1".to_symbol()), 4..10),
+            (Token::Dot, 10..11),
+            (Token::Int(1), 11..12),
+            (Token::Dot, 12..13),
+            (Token::Int(0), 13..14),
+            (Token::Dot, 14..15),
+            (Token::Ident("field2".to_symbol()), 15..21),
+        ];
+        // dbg!(res.clone());
+        if let Some(tok) = res {
+            assert_eq!(tok, ans);
+        } else {
+            panic!("failed to parse dot operator");
+        }
+    }
+    #[test]
+    fn test_dotoperator2() {
+        //test if the normal float parser works
+        let src = "3466.0+2000.0 ";
+        let (res, _errs) = lexer().parse_recovery(src);
+        let ans = vec![
+            (Token::Float("3466.0".to_string()), 0..6),
+            (Token::Op(Op::Sum), 6..7),
+            (Token::Float("2000.0".to_string()), 7..13),
+        ];
+        // dbg!(res.clone());
+        if let Some(tok) = res {
+            assert_eq!(tok, ans);
+        } else {
+            panic!("failed to parse dot operator");
         }
     }
 }
