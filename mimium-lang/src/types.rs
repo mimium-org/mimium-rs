@@ -38,8 +38,13 @@ pub enum Type {
     Array(TypeNodeId),
     Tuple(Vec<TypeNodeId>),
     Record(Vec<(Symbol, TypeNodeId)>),
-    //Function that has a vector of parameters, return type, and type for internal states.
-    Function(Vec<TypeNodeId>, TypeNodeId, Option<TypeNodeId>),
+    ///Function that has a vector of parameters, return type, and type for internal states.
+    ///Parameters are represented as `Vec<(Option<Symbol>, TypeNodeId)>` to support parameter names
+    Function(
+        Vec<(Option<Symbol>, TypeNodeId)>,
+        TypeNodeId,
+        Option<TypeNodeId>,
+    ),
     Ref(TypeNodeId),
     //(experimental) code-type for multi-stage computation that will be evaluated on the next stage
     Code(TypeNodeId),
@@ -66,6 +71,14 @@ impl Type {
     }
     pub fn is_function(&self) -> bool {
         matches!(self, Type::Function(_, _, _))
+    }
+
+    // Helper method to get parameter types without their names
+    pub fn get_param_types(&self) -> Option<Vec<TypeNodeId>> {
+        match self {
+            Type::Function(params, _, _) => Some(params.iter().map(|(_, ty)| *ty).collect()),
+            _ => None,
+        }
     }
     pub fn is_intermediate(&self) -> Option<Rc<RefCell<TypeVar>>> {
         match self {
@@ -136,7 +149,7 @@ impl Type {
             Type::Function(p, r, _s) => {
                 let args = format_vec!(
                     p.iter()
-                        .map(|x| x.to_type().to_string_for_error())
+                        .map(|(_label, x)| x.to_type().to_string_for_error())
                         .collect::<Vec<_>>(),
                     ","
                 );
@@ -176,7 +189,10 @@ impl TypeNodeId {
                     .collect(),
             ),
             Type::Function(p, r, s) => {
-                let at = apply_vec(&p, &mut closure);
+                let at = p
+                    .into_iter()
+                    .map(|(s, t)| (s, apply_scalar(t, &mut closure)))
+                    .collect::<Vec<_>>();
                 let rt = apply_scalar(r, &mut closure);
                 Type::Function(at, rt, s.map(|t| apply_scalar(t, &mut closure)))
             }
@@ -245,7 +261,9 @@ impl fmt::Display for Type {
             }
             Type::Function(p, r, _s) => {
                 let args = format_vec!(
-                    p.iter().map(|x| x.to_type().clone()).collect::<Vec<_>>(),
+                    p.iter()
+                        .map(|(_, x)| x.to_type().clone())
+                        .collect::<Vec<_>>(),
                     ","
                 );
                 write!(f, "({args})->{}", r.to_type())

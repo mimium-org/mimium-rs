@@ -101,7 +101,8 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
             .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
             .then(just(Token::Arrow).ignore_then(ty.clone()))
             .map_with_span(move |(a, e), span| {
-                Type::Function(a, e, None).into_id_with_location(Location::new(span, path))
+                Type::Function(a.into_iter().map(|a| (None, a)).collect(), e, None)
+                    .into_id_with_location(Location::new(span, path))
             })
             .boxed()
             .labelled("function");
@@ -668,11 +669,12 @@ fn gen_unknown_function_type(
     let atypes = ids
         .iter()
         .map(|tid| {
-            if !tid.is_unknown() {
+            let t = if !tid.is_unknown() {
                 tid.ty
             } else {
                 Type::Unknown.into_id_with_location(loc.clone())
-            }
+            };
+            (None, t)
         })
         .collect::<Vec<_>>();
     Type::Function(

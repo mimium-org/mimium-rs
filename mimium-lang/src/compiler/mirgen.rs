@@ -606,12 +606,49 @@ impl Context {
                 if let Some(d) = del {
                     (d, numeric!())
                 } else {
-                    let atvvec = self.eval_args(args);
-                    let rt = if let Type::Function(_, rt, _) = ft.to_type() {
-                        rt
+                    // Get function parameter info
+                    let (param_types, rt) = if let Type::Function(params, rt, _) = ft.to_type() {
+                        (params, rt)
                     } else {
                         panic!("non function type {} {} ", ft.to_type(), ty.to_type());
                     };
+
+                    // Handle parameter packing/unpacking if needed
+                    let atvvec = if args.len() == 1 && param_types.len() > 1 {
+                        let (label, ty) = param_types[0];
+                        // Check if the argument is a tuple or record that we need to unpack
+                        let arg_val = self.eval_expr(args[0]);
+                        match arg_val.1.to_type() {
+                            Type::Tuple(tys) => tys
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, t)| {
+                                    let elem_val = self.push_inst(Instruction::GetElement {
+                                        value: arg_val.0.clone(),
+                                        ty,
+                                        tuple_offset: i as u64,
+                                    });
+                                    (elem_val, t)
+                                })
+                                .collect(),
+                            Type::Record(kvs) => kvs
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, (name, param_type))| {
+                                    let field_val = self.push_inst(Instruction::GetElement {
+                                        value: arg_val.0.clone(),
+                                        ty,
+                                        tuple_offset: i as u64,
+                                    });
+                                    (field_val, param_type)
+                                })
+                                .collect(),
+                            _ => vec![self.eval_expr(args[0])],
+                        }
+                    } else {
+                        self.eval_args(args)
+                    };
+
                     let res = match f.as_ref() {
                         Value::Global(v) => match v.as_ref() {
                             Value::Function(idx) => {
@@ -647,7 +684,9 @@ impl Context {
             Expr::PipeApply(_, _) => unreachable!(),
             Expr::Lambda(ids, _rett, body) => {
                 let (atypes, rt) = match ty.to_type() {
-                    Type::Function(atypes, rt, _) => (atypes.clone(), rt),
+                    Type::Function(atypes, rt, _) => {
+                        (atypes.into_iter().map(|(_, t)| t).collect::<Vec<_>>(), rt)
+                    }
                     _ => panic!(),
                 };
                 let binds = ids

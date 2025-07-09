@@ -29,7 +29,18 @@ macro_rules! string_t {
 #[macro_export]
 macro_rules! function {
     ($params:expr, $return:expr) => {
-        Type::Function($params, $return, None).into_id()
+        Type::Function(
+            $params.into_iter().map(|t| (None, t)).collect(),
+            $return,
+            None
+        ).into_id()
+    };
+}
+
+#[macro_export]
+macro_rules! named_function {
+    ($named_params:expr, $return:expr) => {
+        Type::Function($named_params, $return, None).into_id()
     };
 }
 
@@ -61,8 +72,8 @@ mod typemacro_test {
             Type::Ref(
                 Type::Function(
                     vec![
-                        Type::Primitive(PType::Int).into_id(),
-                        Type::Primitive(PType::Int).into_id(),
+                        (None,Type::Primitive(PType::Int).into_id()),
+                        (None,Type::Primitive(PType::Int).into_id()),
                     ],
                     Type::Primitive(PType::Numeric).into_id(),
                     None,

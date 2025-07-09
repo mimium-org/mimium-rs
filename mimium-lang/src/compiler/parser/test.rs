@@ -262,8 +262,8 @@ fn test_fndef() {
         TypedId {
             ty: Type::Function(
                 vec![
-                    Type::Unknown.into_id_with_location(loc(0..28)),
-                    Type::Unknown.into_id_with_location(loc(0..28)),
+                    (None, Type::Unknown.into_id_with_location(loc(0..28))),
+                    (None, Type::Unknown.into_id_with_location(loc(0..28))),
                 ],
                 Type::Unknown.into_id_with_location(loc(0..28)),
                 None,
@@ -299,8 +299,8 @@ fn global_fnmultiple() {
             id: "hoge".to_symbol(),
             ty: Type::Function(
                 vec![
-                    Type::Unknown.into_id_with_location(loc(0..28)),
-                    Type::Unknown.into_id_with_location(loc(0..28)),
+                    (None, Type::Unknown.into_id_with_location(loc(0..28))),
+                    (None, Type::Unknown.into_id_with_location(loc(0..28))),
                 ],
                 Type::Unknown.into_id_with_location(loc(0..28)),
                 None,
@@ -328,8 +328,8 @@ fn global_fnmultiple() {
                     id: "hoge".to_symbol(),
                     ty: Type::Function(
                         vec![
-                            Type::Unknown.into_id_with_location(loc(29..57)),
-                            Type::Unknown.into_id_with_location(loc(29..57)),
+                            (None, Type::Unknown.into_id_with_location(loc(29..57))),
+                            (None, Type::Unknown.into_id_with_location(loc(29..57))),
                         ],
                         Type::Unknown.into_id_with_location(loc(29..57)),
                         None,
@@ -535,7 +535,7 @@ fn test_stmt_without_return() {
         TypedId {
             id: "test".to_symbol(),
             ty: Type::Function(
-                vec![Type::Unknown.into_id_with_location(loc(0..56))],
+                vec![(None, Type::Unknown.into_id_with_location(loc(0..56)))],
                 Type::Unknown.into_id_with_location(loc(0..56)),
                 None,
             )

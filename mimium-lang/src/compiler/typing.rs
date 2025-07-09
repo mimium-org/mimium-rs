@@ -329,7 +329,8 @@ impl InferContext {
             Type::Array(a) => cls(*a),
             Type::Tuple(t) => vec_cls(t),
             Type::Function(p, r, s) => {
-                vec_cls(p)
+                let vec = p.into_iter().map(|(_, t)| *t).collect::<Vec<_>>();
+                vec_cls(vec.as_slice())
                     && cls(*r)
                     && cls(s.map(|x| x).unwrap_or_else(|| Type::Unknown.into_id()))
             }
@@ -484,7 +485,7 @@ impl InferContext {
                 }
             }
             (Type::Function(p1, r1, _s1), Type::Function(p2, r2, _s2)) => {
-                let (param, errs) = Self::unify_vec(p1, loc1.clone(), p2, loc2.clone());
+                let (param, errs) = Self::unify_named_params(p1, &loc1, p2, &loc2);
                 let ret = Self::unify_types((*r1, loc1), (*r2, loc2));
                 match (ret, errs) {
                     (Ok(ret), errs) if errs.is_empty() => {
@@ -764,7 +765,7 @@ impl InferContext {
             }
             Expr::Lambda(p, rtype, body) => {
                 self.env.extend();
-                let ptypes: Vec<TypeNodeId> = p
+                let ptypes: Vec<(Option<Symbol>, TypeNodeId)> = p
                     .iter()
                     .map(|id| {
                         let pt = if !id.is_unknown() {
@@ -773,7 +774,7 @@ impl InferContext {
                             self.gen_intermediate_type()
                         };
                         self.env.add_bind(&[(id.id, pt)]);
-                        pt
+                        (Some(id.id), pt)
                     })
                     .collect();
                 let bty = if let Some(r) = rtype {
@@ -840,7 +841,20 @@ impl InferContext {
                 let fnl = self.infer_type(*fun);
                 let fnl = self.unwrap_result(fnl);
                 let loc_f = Location::new(fun.to_span(), self.file_path);
-                let callee_t = self.infer_vec(callee.as_slice())?;
+                let callee_t = if callee.len() == 1 {
+                    let callee_t = self.infer_type(callee[0])?;
+                    match callee_t.to_type() {
+                        //parameter-pack handling
+                        Type::Tuple(t) => t.into_iter().map(|t| (None, t)).collect(),
+                        Type::Record(kvs) => kvs.into_iter().map(|(k, t)| (Some(k), t)).collect(),
+                        _ => vec![(None, callee_t)],
+                    }
+                } else {
+                    self.infer_vec(callee.as_slice())?
+                        .into_iter()
+                        .map(|t| (None, t))
+                        .collect::<Vec<_>>()
+                };
                 let res_t = self.gen_intermediate_type();
                 let fntype = Type::Function(callee_t, res_t, None).into_id();
                 let restype = Self::unify_types((fnl, loc_f.clone()), (fntype, loc_f));
@@ -885,6 +899,44 @@ impl InferContext {
     }
     pub fn lookup_res(&self, e: ExprNodeId) -> TypeNodeId {
         *self.result_map.get(&e.0).expect("type inference failed")
+    }
+    // Helper function to unify function parameters with names
+    fn unify_named_params(
+        p1: &[(Option<Symbol>, TypeNodeId)],
+        loc1: &Location,
+        p2: &[(Option<Symbol>, TypeNodeId)],
+        loc2: &Location,
+    ) -> (Vec<(Option<Symbol>, TypeNodeId)>, Vec<Error>) {
+        if p1.len() != p2.len() {
+            let err = Error::LengthMismatch {
+                left: (p1.len(), loc1.clone()),
+                right: (p2.len(), loc2.clone()),
+            };
+            return (Vec::new(), vec![err]);
+        }
+
+        let res = p1
+            .iter()
+            .zip(p2.iter())
+            .map(|((name1, type1), (name2, type2))| {
+                Self::unify_types((*type1, loc1.clone()), (*type2, loc2.clone())).map(
+                    |unified_type| match (name1, name2) {
+                        (Some(n1), Some(n2)) if n1 != n2 => {
+                            log::warn!(
+                                "Unifying parameters with different names: {n1} and {n2}. Using {n1}.",
+                            );
+                            (Some(*n1), unified_type)
+                        }
+                        (Some(n), _) | (_, Some(n)) => (Some(*n), unified_type),
+                        _ => (None, unified_type),
+                    },
+                )
+            })
+            .try_collect();
+        match res {
+            Ok(unified_params) => (unified_params, vec![]),
+            Err(errors) => (Vec::new(), errors),
+        }
     }
 }
 
