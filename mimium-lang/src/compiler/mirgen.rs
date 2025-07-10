@@ -631,19 +631,20 @@ impl Context {
                                     (elem_val, t)
                                 })
                                 .collect(),
-                            Type::Record(kvs) => kvs
-                                .into_iter()
-                                .enumerate()
-                                .map(|(i, (_name, param_type))| {
-                                    //todo: reorder if the keys are different from the order of the parameters defined in function
-                                    let field_val = self.push_inst(Instruction::GetElement {
-                                        value: arg_val.clone(),
-                                        ty,
-                                        tuple_offset: i as u64,
-                                    });
-                                    (field_val, param_type)
-                                })
-                                .collect(),
+                            Type::Record(kvs) => param_types.get_as_slice().iter().map(|param|{
+                                kvs.iter().enumerate().find(|(_i,(k, _))| param.label.is_some_and(| l| l == *k))
+                                    .map_or_else(
+                                        || unreachable!("parameter pack failed, possible type inference bug"),
+                                        |(i,(_, t))| {
+                                            let field_val = self.push_inst(Instruction::GetElement {
+                                                value: arg_val.clone(),
+                                                ty,
+                                                tuple_offset: i as u64,
+                                            });
+                                            (field_val, *t)
+                                        },
+                                    )
+                            }).collect(),
                             _ => vec![self.eval_expr(args[0])],
                         }
                     } else {
@@ -685,9 +686,7 @@ impl Context {
             Expr::PipeApply(_, _) => unreachable!(),
             Expr::Lambda(ids, _rett, body) => {
                 let (atypes, rt) = match ty.to_type() {
-                    Type::Function(atypes, rt, _) => {
-                        (atypes.ty_iter().collect::<Vec<_>>(), rt)
-                    }
+                    Type::Function(atypes, rt, _) => (atypes.ty_iter().collect::<Vec<_>>(), rt),
                     _ => panic!(),
                 };
                 let binds = ids

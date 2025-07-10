@@ -506,6 +506,12 @@ fn parameter_pack_record() {
     let ans = vec![13.0]; // 1 + 5 + 7
     assert_eq!(res, ans);
 }
+#[test]
+fn parameter_pack_record_order() {
+    let res = run_file_test_mono("parameter_pack_record_order.mmm", 1).unwrap();
+    let ans = vec![-4.0]; // 2*(5-7)
+    assert_eq!(res, ans);
+}
 
 #[test]
 fn parameter_pack_record_fail() {
@@ -517,4 +523,3 @@ fn parameter_pack_record_fail2() {
     let res = run_error_test("parameter_pack_record_fail2.mmm", false);
     assert_eq!(res.len(), 1);
 }
-

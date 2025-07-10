@@ -1,0 +1,7 @@
+fn process(a:float,b:float,c:float){
+  a*(b-c)//the order matters
+}
+
+fn dsp(){
+  {c=7,a=2,b=5} |> process //2*(5-7) => -4
+}
