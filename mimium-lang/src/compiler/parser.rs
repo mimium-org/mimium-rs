@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::ast::*;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
-use crate::types::{PType, Type};
+use crate::types::{LabeledParam, LabeledParams, PType, Type};
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::*;
 use chumsky::{Parser, prelude::*};
@@ -101,8 +101,12 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
             .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
             .then(just(Token::Arrow).ignore_then(ty.clone()))
             .map_with_span(move |(a, e), span| {
-                Type::Function(a.into_iter().map(|a| (None, a)).collect(), e, None)
-                    .into_id_with_location(Location::new(span, path))
+                Type::Function(
+                    LabeledParams::new(a.into_iter().map(LabeledParam::from).collect()),
+                    e,
+                    None,
+                )
+                .into_id_with_location(Location::new(span, path))
             })
             .boxed()
             .labelled("function");
@@ -674,11 +678,11 @@ fn gen_unknown_function_type(
             } else {
                 Type::Unknown.into_id_with_location(loc.clone())
             };
-            (None, t)
+            LabeledParam::new(tid.id, t)
         })
-        .collect::<Vec<_>>();
+        .collect();
     Type::Function(
-        atypes,
+        LabeledParams::new(atypes),
         r_type.unwrap_or_else(|| Type::Unknown.into_id_with_location(loc.clone())),
         None,
     )

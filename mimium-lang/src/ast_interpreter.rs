@@ -7,7 +7,7 @@ use crate::{
     pattern::{TypedId, TypedPattern},
     runtime::builtin_fn,
     string_t,
-    types::{PType, Type},
+    types::{LabeledParam, LabeledParams, PType, Type},
     unit,
     utils::{environment::Environment, metadata::Span},
 };
@@ -60,14 +60,16 @@ impl Value {
                 }
             }
             Value::Function(a, _e, _ctx, r_type) => Type::Function(
-                a.iter()
-                    .map(|tid| {
-                        if tid.is_unknown() {
-                            panic!("function argument untyped");
-                        }
-                        (None, tid.ty)
-                    })
-                    .collect(),
+                LabeledParams::new(
+                    a.iter()
+                        .map(|tid| {
+                            if tid.is_unknown() {
+                                panic!("function argument untyped");
+                            }
+                            LabeledParam::from(tid.ty)
+                        })
+                        .collect(),
+                ),
                 r_type.expect("Return type cannot inferred"), //todo!
                 None,
             )
@@ -177,10 +179,7 @@ fn find_matched_builtin_fn(n: Symbol, tv: &[TypeNodeId]) -> Option<(Type, *const
         .iter()
         .find_map(|(name, ty, ptr)| {
             let (ty_same, rt) = if let Type::Function(tv2, rt, _) = ty.to_type() {
-                (
-                    tv.eq(&tv2.into_iter().map(|(_, t)| t).collect::<Vec<_>>()),
-                    rt.to_type(),
-                )
+                (tv.eq(&tv2.ty_iter().collect::<Vec<_>>()), rt.to_type())
             } else {
                 return None;
             };

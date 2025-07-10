@@ -614,7 +614,7 @@ impl Context {
                     };
 
                     // Handle parameter packing/unpacking if needed
-                    let atvvec = if args.len() == 1 && param_types.len() > 1 {
+                    let atvvec = if args.len() == 1 && param_types.get_as_slice().len() > 1 {
                         let (arg_val, ty) = self.eval_expr(args[0]);
                         log::trace!("Unpacking argument for {:?}", ty);
                         // Check if the argument is a tuple or record that we need to unpack
@@ -686,7 +686,7 @@ impl Context {
             Expr::Lambda(ids, _rett, body) => {
                 let (atypes, rt) = match ty.to_type() {
                     Type::Function(atypes, rt, _) => {
-                        (atypes.into_iter().map(|(_, t)| t).collect::<Vec<_>>(), rt)
+                        (atypes.ty_iter().collect::<Vec<_>>(), rt)
                     }
                     _ => panic!(),
                 };

@@ -1,5 +1,4 @@
-use super::PType;
-use super::Type;
+use super::{PType, Type};
 
 #[macro_export]
 macro_rules! unit {
@@ -30,10 +29,16 @@ macro_rules! string_t {
 macro_rules! function {
     ($params:expr, $return:expr) => {
         Type::Function(
-            $params.into_iter().map(|t| (None, t)).collect(),
+            $crate::types::LabeledParams::new(
+                $params
+                    .into_iter()
+                    .map(|t| $crate::types::LabeledParam { label: None, ty: t })
+                    .collect(),
+            ),
             $return,
-            None
-        ).into_id()
+            None,
+        )
+        .into_id()
     };
 }
 
@@ -61,6 +66,8 @@ macro_rules! tuple {
 
 #[cfg(test)]
 mod typemacro_test {
+    use crate::types::{LabeledParam, LabeledParams};
+
     use super::*;
     #[test]
     fn buildertest() {
@@ -71,10 +78,16 @@ mod typemacro_test {
         let answer = Type::Tuple(vec![
             Type::Ref(
                 Type::Function(
-                    vec![
-                        (None,Type::Primitive(PType::Int).into_id()),
-                        (None,Type::Primitive(PType::Int).into_id()),
-                    ],
+                    LabeledParams::new(vec![
+                        LabeledParam {
+                            label: None,
+                            ty: Type::Primitive(PType::Int).into_id(),
+                        },
+                        LabeledParam {
+                            label: None,
+                            ty: Type::Primitive(PType::Int).into_id(),
+                        },
+                    ]),
                     Type::Primitive(PType::Numeric).into_id(),
                     None,
                 )

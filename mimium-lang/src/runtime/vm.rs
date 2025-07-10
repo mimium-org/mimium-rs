@@ -568,8 +568,8 @@ impl Machine {
             let mut wrap_bytecode = Vec::<Instruction>::new();
             // todo: decouple bytecode generator dependency
             let asizes = args
-                .into_iter()
-                .map(|(_, t)| ByteCodeGenerator::word_size_for_type(t));
+                .ty_iter()
+                .map(ByteCodeGenerator::word_size_for_type);
             let nargs = asizes.clone().sum();
             // if there are 2 arguments of float for instance, base pointer should be 2
             let base = nargs;
