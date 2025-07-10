@@ -512,3 +512,9 @@ fn parameter_pack_record_fail() {
     let res = run_error_test("parameter_pack_record_fail.mmm", false);
     assert_eq!(res.len(), 1);
 }
+#[test]
+fn parameter_pack_record_fail2() {
+    let res = run_error_test("parameter_pack_record_fail2.mmm", false);
+    assert_eq!(res.len(), 1);
+}
+
