@@ -38,6 +38,11 @@ pub enum Error {
         loc: Location,
         et: TypeNodeId,
     },
+    FieldNotExistInParams {
+        field: Symbol,
+        loc: Location,
+        params: LabeledParams,
+    },
     DuplicateKeyInRecord {
         key: Vec<Symbol>,
         loc: Location,
@@ -93,10 +98,13 @@ impl ReportableError for Error {
                 format!("Field access for non-record variable.")
             }
             Error::FieldNotExist { field, .. } => {
-                format!("Field `{}` does not exist in the record type", field,)
+                format!("Field `{field}` does not exist in the record type")
             }
             Error::IncompatibleKeyInRecord { .. } => {
                 format!("Record type has incompatible keys.",)
+            }
+            Error::FieldNotExistInParams { .. } => {
+                format!("Field contains non-existing keys in the parameter list")
             }
         }
     }
@@ -165,7 +173,7 @@ impl ReportableError for Error {
                 .map(|(key, loc)| {
                     (
                         loc.clone(),
-                        format!("Duplicate key `{}` found in parameter list", key),
+                        format!("Duplicate key \"{key}\" found in parameter list"),
                     )
                 })
                 .collect(),
@@ -190,7 +198,7 @@ impl ReportableError for Error {
                 vec![(
                     loc.clone(),
                     format!(
-                        "Incompatible key `{}` found in record type",
+                        "Incompatible key \"{}\" found in record type",
                         key.iter()
                             .map(|s| s.to_string())
                             .collect::<Vec<_>>()
@@ -198,6 +206,25 @@ impl ReportableError for Error {
                     ),
                 )]
             }
+            Error::FieldNotExistInParams { field, loc, params } => vec![(
+                loc.clone(),
+                format!(
+                    "Field \"{}\" does not exist in the parameter list{}",
+                    field,
+                    params
+                        .get_as_slice()
+                        .iter()
+                        .map(|p| {
+                            format!(
+                                " \"{}\":{}",
+                                p.label.map_or_else(|| "_".to_string(), |s| s.to_string()),
+                                p.ty.to_type().to_string_for_error()
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            )],
         }
     }
 }
@@ -946,16 +973,19 @@ impl InferContext {
         }
         if has_label_1 && has_label_2 {
             //labels may be in different order
-            let unified_types = ps2
-                .get_as_slice()
-                .iter()
-                .map(|p2| {
-                    ps1.get_as_slice()
-                        .iter()
-                        .find(|p1| p1.label == p2.label)
-                        .map(|p1| Self::unify_types((p1.ty, loc1.clone()), (p2.ty, loc2.clone())))
-                })
-                .flatten();
+            let unified_types = ps2.get_as_slice().iter().map(|p2| {
+                ps1.get_as_slice()
+                    .iter()
+                    .find(|p1| p1.label == p2.label)
+                    .map_or(
+                        Err(vec![Error::FieldNotExistInParams {
+                            field: p2.label.unwrap(),
+                            loc: loc1.clone(),
+                            params: ps1.clone(),
+                        }]),
+                        |p1| Self::unify_types((p1.ty, loc1.clone()), (p2.ty, loc2.clone())),
+                    )
+            });
             if unified_types.clone().any(|x| x.is_err()) {
                 let errs = unified_types.filter_map(|x| x.err()).flatten().collect();
                 return (LabeledParams::new(vec![]), errs);
