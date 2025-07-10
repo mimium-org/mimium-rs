@@ -481,6 +481,12 @@ fn record_infer() {
     let ans = vec![81.5];
     assert_eq!(res, ans);
 }
+#[test]
+fn record_shuffle_field() {
+    let res = run_file_test_mono("record_shuffle_field.mmm", 1).unwrap();
+    let ans = vec![100.0];
+    assert_eq!(res, ans);
+}
 
 #[test]
 fn record_pattern_capture() {

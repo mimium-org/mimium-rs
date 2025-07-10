@@ -73,6 +73,8 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
             .allow_trailing()
             .delimited_by(breakable_blockbegin(), breakable_blockend())
             .map_with_span(move |fields, span| {
+                let mut fields = fields;
+                fields.sort_by(|(a, _), (b, _)| a.cmp(b));
                 Type::Record(fields).into_id_with_location(Location::new(span, path))
             })
             .recover_with(nested_delimiters(
@@ -450,6 +452,9 @@ pub(super) fn atom_parser<'a>(
         .allow_trailing()
         .delimited_by(breakable_blockbegin(), breakable_blockend())
         .map_with_span(move |fields, span| {
+            //fields are implicitly sorted by name.
+            let mut fields = fields;
+            fields.sort_by(|a, b| a.name.cmp(&b.name));
             Expr::RecordLiteral(fields).into_id(Location {
                 span,
                 path: ctx.file_path,
