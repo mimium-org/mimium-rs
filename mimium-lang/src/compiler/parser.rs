@@ -161,17 +161,39 @@ where
         .map(|(id, t)| (id, t))
 }
 
-fn lvar_parser_typed(ctx: ParseContext) -> impl Parser<Token, TypedId, Error = ParseError> + Clone {
+// Basic parameter parser without default values
+fn lvar_parser_typed_basic(
+    ctx: ParseContext,
+) -> impl Parser<Token, TypedId, Error = ParseError> + Clone {
     with_type_annotation(ident_parser(), ctx.clone())
-        .map_with_span(move |(sym, t), span| match t {
-            Some(ty) => TypedId { id: sym, ty },
-            None => TypedId {
-                id: sym,
-                ty: Type::Unknown.into_id_with_location(Location {
-                    span,
+        .map_with_span(move |(sym, t), span| {
+            let ty = match t {
+                Some(ty) => ty,
+                None => Type::Unknown.into_id_with_location(Location {
+                    span: span.clone(),
                     path: ctx.file_path,
                 }),
-            },
+            };
+
+            TypedId::new(sym, ty)
+        })
+        .labelled("lvar_typed_basic")
+}
+
+// Parameter parser with support for default values
+fn lvar_parser_typed(
+    ctx: ParseContext,
+    expr: impl Parser<Token, ExprNodeId, Error = ParseError> + Clone,
+) -> impl Parser<Token, TypedId, Error = ParseError> + Clone {
+    lvar_parser_typed_basic(ctx.clone())
+        .then(
+            // Parse optional default value: = expr
+            just(Token::Assign).ignore_then(expr).or_not(),
+        )
+        .map(|(param, default_value)| TypedId {
+            id: param.id,
+            ty: param.ty,
+            default_value,
         })
         .labelled("lvar_typed")
 }
@@ -386,7 +408,7 @@ pub(super) fn atom_parser<'a>(
     expr_group: ExprParser<'a>,
     ctx: ParseContext,
 ) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone + 'a {
-    let lambda = lvar_parser_typed(ctx.clone())
+    let lambda = lvar_parser_typed(ctx.clone(), expr.clone())
         .separated_by(just(Token::Comma))
         .delimited_by(
             just(Token::LambdaArgBeginEnd),
@@ -581,7 +603,7 @@ fn statement_parser(
         .labelled("let");
     let letrec = just(Token::LetRec)
         .ignore_then(
-            lvar_parser_typed(ctx.clone()).validate(|ident, span, emit| {
+            lvar_parser_typed(ctx.clone(), expr.clone()).validate(|ident, span, emit| {
                 if let Err(e) = validate_reserved_ident(ident.id, span.clone()) {
                     emit(e);
                 }
@@ -695,7 +717,7 @@ fn gen_unknown_function_type(
 }
 fn func_parser(ctx: ParseContext) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone {
     let exprgroup = exprgroup_parser(ctx.clone());
-    let lvar = lvar_parser_typed(ctx.clone());
+    let lvar = lvar_parser_typed(ctx.clone(), exprgroup.clone());
     let blockstart = just(Token::BlockBegin)
         .then_ignore(just(Token::LineBreak).or(just(Token::SemiColon)).repeated());
     let blockend = just(Token::LineBreak)
@@ -732,10 +754,7 @@ fn func_parser(ctx: ParseContext) -> impl Parser<Token, ExprNodeId, Error = Pars
                 span: span.clone(),
                 path: ctx.file_path,
             };
-            let fname = TypedId {
-                id: fname.id,
-                ty: gen_unknown_function_type(&ids, r_type, loc.clone()),
-            };
+            let fname = TypedId::new(fname.id, Type::Unknown.into_id_with_location(loc.clone()));
             (
                 Statement::LetRec(fname, Expr::Lambda(ids, r_type, block).into_id(loc.clone())),
                 loc,

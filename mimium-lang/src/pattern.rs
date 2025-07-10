@@ -1,4 +1,4 @@
-use crate::interner::{Symbol, TypeNodeId};
+use crate::interner::{ExprNodeId, Symbol, TypeNodeId};
 //todo! need to replace with interned string.
 use crate::types::Type;
 use crate::utils::metadata::Span;
@@ -49,9 +49,29 @@ pub struct TypedId {
     // TypeNodeId is always issued even if the expression doesn't have the type
     // specification at all. This can be used for querying for the span.
     pub ty: TypeNodeId,
+    // Optional default value for function parameters
+    pub default_value: Option<ExprNodeId>,
 }
 
 impl TypedId {
+    // Constructor that initializes a TypedId with default values
+    pub fn new(id: Symbol, ty: TypeNodeId) -> Self {
+        TypedId {
+            id,
+            ty,
+            default_value: None,
+        }
+    }
+
+    // Constructor that includes a default value
+    pub fn with_default(id: Symbol, ty: TypeNodeId, default_value: ExprNodeId) -> Self {
+        TypedId {
+            id,
+            ty,
+            default_value: Some(default_value),
+        }
+    }
+
     pub fn to_span(&self) -> Span {
         self.ty.to_span()
     }
@@ -114,6 +134,8 @@ impl From<TypedId> for TypedPattern {
         TypedPattern {
             pat: Pattern::Single(value.id),
             ty: value.ty,
+            // Default values are handled separately in the type system
+            // and not represented in TypedPattern
         }
     }
 }
@@ -122,7 +144,7 @@ impl TryFrom<TypedPattern> for TypedId {
 
     fn try_from(value: TypedPattern) -> Result<Self, Self::Error> {
         match value.pat {
-            Pattern::Single(id) => Ok(TypedId { id, ty: value.ty }),
+            Pattern::Single(id) => Ok(TypedId::new(id, value.ty)),
             _ => Err(ConversionError),
         }
     }

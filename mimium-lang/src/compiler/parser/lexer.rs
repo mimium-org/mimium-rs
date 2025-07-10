@@ -73,13 +73,20 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
             "|>" => Token::Op(Op::Pipe),
             _ => Token::Op(Op::Unknown(s)),
         });
-    let separator = one_of(",.:;").map(|c| match c {
-        ',' => Token::Comma,
-        '.' => Token::Dot,
-        ':' => Token::Colon,
-        ';' => Token::SemiColon,
-        _ => Token::Ident(c.to_string().to_symbol()),
-    });
+    // Handle '..' as DoubleDot token, and '.' as Dot token
+    let double_dot = just("..").map(|_| Token::DoubleDot);
+    let single_dot = just('.').map(|_| Token::Dot);
+    let dot = double_dot.or(single_dot);
+    
+    let separator = choice((
+        dot,
+        one_of(",:;").map(|c| match c {
+            ',' => Token::Comma,
+            ':' => Token::Colon,
+            ';' => Token::SemiColon,
+            _ => Token::Ident(c.to_string().to_symbol()),
+        })
+    ));
     // A parser for identifiers and keywords
     let ident = text::ident().map(|ident: String| match ident.as_str() {
         "fn" => Token::Function,

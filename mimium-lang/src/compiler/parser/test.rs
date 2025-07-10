@@ -277,17 +277,18 @@ fn test_fndef() {
             .into_id_with_location(loc(0..28)),
 
             id: "hoge".to_symbol(),
+            default_value: None,
         },
         Expr::Lambda(
             vec![
-                TypedId {
-                    id: "input".to_symbol(),
-                    ty: Type::Unknown.into_id_with_location(loc(8..13)),
-                },
-                TypedId {
-                    id: "gue".to_symbol(),
-                    ty: Type::Unknown.into_id_with_location(loc(14..17)),
-                },
+                TypedId::new(
+                    "input".to_symbol(),
+                    Type::Unknown.into_id_with_location(loc(8..13)),
+                ),
+                TypedId::new(
+                    "gue".to_symbol(),
+                    Type::Unknown.into_id_with_location(loc(14..17)),
+                ),
             ],
             None,
             Expr::Var("input".to_symbol()).into_id(loc(21..26)),
@@ -318,17 +319,18 @@ fn global_fnmultiple() {
                 None,
             )
             .into_id_with_location(loc(0..28)),
+            default_value: None,
         },
         Expr::Lambda(
             vec![
-                TypedId {
-                    id: "input".to_symbol(),
-                    ty: Type::Unknown.into_id_with_location(loc(8..13)),
-                },
-                TypedId {
-                    id: "gue".to_symbol(),
-                    ty: Type::Unknown.into_id_with_location(loc(14..17)),
-                },
+                TypedId::new(
+                    "input".to_symbol(),
+                    Type::Unknown.into_id_with_location(loc(8..13)),
+                ),
+                TypedId::new(
+                    "gue".to_symbol(),
+                    Type::Unknown.into_id_with_location(loc(14..17)),
+                ),
             ],
             None,
             Expr::Var("input".to_symbol()).into_id(loc(21..26)),
@@ -336,9 +338,9 @@ fn global_fnmultiple() {
         .into_id(loc(0..28)),
         Some(
             Expr::LetRec(
-                TypedId {
-                    id: "hoge".to_symbol(),
-                    ty: Type::Function(
+                TypedId::new(
+                    "hoge".to_symbol(),
+                    Type::Function(
                         LabeledParams::new(vec![
                             LabeledParam::new(
                                 "input".to_symbol(),
@@ -353,17 +355,17 @@ fn global_fnmultiple() {
                         None,
                     )
                     .into_id_with_location(loc(29..57)),
-                },
+                ),
                 Expr::Lambda(
                     vec![
-                        TypedId {
-                            id: "input".to_symbol(),
-                            ty: Type::Unknown.into_id_with_location(loc(37..42)),
-                        },
-                        TypedId {
-                            id: "gue".to_symbol(),
-                            ty: Type::Unknown.into_id_with_location(loc(43..46)),
-                        },
+                        TypedId::new(
+                            "input".to_symbol(),
+                            Type::Unknown.into_id_with_location(loc(37..42)),
+                        ),
+                        TypedId::new(
+                            "gue".to_symbol(),
+                            Type::Unknown.into_id_with_location(loc(43..46)),
+                        ),
                     ],
                     None,
                     Expr::Var("input".to_symbol()).into_id(loc(50..55)),
@@ -384,20 +386,20 @@ fn global_fnmultiple() {
 #[test]
 fn test_macrodef() {
     let ans = Expr::LetRec(
-        TypedId {
-            id: "hoge".to_symbol(),
-            ty: Type::Unknown.into_id_with_location(loc(6..10)),
-        },
+        TypedId::new(
+            "hoge".to_symbol(),
+            Type::Unknown.into_id_with_location(loc(6..10)),
+        ),
         Expr::Lambda(
             vec![
-                TypedId {
-                    id: "input".to_symbol(),
-                    ty: Type::Unknown.into_id_with_location(loc(11..16)),
-                },
-                TypedId {
-                    id: "gue".to_symbol(),
-                    ty: Type::Unknown.into_id_with_location(loc(17..20)),
-                },
+                TypedId::new(
+                    "input".to_symbol(),
+                    Type::Unknown.into_id_with_location(loc(11..16)),
+                ),
+                TypedId::new(
+                    "gue".to_symbol(),
+                    Type::Unknown.into_id_with_location(loc(17..20)),
+                ),
             ],
             None,
             Expr::Bracket(Expr::Var("input".to_symbol()).into_id(loc(24..29))).into_id(loc(0..31)),
@@ -550,9 +552,9 @@ fn test_field_access() {
 #[test]
 fn test_stmt_without_return() {
     let ans = Expr::LetRec(
-        TypedId {
-            id: "test".to_symbol(),
-            ty: Type::Function(
+        TypedId::new(
+            "test".to_symbol(),
+            Type::Function(
                 LabeledParams::new(vec![LabeledParam::new(
                     "input".to_symbol(),
                     Type::Unknown.into_id_with_location(loc(0..56)),
@@ -561,12 +563,12 @@ fn test_stmt_without_return() {
                 None,
             )
             .into_id_with_location(loc(0..56)),
-        },
+        ),
         Expr::Lambda(
-            vec![TypedId {
-                id: "input".to_symbol(),
-                ty: Type::Unknown.into_id_with_location(loc(8..13)),
-            }],
+            vec![TypedId::new(
+                "input".to_symbol(),
+                Type::Unknown.into_id_with_location(loc(8..13)),
+            )],
             None,
             Expr::Let(
                 TypedPattern {

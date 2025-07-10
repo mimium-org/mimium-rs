@@ -244,7 +244,7 @@ fn convert_placeholder(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
                         let loc = Location::new(e_id.to_span().clone(), file_path);
                         let id = format!("__lambda_arg_{i}").to_symbol();
                         let ty = Type::Unknown.into_id_with_location(loc.clone());
-                        let newid = TypedId { id, ty };
+                        let newid = TypedId::new(id, ty);
                         let e = Expr::Var(id).into_id(loc);
                         (Some(newid), e)
                     } else {
@@ -302,10 +302,7 @@ mod test {
                 ty: unknownty,
             },
             Expr::Lambda(
-                vec![TypedId {
-                    id: "input".to_symbol(),
-                    ty: unknownty,
-                }],
+                vec![TypedId::new("input".to_symbol(), unknownty)],
                 None,
                 Expr::Literal(Literal::SelfLit).into_id(loc.clone()),
             )
@@ -321,10 +318,7 @@ mod test {
                 ty: unknownty,
             },
             Expr::Lambda(
-                vec![TypedId {
-                    id: "input".to_symbol(),
-                    ty: unknownty,
-                }],
+                vec![TypedId::new("input".to_symbol(), unknownty)],
                 None,
                 Expr::Feed(
                     "feed_id0".to_symbol(),
