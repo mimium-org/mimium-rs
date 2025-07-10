@@ -1,0 +1,8 @@
+fn add3(a:float,b:float,c:float){
+  a+b+c
+}
+
+fn dsp(){
+// field number is same but wrong keys
+  {a=1,b=5,d=3} |> add3
+}

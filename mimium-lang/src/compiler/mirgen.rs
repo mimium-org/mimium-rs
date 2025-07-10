@@ -606,12 +606,51 @@ impl Context {
                 if let Some(d) = del {
                     (d, numeric!())
                 } else {
-                    let atvvec = self.eval_args(args);
-                    let rt = if let Type::Function(_, rt, _) = ft.to_type() {
-                        rt
+                    // Get function parameter info
+                    let (param_types, rt) = if let Type::Function(params, rt, _) = ft.to_type() {
+                        (params, rt)
                     } else {
                         panic!("non function type {} {} ", ft.to_type(), ty.to_type());
                     };
+
+                    // Handle parameter packing/unpacking if needed
+                    let atvvec = if args.len() == 1 && param_types.get_as_slice().len() > 1 {
+                        let (arg_val, ty) = self.eval_expr(args[0]);
+                        log::trace!("Unpacking argument for {:?}", ty);
+                        // Check if the argument is a tuple or record that we need to unpack
+                        match ty.to_type() {
+                            Type::Tuple(tys) => tys
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, t)| {
+                                    let elem_val = self.push_inst(Instruction::GetElement {
+                                        value: arg_val.clone(),
+                                        ty,
+                                        tuple_offset: i as u64,
+                                    });
+                                    (elem_val, t)
+                                })
+                                .collect(),
+                            Type::Record(kvs) => param_types.get_as_slice().iter().map(|param|{
+                                kvs.iter().enumerate().find(|(_i,(k, _))| param.label.is_some_and(| l| l == *k))
+                                    .map_or_else(
+                                        || unreachable!("parameter pack failed, possible type inference bug"),
+                                        |(i,(_, t))| {
+                                            let field_val = self.push_inst(Instruction::GetElement {
+                                                value: arg_val.clone(),
+                                                ty,
+                                                tuple_offset: i as u64,
+                                            });
+                                            (field_val, *t)
+                                        },
+                                    )
+                            }).collect(),
+                            _ => vec![self.eval_expr(args[0])],
+                        }
+                    } else {
+                        self.eval_args(args)
+                    };
+
                     let res = match f.as_ref() {
                         Value::Global(v) => match v.as_ref() {
                             Value::Function(idx) => {
@@ -647,7 +686,7 @@ impl Context {
             Expr::PipeApply(_, _) => unreachable!(),
             Expr::Lambda(ids, _rett, body) => {
                 let (atypes, rt) = match ty.to_type() {
-                    Type::Function(atypes, rt, _) => (atypes.clone(), rt),
+                    Type::Function(atypes, rt, _) => (atypes.ty_iter().collect::<Vec<_>>(), rt),
                     _ => panic!(),
                 };
                 let binds = ids

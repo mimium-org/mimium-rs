@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::ast::*;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
-use crate::types::{PType, Type};
+use crate::types::{LabeledParam, LabeledParams, PType, Type};
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::*;
 use chumsky::{Parser, prelude::*};
@@ -73,6 +73,8 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
             .allow_trailing()
             .delimited_by(breakable_blockbegin(), breakable_blockend())
             .map_with_span(move |fields, span| {
+                let mut fields = fields;
+                fields.sort_by(|(a, _), (b, _)| a.cmp(b));
                 Type::Record(fields).into_id_with_location(Location::new(span, path))
             })
             .recover_with(nested_delimiters(
@@ -101,7 +103,12 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
             .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
             .then(just(Token::Arrow).ignore_then(ty.clone()))
             .map_with_span(move |(a, e), span| {
-                Type::Function(a, e, None).into_id_with_location(Location::new(span, path))
+                Type::Function(
+                    LabeledParams::new(a.into_iter().map(LabeledParam::from).collect()),
+                    e,
+                    None,
+                )
+                .into_id_with_location(Location::new(span, path))
             })
             .boxed()
             .labelled("function");
@@ -445,6 +452,9 @@ pub(super) fn atom_parser<'a>(
         .allow_trailing()
         .delimited_by(breakable_blockbegin(), breakable_blockend())
         .map_with_span(move |fields, span| {
+            //fields are implicitly sorted by name.
+            let mut fields = fields;
+            fields.sort_by(|a, b| a.name.cmp(&b.name));
             Expr::RecordLiteral(fields).into_id(Location {
                 span,
                 path: ctx.file_path,
@@ -668,15 +678,16 @@ fn gen_unknown_function_type(
     let atypes = ids
         .iter()
         .map(|tid| {
-            if !tid.is_unknown() {
+            let t = if !tid.is_unknown() {
                 tid.ty
             } else {
                 Type::Unknown.into_id_with_location(loc.clone())
-            }
+            };
+            LabeledParam::new(tid.id, t)
         })
-        .collect::<Vec<_>>();
+        .collect();
     Type::Function(
-        atypes,
+        LabeledParams::new(atypes),
         r_type.unwrap_or_else(|| Type::Unknown.into_id_with_location(loc.clone())),
         None,
     )

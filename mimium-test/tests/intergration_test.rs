@@ -445,9 +445,11 @@ fn block_local_scope() {
 fn block_local_scope_fail() {
     let res = run_error_test("block_local_scope_fail.mmm", false);
     assert_eq!(res.len(), 1);
-    assert!(res[0]
-        .get_message()
-        .contains("Variable local1 not found in this scope"))
+    assert!(
+        res[0]
+            .get_message()
+            .contains("Variable local1 not found in this scope")
+    )
 }
 
 #[wasm_bindgen_test(unsupported = test)]
@@ -479,10 +481,51 @@ fn record_infer() {
     let ans = vec![81.5];
     assert_eq!(res, ans);
 }
+#[test]
+fn record_shuffle_field() {
+    let res = run_file_test_mono("record_shuffle_field.mmm", 1).unwrap();
+    let ans = vec![100.0];
+    assert_eq!(res, ans);
+}
 
 #[test]
 fn record_pattern_capture() {
     let res = run_file_test_mono("record_pattern_capture.mmm", 1).unwrap();
     let ans = vec![300.0]; // v1 + v2
     assert_eq!(res, ans);
+}
+#[test]
+fn parameter_pack_tuple() {
+    let res = run_file_test_mono("parameter_pack_tuple.mmm", 1).unwrap();
+    let ans = vec![13.0]; // 1 + 5 + 7
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn parameter_pack_tuple_fail() {
+    let res = run_error_test("parameter_pack_tuple_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+}
+#[test]
+fn parameter_pack_record() {
+    let res = run_file_test_mono("parameter_pack_record.mmm", 1).unwrap();
+    let ans = vec![13.0]; // 1 + 5 + 7
+    assert_eq!(res, ans);
+}
+#[test]
+fn parameter_pack_record_order() {
+    let res = run_file_test_mono("parameter_pack_record_order.mmm", 1).unwrap();
+    let ans = vec![-4.0]; // 2*(5-7)
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn parameter_pack_record_fail() {
+    let res = run_error_test("parameter_pack_record_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+}
+#[test]
+fn parameter_pack_record_fail2() {
+    let res = run_error_test("parameter_pack_record_fail2.mmm", false);
+    assert_eq!(res.len(), 1);
 }

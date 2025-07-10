@@ -1,0 +1,7 @@
+fn add3(a:float,b:float,c:float){
+  a+b+c
+}
+
+fn dsp(){
+  (1,5) |> add3 //fail
+}

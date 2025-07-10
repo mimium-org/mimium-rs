@@ -261,10 +261,16 @@ fn test_fndef() {
     let ans = Expr::LetRec(
         TypedId {
             ty: Type::Function(
-                vec![
-                    Type::Unknown.into_id_with_location(loc(0..28)),
-                    Type::Unknown.into_id_with_location(loc(0..28)),
-                ],
+                LabeledParams::new(vec![
+                    LabeledParam::new(
+                        "input".to_symbol(),
+                        Type::Unknown.into_id_with_location(loc(0..28)),
+                    ),
+                    LabeledParam::new(
+                        "gue".to_symbol(),
+                        Type::Unknown.into_id_with_location(loc(0..28)),
+                    ),
+                ]),
                 Type::Unknown.into_id_with_location(loc(0..28)),
                 None,
             )
@@ -298,10 +304,16 @@ fn global_fnmultiple() {
         TypedId {
             id: "hoge".to_symbol(),
             ty: Type::Function(
-                vec![
-                    Type::Unknown.into_id_with_location(loc(0..28)),
-                    Type::Unknown.into_id_with_location(loc(0..28)),
-                ],
+                LabeledParams::new(vec![
+                    LabeledParam::new(
+                        "input".to_symbol(),
+                        Type::Unknown.into_id_with_location(loc(0..28)),
+                    ),
+                    LabeledParam::new(
+                        "gue".to_symbol(),
+                        Type::Unknown.into_id_with_location(loc(0..28)),
+                    ),
+                ]),
                 Type::Unknown.into_id_with_location(loc(0..28)),
                 None,
             )
@@ -327,10 +339,16 @@ fn global_fnmultiple() {
                 TypedId {
                     id: "hoge".to_symbol(),
                     ty: Type::Function(
-                        vec![
-                            Type::Unknown.into_id_with_location(loc(29..57)),
-                            Type::Unknown.into_id_with_location(loc(29..57)),
-                        ],
+                        LabeledParams::new(vec![
+                            LabeledParam::new(
+                                "input".to_symbol(),
+                                Type::Unknown.into_id_with_location(loc(29..57)),
+                            ),
+                            LabeledParam::new(
+                                "gue".to_symbol(),
+                                Type::Unknown.into_id_with_location(loc(29..57)),
+                            ),
+                        ]),
                         Type::Unknown.into_id_with_location(loc(29..57)),
                         None,
                     )
@@ -535,7 +553,10 @@ fn test_stmt_without_return() {
         TypedId {
             id: "test".to_symbol(),
             ty: Type::Function(
-                vec![Type::Unknown.into_id_with_location(loc(0..56))],
+                LabeledParams::new(vec![LabeledParam::new(
+                    "input".to_symbol(),
+                    Type::Unknown.into_id_with_location(loc(0..56)),
+                )]),
                 Type::Unknown.into_id_with_location(loc(0..56)),
                 None,
             )
@@ -592,7 +613,7 @@ fn test_stmt_without_return() {
 #[should_panic]
 fn test_fail() {
     let src = "let 100 == hoge\n fuga";
-    let (ast, errs) = parse(&src.to_string(), None);
+    let (_ast, errs) = parse(src, None);
 
     if !errs.is_empty() {
         panic!("{}", utils::error::dump_to_string(&errs))
@@ -605,7 +626,7 @@ fn test_err_builtin_redefine() {
     0.0
 }
 100.0";
-    let (_ast, err) = &parse(&src.to_string(), None);
+    let (_ast, err) = &parse(src, None);
 
     assert_eq!(err.len(), 1);
 

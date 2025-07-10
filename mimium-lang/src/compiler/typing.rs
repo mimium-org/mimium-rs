@@ -2,7 +2,7 @@ use crate::ast::{Expr, Literal, RecordField};
 use crate::compiler::intrinsics;
 use crate::interner::{ExprKey, ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
-use crate::types::{PType, Type, TypeVar};
+use crate::types::{LabeledParam, LabeledParams, PType, Type, TypeVar};
 use crate::utils::metadata::Location;
 use crate::utils::{environment::Environment, error::ReportableError};
 use crate::{function, integer, numeric, unit};
@@ -38,10 +38,17 @@ pub enum Error {
         loc: Location,
         et: TypeNodeId,
     },
+    FieldNotExistInParams {
+        field: Symbol,
+        loc: Location,
+        params: LabeledParams,
+    },
     DuplicateKeyInRecord {
         key: Vec<Symbol>,
         loc: Location,
     },
+    DuplicateKeyInParams(Vec<(Symbol, Location)>),
+
     /// This is temporary error which is used when the type of 2 records contain different keys.
     /// If structural subtyping is implemented, this error should be removed.
     IncompatibleKeyInRecord {
@@ -81,6 +88,9 @@ impl ReportableError for Error {
             Error::NonPrimitiveInFeed(_) => {
                 format!("Function that uses `self` cannot return function type.")
             }
+            Error::DuplicateKeyInParams { .. } => {
+                format!("Duplicate keys found in parameter list")
+            }
             Error::DuplicateKeyInRecord { .. } => {
                 format!("Duplicate keys found in record type")
             }
@@ -88,10 +98,13 @@ impl ReportableError for Error {
                 format!("Field access for non-record variable.")
             }
             Error::FieldNotExist { field, .. } => {
-                format!("Field `{}` does not exist in the record type", field,)
+                format!("Field `{field}` does not exist in the record type")
             }
             Error::IncompatibleKeyInRecord { .. } => {
                 format!("Record type has incompatible keys.",)
+            }
+            Error::FieldNotExistInParams { .. } => {
+                format!("Field contains non-existing keys in the parameter list")
             }
         }
     }
@@ -155,6 +168,15 @@ impl ReportableError for Error {
                     ),
                 )]
             }
+            Error::DuplicateKeyInParams(keys) => keys
+                .iter()
+                .map(|(key, loc)| {
+                    (
+                        loc.clone(),
+                        format!("Duplicate key \"{key}\" found in parameter list"),
+                    )
+                })
+                .collect(),
             Error::FieldForNonRecord(location, ty) => {
                 vec![(
                     location.clone(),
@@ -176,7 +198,7 @@ impl ReportableError for Error {
                 vec![(
                     loc.clone(),
                     format!(
-                        "Incompatible key `{}` found in record type",
+                        "Incompatible key \"{}\" found in record type",
                         key.iter()
                             .map(|s| s.to_string())
                             .collect::<Vec<_>>()
@@ -184,6 +206,25 @@ impl ReportableError for Error {
                     ),
                 )]
             }
+            Error::FieldNotExistInParams { field, loc, params } => vec![(
+                loc.clone(),
+                format!(
+                    "Field \"{}\" does not exist in the parameter list{}",
+                    field,
+                    params
+                        .get_as_slice()
+                        .iter()
+                        .map(|p| {
+                            format!(
+                                " \"{}\":{}",
+                                p.label.map_or_else(|| "_".to_string(), |s| s.to_string()),
+                                p.ty.to_type().to_string_for_error()
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            )],
         }
     }
 }
@@ -329,7 +370,8 @@ impl InferContext {
             Type::Array(a) => cls(*a),
             Type::Tuple(t) => vec_cls(t),
             Type::Function(p, r, s) => {
-                vec_cls(p)
+                let vec = p.ty_iter().collect::<Vec<_>>();
+                vec_cls(vec.as_slice())
                     && cls(*r)
                     && cls(s.map(|x| x).unwrap_or_else(|| Type::Unknown.into_id()))
             }
@@ -484,7 +526,7 @@ impl InferContext {
                 }
             }
             (Type::Function(p1, r1, _s1), Type::Function(p2, r2, _s2)) => {
-                let (param, errs) = Self::unify_vec(p1, loc1.clone(), p2, loc2.clone());
+                let (param, errs) = Self::unify_named_params(p1, &loc1, p2, &loc2);
                 let ret = Self::unify_types((*r1, loc1), (*r2, loc2));
                 match (ret, errs) {
                     (Ok(ret), errs) if errs.is_empty() => {
@@ -764,18 +806,27 @@ impl InferContext {
             }
             Expr::Lambda(p, rtype, body) => {
                 self.env.extend();
-                let ptypes: Vec<TypeNodeId> = p
-                    .iter()
-                    .map(|id| {
-                        let pt = if !id.is_unknown() {
-                            id.ty
-                        } else {
-                            self.gen_intermediate_type()
-                        };
-                        self.env.add_bind(&[(id.id, pt)]);
-                        pt
-                    })
-                    .collect();
+                let dup = p.iter().duplicates_by(|id| id.id).map(|id| {
+                    let loc = Location::new(id.to_span(), self.file_path);
+                    (id.id, loc)
+                });
+                if dup.clone().count() > 0 {
+                    return Err(vec![Error::DuplicateKeyInParams(dup.collect())]);
+                }
+
+                let ptypes = LabeledParams::new(
+                    p.iter()
+                        .map(|id| {
+                            let pt = if !id.is_unknown() {
+                                id.ty
+                            } else {
+                                self.gen_intermediate_type()
+                            };
+                            self.env.add_bind(&[(id.id, pt)]);
+                            LabeledParam::new(id.id, pt)
+                        })
+                        .collect(),
+                );
                 let bty = if let Some(r) = rtype {
                     let loc_r = Location::new(r.to_span(), self.file_path);
                     let bty = self.infer_type(*body)?;
@@ -840,9 +891,25 @@ impl InferContext {
                 let fnl = self.infer_type(*fun);
                 let fnl = self.unwrap_result(fnl);
                 let loc_f = Location::new(fun.to_span(), self.file_path);
-                let callee_t = self.infer_vec(callee.as_slice())?;
+                let callee_t = if callee.len() == 1 {
+                    let callee_t = self.infer_type(callee[0])?;
+                    match callee_t.to_type() {
+                        //parameter-pack handling
+                        Type::Tuple(t) => t.into_iter().map(LabeledParam::from).collect(),
+                        Type::Record(kvs) => kvs
+                            .into_iter()
+                            .map(|(k, t)| LabeledParam::new(k, t))
+                            .collect(),
+                        _ => vec![LabeledParam::from(callee_t)],
+                    }
+                } else {
+                    self.infer_vec(callee.as_slice())?
+                        .into_iter()
+                        .map(LabeledParam::from)
+                        .collect::<Vec<_>>()
+                };
                 let res_t = self.gen_intermediate_type();
-                let fntype = Type::Function(callee_t, res_t, None).into_id();
+                let fntype = Type::Function(LabeledParams::new(callee_t), res_t, None).into_id();
                 let restype = Self::unify_types((fnl, loc_f.clone()), (fntype, loc_f));
                 match restype {
                     Ok(t) => match t.to_type() {
@@ -885,6 +952,77 @@ impl InferContext {
     }
     pub fn lookup_res(&self, e: ExprNodeId) -> TypeNodeId {
         *self.result_map.get(&e.0).expect("type inference failed")
+    }
+    // Helper function to unify function parameters with names
+    fn unify_named_params(
+        ps1: &LabeledParams, //function
+        loc1: &Location,
+        ps2: &LabeledParams, //arguments
+        loc2: &Location,
+    ) -> (LabeledParams, Vec<Error>) {
+        let len1 = ps1.get_as_slice().len();
+        let len2 = ps2.get_as_slice().len();
+        let has_label_1 = ps1.has_label();
+        let has_label_2 = ps2.has_label();
+        if len1 != len2 {
+            let err = Error::LengthMismatch {
+                left: (len1, loc1.clone()),
+                right: (len2, loc2.clone()),
+            };
+            return (LabeledParams::new(vec![]), vec![err]);
+        }
+        if has_label_1 && has_label_2 {
+            //labels may be in different order
+            let unified_types = ps2.get_as_slice().iter().map(|p2| {
+                ps1.get_as_slice()
+                    .iter()
+                    .find(|p1| p1.label == p2.label)
+                    .map_or(
+                        Err(vec![Error::FieldNotExistInParams {
+                            field: p2.label.unwrap(),
+                            loc: loc1.clone(),
+                            params: ps1.clone(),
+                        }]),
+                        |p1| Self::unify_types((p1.ty, loc1.clone()), (p2.ty, loc2.clone())),
+                    )
+            });
+            if unified_types.clone().any(|x| x.is_err()) {
+                let errs = unified_types.filter_map(|x| x.err()).flatten().collect();
+                return (LabeledParams::new(vec![]), errs);
+            }
+            let res = unified_types
+                .map(|x| x.unwrap())
+                .zip(ps2.get_as_slice().iter().map(|p| p.label))
+                .map(|(ty, label)| LabeledParam { label, ty })
+                .collect::<Vec<_>>();
+            return (LabeledParams::new(res), vec![]);
+        }
+        let label_vec = if has_label_1 && !has_label_2 {
+            ps1.get_as_slice().iter().map(|p| p.label).collect()
+        } else if !has_label_1 && has_label_2 {
+            ps2.get_as_slice().iter().map(|p| p.label).collect()
+        } else {
+            vec![None; len1]
+        };
+        let ts = ps1
+            .ty_iter()
+            .zip(ps2.ty_iter())
+            .map(|(t1, t2)| Self::unify_types((t1, loc1.clone()), (t2, loc2.clone())))
+            .collect::<Vec<_>>();
+        if ts.clone().into_iter().any(|x| x.is_err()) {
+            let errs = ts.into_iter().filter_map(|x| x.err()).flatten().collect();
+            return (LabeledParams::new(vec![]), errs);
+        } else {
+            let res = ts
+                .into_iter()
+                .zip(label_vec)
+                .map(|(ty, label)| LabeledParam {
+                    label,
+                    ty: ty.unwrap(),
+                })
+                .collect::<Vec<_>>();
+            return (LabeledParams::new(res), vec![]);
+        }
     }
 }
 

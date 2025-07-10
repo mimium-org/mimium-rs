@@ -31,6 +31,57 @@ impl TypeVar {
         }
     }
 }
+/// A parameter representation for function type, with an optional label and a type.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LabeledParam {
+    pub label: Option<Symbol>,
+    pub ty: TypeNodeId,
+}
+impl LabeledParam {
+    pub fn new(label: Symbol, ty: TypeNodeId) -> Self {
+        Self {
+            label: Some(label),
+            ty,
+        }
+    }
+}
+impl From<TypeNodeId> for LabeledParam {
+    fn from(ty: TypeNodeId) -> Self {
+        Self { label: None, ty }
+    }
+}
+/// A parameter representation for function type, with an optional label and a type.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LabeledParams(Vec<LabeledParam>);
+impl LabeledParams {
+    pub fn new(params: Vec<LabeledParam>) -> Self {
+        Self(params)
+    }
+    pub fn get_as_slice(&self) -> &[LabeledParam] {
+        &self.0
+    }
+    pub fn ty_iter(&self) -> impl Iterator<Item = TypeNodeId> + Clone {
+        self.0.iter().map(|p| p.ty)
+    }
+    pub fn ty_map(
+        &self,
+        mut f: impl FnMut(TypeNodeId) -> TypeNodeId,
+    ) -> impl Iterator<Item = LabeledParam> {
+        self.0.iter().map(move |p| LabeledParam {
+            label: p.label,
+            ty: f(p.ty),
+        })
+    }
+    pub fn has_label(&self) -> bool {
+        debug_assert!(
+            self.0.iter().all(|p| p.label.is_some()) || self.0.iter().all(|p| p.label.is_none()),
+            "parameter labels are either all set or all unset"
+        );
+        // if the parameters are empty,just returns false
+        self.0.first().is_some_and(|p| p.label.is_some())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Type {
     Primitive(PType),
@@ -38,8 +89,9 @@ pub enum Type {
     Array(TypeNodeId),
     Tuple(Vec<TypeNodeId>),
     Record(Vec<(Symbol, TypeNodeId)>),
-    //Function that has a vector of parameters, return type, and type for internal states.
-    Function(Vec<TypeNodeId>, TypeNodeId, Option<TypeNodeId>),
+    ///Function that has a vector of parameters, return type, and type for internal states.
+    ///Parameters are represented as `Vec<(Option<Symbol>, TypeNodeId)>` to support parameter names
+    Function(LabeledParams, TypeNodeId, Option<TypeNodeId>),
     Ref(TypeNodeId),
     //(experimental) code-type for multi-stage computation that will be evaluated on the next stage
     Code(TypeNodeId),
@@ -66,6 +118,14 @@ impl Type {
     }
     pub fn is_function(&self) -> bool {
         matches!(self, Type::Function(_, _, _))
+    }
+
+    // Helper method to get parameter types without their names
+    pub fn get_param_types(&self) -> Option<Vec<TypeNodeId>> {
+        match self {
+            Type::Function(params, _, _) => Some(params.ty_iter().collect()),
+            _ => None,
+        }
     }
     pub fn is_intermediate(&self) -> Option<Rc<RefCell<TypeVar>>> {
         match self {
@@ -135,7 +195,7 @@ impl Type {
             }
             Type::Function(p, r, _s) => {
                 let args = format_vec!(
-                    p.iter()
+                    p.ty_iter()
                         .map(|x| x.to_type().to_string_for_error())
                         .collect::<Vec<_>>(),
                     ","
@@ -176,9 +236,15 @@ impl TypeNodeId {
                     .collect(),
             ),
             Type::Function(p, r, s) => {
-                let at = apply_vec(&p, &mut closure);
+                let at = p
+                    .ty_map(|t| apply_scalar(t, &mut closure))
+                    .collect::<Vec<_>>();
                 let rt = apply_scalar(r, &mut closure);
-                Type::Function(at, rt, s.map(|t| apply_scalar(t, &mut closure)))
+                Type::Function(
+                    LabeledParams::new(at),
+                    rt,
+                    s.map(|t| apply_scalar(t, &mut closure)),
+                )
             }
             Type::Ref(x) => Type::Ref(apply_scalar(x, &mut closure)),
             Type::Code(_c) => todo!(),
@@ -245,7 +311,7 @@ impl fmt::Display for Type {
             }
             Type::Function(p, r, _s) => {
                 let args = format_vec!(
-                    p.iter().map(|x| x.to_type().clone()).collect::<Vec<_>>(),
+                    p.ty_iter().map(|x| x.to_type().clone()).collect::<Vec<_>>(),
                     ","
                 );
                 write!(f, "({args})->{}", r.to_type())
