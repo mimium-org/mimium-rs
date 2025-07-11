@@ -549,7 +549,7 @@ impl Context {
             Expr::RecordLiteral(fields) => {
                 self.alloc_aggregates(&fields.iter().map(|f| f.expr).collect::<Vec<_>>(), ty)
             }
-            Expr::IncompleteRecord(fields) => {
+            Expr::ImcompleteRecord(fields) => {
                 // For incomplete records, we also aggregate the available fields
                 // The default values will be handled in the type system and during record construction
                 self.alloc_aggregates(&fields.iter().map(|f| f.expr).collect::<Vec<_>>(), ty)

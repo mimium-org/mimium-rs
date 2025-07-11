@@ -76,10 +76,10 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
     // Handle '..' as DoubleDot token, and '.' as Dot token
     let double_dot = just("..").map(|_| Token::DoubleDot);
     let single_dot = just('.').map(|_| Token::Dot);
-    let dot = double_dot.or(single_dot);
     
     let separator = choice((
-        dot,
+        double_dot,
+        single_dot,
         one_of(",:;").map(|c| match c {
             ',' => Token::Comma,
             ':' => Token::Colon,

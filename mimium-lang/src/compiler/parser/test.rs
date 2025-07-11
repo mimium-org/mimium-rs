@@ -506,6 +506,18 @@ fn test_field_access() {
     .into_id(loc(0..11));
     test_expr_string("x.0.field1.1.0.field2", ans);
 }
+
+#[test]
+fn test_imcomplete_record() {
+    let ans = Expr::ImcompleteRecord(vec![
+        RecordField {
+            name: "x".to_symbol(),
+            expr: Expr::Literal(Literal::Float("200".to_symbol())).into_id(loc(3..4)),
+        }
+    ])
+        .into_id(loc(0..7));
+    test_expr_string("{x = 200, ..}", ans);
+}
 #[test]
 fn test_stmt_without_return() {
     let ans = Expr::LetRec(

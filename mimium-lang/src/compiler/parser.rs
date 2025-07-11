@@ -162,9 +162,7 @@ where
 }
 
 // Basic parameter parser without default values
-fn lvar_parser_typed(
-    ctx: ParseContext,
-) -> impl Parser<Token, TypedId, Error = ParseError> + Clone {
+fn lvar_parser_typed(ctx: ParseContext) -> impl Parser<Token, TypedId, Error = ParseError> + Clone {
     with_type_annotation(ident_parser(), ctx.clone())
         .map_with_span(move |(sym, t), span| {
             let ty = match t {
@@ -472,15 +470,22 @@ pub(super) fn atom_parser<'a>(
         .separated_by(breakable_comma())
         .at_least(1)
         .allow_trailing()
+        .then(just(Token::DoubleDot).or_not())
         .delimited_by(breakable_blockbegin(), breakable_blockend())
-        .map_with_span(move |fields, span| {
+        .map_with_span(move |(fields,is_imcomplete), span, | {
             //fields are implicitly sorted by name.
             let mut fields = fields;
             fields.sort_by(|a, b| a.name.cmp(&b.name));
-            Expr::RecordLiteral(fields).into_id(Location {
-                span,
-                path: ctx.file_path,
-            })
+            let loc = Location {
+                    span,
+                    path: ctx.file_path,
+                };
+            if is_imcomplete.is_some() {
+                log::trace!("is imcomplete record literal");
+                Expr::ImcompleteRecord(fields).into_id(loc)
+            } else {
+                Expr::RecordLiteral(fields).into_id(loc)
+            }
         })
         .recover_with(nested_delimiters(
             Token::BlockBegin,
