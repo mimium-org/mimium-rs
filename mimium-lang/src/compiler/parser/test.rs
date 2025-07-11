@@ -260,22 +260,7 @@ fn test_macroexpand() {
 fn test_fndef() {
     let ans = Expr::LetRec(
         TypedId {
-            ty: Type::Function(
-                LabeledParams::new(vec![
-                    LabeledParam::new(
-                        "input".to_symbol(),
-                        Type::Unknown.into_id_with_location(loc(0..28)),
-                    ),
-                    LabeledParam::new(
-                        "gue".to_symbol(),
-                        Type::Unknown.into_id_with_location(loc(0..28)),
-                    ),
-                ]),
-                Type::Unknown.into_id_with_location(loc(0..28)),
-                None,
-            )
-            .into_id_with_location(loc(0..28)),
-
+            ty: Type::Unknown.into_id_with_location(loc(0..28)),
             id: "hoge".to_symbol(),
             default_value: None,
         },
@@ -304,21 +289,7 @@ fn global_fnmultiple() {
     let ans = Expr::LetRec(
         TypedId {
             id: "hoge".to_symbol(),
-            ty: Type::Function(
-                LabeledParams::new(vec![
-                    LabeledParam::new(
-                        "input".to_symbol(),
-                        Type::Unknown.into_id_with_location(loc(0..28)),
-                    ),
-                    LabeledParam::new(
-                        "gue".to_symbol(),
-                        Type::Unknown.into_id_with_location(loc(0..28)),
-                    ),
-                ]),
-                Type::Unknown.into_id_with_location(loc(0..28)),
-                None,
-            )
-            .into_id_with_location(loc(0..28)),
+            ty: Type::Unknown.into_id_with_location(loc(0..28)),
             default_value: None,
         },
         Expr::Lambda(
@@ -340,21 +311,7 @@ fn global_fnmultiple() {
             Expr::LetRec(
                 TypedId::new(
                     "hoge".to_symbol(),
-                    Type::Function(
-                        LabeledParams::new(vec![
-                            LabeledParam::new(
-                                "input".to_symbol(),
-                                Type::Unknown.into_id_with_location(loc(29..57)),
-                            ),
-                            LabeledParam::new(
-                                "gue".to_symbol(),
-                                Type::Unknown.into_id_with_location(loc(29..57)),
-                            ),
-                        ]),
-                        Type::Unknown.into_id_with_location(loc(29..57)),
-                        None,
-                    )
-                    .into_id_with_location(loc(29..57)),
+                    Type::Unknown.into_id_with_location(loc(29..57)),
                 ),
                 Expr::Lambda(
                     vec![
@@ -554,15 +511,7 @@ fn test_stmt_without_return() {
     let ans = Expr::LetRec(
         TypedId::new(
             "test".to_symbol(),
-            Type::Function(
-                LabeledParams::new(vec![LabeledParam::new(
-                    "input".to_symbol(),
-                    Type::Unknown.into_id_with_location(loc(0..56)),
-                )]),
-                Type::Unknown.into_id_with_location(loc(0..56)),
-                None,
-            )
-            .into_id_with_location(loc(0..56)),
+            Type::Unknown.into_id_with_location(loc(0..56)),
         ),
         Expr::Lambda(
             vec![TypedId::new(
