@@ -162,7 +162,7 @@ where
 }
 
 // Basic parameter parser without default values
-fn lvar_parser_typed_basic(
+fn lvar_parser_typed(
     ctx: ParseContext,
 ) -> impl Parser<Token, TypedId, Error = ParseError> + Clone {
     with_type_annotation(ident_parser(), ctx.clone())
@@ -177,15 +177,15 @@ fn lvar_parser_typed_basic(
 
             TypedId::new(sym, ty)
         })
-        .labelled("lvar_typed_basic")
+        .labelled("lvar_typed")
 }
 
 // Parameter parser with support for default values
-fn lvar_parser_typed(
+fn lvar_parser_typed_with_default(
     ctx: ParseContext,
     expr: impl Parser<Token, ExprNodeId, Error = ParseError> + Clone,
 ) -> impl Parser<Token, TypedId, Error = ParseError> + Clone {
-    lvar_parser_typed_basic(ctx.clone())
+    lvar_parser_typed(ctx.clone())
         .then(
             // Parse optional default value: = expr
             just(Token::Assign).ignore_then(expr).or_not(),
@@ -195,7 +195,7 @@ fn lvar_parser_typed(
             ty: param.ty,
             default_value,
         })
-        .labelled("lvar_typed")
+        .labelled("lvar_typed_with_default")
 }
 fn pattern_parser(
     ctx: ParseContext,
@@ -408,7 +408,7 @@ pub(super) fn atom_parser<'a>(
     expr_group: ExprParser<'a>,
     ctx: ParseContext,
 ) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone + 'a {
-    let lambda = lvar_parser_typed(ctx.clone(), expr.clone())
+    let lambda = lvar_parser_typed_with_default(ctx.clone(), expr.clone())
         .separated_by(just(Token::Comma))
         .delimited_by(
             just(Token::LambdaArgBeginEnd),
@@ -603,7 +603,7 @@ fn statement_parser(
         .labelled("let");
     let letrec = just(Token::LetRec)
         .ignore_then(
-            lvar_parser_typed(ctx.clone(), expr.clone()).validate(|ident, span, emit| {
+            lvar_parser_typed(ctx.clone()).validate(|ident, span, emit| {
                 if let Err(e) = validate_reserved_ident(ident.id, span.clone()) {
                     emit(e);
                 }
@@ -717,7 +717,7 @@ fn gen_unknown_function_type(
 }
 fn func_parser(ctx: ParseContext) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone {
     let exprgroup = exprgroup_parser(ctx.clone());
-    let lvar = lvar_parser_typed(ctx.clone(), exprgroup.clone());
+    let lvar = lvar_parser_typed_with_default(ctx.clone(), exprgroup.clone());
     let blockstart = just(Token::BlockBegin)
         .then_ignore(just(Token::LineBreak).or(just(Token::SemiColon)).repeated());
     let blockend = just(Token::LineBreak)
