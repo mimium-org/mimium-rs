@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use itertools::Itertools;
 
-use crate::ast::Expr;
+use crate::ast::{Expr, RecordField};
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
 use crate::types::Type;
@@ -60,8 +60,7 @@ impl TypeDestructor {
                 let body = fields
                     .iter()
                     .map(|(name, p)| {
-                        let field_value =
-                            Expr::FieldAccess(newrvar, *name).into_id(loc.clone());
+                        let field_value = Expr::FieldAccess(newrvar, *name).into_id(loc.clone());
                         self.destruct_pattern(p, field_value)
                     })
                     .reduce(|a, b| {
@@ -92,15 +91,19 @@ pub trait ValueTrait {
     fn make_closure(e: ExprNodeId, names: Vec<Symbol>, env: Environment<Self>) -> Self
     where
         Self: std::marker::Sized;
-    fn get_as_closure(&self) -> Option<(Environment<Self>, Vec<Symbol>, ExprNodeId)>
+    fn get_as_closure(self) -> Option<(Environment<Self>, Vec<Symbol>, ExprNodeId)>
     where
         Self: std::marker::Sized;
-    fn make_fixpoint(e: ExprNodeId) -> Self;
+    fn make_fixpoint(name: Symbol, e: ExprNodeId) -> Self;
+    fn get_as_fixpoint(self) -> Option<(Symbol, ExprNodeId)>
+    where
+        Self: std::marker::Sized;
 }
+
+///Trait for defining general reduction rules of Lambda calculus, independent of the primitive types, even if it is untyped.
 pub trait GeneralInterpreter {
     type Value: Clone + ValueTrait;
-    type SideEffect;
-    fn interpret_expr(&mut self, expr: ExprNodeId) -> (Self::Value, Self::SideEffect);
+    fn interpret_expr(&mut self, expr: ExprNodeId) -> Self::Value;
     fn get_empty_val(&self) -> Self::Value;
     fn get_val_env(&mut self) -> Rc<RefCell<Environment<Self::Value>>>;
     fn get_pattern_destructor(&mut self) -> &mut TypeDestructor;
@@ -129,7 +132,7 @@ pub trait GeneralInterpreter {
                 LookupRes::Global(val) => val.clone(),
                 LookupRes::None => panic!("Variable {name} not found"),
             },
-            Expr::Let(pattern,_e, _body) => {
+            Expr::Let(pattern, _e, _body) => {
                 let single_let = self
                     .get_pattern_destructor()
                     .destruct_pattern(&pattern.pat, expr);
@@ -149,7 +152,7 @@ pub trait GeneralInterpreter {
                 body.map_or(empty, |e| self.eval_in_new_env(&[(name, v)], e))
             }
             Expr::LetRec(typed_id, e, body) => {
-                let fixpoint = ValueTrait::make_fixpoint(e);
+                let fixpoint = ValueTrait::make_fixpoint(typed_id.id, e);
                 let empty = self.get_empty_val();
                 body.map_or(empty, |e| {
                     self.eval_in_new_env(&[(typed_id.id, fixpoint)], e)
@@ -162,10 +165,21 @@ pub trait GeneralInterpreter {
                 ValueTrait::make_closure(body, names, env)
             }
             Expr::Apply(f, a) => {
-                let (mut c_env, names, body) = self
-                    .eval(f)
+                let fv = self.eval(f);
+                let (mut c_env, names, body) = fv
+                    .clone()
                     .get_as_closure()
-                    .expect("not a function type");
+                    .or_else(|| {
+                        fv.get_as_fixpoint().map(|(name, e)| {
+                            let names = vec![name];
+                            let body = e;
+                            let mut env = self.get_val_env().borrow().clone();
+                            env.extend();
+                            env.add_bind(&[(name, ValueTrait::make_fixpoint(name, e))]);
+                            (env, names, body)
+                        })
+                    })
+                    .expect("Expected closure or fixpoint value");
                 let args = a.iter().map(|arg| self.eval(*arg));
                 let binds = names.into_iter().zip(args).collect_vec();
                 self.eval_with_env(binds.as_slice(), &mut c_env, body)
@@ -177,7 +191,129 @@ pub trait GeneralInterpreter {
                 todo!("")
             }
 
-            _ => self.interpret_expr(expr).0,
+            _ => self.interpret_expr(expr),
         }
+    }
+}
+
+/// Evalueated result of the expression. Theoritically, it can be tagless union because it is statically typed, but we use enum for better readability.
+#[derive(Clone, Debug)]
+enum Value {
+    None,
+    Expr(ExprNodeId),
+    Closure(ExprNodeId, Vec<Symbol>, Environment<Value>),
+    Fixpoint(Symbol, ExprNodeId),
+}
+impl ValueTrait for Value {
+    fn make_closure(e: ExprNodeId, names: Vec<Symbol>, env: Environment<Self>) -> Self {
+        // Create a closure value with the given expression, names, and environment
+        Value::Closure(e, names, env)
+    }
+
+    fn get_as_closure(self) -> Option<(Environment<Self>, Vec<Symbol>, ExprNodeId)> {
+        match self {
+            Value::Closure(e, names, env) => Some((env, names, e)),
+            _ => None,
+        }
+    }
+
+    fn make_fixpoint(name: Symbol, e: ExprNodeId) -> Self {
+        // Create a fixpoint value with the given expression
+        Value::Fixpoint(name, e)
+    }
+
+    fn get_as_fixpoint(self) -> Option<(Symbol, ExprNodeId)>
+    where
+        Self: std::marker::Sized,
+    {
+        match self {
+            Value::Fixpoint(name, e) => Some((name, e)),
+            _ => None,
+        }
+    }
+}
+impl Value {
+    pub fn to_expr(&self) -> Option<ExprNodeId> {
+        match self {
+            Value::Expr(e) => Some(*e),
+            _ => None,
+        }
+    }
+}
+struct StageInterpreter {
+    val_env: Rc<RefCell<Environment<Value>>>,
+    type_env: Environment<TypeNodeId>,
+    pattern_destructor: TypeDestructor,
+}
+impl GeneralInterpreter for StageInterpreter {
+    type Value = Value;
+
+    fn interpret_expr(&mut self, expr: ExprNodeId) -> Self::Value {
+        // Implement the logic for interpreting expressions here
+        match expr.to_expr() {
+            Expr::ArrayLiteral(ev) => {
+                let elements = ev
+                    .into_iter()
+                    .map(|e| self.eval(e).to_expr().unwrap())
+                    .collect_vec();
+                Value::Expr(Expr::ArrayLiteral(elements).into_id(expr.to_location()))
+            }
+            Expr::RecordLiteral(fields) => {
+                let evaluated_fields = fields
+                    .into_iter()
+                    .map(|RecordField { name, expr }| RecordField {
+                        name,
+                        expr: self.eval(expr).to_expr().unwrap(),
+                    })
+                    .collect();
+                Value::Expr(Expr::RecordLiteral(evaluated_fields).into_id(expr.to_location()))
+            }
+            Expr::Tuple(elements) => {
+                let evaluated_elements = elements
+                    .into_iter()
+                    .map(|e| self.eval(e).to_expr().unwrap())
+                    .collect_vec();
+                Value::Expr(Expr::Tuple(evaluated_elements).into_id(expr.to_location()))
+            }
+            Expr::Proj(e, idx) => {
+                let evaluated_expr = self.eval(e).to_expr().unwrap();
+                Value::Expr(Expr::Proj(evaluated_expr, idx).into_id(expr.to_location()))
+            }
+            Expr::ArrayAccess(e, i) => {
+                let evaluated_expr = self.eval(e).to_expr().unwrap();
+                let evaluated_index = self.eval(i).to_expr().unwrap();
+                Value::Expr(
+                    Expr::ArrayAccess(evaluated_expr, evaluated_index).into_id(expr.to_location()),
+                )
+            }
+            Expr::FieldAccess(e, name) => {
+                let evaluated_expr = self.eval(e).to_expr().unwrap();
+                Value::Expr(Expr::FieldAccess(evaluated_expr, name).into_id(expr.to_location()))
+            }
+            Expr::Block(e) => {
+                let evaluated_expr = e.map_or(Expr::Error.into_id_without_span(), |eid| {
+                    self.eval_in_new_env(&[], eid).to_expr().unwrap()
+                });
+                Value::Expr(evaluated_expr)
+            }
+            Expr::Literal(_) | Expr::Error => Value::Expr(expr),
+            _ => self.eval(expr),
+        }
+    }
+
+    fn get_empty_val(&self) -> Self::Value {
+        Value::None
+    }
+
+    fn get_val_env(&mut self) -> Rc<RefCell<Environment<Self::Value>>> {
+        self.val_env.clone()
+    }
+
+    fn get_pattern_destructor(&mut self) -> &mut TypeDestructor {
+        &mut self.pattern_destructor
+    }
+
+    fn get_type_env(&mut self) -> &mut Environment<TypeNodeId> {
+        &mut self.type_env
     }
 }
