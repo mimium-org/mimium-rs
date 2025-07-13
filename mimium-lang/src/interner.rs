@@ -11,9 +11,14 @@ use std::{
 };
 
 use slotmap::SlotMap;
-use string_interner::{backend::StringBackend, StringInterner};
+use string_interner::{StringInterner, backend::StringBackend};
 
-use crate::{ast::Expr, dummy_span, types::Type, utils::metadata::{Location, Span}};
+use crate::{
+    ast::Expr,
+    dummy_span,
+    types::Type,
+    utils::metadata::{Location, Span},
+};
 slotmap::new_key_type! {
     pub struct ExprKey;
     pub struct TypeKey;
@@ -42,13 +47,13 @@ impl SessionGlobals {
         TypeNodeId(key)
     }
 
-    pub fn store_expr_with_location(&mut self, expr: Expr, loc:Location) -> ExprNodeId {
+    pub fn store_expr_with_location(&mut self, expr: Expr, loc: Location) -> ExprNodeId {
         let expr_id = self.store_expr(expr);
         self.store_loc(expr_id, loc);
         expr_id
     }
 
-    pub fn store_type_with_location(&mut self, ty: Type, loc:Location) -> TypeNodeId {
+    pub fn store_type_with_location(&mut self, ty: Type, loc: Location) -> TypeNodeId {
         let type_id = self.store_type(ty);
         self.store_loc(type_id, loc);
         type_id
@@ -167,6 +172,15 @@ impl ExprNodeId {
         with_session_globals(|session_globals| match session_globals.get_span(*self) {
             Some(loc) => loc.span.clone(),
             None => dummy_span!(),
+        })
+    }
+    pub fn to_location(&self) -> Location {
+        with_session_globals(|session_globals| match session_globals.get_span(*self) {
+            Some(loc) => loc.clone(),
+            None => Location {
+                span: dummy_span!(),
+                path: "".to_symbol(),
+            },
         })
     }
 }

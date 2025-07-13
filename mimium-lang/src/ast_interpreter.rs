@@ -13,14 +13,14 @@ use crate::{
 };
 use itertools::Itertools;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PValue {
     Unit,
     Numeric(f64),
     Integer(i64),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Primitive(PValue),
     String(String),
@@ -91,7 +91,7 @@ impl Value {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Context {
     pub env: Environment<Value>,
     pub history: (u64, Vec<PValue>),
