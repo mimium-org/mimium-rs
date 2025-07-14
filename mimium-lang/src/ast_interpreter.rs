@@ -270,8 +270,7 @@ pub fn eval_ast(e_meta: ExprNodeId, ctx: &mut Context) -> Result<Value, CompileE
     match &e_meta.to_expr() {
         ast::Expr::Literal(l) => Ok(eval_literal(l)),
         ast::Expr::Var(v) => env
-            .lookup(v)
-            .map(|v| v.clone())
+            .lookup(v).cloned()
             .or(ctx
                 .extern_syms
                 .iter()
@@ -298,7 +297,7 @@ pub fn eval_ast(e_meta: ExprNodeId, ctx: &mut Context) -> Result<Value, CompileE
             let v = eval_ast(*t, ctx)?;
             let span = t.to_span();
             match v {
-                Value::Tuple(t) => t.get(*i as usize).map(|v| v.clone()).ok_or(CompileError(
+                Value::Tuple(t) => t.get(*i as usize).cloned().ok_or(CompileError(
                     ErrorKind::IndexOutOfRange(t.len() as u16, *i as u16),
                     span.clone(),
                 )),
@@ -316,7 +315,7 @@ pub fn eval_ast(e_meta: ExprNodeId, ctx: &mut Context) -> Result<Value, CompileE
                     let mut argvec: Vec<_> = argv
                         .iter()
                         .zip(params.iter())
-                        .map(|(v, TypedId { id, .. })| (id.clone(), v.clone()))
+                        .map(|(v, TypedId { id, .. })| (*id, v.clone()))
                         .collect();
                     eval_with_new_env(b, &mut n_ctx, &mut argvec)
                 }
@@ -335,7 +334,7 @@ pub fn eval_ast(e_meta: ExprNodeId, ctx: &mut Context) -> Result<Value, CompileE
             panic!("|> should not be shown in evaluation stage.")
         }
         ast::Expr::Lambda(a, r, e) => Ok(Value::Function(
-            a.iter().map(|tid| tid.clone()).collect(),
+            a.iter().cloned().collect(),
             *e,
             ctx.clone(), //todo! do not copy
             *r,
