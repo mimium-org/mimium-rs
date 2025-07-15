@@ -4,11 +4,10 @@ use std::rc::Rc;
 use itertools::Itertools;
 
 use crate::ast::{Expr, Literal, RecordField};
-use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
+use crate::interner::{ExprNodeId, Symbol, ToSymbol};
 use crate::pattern::{Pattern, TypedPattern};
 use crate::types::Type;
 use crate::utils::environment::{Environment, LookupRes};
-use crate::utils::miniprint::MiniPrint;
 
 mod builtin;
 const PERSISTENT_STAGE: i64 = i64::MIN;
@@ -548,7 +547,12 @@ pub fn create_default_interpreter() -> StageInterpreter {
 }
 pub fn expand_macro(expr: ExprNodeId) -> ExprNodeId {
     let mut interpreter = create_default_interpreter();
-    let res = interpreter.unstage(1, expr);
-    println!("Macro expansion result: {}", res.simple_print());
-    res
+    let env = interpreter.get_val_env().clone();
+    let res = interpreter.eval(1, expr);
+
+    println!("Macro expansion result: {:?}", res);
+    match res {
+        Value::Code(e) => e,
+        _ => panic!("Macro expansion did not result in a code value"),
+    }
 }

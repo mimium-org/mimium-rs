@@ -10,6 +10,7 @@ fn genpower(n:float){
 }
 
 // you can't write like $(genpower(3))(2) because of the precedence of dollar sign.
-fn dsp(){
+let dsp = `(| | {
   2 |> $(genpower(3))
-}
+})
+dsp

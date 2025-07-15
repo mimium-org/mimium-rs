@@ -142,7 +142,7 @@ impl Context {
     pub fn emit_mir(&self, src: &str) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
         let path = self.file_path.map(|sym| PathBuf::from(sym.to_string()));
         let (ast, mut parse_errs) = parser::parse(src, path);
-        let ast = parser::add_global_context(ast, self.file_path.unwrap_or_default());
+        // let ast = parser::add_global_context(ast, self.file_path.unwrap_or_default());
         let mir = mirgen::compile(ast, &self.get_ext_typeinfos(), self.file_path);
         if parse_errs.is_empty() {
             mir

@@ -1,5 +1,6 @@
 use super::intrinsics;
 use super::typing::{InferContext, infer_root};
+use crate::compiler::parser;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::{function, interpreter, numeric, unit};
@@ -907,9 +908,10 @@ pub fn compile(
         .collect::<Vec<_>>();
 
     if errors.is_empty() {
-        let expr3 = interpreter::expand_macro(expr2);
+        let expr2 = interpreter::expand_macro(expr2);
+        let expr2 = parser::add_global_context(expr2, file_path.unwrap_or_default());
         let mut ctx = Context::new(infer_ctx, file_path);
-        let _res = ctx.eval_expr(expr3);
+        let _res = ctx.eval_expr(expr2);
         ctx.program.file_path = file_path;
         Ok(ctx.program.clone())
     } else {
