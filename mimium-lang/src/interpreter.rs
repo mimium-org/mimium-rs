@@ -226,7 +226,7 @@ pub trait GeneralInterpreter {
 
 /// Evalueated result of the expression. Theoritically, it can be tagless union because it is statically typed, but we use enum for better readability.
 #[derive(Clone)]
-enum Value {
+pub enum Value {
     Error,
     Unit,
     Number(f64),
@@ -277,7 +277,7 @@ impl ValueTrait for Value {
     }
 }
 type ExtFunction = Rc<dyn Fn(Vec<Value>) -> Value>;
-struct StageInterpreter {
+pub struct StageInterpreter {
     val_env: Rc<RefCell<Environment<(Value, Stage)>>>,
     pattern_destructor: TypeDestructor,
 }
@@ -433,4 +433,12 @@ impl StageInterpreter {
 pub fn create_default_interpreter() -> StageInterpreter {
     let ext_fns = builtin::gen_default_fns();
     StageInterpreter::new(ext_fns)
+}
+pub fn expand_macro(expr: ExprNodeId) -> ExprNodeId {
+    let mut interpreter = create_default_interpreter();
+    let res = interpreter.eval(1, Expr::Bracket(expr).into_id_without_span());
+    match res {
+        Value::Code(e) => e,
+        _ => panic!("Expected a code value from macro expansion"),
+    }
 }

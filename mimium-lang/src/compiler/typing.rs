@@ -544,8 +544,9 @@ impl InferContext {
             }
             (Type::Failure, t) => Ok(t.clone().into_id_with_location(loc1.clone())),
             (t, Type::Failure) => Ok(t.clone().into_id_with_location(loc2.clone())),
-            (Type::Code(_p1), Type::Code(_p2)) => {
-                todo!("type system for multi-stage computation has not implemented yet")
+            (Type::Code(p1), Type::Code(p2)) => {
+                let ret = Self::unify_types((*p1, loc1.clone()), (*p2, loc2))?;
+                Ok(Type::Code(ret).into_id_with_location(loc1))
             }
             (_p1, _p2) => Err(vec![Error::TypeMismatch {
                 left: (t1, loc1),
@@ -947,10 +948,15 @@ impl InferContext {
             Expr::Escape(e) => {
                 let loc_e = Location::new(e.to_span(), self.file_path);
                 let res = self.infer_type(*e)?;
-                let intermediate =
-                    Type::Code(self.gen_intermediate_type_with_location(loc_e.clone()))
-                        .into_id_with_location(loc_e.clone());
-                Self::unify_types((res, loc_e.clone()), (intermediate, loc_e))
+                let intermediate = self.gen_intermediate_type_with_location(loc_e.clone());
+                let _res_unused = Self::unify_types(
+                    (res, loc_e.clone()),
+                    (
+                        Type::Code(intermediate).into_id_with_location(loc_e.clone()),
+                        loc_e,
+                    ),
+                )?;
+                Ok(intermediate)
             }
             Expr::Bracket(e) => {
                 let loc_e = Location::new(e.to_span(), self.file_path);

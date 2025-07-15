@@ -203,7 +203,7 @@ impl Type {
                 format!("({args})->{}", r.to_type().to_string_for_error())
             }
             Type::Ref(x) => format!("&{}", x.to_type().to_string_for_error()),
-            Type::Code(_c) => "<...code...>".to_string(),
+            Type::Code(c) => format!("`({})", c.to_type().to_string_for_error()),
             Type::Intermediate(_id) => "?".to_string(),
             // if no special treatment is needed, forward to the Display implementation
             x => x.to_string(),
@@ -247,7 +247,7 @@ impl TypeNodeId {
                 )
             }
             Type::Ref(x) => Type::Ref(apply_scalar(x, &mut closure)),
-            Type::Code(_c) => todo!(),
+            Type::Code(c) => Type::Code(apply_scalar(c, &mut closure)),
             Type::Intermediate(id) => Type::Intermediate(id.clone()),
             _ => self.to_type(),
         };
