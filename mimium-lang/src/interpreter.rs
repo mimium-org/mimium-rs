@@ -384,9 +384,9 @@ impl GeneralInterpreter for StageInterpreter {
                 panic!("assignment cannot be used in macro expansion currently")
             }
             Expr::Escape(e) => {
-                let c = self.eval(stage, e);
+                let c = self.eval(stage - 1, e);
                 match c {
-                    Value::Code(e) => self.eval(stage - 1, e),
+                    Value::Code(e) => self.eval(stage, e),
                     _ => panic!("Escape expression must be a closure or fixpoint"),
                 }
             }
