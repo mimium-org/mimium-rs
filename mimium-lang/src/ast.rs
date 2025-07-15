@@ -190,8 +190,8 @@ impl MiniPrint for Expr {
                 then.simple_print(),
                 optelse.simple_print()
             ),
-            Expr::Bracket(_) => todo!(),
-            Expr::Escape(_) => todo!(),
+            Expr::Bracket(e) => format!("(bracket {})", e.simple_print()),
+            Expr::Escape(e) => format!("(escape {})", e.simple_print()),
             Expr::Error => "(error)".to_string(),
         }
     }
