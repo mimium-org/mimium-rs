@@ -93,7 +93,7 @@ where
     SESSION_GLOBALS.with_borrow_mut(f)
 }
 
-#[derive(Default, Copy, Clone, PartialEq, Debug, Hash, Eq, PartialOrd, Ord)]
+#[derive(Default, Copy, Clone, PartialEq, Hash, Eq, PartialOrd, Ord)]
 pub struct Symbol(pub usize); //Symbol Trait is implemented on usize
 
 pub trait ToSymbol {
@@ -128,6 +128,11 @@ impl Symbol {
 impl Display for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
+    }
+}
+impl std::fmt::Debug for Symbol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}({})", self.as_str(), self.0)
     }
 }
 

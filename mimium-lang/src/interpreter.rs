@@ -107,10 +107,10 @@ pub trait ValueTrait {
 type Stage = i64;
 ///Trait for defining general reduction rules of Lambda calculus, independent of the primitive types, even if it is untyped.
 pub trait GeneralInterpreter {
-    type Value: Clone + ValueTrait;
+    type Value: Clone + ValueTrait + std::fmt::Debug;
     fn interpret_expr(&mut self, stage: Stage, expr: ExprNodeId) -> Self::Value;
     fn get_empty_val(&self) -> Self::Value;
-    fn get_val_env(&mut self) -> Rc<RefCell<Environment<(Self::Value, Stage)>>>;
+    fn get_val_env(&mut self) -> &mut Environment<(Self::Value, Stage)>;
     fn get_pattern_destructor(&mut self) -> &mut TypeDestructor;
     fn eval_in_new_env(
         &mut self,
@@ -118,8 +118,8 @@ pub trait GeneralInterpreter {
         stage: Stage,
         e: ExprNodeId,
     ) -> Self::Value {
-        let env = self.get_val_env();
-        self.eval_with_env(binds, stage, &mut env.borrow_mut(), e)
+        let mut env = self.get_val_env().clone();
+        self.eval_with_env(binds, stage, &mut env, e)
     }
     fn eval_with_env(
         &mut self,
@@ -128,41 +128,49 @@ pub trait GeneralInterpreter {
         env: &mut Environment<(Self::Value, Stage)>,
         e: ExprNodeId,
     ) -> Self::Value {
+        let tmp_env = self.get_val_env().clone();
         let binds = binds
             .iter()
             .map(|(name, val)| {
                 let v = val.clone();
-                (name.clone(), (v, stage))
+                (*name, (v, stage))
             })
             .collect_vec();
         env.extend();
         env.add_bind(binds.as_slice());
+        *self.get_val_env() = env.clone();
         let res = self.eval(stage, e);
         env.to_outer();
+        *self.get_val_env() = tmp_env; // Restore the original environment
         res
     }
     fn eval(&mut self, stage: Stage, expr: ExprNodeId) -> Self::Value {
         match expr.to_expr() {
-            Expr::Var(name) => match self.get_val_env().borrow().lookup_cls(&name) {
-                LookupRes::Local((val, bounded_stage)) if stage == *bounded_stage => val.clone(),
-                LookupRes::UpValue(_, (val, bounded_stage)) if stage == *bounded_stage => {
-                    val.clone()
+            Expr::Var(name) => {
+                let env = self.get_val_env();
+                match env.lookup_cls(&name) {
+                    LookupRes::Local((val, bounded_stage)) if stage == *bounded_stage => {
+                        val.clone()
+                    }
+                    LookupRes::UpValue(_, (val, bounded_stage)) if stage == *bounded_stage => {
+                        val.clone()
+                    }
+                    LookupRes::Global((val, bounded_stage))
+                        if stage == *bounded_stage || *bounded_stage == PERSISTENT_STAGE =>
+                    {
+                        val.clone()
+                    }
+                    LookupRes::None => panic!("Variable {name} not found, env:\n{:?}", env),
+                    LookupRes::Local((_, bounded_stage))
+                    | LookupRes::UpValue(_, (_, bounded_stage))
+                    | LookupRes::Global((_, bounded_stage)) => {
+                        panic!(
+                            "Variable {name} found, but stage mismatch: expected {}, found {}",
+                            stage, *bounded_stage
+                        )
+                    }
                 }
-                LookupRes::Global((val, bounded_stage))
-                    if stage == *bounded_stage || *bounded_stage == PERSISTENT_STAGE =>
-                {
-                    val.clone()
-                }
-                LookupRes::None => panic!("Variable {name} not found"),
-                LookupRes::Local((_, bounded_stage))
-                | LookupRes::UpValue(_, (_, bounded_stage))
-                | LookupRes::Global((_, bounded_stage)) => {
-                    panic!(
-                        "Variable {name} found, but stage mismatch: expected {}, found {}",
-                        stage, *bounded_stage
-                    )
-                }
-            },
+            }
             Expr::Let(pattern, _e, _body) => {
                 let single_let = self
                     .get_pattern_destructor()
@@ -190,10 +198,9 @@ pub trait GeneralInterpreter {
                 })
             }
             Expr::Lambda(names, _, body) => {
-                let env = self.get_val_env().borrow().clone();
                 let names = names.iter().map(|name| name.id).collect_vec();
                 //todo: need to deep-copy the expr?
-                ValueTrait::make_closure(body, names, env)
+                ValueTrait::make_closure(body, names, self.get_val_env().clone())
             }
             Expr::Apply(f, a) => {
                 let fv = self.eval(stage, f);
@@ -208,13 +215,13 @@ pub trait GeneralInterpreter {
                             fv.get_as_fixpoint().map(|(name, e)| {
                                 let names = vec![name];
                                 let body = e;
-                                let mut env = self.get_val_env().borrow().clone();
+                                let env = self.get_val_env();
                                 env.extend();
                                 env.add_bind(&[(
                                     name,
                                     (ValueTrait::make_fixpoint(name, e), stage),
                                 )]);
-                                (env, names, body)
+                                (env.clone(), names, body)
                             })
                         })
                         .expect("Expected closure or fixpoint value");
@@ -261,6 +268,7 @@ pub enum Value {
     Code(ExprNodeId),
     ExternalFn(ExtFunction),
 }
+
 impl ValueTrait for Value {
     fn make_closure(e: ExprNodeId, names: Vec<Symbol>, env: Environment<(Self, Stage)>) -> Self {
         // Create a closure value with the given expression, names, and environment
@@ -299,7 +307,7 @@ impl ValueTrait for Value {
     }
 }
 pub struct StageInterpreter {
-    val_env: Rc<RefCell<Environment<(Value, Stage)>>>,
+    val_env: Environment<(Value, Stage)>,
     pattern_destructor: TypeDestructor,
 }
 impl GeneralInterpreter for StageInterpreter {
@@ -409,7 +417,7 @@ impl GeneralInterpreter for StageInterpreter {
                 let c = self.eval(stage - 1, e);
                 match c {
                     Value::Code(e) => self.eval(stage, e),
-                    _ => panic!("Escape expression must be a closure or fixpoint"),
+                    _ => panic!("Escape expression must be a code"),
                 }
             }
             Expr::Bracket(e) => Value::Code(self.unstage(stage + 1, e)),
@@ -422,8 +430,8 @@ impl GeneralInterpreter for StageInterpreter {
         Value::Unit
     }
 
-    fn get_val_env(&mut self) -> Rc<RefCell<Environment<(Self::Value, Stage)>>> {
-        self.val_env.clone()
+    fn get_val_env(&mut self) -> &mut Environment<(Self::Value, Stage)> {
+        &mut self.val_env
     }
 
     fn get_pattern_destructor(&mut self) -> &mut TypeDestructor {
@@ -433,21 +441,20 @@ impl GeneralInterpreter for StageInterpreter {
 
 impl StageInterpreter {
     pub fn new(ext_fns: Vec<ExtFunction>) -> Self {
-        let env = Rc::new(RefCell::new(Environment::new()));
-        {
-            let mut env2 = env.borrow_mut();
-            env2.extend();
-            env2.add_bind(
-                ext_fns
-                    .iter()
-                    .map(|e| {
-                        let v = Value::ExternalFn(e.clone());
-                        (e.name, (v, PERSISTENT_STAGE)) // Stage is set to persistent for external functions
-                    })
-                    .collect::<Vec<_>>()
-                    .as_slice(),
-            );
-        }
+        let mut env = Environment::new();
+
+        env.extend();
+        env.add_bind(
+            ext_fns
+                .iter()
+                .map(|e| {
+                    let v = Value::ExternalFn(e.clone());
+                    (e.name, (v, PERSISTENT_STAGE)) // Stage is set to persistent for external functions
+                })
+                .collect::<Vec<_>>()
+                .as_slice(),
+        );
+
         Self {
             val_env: env,
             pattern_destructor: TypeDestructor { anonymous_count: 0 },
@@ -457,10 +464,11 @@ impl StageInterpreter {
         match e.to_expr() {
             Expr::Bracket(inner) => self.unstage(stage + 1, inner),
             Expr::Escape(inner) => {
-                if let Value::Code(c) = self.eval(stage - 1, inner) {
+                let r = self.eval(stage - 1, inner);
+                if let Value::Code(c) = r {
                     c
                 } else {
-                    panic!("Escape expression must evaluate to a code value")
+                    panic!("Escape expression must evaluate to a code value but got {r:?}");
                 }
             }
             Expr::Apply(f, a) => {
@@ -547,8 +555,7 @@ pub fn create_default_interpreter() -> StageInterpreter {
 }
 pub fn expand_macro(expr: ExprNodeId) -> ExprNodeId {
     let mut interpreter = create_default_interpreter();
-    let env = interpreter.get_val_env().clone();
-    let res = interpreter.eval(1, expr);
+    let res = interpreter.eval(0, expr);
 
     println!("Macro expansion result: {:?}", res);
     match res {
