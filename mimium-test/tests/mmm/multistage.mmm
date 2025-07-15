@@ -1,0 +1,14 @@
+fn genpower(n){
+    letrec aux = |n,x| {
+        if (n>1){
+            `( $x * $(aux(n-1,x)) )
+        }else{
+            x
+        }
+    }
+    `(|x| $(aux(n,`x)))
+}
+let res = $(genpower(3))(2) //2^3
+fn dsp(){
+    res // should be 8
+}
