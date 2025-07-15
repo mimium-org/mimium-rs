@@ -1,49 +1,39 @@
-use std::rc::Rc;
-
-use crate::interner::Symbol;
 use crate::interner::ToSymbol;
 
 use super::ExtFunction;
 use super::Value;
 
-fn new_fn_f1_unit(name: &'static str, f: impl Fn(f64) + 'static) -> (Symbol, ExtFunction) {
-    (
-        name.to_symbol(),
-        Rc::new(move |args: Vec<Value>| {
-            let v = args[0].clone();
-            match v {
-                Value::Number(v) => {
-                    f(v);
-                    Value::Unit
-                }
-                _ => panic!("{} requires a numeric argument", name),
+fn new_fn_f1_unit(name: &'static str, f: impl Fn(f64) + 'static) -> ExtFunction {
+    ExtFunction::new(name.to_symbol(), move |args: Vec<Value>| {
+        let v = args[0].clone();
+        match v {
+            Value::Number(v) => {
+                f(v);
+                Value::Unit
             }
-        }),
-    )
+            _ => panic!("{} requires a numeric argument", name),
+        }
+    })
 }
-fn new_fn_f1_f(name: &'static str, f: impl Fn(f64) -> f64 + 'static) -> (Symbol, ExtFunction) {
-    (
-        name.to_symbol(),
-        Rc::new(move |args: Vec<Value>| {
-            let v = args[0].clone();
-            match v {
-                Value::Number(v) => Value::Number(f(v)),
-                _ => panic!("{} requires a numeric argument", name),
-            }
-        }),
-    )
+fn new_fn_f1_f(name: &'static str, f: impl Fn(f64) -> f64 + 'static) -> ExtFunction {
+    ExtFunction::new(name.to_symbol(), move |args: Vec<Value>| {
+        let v = args[0].clone();
+        match v {
+            Value::Number(v) => Value::Number(f(v)),
+            _ => panic!("{} requires a numeric argument", name),
+        }
+    })
 }
-fn new_fn_f2_f(name: &'static str, f: impl Fn(f64, f64) -> f64 + 'static) -> (Symbol, ExtFunction) {
-    (
-        name.to_symbol(),
-        Rc::new(move |args: Vec<Value>| match args.as_slice() {
+fn new_fn_f2_f(name: &'static str, f: impl Fn(f64, f64) -> f64 + 'static) -> ExtFunction {
+    ExtFunction::new(name.to_symbol(), move |args: Vec<Value>| {
+        match args.as_slice() {
             [Value::Number(v1), Value::Number(v2)] => Value::Number(f(*v1, *v2)),
             _ => panic!("{} requires two numeric arguments", name),
-        }),
-    )
+        }
+    })
 }
 
-pub(super) fn gen_default_fns() -> Vec<(Symbol, ExtFunction)> {
+pub(super) fn gen_default_fns() -> Vec<ExtFunction> {
     vec![
         new_fn_f1_f("neg", |v| -v),
         new_fn_f2_f("add", |a, b| a + b),

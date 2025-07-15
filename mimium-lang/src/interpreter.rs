@@ -8,9 +8,10 @@ use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
 use crate::types::Type;
 use crate::utils::environment::{Environment, LookupRes};
+use crate::utils::miniprint::MiniPrint;
 
 mod builtin;
-
+const PERSISTENT_STAGE: i64 = i64::MIN;
 #[derive(Clone, Debug)]
 pub struct TypeDestructor {
     anonymous_count: u64,
@@ -148,7 +149,11 @@ pub trait GeneralInterpreter {
                 LookupRes::UpValue(_, (val, bounded_stage)) if stage == *bounded_stage => {
                     val.clone()
                 }
-                LookupRes::Global((val, bounded_stage)) if stage == *bounded_stage => val.clone(),
+                LookupRes::Global((val, bounded_stage))
+                    if stage == *bounded_stage || *bounded_stage == PERSISTENT_STAGE =>
+                {
+                    val.clone()
+                }
                 LookupRes::None => panic!("Variable {name} not found"),
                 LookupRes::Local((_, bounded_stage))
                 | LookupRes::UpValue(_, (_, bounded_stage))
@@ -224,8 +229,26 @@ pub trait GeneralInterpreter {
     }
 }
 
-/// Evalueated result of the expression. Theoritically, it can be tagless union because it is statically typed, but we use enum for better readability.
 #[derive(Clone)]
+pub struct ExtFunction {
+    name: Symbol,
+    f: Rc<dyn Fn(Vec<Value>) -> Value>,
+}
+impl ExtFunction {
+    pub fn new(name: Symbol, f: impl Fn(Vec<Value>) -> Value + 'static) -> Self {
+        ExtFunction {
+            name,
+            f: Rc::new(f),
+        }
+    }
+}
+impl std::fmt::Debug for ExtFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "External function: {}", self.name)
+    }
+}
+/// Evalueated result of the expression. Theoritically, it can be tagless union because it is statically typed, but we use enum for better readability.
+#[derive(Clone, Debug)]
 pub enum Value {
     Error,
     Unit,
@@ -237,7 +260,7 @@ pub enum Value {
     Closure(ExprNodeId, Vec<Symbol>, Environment<(Value, Stage)>),
     Fixpoint(Symbol, ExprNodeId),
     Code(ExprNodeId),
-    ExternalFn(Rc<dyn Fn(Vec<Value>) -> Value>),
+    ExternalFn(ExtFunction),
 }
 impl ValueTrait for Value {
     fn make_closure(e: ExprNodeId, names: Vec<Symbol>, env: Environment<(Self, Stage)>) -> Self {
@@ -271,12 +294,11 @@ impl ValueTrait for Value {
         Self: std::marker::Sized,
     {
         match self {
-            Value::ExternalFn(f) => Some(f),
+            Value::ExternalFn(f) => Some(f.f),
             _ => None,
         }
     }
 }
-type ExtFunction = Rc<dyn Fn(Vec<Value>) -> Value>;
 pub struct StageInterpreter {
     val_env: Rc<RefCell<Environment<(Value, Stage)>>>,
     pattern_destructor: TypeDestructor,
@@ -391,7 +413,7 @@ impl GeneralInterpreter for StageInterpreter {
                     _ => panic!("Escape expression must be a closure or fixpoint"),
                 }
             }
-            Expr::Bracket(e) => Value::Code(e),
+            Expr::Bracket(e) => Value::Code(self.unstage(stage + 1, e)),
             // apply, lambda, let, letrec, escape, bracket, etc. will be handled by the interpreter trait
             _ => self.eval(stage, expr),
         }
@@ -411,21 +433,111 @@ impl GeneralInterpreter for StageInterpreter {
 }
 
 impl StageInterpreter {
-    pub fn new(ext_fns: Vec<(Symbol, ExtFunction)>) -> Self {
+    pub fn new(ext_fns: Vec<ExtFunction>) -> Self {
         let env = Rc::new(RefCell::new(Environment::new()));
-        env.borrow_mut().add_bind(
-            ext_fns
-                .iter()
-                .map(|(name, func)| {
-                    let v = Value::ExternalFn(func.clone());
-                    (name.clone(), (v, 0)) // Stage is set to 0 for external functions
-                })
-                .collect::<Vec<_>>()
-                .as_slice(),
-        );
+        {
+            let mut env2 = env.borrow_mut();
+            env2.extend();
+            env2.add_bind(
+                ext_fns
+                    .iter()
+                    .map(|e| {
+                        let v = Value::ExternalFn(e.clone());
+                        (e.name, (v, PERSISTENT_STAGE)) // Stage is set to persistent for external functions
+                    })
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+            );
+        }
         Self {
             val_env: env,
             pattern_destructor: TypeDestructor { anonymous_count: 0 },
+        }
+    }
+    fn unstage(&mut self, stage: Stage, e: ExprNodeId) -> ExprNodeId {
+        match e.to_expr() {
+            Expr::Bracket(inner) => self.unstage(stage + 1, inner),
+            Expr::Escape(inner) => {
+                if let Value::Code(c) = self.eval(stage - 1, inner) {
+                    c
+                } else {
+                    panic!("Escape expression must evaluate to a code value")
+                }
+            }
+            Expr::Apply(f, a) => {
+                let f_val = self.unstage(stage, f);
+                let a_vals = a.into_iter().map(|arg| self.unstage(stage, arg)).collect();
+                Expr::Apply(f_val, a_vals).into_id(e.to_location())
+            }
+            Expr::Lambda(params, r_ty, body) => {
+                let body_val = self.unstage(stage, body);
+                Expr::Lambda(params, r_ty, body_val).into_id(e.to_location())
+            }
+            Expr::Let(id, value, body) => Expr::Let(
+                id,
+                self.unstage(stage, value),
+                body.map(|b| self.unstage(stage, b)),
+            )
+            .into_id(e.to_location()),
+            Expr::LetRec(id, value, body) => Expr::LetRec(
+                id,
+                self.unstage(stage, value),
+                body.map(|b| self.unstage(stage, b)),
+            )
+            .into_id(e.to_location()),
+            Expr::Feed(id, body) => {
+                Expr::Feed(id, self.unstage(stage, body)).into_id(e.to_location())
+            }
+            Expr::If(cond, then, else_opt) => Expr::If(
+                self.unstage(stage, cond),
+                self.unstage(stage, then),
+                else_opt.map(|e| self.unstage(stage, e)),
+            )
+            .into_id(e.to_location()),
+            Expr::Then(e1, e2) => {
+                Expr::Then(self.unstage(stage, e1), e2.map(|e| self.unstage(stage, e)))
+                    .into_id(e.to_location())
+            }
+            Expr::Assign(target, value) => {
+                Expr::Assign(self.unstage(stage, target), self.unstage(stage, value))
+                    .into_id(e.to_location())
+            }
+            Expr::ArrayLiteral(elements) => Expr::ArrayLiteral(
+                elements
+                    .into_iter()
+                    .map(|e| self.unstage(stage, e))
+                    .collect(),
+            )
+            .into_id(e.to_location()),
+            Expr::RecordLiteral(fields) => Expr::RecordLiteral(
+                fields
+                    .into_iter()
+                    .map(|RecordField { name, expr }| RecordField {
+                        name,
+                        expr: self.unstage(stage, expr),
+                    })
+                    .collect(),
+            )
+            .into_id(e.to_location()),
+            Expr::Tuple(elements) => Expr::Tuple(
+                elements
+                    .into_iter()
+                    .map(|e| self.unstage(stage, e))
+                    .collect(),
+            )
+            .into_id(e.to_location()),
+            Expr::Proj(e, idx) => Expr::Proj(self.unstage(stage, e), idx).into_id(e.to_location()),
+            Expr::ArrayAccess(e, i) => {
+                Expr::ArrayAccess(self.unstage(stage, e), self.unstage(stage, i))
+                    .into_id(e.to_location())
+            }
+            Expr::FieldAccess(e, name) => {
+                Expr::FieldAccess(self.unstage(stage, e), name).into_id(e.to_location())
+            }
+            Expr::Block(b) => {
+                Expr::Block(b.map(|eid| self.unstage(stage, eid))).into_id(e.to_location())
+            }
+            _ => e,
         }
     }
 }
@@ -436,9 +548,7 @@ pub fn create_default_interpreter() -> StageInterpreter {
 }
 pub fn expand_macro(expr: ExprNodeId) -> ExprNodeId {
     let mut interpreter = create_default_interpreter();
-    let res = interpreter.eval(1, Expr::Bracket(expr).into_id_without_span());
-    match res {
-        Value::Code(e) => e,
-        _ => panic!("Expected a code value from macro expansion"),
-    }
+    let res = interpreter.unstage(1, expr);
+    println!("Macro expansion result: {}", res.simple_print());
+    res
 }

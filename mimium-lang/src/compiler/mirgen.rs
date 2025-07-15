@@ -2,7 +2,7 @@ use super::intrinsics;
 use super::typing::{InferContext, infer_root};
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
-use crate::{function, numeric, unit};
+use crate::{function, interpreter, numeric, unit};
 pub mod convert_pronoun;
 pub(crate) mod recursecheck;
 use crate::mir::{self, Argument, Instruction, Mir, StateSize, VPtr, VReg, Value};
@@ -907,8 +907,9 @@ pub fn compile(
         .collect::<Vec<_>>();
 
     if errors.is_empty() {
+        let expr3 = interpreter::expand_macro(expr2);
         let mut ctx = Context::new(infer_ctx, file_path);
-        let _res = ctx.eval_expr(expr2);
+        let _res = ctx.eval_expr(expr3);
         ctx.program.file_path = file_path;
         Ok(ctx.program.clone())
     } else {

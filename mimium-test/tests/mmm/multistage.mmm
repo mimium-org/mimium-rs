@@ -10,8 +10,6 @@ fn genpower(n:float){
 }
 
 // you can't write like $(genpower(3))(2) because of the precedence of dollar sign.
-let f = $(genpower(3))
-let res = f(2)//2^3
 fn dsp(){
-    res // should be 8
+  2 |> $(genpower(3))
 }
