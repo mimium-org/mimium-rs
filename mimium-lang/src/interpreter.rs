@@ -9,6 +9,8 @@ use crate::pattern::{Pattern, TypedPattern};
 use crate::types::Type;
 use crate::utils::environment::{Environment, LookupRes};
 
+mod builtin;
+
 #[derive(Clone, Debug)]
 pub struct TypeDestructor {
     anonymous_count: u64,
@@ -278,7 +280,6 @@ type ExtFunction = Rc<dyn Fn(Vec<Value>) -> Value>;
 struct StageInterpreter {
     val_env: Rc<RefCell<Environment<(Value, Stage)>>>,
     pattern_destructor: TypeDestructor,
-    external_functions: Vec<(Symbol, ExtFunction)>,
 }
 impl GeneralInterpreter for StageInterpreter {
     type Value = Value;
@@ -410,15 +411,26 @@ impl GeneralInterpreter for StageInterpreter {
 }
 
 impl StageInterpreter {
-    pub fn new(ext_fns: impl Iterator<Item = (Symbol, ExtFunction)>) -> Self {
+    pub fn new(ext_fns: Vec<(Symbol, ExtFunction)>) -> Self {
+        let env = Rc::new(RefCell::new(Environment::new()));
+        env.borrow_mut().add_bind(
+            ext_fns
+                .iter()
+                .map(|(name, func)| {
+                    let v = Value::ExternalFn(func.clone());
+                    (name.clone(), (v, 0)) // Stage is set to 0 for external functions
+                })
+                .collect::<Vec<_>>()
+                .as_slice(),
+        );
         Self {
-            val_env: Rc::new(RefCell::new(Environment::new())),
+            val_env: env,
             pattern_destructor: TypeDestructor { anonymous_count: 0 },
-            external_functions: ext_fns.collect(),
         }
     }
+}
 
-    pub fn add_external_function(&mut self, name: Symbol, func: Rc<dyn Fn(Vec<Value>) -> Value>) {
-        self.external_functions.push((name, func));
-    }
+pub fn create_default_interpreter() -> StageInterpreter {
+    let ext_fns = builtin::gen_default_fns();
+    StageInterpreter::new(ext_fns)
 }
