@@ -11,7 +11,7 @@ use crate::utils::environment::{Environment, LookupRes};
 
 mod builtin;
 const PERSISTENT_STAGE: i64 = i64::MIN;
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct TypeDestructor {
     anonymous_count: u64,
 }
@@ -105,72 +105,82 @@ pub trait ValueTrait {
         Self: std::marker::Sized;
 }
 type Stage = i64;
+pub struct Context<V>
+where
+    V: Clone + ValueTrait + std::fmt::Debug,
+{
+    pub stage: Stage,
+    pub env: Environment<(V, Stage)>,
+}
+
 ///Trait for defining general reduction rules of Lambda calculus, independent of the primitive types, even if it is untyped.
 pub trait GeneralInterpreter {
     type Value: Clone + ValueTrait + std::fmt::Debug;
-    fn interpret_expr(&mut self, stage: Stage, expr: ExprNodeId) -> Self::Value;
+    fn interpret_expr(&mut self, ctx: &mut Context<Self::Value>, expr: ExprNodeId) -> Self::Value;
     fn get_empty_val(&self) -> Self::Value;
-    fn get_val_env(&mut self) -> &mut Environment<(Self::Value, Stage)>;
     fn get_pattern_destructor(&mut self) -> &mut TypeDestructor;
     fn eval_in_new_env(
         &mut self,
         binds: &[(Symbol, Self::Value)],
-        stage: Stage,
+        ctx: &mut Context<Self::Value>,
         e: ExprNodeId,
     ) -> Self::Value {
-        let mut env = self.get_val_env().clone();
-        self.eval_with_env(binds, stage, &mut env, e)
-    }
-    fn eval_with_env(
-        &mut self,
-        binds: &[(Symbol, Self::Value)],
-        stage: Stage,
-        env: &mut Environment<(Self::Value, Stage)>,
-        e: ExprNodeId,
-    ) -> Self::Value {
-        let tmp_env = self.get_val_env().clone();
+        ctx.env.extend();
         let binds = binds
             .iter()
             .map(|(name, val)| {
                 let v = val.clone();
-                (*name, (v, stage))
+                (*name, (v, ctx.stage))
             })
             .collect_vec();
-        env.extend();
-        env.add_bind(binds.as_slice());
-        *self.get_val_env() = env.clone();
-        let res = self.eval(stage, e);
-        env.to_outer();
-        *self.get_val_env() = tmp_env; // Restore the original environment
+        ctx.env.add_bind(binds.as_slice());
+        let res = self.eval(ctx, e);
+        ctx.env.to_outer();
         res
     }
-    fn eval(&mut self, stage: Stage, expr: ExprNodeId) -> Self::Value {
+    fn eval_with_closure_env(
+        &mut self,
+        binds: &[(Symbol, Self::Value)],
+        mut ctx: Context<Self::Value>,
+        e: ExprNodeId,
+    ) -> Self::Value {
+        let binds = binds
+            .iter()
+            .map(|(name, val)| {
+                let v = val.clone();
+                (*name, (v, ctx.stage))
+            })
+            .collect_vec();
+        ctx.env.extend();
+        ctx.env.add_bind(binds.as_slice());
+        let res = self.eval(&mut ctx, e);
+        ctx.env.to_outer();
+        res
+    }
+    fn eval(&mut self, ctx: &mut Context<Self::Value>, expr: ExprNodeId) -> Self::Value {
         match expr.to_expr() {
-            Expr::Var(name) => {
-                let env = self.get_val_env();
-                match env.lookup_cls(&name) {
-                    LookupRes::Local((val, bounded_stage)) if stage == *bounded_stage => {
-                        val.clone()
-                    }
-                    LookupRes::UpValue(_, (val, bounded_stage)) if stage == *bounded_stage => {
-                        val.clone()
-                    }
-                    LookupRes::Global((val, bounded_stage))
-                        if stage == *bounded_stage || *bounded_stage == PERSISTENT_STAGE =>
-                    {
-                        val.clone()
-                    }
-                    LookupRes::None => panic!("Variable {name} not found, env:\n{:?}", env),
-                    LookupRes::Local((_, bounded_stage))
-                    | LookupRes::UpValue(_, (_, bounded_stage))
-                    | LookupRes::Global((_, bounded_stage)) => {
-                        panic!(
-                            "Variable {name} found, but stage mismatch: expected {}, found {}",
-                            stage, *bounded_stage
-                        )
-                    }
+            Expr::Var(name) => match ctx.env.lookup_cls(&name) {
+                LookupRes::Local((val, bounded_stage)) if ctx.stage == *bounded_stage => {
+                    val.clone()
                 }
-            }
+                LookupRes::UpValue(_, (val, bounded_stage)) if ctx.stage == *bounded_stage => {
+                    val.clone()
+                }
+                LookupRes::Global((val, bounded_stage))
+                    if ctx.stage == *bounded_stage || *bounded_stage == PERSISTENT_STAGE =>
+                {
+                    val.clone()
+                }
+                LookupRes::None => panic!("Variable {name} not found, env:\n{:?}", ctx.env),
+                LookupRes::Local((_, bounded_stage))
+                | LookupRes::UpValue(_, (_, bounded_stage))
+                | LookupRes::Global((_, bounded_stage)) => {
+                    panic!(
+                        "Variable {name} found, but stage mismatch: expected {}, found {}",
+                        *bounded_stage, ctx.stage
+                    )
+                }
+            },
             Expr::Let(pattern, _e, _body) => {
                 let single_let = self
                     .get_pattern_destructor()
@@ -186,51 +196,51 @@ pub trait GeneralInterpreter {
                     ) => (name, e, body),
                     _ => panic!("Expected single pattern in let expression"),
                 };
-                let v = self.eval(stage, e);
+                let v = self.eval(ctx, e);
                 let empty = self.get_empty_val();
-                body.map_or(empty, |e| self.eval_in_new_env(&[(name, v)], stage, e))
+                body.map_or(empty, |e| self.eval_in_new_env(&[(name, v)], ctx, e))
             }
             Expr::LetRec(typed_id, e, body) => {
                 let fixpoint = ValueTrait::make_fixpoint(typed_id.id, e);
+                log::trace!(
+                    "Creating fixpoint for {}, stage: {}",
+                    typed_id.id,
+                    ctx.stage
+                );
+                let res = self.eval_in_new_env(&[(typed_id.id, fixpoint)], ctx, e);
+
                 let empty = self.get_empty_val();
                 body.map_or(empty, |e| {
-                    self.eval_in_new_env(&[(typed_id.id, fixpoint)], stage, e)
+                    self.eval_in_new_env(&[(typed_id.id, res)], ctx, e)
                 })
             }
             Expr::Lambda(names, _, body) => {
                 let names = names.iter().map(|name| name.id).collect_vec();
                 //todo: need to deep-copy the expr?
-                ValueTrait::make_closure(body, names, self.get_val_env().clone())
+                ValueTrait::make_closure(body, names, ctx.env.clone())
             }
             Expr::Apply(f, a) => {
-                let fv = self.eval(stage, f);
-                let args = a.into_iter().map(|arg| self.eval(stage, arg)).collect();
+                let fv = self.eval(ctx, f);
+                let args = a.into_iter().map(|arg| self.eval(ctx, arg)).collect();
                 if let Some(ext_fn) = fv.clone().get_as_external_fn() {
                     ext_fn(args)
-                } else {
-                    let (mut c_env, names, body) = fv
-                        .clone()
-                        .get_as_closure()
-                        .or_else(|| {
-                            fv.get_as_fixpoint().map(|(name, e)| {
-                                let names = vec![name];
-                                let body = e;
-                                let env = self.get_val_env();
-                                env.extend();
-                                env.add_bind(&[(
-                                    name,
-                                    (ValueTrait::make_fixpoint(name, e), stage),
-                                )]);
-                                (env.clone(), names, body)
-                            })
-                        })
-                        .expect("Expected closure or fixpoint value");
+                } else if let Some((c_env, names, body)) = fv.clone().get_as_closure() {
+                    log::trace!("entering closure app with names: {:?}", names);
                     let binds = names.into_iter().zip(args).collect_vec();
-                    self.eval_with_env(binds.as_slice(), stage, &mut c_env, body)
+                    let new_ctx = Context {
+                        env: c_env,
+                        stage: ctx.stage,
+                    };
+                    self.eval_with_closure_env(binds.as_slice(), new_ctx, body)
+                } else if let Some((name, e)) = fv.get_as_fixpoint() {
+                    let bind = [(name, ValueTrait::make_fixpoint(name, e))];
+                    self.eval_in_new_env(&bind, ctx, e)
+                } else {
+                    panic!("apply to non-fuctional type")
                 }
             }
 
-            _ => self.interpret_expr(stage, expr),
+            _ => self.interpret_expr(ctx, expr),
         }
     }
 }
@@ -306,34 +316,33 @@ impl ValueTrait for Value {
         }
     }
 }
+#[derive(Default)]
 pub struct StageInterpreter {
-    val_env: Environment<(Value, Stage)>,
     pattern_destructor: TypeDestructor,
 }
 impl GeneralInterpreter for StageInterpreter {
     type Value = Value;
 
-    fn interpret_expr(&mut self, stage: Stage, expr: ExprNodeId) -> Self::Value {
+    fn interpret_expr(&mut self, ctx: &mut Context<Value>, expr: ExprNodeId) -> Self::Value {
         // Implement the logic for interpreting expressions here
         match expr.to_expr() {
             Expr::ArrayLiteral(ev) => {
-                let elements = ev.into_iter().map(|e| self.eval(stage, e)).collect();
+                let elements = ev.into_iter().map(|e| self.eval(ctx, e)).collect();
                 Value::Array(elements)
             }
             Expr::RecordLiteral(fields) => {
                 let evaluated_fields = fields
                     .into_iter()
-                    .map(|RecordField { name, expr }| (name, self.eval(stage, expr)))
+                    .map(|RecordField { name, expr }| (name, self.eval(ctx, expr)))
                     .collect();
                 Value::Record(evaluated_fields)
             }
             Expr::Tuple(elements) => {
-                let evaluated_elements =
-                    elements.into_iter().map(|e| self.eval(stage, e)).collect();
+                let evaluated_elements = elements.into_iter().map(|e| self.eval(ctx, e)).collect();
                 Value::Tuple(evaluated_elements)
             }
             Expr::Proj(e, idx) => {
-                let evaluated_expr = self.eval(stage, e);
+                let evaluated_expr = self.eval(ctx, e);
                 match evaluated_expr {
                     Value::Tuple(elements) => {
                         if idx < 0 || idx as usize >= elements.len() {
@@ -345,8 +354,8 @@ impl GeneralInterpreter for StageInterpreter {
                 }
             }
             Expr::ArrayAccess(e, i) => {
-                let evaluated_expr = self.eval(stage, e);
-                let evaluated_index = self.eval(stage, i);
+                let evaluated_expr = self.eval(ctx, e);
+                let evaluated_index = self.eval(ctx, i);
                 match evaluated_expr {
                     Value::Array(elements) => {
                         if let Value::Number(idx) = evaluated_index {
@@ -364,7 +373,7 @@ impl GeneralInterpreter for StageInterpreter {
                 }
             }
             Expr::FieldAccess(e, name) => {
-                let evaluated_expr = self.eval(stage, e);
+                let evaluated_expr = self.eval(ctx, e);
                 match evaluated_expr {
                     Value::Record(fields) => fields
                         .into_iter()
@@ -376,7 +385,7 @@ impl GeneralInterpreter for StageInterpreter {
                     _ => panic!("Field access can only be applied to records"),
                 }
             }
-            Expr::Block(e) => e.map_or(Value::Unit, |eid| self.eval_in_new_env(&[], stage, eid)),
+            Expr::Block(e) => e.map_or(Value::Unit, |eid| self.eval_in_new_env(&[], ctx, eid)),
             Expr::Literal(Literal::Float(f)) => Value::Number(f.to_string().parse().unwrap()),
             Expr::Literal(Literal::Int(i)) => Value::Number(i as f64),
             Expr::Literal(Literal::String(s)) => Value::String(s),
@@ -397,41 +406,48 @@ impl GeneralInterpreter for StageInterpreter {
                 panic!("Pipe apply expression should be removed in the previous stage")
             }
             Expr::If(cond, then, else_opt) => {
-                let cond_val = self.eval(stage, cond);
+                let cond_val = self.eval(ctx, cond);
                 match cond_val {
-                    Value::Number(n) if n > 0.0 => self.eval(stage, then),
-                    Value::Number(_) => else_opt.map_or(Value::Unit, |e| self.eval(stage, e)),
+                    Value::Number(n) if n > 0.0 => self.eval(ctx, then),
+                    Value::Number(_) => else_opt.map_or(Value::Unit, |e| self.eval(ctx, e)),
                     _ => panic!("Condition must be a number for if expression"),
                 }
             }
             Expr::Then(e1, e2) => {
-                let _v1 = self.eval(stage, e1);
-                e2.map_or(Value::Unit, |e| self.eval(stage, e))
+                let _v1 = self.eval(ctx, e1);
+                e2.map_or(Value::Unit, |e| self.eval(ctx, e))
             }
             Expr::Assign(target, e) => {
-                let target_val = self.eval(stage, target);
-                let new_val = self.eval(stage, e);
+                let target_val = self.eval(ctx, target);
+                let new_val = self.eval(ctx, e);
                 panic!("assignment cannot be used in macro expansion currently")
             }
             Expr::Escape(e) => {
-                let c = self.eval(stage - 1, e);
+                ctx.stage -= 1; // Decrease the stage for escape
+                log::trace!("Escaping expression, stage => {}", ctx.stage);
+                let c = self.eval(ctx, e);
+                ctx.stage += 1; // Increase the stage back
+
                 match c {
-                    Value::Code(e) => self.eval(stage, e),
+                    Value::Code(e) => self.eval(ctx, e),
                     _ => panic!("Escape expression must be a code"),
                 }
             }
-            Expr::Bracket(e) => Value::Code(self.unstage(stage + 1, e)),
+            Expr::Bracket(e) => {
+                ctx.stage += 1; // Increase the stage for bracket
+                log::trace!("Bracketting expression, stage => {}", ctx.stage);
+
+                let res = Value::Code(self.unstage(ctx, e));
+                ctx.stage -= 1; // Decrease the stage back
+                res
+            }
             // apply, lambda, let, letrec, escape, bracket, etc. will be handled by the interpreter trait
-            _ => self.eval(stage, expr),
+            _ => self.eval(ctx, expr),
         }
     }
 
     fn get_empty_val(&self) -> Self::Value {
         Value::Unit
-    }
-
-    fn get_val_env(&mut self) -> &mut Environment<(Self::Value, Stage)> {
-        &mut self.val_env
     }
 
     fn get_pattern_destructor(&mut self) -> &mut TypeDestructor {
@@ -440,31 +456,22 @@ impl GeneralInterpreter for StageInterpreter {
 }
 
 impl StageInterpreter {
-    pub fn new(ext_fns: Vec<ExtFunction>) -> Self {
-        let mut env = Environment::new();
-
-        env.extend();
-        env.add_bind(
-            ext_fns
-                .iter()
-                .map(|e| {
-                    let v = Value::ExternalFn(e.clone());
-                    (e.name, (v, PERSISTENT_STAGE)) // Stage is set to persistent for external functions
-                })
-                .collect::<Vec<_>>()
-                .as_slice(),
-        );
-
-        Self {
-            val_env: env,
-            pattern_destructor: TypeDestructor { anonymous_count: 0 },
-        }
-    }
-    fn unstage(&mut self, stage: Stage, e: ExprNodeId) -> ExprNodeId {
+    fn unstage(&mut self, ctx: &mut Context<Value>, e: ExprNodeId) -> ExprNodeId {
         match e.to_expr() {
-            Expr::Bracket(inner) => self.unstage(stage + 1, inner),
+            Expr::Bracket(inner) => {
+                
+                ctx.stage += 1;
+                log::trace!("staging bracket expression, stage => {}", ctx.stage);
+                let res = self.unstage(ctx, inner);
+                ctx.stage -= 1;
+                res
+            }
             Expr::Escape(inner) => {
-                let r = self.eval(stage - 1, inner);
+                ctx.stage -= 1;
+                log::trace!("Unstaging escape expression, stage => {}", ctx.stage);
+
+                let r = self.eval(ctx, inner);
+                ctx.stage += 1;
                 if let Value::Code(c) = r {
                     c
                 } else {
@@ -472,90 +479,99 @@ impl StageInterpreter {
                 }
             }
             Expr::Apply(f, a) => {
-                let f_val = self.unstage(stage, f);
-                let a_vals = a.into_iter().map(|arg| self.unstage(stage, arg)).collect();
+                let f_val = self.unstage(ctx, f);
+                let a_vals = a.into_iter().map(|arg| self.unstage(ctx, arg)).collect();
                 Expr::Apply(f_val, a_vals).into_id(e.to_location())
             }
             Expr::Lambda(params, r_ty, body) => {
-                let body_val = self.unstage(stage, body);
+                let body_val = self.unstage(ctx, body);
                 Expr::Lambda(params, r_ty, body_val).into_id(e.to_location())
             }
             Expr::Let(id, value, body) => Expr::Let(
                 id,
-                self.unstage(stage, value),
-                body.map(|b| self.unstage(stage, b)),
+                self.unstage(ctx, value),
+                body.map(|b| self.unstage(ctx, b)),
             )
             .into_id(e.to_location()),
             Expr::LetRec(id, value, body) => Expr::LetRec(
                 id,
-                self.unstage(stage, value),
-                body.map(|b| self.unstage(stage, b)),
+                self.unstage(ctx, value),
+                body.map(|b| self.unstage(ctx, b)),
             )
             .into_id(e.to_location()),
             Expr::Feed(id, body) => {
-                Expr::Feed(id, self.unstage(stage, body)).into_id(e.to_location())
+                Expr::Feed(id, self.unstage(ctx, body)).into_id(e.to_location())
             }
             Expr::If(cond, then, else_opt) => Expr::If(
-                self.unstage(stage, cond),
-                self.unstage(stage, then),
-                else_opt.map(|e| self.unstage(stage, e)),
+                self.unstage(ctx, cond),
+                self.unstage(ctx, then),
+                else_opt.map(|e| self.unstage(ctx, e)),
             )
             .into_id(e.to_location()),
             Expr::Then(e1, e2) => {
-                Expr::Then(self.unstage(stage, e1), e2.map(|e| self.unstage(stage, e)))
+                Expr::Then(self.unstage(ctx, e1), e2.map(|e| self.unstage(ctx, e)))
                     .into_id(e.to_location())
             }
             Expr::Assign(target, value) => {
-                Expr::Assign(self.unstage(stage, target), self.unstage(stage, value))
+                Expr::Assign(self.unstage(ctx, target), self.unstage(ctx, value))
                     .into_id(e.to_location())
             }
-            Expr::ArrayLiteral(elements) => Expr::ArrayLiteral(
-                elements
-                    .into_iter()
-                    .map(|e| self.unstage(stage, e))
-                    .collect(),
-            )
-            .into_id(e.to_location()),
+            Expr::ArrayLiteral(elements) => {
+                Expr::ArrayLiteral(elements.into_iter().map(|e| self.unstage(ctx, e)).collect())
+                    .into_id(e.to_location())
+            }
             Expr::RecordLiteral(fields) => Expr::RecordLiteral(
                 fields
                     .into_iter()
                     .map(|RecordField { name, expr }| RecordField {
                         name,
-                        expr: self.unstage(stage, expr),
+                        expr: self.unstage(ctx, expr),
                     })
                     .collect(),
             )
             .into_id(e.to_location()),
-            Expr::Tuple(elements) => Expr::Tuple(
-                elements
-                    .into_iter()
-                    .map(|e| self.unstage(stage, e))
-                    .collect(),
-            )
-            .into_id(e.to_location()),
-            Expr::Proj(e, idx) => Expr::Proj(self.unstage(stage, e), idx).into_id(e.to_location()),
+            Expr::Tuple(elements) => {
+                Expr::Tuple(elements.into_iter().map(|e| self.unstage(ctx, e)).collect())
+                    .into_id(e.to_location())
+            }
+            Expr::Proj(e, idx) => Expr::Proj(self.unstage(ctx, e), idx).into_id(e.to_location()),
             Expr::ArrayAccess(e, i) => {
-                Expr::ArrayAccess(self.unstage(stage, e), self.unstage(stage, i))
+                Expr::ArrayAccess(self.unstage(ctx, e), self.unstage(ctx, i))
                     .into_id(e.to_location())
             }
             Expr::FieldAccess(e, name) => {
-                Expr::FieldAccess(self.unstage(stage, e), name).into_id(e.to_location())
+                Expr::FieldAccess(self.unstage(ctx, e), name).into_id(e.to_location())
             }
             Expr::Block(b) => {
-                Expr::Block(b.map(|eid| self.unstage(stage, eid))).into_id(e.to_location())
+                Expr::Block(b.map(|eid| self.unstage(ctx, eid))).into_id(e.to_location())
             }
             _ => e,
         }
     }
 }
 
-pub fn create_default_interpreter() -> StageInterpreter {
+pub fn create_default_interpreter() -> (StageInterpreter, Context<Value>) {
     let ext_fns = builtin::gen_default_fns();
-    StageInterpreter::new(ext_fns)
+    let mut env = Environment::new();
+
+    env.extend();
+    env.add_bind(
+        ext_fns
+            .iter()
+            .map(|e| {
+                let v = Value::ExternalFn(e.clone());
+                (e.name, (v, PERSISTENT_STAGE)) // Stage is set to persistent for external functions
+            })
+            .collect::<Vec<_>>()
+            .as_slice(),
+    );
+    let ctx = Context { stage: 0, env };
+    (StageInterpreter::default(), ctx)
 }
+
 pub fn expand_macro(expr: ExprNodeId) -> ExprNodeId {
-    let mut interpreter = create_default_interpreter();
-    let res = interpreter.eval(0, expr);
+    let (mut interpreter, mut ctx) = create_default_interpreter();
+    let res = interpreter.eval(&mut ctx, expr);
 
     println!("Macro expansion result: {:?}", res);
     match res {
