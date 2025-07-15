@@ -944,6 +944,19 @@ impl InferContext {
                 self.env.to_outer();
                 res
             }),
+            Expr::Escape(e) => {
+                let loc_e = Location::new(e.to_span(), self.file_path);
+                let res = self.infer_type(*e)?;
+                let intermediate =
+                    Type::Code(self.gen_intermediate_type_with_location(loc_e.clone()))
+                        .into_id_with_location(loc_e.clone());
+                Self::unify_types((res, loc_e.clone()), (intermediate, loc_e))
+            }
+            Expr::Bracket(e) => {
+                let loc_e = Location::new(e.to_span(), self.file_path);
+                let res = self.infer_type(*e)?;
+                Ok(Type::Code(res).into_id_with_location(loc_e))
+            }
             _ => Ok(Type::Failure.into_id_with_location(loc)),
         };
         res.inspect(|ty| {
