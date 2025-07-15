@@ -21,7 +21,7 @@ use mimium_lang::utils::error::ReportableError;
 use mimium_lang::utils::miniprint::MiniPrint;
 use mimium_lang::utils::{error::report, fileloader};
 use mimium_lang::ExecContext;
-use mimium_lang::{compiler::mirgen::convert_pronoun, repl};
+use mimium_lang::{compiler::mirgen::convert_pronoun};
 use mimium_lang::{log, Config};
 use mimium_symphonia::{self, SamplerPlugin};
 #[derive(clap::Parser, Debug, Clone)]
@@ -241,7 +241,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         None => {
-            repl::run_repl();
+            // repl::run_repl();
         }
     }
     Ok(())

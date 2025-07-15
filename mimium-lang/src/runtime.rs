@@ -1,9 +1,5 @@
 use crate::utils::{error::ReportableError, metadata::Location};
 
-// pub mod scheduler;
-// pub mod hir_interpreter;
-pub mod builtin_fn;
-
 pub mod vm;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Time(pub u64);

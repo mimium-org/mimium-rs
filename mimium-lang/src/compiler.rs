@@ -74,7 +74,6 @@ use std::path::PathBuf;
 use mirgen::recursecheck;
 
 use crate::{
-    ast_interpreter,
     interner::{ExprNodeId, Symbol, TypeNodeId},
     mir::Mir,
     runtime::vm,
@@ -163,16 +162,16 @@ impl Context {
     }
 }
 
-pub fn interpret_top(
-    content: String,
-    global_ctx: &mut ast_interpreter::Context,
-) -> Result<ast_interpreter::Value, Vec<Box<dyn ReportableError>>> {
-    let ast = emit_ast(&content, None)?;
-    ast_interpreter::eval_ast(ast, global_ctx).map_err(|e| {
-        let eb: Box<dyn ReportableError> = Box::new(e);
-        vec![eb]
-    })
-}
+// pub fn interpret_top(
+//     content: String,
+//     global_ctx: &mut ast_interpreter::Context,
+// ) -> Result<ast_interpreter::Value, Vec<Box<dyn ReportableError>>> {
+//     let ast = emit_ast(&content, None)?;
+//     ast_interpreter::eval_ast(ast, global_ctx).map_err(|e| {
+//         let eb: Box<dyn ReportableError> = Box::new(e);
+//         vec![eb]
+//     })
+// }
 
 #[cfg(test)]
 mod test {
