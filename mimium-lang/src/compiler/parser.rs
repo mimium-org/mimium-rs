@@ -311,22 +311,25 @@ where
         })
         .labelled("dot");
 
-    let unary = just(Token::Op(Op::Minus))
+    let unary = one_of([Token::Op(Op::Minus), Token::BackQuote, Token::Dollar])
         .map_with_span(|e, s| (e, s))
         .repeated()
         .then(dot.clone())
-        .foldr(move |(_op, op_span), rhs| {
+        .foldr(move |(op, op_span), rhs| {
             let rhs_span = rhs.to_span();
-            let loc = Location {
-                span: op_span.start..rhs_span.start,
-                path: ctx.file_path,
-            };
-            let neg_op = Expr::Var("neg".to_symbol()).into_id(loc);
             let loc = Location {
                 span: op_span.start..rhs_span.end,
                 path: ctx.file_path,
             };
-            Expr::Apply(neg_op, vec![rhs]).into_id(loc)
+            match op {
+                Token::BackQuote => Expr::Bracket(rhs).into_id(loc.clone()),
+                Token::Dollar => Expr::Escape(rhs).into_id(loc.clone()),
+                Token::Op(Op::Minus) => {
+                    let neg_op = Expr::Var("neg".to_symbol()).into_id(loc.clone());
+                    Expr::Apply(neg_op, vec![rhs]).into_id(loc)
+                }
+                _ => unreachable!("Unexpected unary operator: {:?}", op),
+            }
         })
         .labelled("unary");
     let optoken = move |o: Op| {
