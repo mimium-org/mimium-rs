@@ -221,7 +221,11 @@ pub trait GeneralInterpreter {
             }
             Expr::Apply(f, a) => {
                 let fv = self.eval(ctx, f);
-                let args = a.into_iter().map(|arg| self.eval(ctx, arg)).collect();
+                let args = a
+                    .clone()
+                    .into_iter()
+                    .map(|arg| self.eval(ctx, arg))
+                    .collect();
                 if let Some(ext_fn) = fv.clone().get_as_external_fn() {
                     ext_fn(args)
                 } else if let Some((c_env, names, body)) = fv.clone().get_as_closure() {
@@ -232,9 +236,9 @@ pub trait GeneralInterpreter {
                         stage: ctx.stage,
                     };
                     self.eval_with_closure_env(binds.as_slice(), new_ctx, body)
-                } else if let Some((name, e)) = fv.get_as_fixpoint() {
-                    let bind = [(name, ValueTrait::make_fixpoint(name, e))];
-                    self.eval_in_new_env(&bind, ctx, e)
+                } else if let Some((_, e)) = fv.get_as_fixpoint() {
+                    let new_app = Expr::Apply(e, a.clone()).into_id(expr.to_location());
+                    self.eval(ctx, new_app)
                 } else {
                     panic!("apply to non-fuctional type")
                 }
@@ -364,7 +368,7 @@ impl TryInto<ExprNodeId> for Value {
                 // Fixpoint cannot be converted to ExprNodeId directly
                 Err(ValueToExprError::FixpointToExpr)
             }
-            Value::Code(e) => Err(ValueToExprError::CodeToExpr),
+            Value::Code(e) => Ok(e),
             Value::ExternalFn(_) => {
                 // External function cannot be converted to ExprNodeId directly
                 Err(ValueToExprError::ExternalFnToExpr)
@@ -486,19 +490,19 @@ impl GeneralInterpreter for StageInterpreter {
                     e2.map_or(Value::Unit, |e| self.eval(ctx, e))
                 }
                 Expr::Assign(target, e) => {
-                    let target_val = self.eval(ctx, target);
-                    let new_val = self.eval(ctx, e);
+                    let _target_val = self.eval(ctx, target);
+                    let _new_val = self.eval(ctx, e);
                     panic!("assignment cannot be used in macro expansion currently")
                 }
-                Expr::Escape(e) => {
+                Expr::Escape(_e) => {
                     panic!("escape expression cannot be evaluated in stage 0")
                 }
                 Expr::Bracket(e) => {
-                    ctx.stage += 1; // Increase the stage for bracket
+                    ctx.stage = 1; // Increase the stage for bracket
                     log::trace!("Bracketting expression, stage => {}", ctx.stage);
 
                     let res = Value::Code(self.rebuild(ctx, e));
-                    ctx.stage -= 1; // Decrease the stage back
+                    ctx.stage = 0; // Decrease the stage back
                     res
                 }
                 // apply, lambda, let, letrec, escape, bracket, etc. will be handled by the interpreter trait
