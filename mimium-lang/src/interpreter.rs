@@ -1,94 +1,21 @@
-use std::cell::RefCell;
+/// A tree walk interpreter of mimium, primarily used for macro expansion.
+/// This macro system is based on the multi-stage programming paradigm, like MetaML, MetaOCaml, Scala3, where expressions can be evaluated at multiple stages.
 use std::rc::Rc;
 
 use itertools::Itertools;
 
 use crate::ast::{Expr, Literal, RecordField};
 use crate::interner::{ExprNodeId, Symbol, ToSymbol};
-use crate::pattern::{Pattern, TypedId, TypedPattern};
-use crate::types::Type;
+use crate::pattern::{Pattern, TypedPattern};
 use crate::utils::environment::{Environment, LookupRes};
 
 mod builtin;
+mod type_destructor;
+use type_destructor::TypeDestructor;
+
 const PERSISTENT_STAGE: i64 = i64::MIN;
-#[derive(Clone, Debug, Default)]
-pub struct TypeDestructor {
-    anonymous_count: u64,
-}
+type Stage = i64;
 
-impl TypeDestructor {
-    fn get_new_name(&mut self) -> Symbol {
-        let name = format!("_anonymous_pat_{}", self.anonymous_count).to_symbol();
-        self.anonymous_count += 1;
-        name
-    }
-
-    pub fn destruct_pattern(&mut self, pattern: &Pattern, value: ExprNodeId) -> ExprNodeId {
-        match pattern {
-            Pattern::Single(_name) => value,
-            Pattern::Tuple(patterns) => {
-                let new_name = self.get_new_name();
-                let loc = value.to_location();
-                let newrvar = Expr::Var(new_name).into_id(loc.clone());
-                let body = patterns
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| {
-                        let field_value = Expr::Proj(value, i as i64).into_id(loc.clone());
-                        self.destruct_pattern(p, field_value)
-                    })
-                    .reduce(|a, b| {
-                        let tpat = TypedPattern {
-                            pat: pattern.clone(),
-                            ty: Type::Unknown.into_id(),
-                        };
-                        Expr::Let(tpat, a, Some(b)).into_id(loc.clone())
-                    })
-                    .unwrap();
-                Expr::Let(
-                    TypedPattern {
-                        pat: Pattern::Single(new_name),
-                        ty: Type::Unknown.into_id(),
-                    },
-                    newrvar,
-                    Some(body),
-                )
-                .into_id(loc.clone())
-            }
-            Pattern::Record(fields) => {
-                let new_name = self.get_new_name();
-                let loc = value.to_location();
-                let newrvar = Expr::Var(new_name).into_id(loc.clone());
-                let body = fields
-                    .iter()
-                    .map(|(name, p)| {
-                        let field_value = Expr::FieldAccess(newrvar, *name).into_id(loc.clone());
-                        self.destruct_pattern(p, field_value)
-                    })
-                    .reduce(|a, b| {
-                        let tpat = TypedPattern {
-                            pat: pattern.clone(),
-                            ty: Type::Unknown.into_id(),
-                        };
-                        Expr::Let(tpat, a, Some(b)).into_id(loc.clone())
-                    })
-                    .unwrap();
-                Expr::Let(
-                    TypedPattern {
-                        pat: Pattern::Single(new_name),
-                        ty: Type::Unknown.into_id(),
-                    },
-                    newrvar,
-                    Some(body),
-                )
-                .into_id(loc.clone())
-            }
-            Pattern::Error => {
-                panic!("Error pattern cannot be destructed")
-            }
-        }
-    }
-}
 pub trait ValueTrait {
     fn make_closure(e: ExprNodeId, names: Vec<Symbol>, env: Environment<(Self, Stage)>) -> Self
     where
@@ -104,7 +31,6 @@ pub trait ValueTrait {
     where
         Self: std::marker::Sized;
 }
-type Stage = i64;
 pub struct Context<V>
 where
     V: Clone + ValueTrait + std::fmt::Debug,
