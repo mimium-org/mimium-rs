@@ -97,7 +97,7 @@ pub trait GeneralInterpreter {
                 {
                     val.clone()
                 }
-                LookupRes::None => panic!("Variable {name} not found, env:\n{:?}", ctx.env),
+                LookupRes::None => panic!("Variable {name} not found"),
                 LookupRes::Local((_, bounded_stage))
                 | LookupRes::UpValue(_, (_, bounded_stage))
                 | LookupRes::Global((_, bounded_stage)) => {

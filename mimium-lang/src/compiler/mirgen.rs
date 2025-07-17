@@ -377,7 +377,7 @@ impl Context {
                 let ty = self
                     .typeenv
                     .lookup(name, loc)
-                    .expect("variable not found. it should be detected at type checking stage");
+                    .expect(format!("variable {name} not found. it should be detected at type checking stage").as_str());
                 Arc::new(Value::ExtFunction(name, ty))
             }
         };
