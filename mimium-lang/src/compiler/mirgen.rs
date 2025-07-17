@@ -890,6 +890,13 @@ impl Context {
         }
     }
 }
+
+fn is_code_contain_macro(typeenv: &mut InferContext, top_ast: ExprNodeId) -> bool {
+    typeenv
+        .infer_type(top_ast)
+        .is_ok_and(|t| matches!(t.to_type(), Type::Code(_)))
+}
+
 /// Generate MIR from AST.
 /// The input ast (`root_expr_id`) should contain global context. (See [[compiler::parser::add_global_context]].)
 /// MIR generator itself does not emit any error, the any compile errors are analyzed before generating MIR, mostly in type checker.
@@ -902,7 +909,7 @@ pub fn compile(
     let ast2 = recursecheck::convert_recurse(root_expr_id, file_path.unwrap_or_default());
     let (expr2, convert_errs) =
         convert_pronoun::convert_pronoun(ast2, file_path.unwrap_or_default());
-    let infer_ctx = infer_root(expr2, builtin_types, file_path.unwrap_or_default());
+    let mut infer_ctx = infer_root(expr2, builtin_types, file_path.unwrap_or_default());
     let errors = infer_ctx
         .errors
         .iter()
@@ -916,7 +923,12 @@ pub fn compile(
         .collect::<Vec<_>>();
 
     if errors.is_empty() {
-        let expr2 = interpreter::expand_macro(expr2);
+        let expr2 = if is_code_contain_macro(&mut infer_ctx, expr2) {
+            interpreter::expand_macro(expr2)
+        } else {
+            expr2
+        };
+
         let expr2 = parser::add_global_context(expr2, file_path.unwrap_or_default());
         let mut ctx = Context::new(infer_ctx, file_path);
         let _res = ctx.eval_expr(expr2);
