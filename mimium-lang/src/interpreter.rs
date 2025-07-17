@@ -207,7 +207,7 @@ impl std::fmt::Debug for ExtFunction {
 /// Evalueated result of the expression. Theoritically, it can be tagless union because it is statically typed, but we use enum for better readability.
 #[derive(Clone, Debug)]
 pub enum Value {
-    ErrorV,
+    ErrorV(ExprNodeId),
     Unit,
     Number(f64),
     String(Symbol),
@@ -300,7 +300,7 @@ impl TryInto<ExprNodeId> for Value {
                 Err(ValueToExprError::ExternalFnToExpr)
             }
             Value::Unit => Ok(Expr::Block(None).into_id_without_span()),
-            Value::ErrorV => panic!("Error value cannot be converted to ExprNodeId"),
+            Value::ErrorV(e) => Ok(e),
         }
     }
 }
@@ -396,7 +396,7 @@ impl GeneralInterpreter for StageInterpreter {
                 Expr::Literal(Literal::SampleRate) => {
                     panic!("Samplerate literal cannot be evaluated in macro expansion")
                 }
-                Expr::Error => Value::ErrorV,
+                Expr::Error => Value::ErrorV(expr),
                 Expr::Feed(_, _) => {
                     panic!("Feed expression cannot be evaluated in macro expansion")
                 }
@@ -563,6 +563,7 @@ pub fn expand_macro(expr: ExprNodeId) -> ExprNodeId {
     println!("Macro expansion result: {:?}", res);
     match res {
         Value::Code(e) => e,
+        Value::ErrorV(e) => e,
         _ => panic!("Macro expansion did not result in a code value"),
     }
 }

@@ -25,7 +25,19 @@ mod test;
 pub(super) struct ParseContext {
     file_path: Symbol,
 }
+impl ParseContext {
+    pub fn gen_loc(&self, span: Span) -> Location {
+        Location {
+            span,
+            path: self.file_path,
+        }
+    }
+}
 pub(crate) type ParseError = Simple<Token>;
+
+fn merge_span(a: Span, b: Span) -> Span {
+    a.start..b.end
+}
 
 fn breakable_comma() -> impl Parser<Token, (), Error = ParseError> + Clone {
     just(Token::Comma)
@@ -601,25 +613,26 @@ fn statement_parser(
         .map_with_span(|(lvar, body), span| (Statement::Assign(lvar, body), span))
         .labelled("assign");
     let single = expr.map_with_span(|e, span| (Statement::Single(e), span));
-    let_.or(letrec).or(assign).or(single).map(move |(t, span)| {
-        (
-            t,
-            Location {
-                span,
-                path: ctx.file_path,
-            },
-        )
-    })
+    let_.or(letrec)
+        .or(assign)
+        .or(single)
+        .map(move |(t, span)| (t, ctx.clone().gen_loc(span)))
 }
 fn statements_parser(
     expr: ExprParser<'_>,
     ctx: ParseContext,
 ) -> impl Parser<Token, Option<ExprNodeId>, Error = ParseError> + Clone + '_ {
-    statement_parser(expr, ctx)
+    statement_parser(expr, ctx.clone())
         .separated_by(just(Token::LineBreak).or(just(Token::SemiColon)).repeated())
         .allow_leading()
         .allow_trailing()
-        .recover_with(skip_until([Token::LineBreak, Token::SemiColon], |_| vec![]))
+        .recover_with(skip_until(
+            [Token::LineBreak, Token::SemiColon],
+            move |span| {
+                let loc = ctx.clone().gen_loc(span);
+                vec![(Statement::Error, loc)]
+            },
+        ))
         .map(|stmts| into_then_expr(&stmts))
 }
 
@@ -628,22 +641,32 @@ fn block_parser(
     ctx: ParseContext,
 ) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone + '_ {
     let stmts = statements_parser(expr, ctx.clone());
-    stmts
+    let ctx2 = ctx.clone();
+    let ctx3 = ctx.clone();
+    let block = stmts
         .delimited_by(breakable_blockbegin(), breakable_blockend())
-        .map_with_span(move |stmts, span| {
-            Expr::Block(stmts).into_id(Location {
-                span,
-                path: ctx.file_path,
-            })
-        })
+        .map_with_span(move |stmts, span| Expr::Block(stmts).into_id(ctx.clone().gen_loc(span)))
         .recover_with(nested_delimiters(
             Token::BlockBegin,
             Token::BlockEnd,
             [],
-            |_| Expr::Error.into_id_without_span(),
-        ))
+            move |span| Expr::Error.into_id(ctx2.clone().gen_loc(span)),
+        ));
+    one_of([Token::BackQuote, Token::Dollar])
+        .map_with_span(move |op, op_span| (op, op_span))
+        .repeated()
+        .then(block.clone())
+        .foldr(move |(op, op_span), rhs| {
+            let rhs_span = rhs.to_span();
+            let loc = ctx3.clone().gen_loc(merge_span(op_span, rhs_span));
+            match op {
+                Token::BackQuote => Expr::Bracket(rhs).into_id(loc.clone()),
+                Token::Dollar => Expr::Escape(rhs).into_id(loc.clone()),
+                _ => unreachable!("Unexpected block operator: {:?}", op),
+            }
+        })
 }
-// expr_group contains let statement, assignment statement, function definiton,... they cannot be placed as an argument for apply directly.
+
 fn exprgroup_parser<'a>(ctx: ParseContext) -> ExprParser<'a> {
     recursive(move |expr_group: ExprParser<'a>| {
         let expr = expr_parser(expr_group.clone(), ctx.clone());
