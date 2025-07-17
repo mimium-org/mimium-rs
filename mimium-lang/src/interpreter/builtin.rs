@@ -1,3 +1,5 @@
+use crate::ast::Expr;
+use crate::ast::Literal;
 use crate::interner::ToSymbol;
 
 use super::ExtFunction;
@@ -28,17 +30,26 @@ fn new_fn_f2_f(name: &'static str, f: impl Fn(f64, f64) -> f64 + 'static) -> Ext
     ExtFunction::new(name.to_symbol(), move |args: Vec<Value>| {
         match args.as_slice() {
             [Value::Number(v1), Value::Number(v2)] => Value::Number(f(*v1, *v2)),
-            _ => panic!("{} requires two numeric arguments", name),
+            _ => panic!("{name} requires two numeric arguments"),
         }
     })
 }
-
+fn lift_float() -> ExtFunction {
+    ExtFunction::new("lift_f".to_symbol(), |args: Vec<Value>| {
+        match args.as_slice() {
+            [Value::Number(v)] => Value::Code(
+                Expr::Literal(Literal::Float(v.to_string().to_symbol())).into_id_without_span(),
+            ),
+            _ => panic!("lift_f requires a 1numeric argument"),
+        }
+    })
+}
 pub(super) fn gen_default_fns() -> Vec<ExtFunction> {
     vec![
         new_fn_f1_f("neg", |v| -v),
         new_fn_f2_f("add", |a, b| a + b),
         new_fn_f2_f("sub", |a, b| a - b),
-        new_fn_f2_f("mul", |a, b| a * b),
+        new_fn_f2_f("mult", |a, b| a * b),
         new_fn_f2_f("div", |a, b| a / b),
         //not,abs,modulo,sqrt,round,floor,ceil
         new_fn_f1_f("abs", |v| v.abs()),
@@ -82,5 +93,6 @@ pub(super) fn gen_default_fns() -> Vec<ExtFunction> {
             println!("{f}");
             f
         }),
+        lift_float(),
     ]
 }
