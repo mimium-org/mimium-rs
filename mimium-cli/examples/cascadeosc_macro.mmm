@@ -24,10 +24,11 @@ ${
         }
     }
 `{
+    let o = $(cascade(20.0,`osc))
 let dsp = | | {
-    let r =  200 |> $(cascade(20.0,`osc))
+    let r =  200 |> o
     (r,r)
+    }
 }
-}
-}
+    }
 }

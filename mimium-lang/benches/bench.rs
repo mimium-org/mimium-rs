@@ -81,8 +81,9 @@ ${
         }
     }
 `{
+let o = $(cascade(40.0,`osc))
 let dsp = | | {
-    let r =  200 |> $(cascade(40.0,`osc))
+    let r =  200 |> o
     (r,r)
 }
 }
