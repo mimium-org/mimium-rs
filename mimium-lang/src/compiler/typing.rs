@@ -380,7 +380,7 @@ impl InferContext {
         }
     }
 
-    fn substitute_type(t: TypeNodeId) -> TypeNodeId {
+    pub fn substitute_type(t: TypeNodeId) -> TypeNodeId {
         match t.to_type() {
             Type::Intermediate(cell) => {
                 let TypeVar { parent, .. } = &cell.borrow() as &TypeVar;

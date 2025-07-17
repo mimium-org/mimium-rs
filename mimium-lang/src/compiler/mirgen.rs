@@ -595,9 +595,10 @@ impl Context {
             Expr::ArrayAccess(array, index) => {
                 let (array_v, array_ty) = self.eval_expr(*array);
                 let (index_v, _) = self.eval_expr(*index);
-                let elem_ty = match array_ty.to_type() {
+                //todo: somehow type substituions are imcomplete
+                let elem_ty = match InferContext::substitute_type(array_ty).to_type() {
                     Type::Array(elem_ty) => elem_ty,
-                    _ => panic!("Expected array type for array access"),
+                    ty => panic!("Expected array type for array access, found {ty}"),
                 };
                 // Get element at the specified index
                 let result = self.push_inst(Instruction::GetArrayElem(
