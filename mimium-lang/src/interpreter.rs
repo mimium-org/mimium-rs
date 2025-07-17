@@ -15,12 +15,12 @@ use type_destructor::TypeDestructor;
 
 const PERSISTENT_STAGE: i64 = i64::MIN;
 type Stage = i64;
-
+type ClosureContent<T> = (Environment<(T, Stage)>, Vec<Symbol>, ExprNodeId);
 pub trait ValueTrait {
     fn make_closure(e: ExprNodeId, names: Vec<Symbol>, env: Environment<(Self, Stage)>) -> Self
     where
         Self: std::marker::Sized;
-    fn get_as_closure(self) -> Option<(Environment<(Self, Stage)>, Vec<Symbol>, ExprNodeId)>
+    fn get_as_closure(self) -> Option<ClosureContent<Self>>
     where
         Self: std::marker::Sized;
     fn make_fixpoint(name: Symbol, e: ExprNodeId) -> Self;
@@ -44,7 +44,7 @@ pub trait GeneralInterpreter {
     type Value: Clone + ValueTrait + std::fmt::Debug;
     fn interpret_expr(&mut self, ctx: &mut Context<Self::Value>, expr: ExprNodeId) -> Self::Value;
     fn get_empty_val(&self) -> Self::Value;
-    fn get_pattern_destructor(&mut self) -> &mut TypeDestructor;
+    fn destruct_pattern(&mut self, pattern: &Pattern, expr: ExprNodeId) -> ExprNodeId;
     fn eval_in_new_env(
         &mut self,
         binds: &[(Symbol, Self::Value)],
@@ -108,9 +108,7 @@ pub trait GeneralInterpreter {
                 }
             },
             Expr::Let(pattern, _e, _body) => {
-                let single_let = self
-                    .get_pattern_destructor()
-                    .destruct_pattern(&pattern.pat, expr);
+                let single_let = self.destruct_pattern(&pattern.pat, expr);
                 let (name, e, body) = match single_let.to_expr() {
                     Expr::Let(
                         TypedPattern {
@@ -441,8 +439,8 @@ impl GeneralInterpreter for StageInterpreter {
         Value::Unit
     }
 
-    fn get_pattern_destructor(&mut self) -> &mut TypeDestructor {
-        &mut self.pattern_destructor
+    fn destruct_pattern(&mut self, pattern: &Pattern, expr: ExprNodeId) -> ExprNodeId {
+        self.pattern_destructor.destruct_pattern(pattern, expr)
     }
 }
 
@@ -560,10 +558,15 @@ pub fn expand_macro(expr: ExprNodeId) -> ExprNodeId {
     let (mut interpreter, mut ctx) = create_default_interpreter();
     let res = interpreter.eval(&mut ctx, expr);
 
-    println!("Macro expansion result: {:?}", res);
     match res {
         Value::Code(e) => e,
         Value::ErrorV(e) => e,
+        Value::Unit => {
+            log::info!(
+                "Macro expansion did not resulted in a code value, which means there were no macro expressions to expand"
+            );
+            expr
+        }
         _ => panic!("Macro expansion did not result in a code value"),
     }
 }
