@@ -8,13 +8,100 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-
+    use mimium_lang::compiler::{self, Config};
+    use mimium_lang::interner::ToSymbol;
+    use mimium_lang::runtime::vm::builtin::get_builtin_fn_types;
+    use mimium_lang::runtime::vm::Machine;
+    use test::Bencher;
+    fn bench_runtime(b: &mut Bencher, content: &str, times: usize) {
+        let compiler = compiler::Context::new(get_builtin_fn_types(), None, Config::default());
+        let program = compiler.emit_bytecode(content).expect("ok");
+        let idx = program.get_fun_index(&"dsp".to_symbol()).expect("ok");
+        let mut machine = Machine::new(program, [].into_iter(), [].into_iter());
+        machine.execute_main();
+        b.iter(move || {
+            for _i in 0..times {
+                let _ = machine.execute_idx(idx);
+            }
+        });
+    }
+    mod multistage {
+        use super::*;
+        fn src_normal() -> String {
+            r###"
+let PI = 3.14159265359
+let phasor_shift =  |freq,phase_shift|{
+    (self + freq/48000 + phase_shift)%1.0
+}
+let sinwave = |freq,phase|{
+    phasor_shift(freq,phase)*2.0*PI |> sin
+}
+fn osc(freq){
+  sinwave(freq,0.0)
+}
+fn cascade(n,gen:()->(float)->float){
+    let g = gen()
+    if (n>0.0){
+        let c = cascade(n - 1.0 ,gen)
+        |rate| rate + g(rate/2.0)* 0.5* rate*(1.0-(1.0/(n*2.0))) |> c 
+    }else{
+        |rate| g(rate) 
+    }
+}
+let n =40.0
+let myosc = cascade(n, | | osc);
+fn dsp(){
+    let r = myosc(200.0)
+    (r,r)
+}
+"###
+            .to_string()
+        }
+        fn src_multistage() -> String {
+            r###"
+`{
+let PI = 3.14159265359
+let phasor_shift =  |freq,phase_shift|{
+    (self + freq/48000 + phase_shift)%1.0
+}
+let sinwave = |freq,phase|{
+    phasor_shift(freq,phase)*2.0*PI |> sin
+}
+let osc = |freq|{
+  sinwave(freq,0.0)
+}
+${
+    letrec cascade = |n,gen|{
+        if (n>0.0){
+            let c = cascade(n - 1.0 ,gen)
+            let multiplier = 1.0-(1.0/(n*2.0)) |> lift_f
+            `{|rate| rate + ($gen)(rate/2.0)* 0.5 * rate* $multiplier  |> $c }
+        }else{
+            `{|rate| ($gen)(rate)}
+        }
+    }
+`{
+let dsp = | | {
+    let r =  200 |> $(cascade(40.0,`osc))
+    (r,r)
+}
+}
+}
+}
+"###
+            .to_string()
+        }
+        #[bench]
+        fn bench_multistage_normal(b: &mut Bencher) {
+            bench_runtime(b, &src_normal(), 100);
+        }
+        #[bench]
+        fn bench_multistage(b: &mut Bencher) {
+            bench_runtime(b, &src_multistage(), 100);
+        }
+    }
     mod runtime {
-        use mimium_lang::compiler::{self, Config};
-        use mimium_lang::interner::ToSymbol;
-        use mimium_lang::runtime::vm::Machine;
-        use test::Bencher;
-
+        use super::*;
         fn make_multiosc_src(n: usize) -> String {
             format!(
                 "let pi = 3.14159265359
@@ -45,18 +132,6 @@ fn dsp(){{
             )
         }
 
-        fn bench_runtime(b: &mut Bencher, content: &str, times: usize) {
-            let compiler = compiler::Context::new([], None, Config::default());
-            let program = compiler.emit_bytecode(content).expect("ok");
-            let idx = program.get_fun_index(&"dsp".to_symbol()).expect("ok");
-            let mut machine = Machine::new(program, [].into_iter(), [].into_iter());
-            machine.execute_main();
-            b.iter(move || {
-                for _i in 0..times {
-                    let _ = machine.execute_idx(idx);
-                }
-            });
-        }
         #[bench]
         fn bench_multiosc5(b: &mut Bencher) {
             bench_runtime(b, &make_multiosc_src(5), 1);
