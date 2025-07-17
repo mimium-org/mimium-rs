@@ -3,6 +3,7 @@ pub mod typing;
 // pub mod hirgen;
 pub mod bytecodegen;
 mod intrinsics;
+pub(crate) mod pattern_destructor;
 pub mod mirgen;
 
 #[derive(Debug, Clone)]

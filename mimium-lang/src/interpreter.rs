@@ -10,8 +10,6 @@ use crate::pattern::{Pattern, TypedPattern};
 use crate::utils::environment::{Environment, LookupRes};
 
 mod builtin;
-mod type_destructor;
-use type_destructor::TypeDestructor;
 
 const PERSISTENT_STAGE: i64 = i64::MIN;
 type Stage = i64;
@@ -44,7 +42,6 @@ pub trait GeneralInterpreter {
     type Value: Clone + ValueTrait + std::fmt::Debug;
     fn interpret_expr(&mut self, ctx: &mut Context<Self::Value>, expr: ExprNodeId) -> Self::Value;
     fn get_empty_val(&self) -> Self::Value;
-    fn destruct_pattern(&mut self, pattern: &Pattern, expr: ExprNodeId) -> ExprNodeId;
     fn eval_in_new_env(
         &mut self,
         binds: &[(Symbol, Self::Value)],
@@ -107,22 +104,20 @@ pub trait GeneralInterpreter {
                     )
                 }
             },
-            Expr::Let(pattern, _e, _body) => {
-                let single_let = self.destruct_pattern(&pattern.pat, expr);
-                let (name, e, body) = match single_let.to_expr() {
-                    Expr::Let(
-                        TypedPattern {
-                            pat: Pattern::Single(name),
-                            ..
-                        },
-                        e,
-                        body,
-                    ) => (name, e, body),
-                    _ => panic!("Expected single pattern in let expression"),
-                };
+            Expr::Let(
+                TypedPattern {
+                    pat: Pattern::Single(name),
+                    ..
+                },
+                e,
+                body,
+            ) => {
                 let v = self.eval(ctx, e);
                 let empty = self.get_empty_val();
                 body.map_or(empty, |e| self.eval_in_new_env(&[(name, v)], ctx, e))
+            }
+            Expr::Let(_, _, _) => {
+                panic!("Let with multiple patterns should be destructed before evaluation")
             }
             Expr::LetRec(typed_id, e, body) => {
                 let fixpoint = ValueTrait::make_fixpoint(typed_id.id, e);
@@ -304,9 +299,7 @@ impl TryInto<ExprNodeId> for Value {
 }
 
 #[derive(Default)]
-pub struct StageInterpreter {
-    pattern_destructor: TypeDestructor,
-}
+pub struct StageInterpreter {}
 
 impl MultiStageInterpreter for StageInterpreter {
     type Value = Value;
@@ -437,10 +430,6 @@ impl GeneralInterpreter for StageInterpreter {
 
     fn get_empty_val(&self) -> Self::Value {
         Value::Unit
-    }
-
-    fn destruct_pattern(&mut self, pattern: &Pattern, expr: ExprNodeId) -> ExprNodeId {
-        self.pattern_destructor.destruct_pattern(pattern, expr)
     }
 }
 

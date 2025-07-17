@@ -6,6 +6,7 @@ use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::{function, interpreter, numeric, unit};
 pub mod convert_pronoun;
 pub(crate) mod recursecheck;
+use super::pattern_destructor::destruct_let_pattern;
 use crate::mir::{self, Argument, Instruction, Mir, StateSize, VPtr, VReg, Value};
 
 use std::sync::Arc;
@@ -374,10 +375,12 @@ impl Context {
                 _ => unreachable!("non global_value"),
             },
             LookupRes::None => {
-                let ty = self
-                    .typeenv
-                    .lookup(name, loc)
-                    .expect(format!("variable {name} not found. it should be detected at type checking stage").as_str());
+                let ty = self.typeenv.lookup(name, loc).expect(
+                    format!(
+                        "variable {name} not found. it should be detected at type checking stage"
+                    )
+                    .as_str(),
+                );
                 Arc::new(Value::ExtFunction(name, ty))
             }
         };
@@ -909,7 +912,8 @@ pub fn compile(
     let ast2 = recursecheck::convert_recurse(root_expr_id, file_path.unwrap_or_default());
     let (expr2, convert_errs) =
         convert_pronoun::convert_pronoun(ast2, file_path.unwrap_or_default());
-    let mut infer_ctx = infer_root(expr2, builtin_types, file_path.unwrap_or_default());
+    let expr3 = destruct_let_pattern(expr2);
+    let mut infer_ctx = infer_root(expr3, builtin_types, file_path.unwrap_or_default());
     let errors = infer_ctx
         .errors
         .iter()
