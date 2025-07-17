@@ -514,7 +514,11 @@ impl Context {
     }
     pub fn eval_expr(&mut self, e: ExprNodeId) -> (VPtr, TypeNodeId) {
         let span = e.to_span();
-        let ty = self.typeenv.lookup_res(e);
+        let ty = self
+            .typeenv
+            .infer_type(e)
+            .expect("type inference failed, should be an error at type checker stage");
+
         match &e.to_expr() {
             Expr::Literal(lit) => {
                 let v = self.eval_literal(lit, &span);
@@ -802,7 +806,10 @@ impl Context {
                 let is_global = self.get_ctxdata().func_i == 0;
                 self.fn_label = Some(id.id);
                 let nextfunid = self.program.functions.len();
-                let t = self.typeenv.lookup_res(e);
+                let t = self
+                    .typeenv
+                    .infer_type(e)
+                    .expect("type inference failed, should be an error at type checker stage");
                 let v = if is_global {
                     Arc::new(Value::Function(nextfunid))
                 } else {
@@ -886,6 +893,7 @@ impl Context {
 /// Generate MIR from AST.
 /// The input ast (`root_expr_id`) should contain global context. (See [[compiler::parser::add_global_context]].)
 /// MIR generator itself does not emit any error, the any compile errors are analyzed before generating MIR, mostly in type checker.
+/// Note that the AST may contain partial error nodes, to do type check and report them as possible.
 pub fn compile(
     root_expr_id: ExprNodeId,
     builtin_types: &[(Symbol, TypeNodeId)],

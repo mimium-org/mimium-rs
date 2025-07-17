@@ -236,7 +236,7 @@ pub struct InferContext {
     level: u64,
     instantiated_map: BTreeMap<u64, TypeNodeId>, //from type scheme to typevar
     generalize_map: BTreeMap<u64, u64>,
-    result_map: BTreeMap<ExprKey, TypeNodeId>,
+    result_memo: BTreeMap<ExprKey, TypeNodeId>,
     file_path: Symbol,
     pub env: Environment<TypeNodeId>,
     pub errors: Vec<Error>,
@@ -249,7 +249,7 @@ impl InferContext {
             level: Default::default(),
             instantiated_map: Default::default(),
             generalize_map: Default::default(),
-            result_map: Default::default(),
+            result_memo: Default::default(),
             file_path,
             env: Environment::<TypeNodeId>::default(),
             errors: Default::default(),
@@ -394,14 +394,14 @@ impl InferContext {
     }
     fn substitute_all_intermediates(&mut self) {
         let mut e_list = self
-            .result_map
+            .result_memo
             .iter()
             .map(|(e, t)| (*e, Self::substitute_type(*t)))
             .collect::<Vec<_>>();
 
         e_list.iter_mut().for_each(|(e, t)| {
             log::trace!("e: {:?} t: {}", e, t.to_type());
-            let _old = self.result_map.insert(*e, *t);
+            let _old = self.result_memo.insert(*e, *t);
         })
     }
     fn unify_vec(
@@ -663,7 +663,11 @@ impl InferContext {
         self.level -= 1;
         r
     }
-    fn infer_type(&mut self, e: ExprNodeId) -> Result<TypeNodeId, Vec<Error>> {
+    pub fn infer_type(&mut self, e: ExprNodeId) -> Result<TypeNodeId, Vec<Error>> {
+        if let Some(r) = self.result_memo.get(&e.0) {
+            //use cached result
+            return Ok(*r);
+        }
         let loc = Location::new(e.to_span(), self.file_path); //todo file
         let res: Result<TypeNodeId, Vec<Error>> = match &e.to_expr() {
             Expr::Literal(l) => Self::infer_type_literal(l).map_err(|e| vec![e]),
@@ -966,11 +970,8 @@ impl InferContext {
             _ => Ok(Type::Failure.into_id_with_location(loc)),
         };
         res.inspect(|ty| {
-            self.result_map.insert(e.0, *ty);
+            self.result_memo.insert(e.0, *ty);
         })
-    }
-    pub fn lookup_res(&self, e: ExprNodeId) -> TypeNodeId {
-        *self.result_map.get(&e.0).expect("type inference failed")
     }
     // Helper function to unify function parameters with names
     fn unify_named_params(
