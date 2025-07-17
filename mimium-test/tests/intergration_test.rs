@@ -529,3 +529,16 @@ fn parameter_pack_record_fail2() {
     let res = run_error_test("parameter_pack_record_fail2.mmm", false);
     assert_eq!(res.len(), 1);
 }
+
+#[test]
+fn multistage() {
+    let res = run_file_test_mono("multistage.mmm", 1).unwrap();
+    let ans = vec![32.0];
+    assert_eq!(res, ans);
+}
+#[test]
+fn multistage_macro() {
+    let res = run_file_test_mono("multistage_macro.mmm", 1).unwrap();
+    let ans = vec![8.0];
+    assert_eq!(res, ans);
+}
