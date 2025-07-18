@@ -14,7 +14,7 @@ use slotmap::SlotMap;
 use string_interner::{StringInterner, backend::StringBackend};
 
 use crate::{
-    ast::Expr,
+    ast::{Expr, RecordField},
     dummy_span,
     types::Type,
     utils::metadata::{Location, Span},
@@ -187,6 +187,57 @@ impl ExprNodeId {
                 path: "".to_symbol(),
             },
         })
+    }
+    pub fn apply_fn(&self, f: &mut impl FnMut(Self) -> Self) -> Self {
+        let mut apply_node = |e: ExprNodeId| e.apply_fn(f);
+
+        let expr = match self.to_expr() {
+            Expr::Tuple(e) => {
+                let apply_vec = |vec: &Vec<_>| vec.clone().into_iter().map(apply_node).collect();
+                Expr::Tuple(apply_vec(&e))
+            }
+            Expr::Block(e) => Expr::Block(e.map(apply_node)),
+            Expr::Proj(e, idx) => Expr::Proj(apply_node(e), idx),
+            Expr::ArrayAccess(e, i) => Expr::ArrayAccess(apply_node(e), apply_node(i)),
+            Expr::ArrayLiteral(items) => {
+                let apply_vec = |vec: &Vec<_>| vec.clone().into_iter().map(apply_node).collect();
+                Expr::ArrayLiteral(apply_vec(&items))
+            }
+            Expr::RecordLiteral(fields) => Expr::RecordLiteral(
+                fields
+                    .iter()
+                    .map(|f| RecordField {
+                        name: f.name,
+                        expr: apply_node(f.expr),
+                    })
+                    .collect(),
+            ),
+            Expr::Apply(func, args) => Expr::Apply(
+                apply_node(func),
+                args.clone().into_iter().map(apply_node).collect(),
+            ),
+            Expr::PipeApply(lhs, rhs) => Expr::PipeApply(apply_node(lhs), apply_node(rhs)),
+            Expr::FieldAccess(record, field) => Expr::FieldAccess(apply_node(record), field),
+            Expr::Lambda(params, ty, body) => Expr::Lambda(params.clone(), ty, apply_node(body)),
+            Expr::Feed(id, body) => Expr::Feed(id, apply_node(body)),
+            Expr::Let(id, body, then) => {
+                Expr::Let(id.clone(), apply_node(body), then.map(apply_node))
+            }
+            Expr::LetRec(id, body, then) => {
+                Expr::LetRec(id.clone(), apply_node(body), then.map(apply_node))
+            }
+            Expr::Assign(lid, rhs) => Expr::Assign(apply_node(lid), apply_node(rhs)),
+            Expr::Then(first, second) => Expr::Then(apply_node(first), second.map(apply_node)),
+            Expr::If(cond, then, optelse) => Expr::If(
+                apply_node(cond),
+                apply_node(then),
+                optelse.map(apply_node),
+            ),
+            Expr::Bracket(e) => Expr::Bracket(apply_node(e)),
+            Expr::Escape(e) => Expr::Escape(apply_node(e)),
+            _ => self.to_expr(),
+        };
+        expr.into_id(self.to_location())
     }
 }
 
