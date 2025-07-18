@@ -1031,7 +1031,7 @@ impl InferContext {
             .collect::<Vec<_>>();
         if ts.clone().into_iter().any(|x| x.is_err()) {
             let errs = ts.into_iter().filter_map(|x| x.err()).flatten().collect();
-            return (LabeledParams::new(vec![]), errs);
+            (LabeledParams::new(vec![]), errs)
         } else {
             let res = ts
                 .into_iter()
@@ -1041,7 +1041,7 @@ impl InferContext {
                     ty: ty.unwrap(),
                 })
                 .collect::<Vec<_>>();
-            return (LabeledParams::new(res), vec![]);
+            (LabeledParams::new(res), vec![])
         }
     }
 }

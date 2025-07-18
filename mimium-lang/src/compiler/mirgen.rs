@@ -593,20 +593,16 @@ impl Context {
                 (reg, Type::Array(elem_ty).into_id())
             }
             Expr::ArrayAccess(array, index) => {
-                let (array_v, array_ty) = self.eval_expr(*array);
+                let (array_v, _array_ty) = self.eval_expr(*array);
                 let (index_v, _) = self.eval_expr(*index);
-                //todo: somehow type substituions are imcomplete
-                let elem_ty = match InferContext::substitute_type(array_ty).to_type() {
-                    Type::Array(elem_ty) => elem_ty,
-                    ty => panic!("Expected array type for array access, found {ty}"),
-                };
+
                 // Get element at the specified index
                 let result = self.push_inst(Instruction::GetArrayElem(
                     array_v.clone(),
                     index_v.clone(),
-                    elem_ty,
+                    ty,
                 ));
-                (result, elem_ty)
+                (result, ty)
             }
 
             Expr::Apply(f, args) => {
@@ -911,10 +907,10 @@ pub fn compile(
     file_path: Option<Symbol>,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
     let ast2 = recursecheck::convert_recurse(root_expr_id, file_path.unwrap_or_default());
-    let (expr2, convert_errs) =
+    let (expr, convert_errs) =
         convert_pronoun::convert_pronoun(ast2, file_path.unwrap_or_default());
-    let expr3 = destruct_let_pattern(expr2);
-    let mut infer_ctx = infer_root(expr3, builtin_types, file_path.unwrap_or_default());
+    // let expr = destruct_let_pattern(expr);
+    let mut infer_ctx = infer_root(expr, builtin_types, file_path.unwrap_or_default());
     let errors = infer_ctx
         .errors
         .iter()
@@ -928,15 +924,18 @@ pub fn compile(
         .collect::<Vec<_>>();
 
     if errors.is_empty() {
-        let expr2 = if is_code_contain_macro(&mut infer_ctx, expr2) {
-            interpreter::expand_macro(expr2)
+        let expr = if is_code_contain_macro(&mut infer_ctx, expr) {
+            interpreter::expand_macro(expr)
         } else {
-            expr2
+            expr
         };
-
-        let expr2 = parser::add_global_context(expr2, file_path.unwrap_or_default());
+        log::trace!(
+            "ast after macro expansion: {:?}",
+            expr.to_expr()
+        );
+        let expr = parser::add_global_context(expr, file_path.unwrap_or_default());
         let mut ctx = Context::new(infer_ctx, file_path);
-        let _res = ctx.eval_expr(expr2);
+        let _res = ctx.eval_expr(expr);
         ctx.program.file_path = file_path;
         Ok(ctx.program.clone())
     } else {

@@ -1,8 +1,9 @@
 use crate::{
-    ast::Expr,
+    ast::{Expr, RecordField},
     interner::{ExprNodeId, Symbol, ToSymbol},
     pattern::{Pattern, TypedPattern},
     types::Type,
+    utils::metadata::Location,
 };
 
 /// Decompose patterns into the sequence of single let bindings.
@@ -28,82 +29,131 @@ impl PatternDestructor {
         name
     }
 
-    fn destruct_pattern(&mut self, pattern: &Pattern, value: ExprNodeId,then_body:Option<ExprNodeId>) -> (Symbol, ExprNodeId) {
-        match pattern {
-            Pattern::Single(name) => (*name, value),
-            Pattern::Tuple(patterns) => {
-                let new_name = self.get_new_name();
-                let loc = value.to_location();
-                let newrvar = Expr::Var(new_name).into_id(loc.clone());
-                let body = patterns
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| {
-                        let field_value = Expr::Proj(newrvar, i as i64).into_id(loc.clone());
-                        self.destruct_pattern(p, field_value, None)
-                    })
-                    .rfold(then_body, |acc: Option<ExprNodeId>, (name, value)| {
-                        let tpat = TypedPattern {
-                            pat: Pattern::Single(name),
-                            ty: Type::Unknown.into_id(),
-                        };
-                        Some(Expr::Let(tpat, value, acc).into_id(loc.clone()))
-                    });
-                let res = Expr::Let(
+    fn destruct_pattern(
+        &mut self,
+        pattern: &TypedPattern,
+        value: ExprNodeId,
+        then_body: Option<ExprNodeId>,
+        loc: Location,
+    ) -> Option<ExprNodeId> {
+        match &pattern.pat {
+            Pattern::Single(name) => Some(
+                Expr::Let(
                     TypedPattern {
-                        pat: Pattern::Single(new_name),
-                        ty: Type::Unknown.into_id(),
+                        pat: Pattern::Single(*name),
+                        ty: pattern.ty,
                     },
                     value,
-                    body,
+                    then_body,
                 )
-                .into_id(loc.clone());
-                (new_name, res)
-            }
-            Pattern::Record(fields) => {
-                let new_name = self.get_new_name();
-                let loc = value.to_location();
-                let newrvar = Expr::Var(new_name).into_id(loc.clone());
-                let body = fields
-                    .iter()
-                    .map(|(name, p)| {
-                        let field_value = Expr::FieldAccess(newrvar, *name).into_id(loc.clone());
-                        self.destruct_pattern(p, field_value,None)
-                    })
-                    .rfold(None, |acc: Option<ExprNodeId>, (name, value)| {
-                        let tpat = TypedPattern {
-                            pat: Pattern::Single(name),
+                .into_id(loc),
+            ),
+            Pattern::Tuple(patterns) => patterns.iter().enumerate().rfold(
+                then_body,
+                |acc: Option<ExprNodeId>, (i, sub_pat)| {
+                    let field_value = Expr::Proj(value, i as i64).into_id(loc.clone());
+                    self.destruct_pattern(
+                        &TypedPattern {
+                            pat: sub_pat.clone(),
                             ty: Type::Unknown.into_id(),
-                        };
-                        Some(Expr::Let(tpat, value, acc).into_id(loc.clone()))
-                    });
-                let res = Expr::Let(
-                    TypedPattern {
-                        pat: Pattern::Single(new_name),
-                        ty: Type::Unknown.into_id(),
-                    },
-                    newrvar,
-                    body,
-                )
-                .into_id(loc.clone());
-                (new_name, res)
+                        },
+                        field_value,
+                        acc,
+                        field_value.to_location(),
+                    )
+                },
+            ),
+            Pattern::Record(fields) => {
+                fields
+                    .iter()
+                    .rfold(then_body, |acc: Option<ExprNodeId>, (name, sub_pat)| {
+                        let field_value = Expr::FieldAccess(value, *name).into_id(loc.clone());
+                        self.destruct_pattern(
+                            &TypedPattern {
+                                pat: sub_pat.clone(),
+                                ty: Type::Unknown.into_id(),
+                            },
+                            field_value,
+                            acc,
+                            field_value.to_location(),
+                        )
+                    })
             }
-            Pattern::Error => {
-                panic!("Error pattern cannot be destructed")
-            }
+            Pattern::Error => Some(Expr::Error.into_id(loc.clone())),
         }
     }
     pub(self) fn destruct_top(&mut self, expr: ExprNodeId) -> ExprNodeId {
-        match expr.to_expr() {
+        let mut apply_node = |e: ExprNodeId| self.destruct_top(e);
+        let res = match expr.to_expr() {
             Expr::Let(tpat, value, body) => {
-                let (_, single) = self.destruct_pattern(&tpat.pat, value,body);
-                single
+                let desugard_v = self.destruct_top(value);
+                let desugard_body = body.map(|b| self.destruct_top(b));
+                match tpat.pat {
+                    Pattern::Single(_) => Expr::Let(tpat, desugard_v, desugard_body),
+                    Pattern::Tuple(_) | Pattern::Record(_) => {
+                        let new_name = self.get_new_name();
+                        let new_rvar = Expr::Var(new_name).into_id(expr.to_location());
+                        let destructed_pattern_body = self.destruct_pattern(
+                            &tpat,
+                            new_rvar,
+                            desugard_body,
+                            expr.to_location(),
+                        );
+                        Expr::Let(
+                            TypedPattern {
+                                pat: Pattern::Single(new_name),
+                                ty: Type::Unknown.into_id(),
+                            },
+                            desugard_v,
+                            destructed_pattern_body,
+                        )
+                    }
+                    _ => Expr::Error,
+                }
             }
-            _ => expr
-                .to_expr()
-                .apply_fn(&mut |e: Expr| self.destruct_top(e.into_id(expr.to_location())).to_expr())
-                .into_id(expr.to_location()),
-        }
+            Expr::Tuple(e) => {
+                let apply_vec = |vec: &Vec<_>| vec.clone().into_iter().map(apply_node).collect();
+                Expr::Tuple(apply_vec(&e))
+            }
+            Expr::Block(e) => Expr::Block(e.map(apply_node)),
+            Expr::Proj(e, idx) => Expr::Proj(apply_node(e), idx),
+            Expr::ArrayAccess(e, i) => Expr::ArrayAccess(apply_node(e), apply_node(i)),
+            Expr::ArrayLiteral(items) => {
+                let apply_vec = |vec: &Vec<_>| vec.clone().into_iter().map(apply_node).collect();
+                Expr::ArrayLiteral(apply_vec(&items))
+            }
+            Expr::RecordLiteral(fields) => Expr::RecordLiteral(
+                fields
+                    .iter()
+                    .map(|f| RecordField {
+                        name: f.name,
+                        expr: apply_node(f.expr),
+                    })
+                    .collect(),
+            ),
+            Expr::Apply(func, args) => Expr::Apply(
+                apply_node(func),
+                args.clone().into_iter().map(apply_node).collect(),
+            ),
+            Expr::PipeApply(lhs, rhs) => Expr::PipeApply(apply_node(lhs), apply_node(rhs)),
+            Expr::FieldAccess(record, field) => Expr::FieldAccess(apply_node(record), field),
+            Expr::Lambda(params, ty, body) => Expr::Lambda(params.clone(), ty, apply_node(body)),
+            Expr::Feed(id, body) => Expr::Feed(id, apply_node(body)),
+            Expr::LetRec(id, body, then) => {
+                Expr::LetRec(id.clone(), apply_node(body), then.map(apply_node))
+            }
+            Expr::Assign(lid, rhs) => Expr::Assign(apply_node(lid), apply_node(rhs)),
+            Expr::Then(first, second) => Expr::Then(apply_node(first), second.map(apply_node)),
+            Expr::If(cond, then, optelse) => {
+                Expr::If(apply_node(cond), apply_node(then), optelse.map(apply_node))
+            }
+            Expr::Bracket(e) => Expr::Bracket(apply_node(e)),
+            Expr::Escape(e) => Expr::Escape(apply_node(e)),
+            _ => {
+                return expr;
+            }
+        };
+        res.into_id(expr.to_location())
     }
 }
 
