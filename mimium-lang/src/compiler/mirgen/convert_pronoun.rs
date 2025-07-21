@@ -101,18 +101,39 @@ where
             let (then, err2) = conversion(then);
             let (opt_else, errs3) = opt_conversion(opt_else);
             let found_any =
-                cond.found_any | then.found_any | opt_else.as_ref().map_or(false, |e| e.found_any);
+                cond.found_any | then.found_any | opt_else.as_ref().is_some_and(|e| e.found_any);
             let expr = Expr::If(cond.expr, then.expr, opt_else.map(|e| e.expr)).into_id(loc);
             let errs = [err, err2, errs3].concat();
             (ConvertResult { expr, found_any }, errs)
         }
         Expr::Block(body) => {
             let (body, errs) = opt_conversion(body);
-            let found_any = body.as_ref().map_or(false, |b| b.found_any);
+            let found_any = body.as_ref().is_some_and(|b| b.found_any);
             let expr = Expr::Block(body.map(|e| e.expr)).into_id(loc);
             (ConvertResult { expr, found_any }, errs)
         }
-
+        Expr::Escape(e) => {
+            let (res, errs) = conversion(e);
+            let expr = Expr::Escape(res.expr).into_id(loc);
+            (
+                ConvertResult {
+                    expr,
+                    found_any: res.found_any,
+                },
+                errs,
+            )
+        }
+        Expr::Bracket(e) => {
+            let (res, errs) = conversion(e);
+            let expr = Expr::Bracket(res.expr).into_id(loc);
+            (
+                ConvertResult {
+                    expr,
+                    found_any: res.found_any,
+                },
+                errs,
+            )
+        }
         _ => (
             ConvertResult {
                 expr: e_id,

@@ -11,9 +11,14 @@ use std::{
 };
 
 use slotmap::SlotMap;
-use string_interner::{backend::StringBackend, StringInterner};
+use string_interner::{StringInterner, backend::StringBackend};
 
-use crate::{ast::Expr, dummy_span, types::Type, utils::metadata::{Location, Span}};
+use crate::{
+    ast::{Expr, RecordField},
+    dummy_span,
+    types::Type,
+    utils::metadata::{Location, Span},
+};
 slotmap::new_key_type! {
     pub struct ExprKey;
     pub struct TypeKey;
@@ -42,13 +47,13 @@ impl SessionGlobals {
         TypeNodeId(key)
     }
 
-    pub fn store_expr_with_location(&mut self, expr: Expr, loc:Location) -> ExprNodeId {
+    pub fn store_expr_with_location(&mut self, expr: Expr, loc: Location) -> ExprNodeId {
         let expr_id = self.store_expr(expr);
         self.store_loc(expr_id, loc);
         expr_id
     }
 
-    pub fn store_type_with_location(&mut self, ty: Type, loc:Location) -> TypeNodeId {
+    pub fn store_type_with_location(&mut self, ty: Type, loc: Location) -> TypeNodeId {
         let type_id = self.store_type(ty);
         self.store_loc(type_id, loc);
         type_id
@@ -88,7 +93,7 @@ where
     SESSION_GLOBALS.with_borrow_mut(f)
 }
 
-#[derive(Default, Copy, Clone, PartialEq, Debug, Hash, Eq, PartialOrd, Ord)]
+#[derive(Default, Copy, Clone, PartialEq, Hash, Eq, PartialOrd, Ord)]
 pub struct Symbol(pub usize); //Symbol Trait is implemented on usize
 
 pub trait ToSymbol {
@@ -123,6 +128,11 @@ impl Symbol {
 impl Display for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
+    }
+}
+impl std::fmt::Debug for Symbol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}({})", self.as_str(), self.0)
     }
 }
 
@@ -168,6 +178,66 @@ impl ExprNodeId {
             Some(loc) => loc.span.clone(),
             None => dummy_span!(),
         })
+    }
+    pub fn to_location(&self) -> Location {
+        with_session_globals(|session_globals| match session_globals.get_span(*self) {
+            Some(loc) => loc.clone(),
+            None => Location {
+                span: dummy_span!(),
+                path: "".to_symbol(),
+            },
+        })
+    }
+    pub fn apply_fn(&self, f: &mut impl FnMut(Self) -> Self) -> Self {
+        let mut apply_node = |e: ExprNodeId| e.apply_fn(f);
+
+        let expr = match self.to_expr() {
+            Expr::Tuple(e) => {
+                let apply_vec = |vec: &Vec<_>| vec.clone().into_iter().map(apply_node).collect();
+                Expr::Tuple(apply_vec(&e))
+            }
+            Expr::Block(e) => Expr::Block(e.map(apply_node)),
+            Expr::Proj(e, idx) => Expr::Proj(apply_node(e), idx),
+            Expr::ArrayAccess(e, i) => Expr::ArrayAccess(apply_node(e), apply_node(i)),
+            Expr::ArrayLiteral(items) => {
+                let apply_vec = |vec: &Vec<_>| vec.clone().into_iter().map(apply_node).collect();
+                Expr::ArrayLiteral(apply_vec(&items))
+            }
+            Expr::RecordLiteral(fields) => Expr::RecordLiteral(
+                fields
+                    .iter()
+                    .map(|f| RecordField {
+                        name: f.name,
+                        expr: apply_node(f.expr),
+                    })
+                    .collect(),
+            ),
+            Expr::Apply(func, args) => Expr::Apply(
+                apply_node(func),
+                args.clone().into_iter().map(apply_node).collect(),
+            ),
+            Expr::PipeApply(lhs, rhs) => Expr::PipeApply(apply_node(lhs), apply_node(rhs)),
+            Expr::FieldAccess(record, field) => Expr::FieldAccess(apply_node(record), field),
+            Expr::Lambda(params, ty, body) => Expr::Lambda(params.clone(), ty, apply_node(body)),
+            Expr::Feed(id, body) => Expr::Feed(id, apply_node(body)),
+            Expr::Let(id, body, then) => {
+                Expr::Let(id.clone(), apply_node(body), then.map(apply_node))
+            }
+            Expr::LetRec(id, body, then) => {
+                Expr::LetRec(id.clone(), apply_node(body), then.map(apply_node))
+            }
+            Expr::Assign(lid, rhs) => Expr::Assign(apply_node(lid), apply_node(rhs)),
+            Expr::Then(first, second) => Expr::Then(apply_node(first), second.map(apply_node)),
+            Expr::If(cond, then, optelse) => Expr::If(
+                apply_node(cond),
+                apply_node(then),
+                optelse.map(apply_node),
+            ),
+            Expr::Bracket(e) => Expr::Bracket(apply_node(e)),
+            Expr::Escape(e) => Expr::Escape(apply_node(e)),
+            _ => self.to_expr(),
+        };
+        expr.into_id(self.to_location())
     }
 }
 

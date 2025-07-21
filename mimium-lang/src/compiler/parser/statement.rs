@@ -15,6 +15,7 @@ pub(super) enum Statement {
     LetRec(TypedId, ExprNodeId),
     Assign(ExprNodeId, ExprNodeId),
     Single(ExprNodeId),
+    Error,
 }
 
 pub fn stmt_from_expr_top(expr: ExprNodeId) -> Vec<Statement> {
@@ -72,6 +73,9 @@ pub(super) fn into_then_expr(stmts: &[(Statement, Location)]) -> Option<ExprNode
             }
             (None, Statement::Single(e)) => Some(*e),
             (t, Statement::Single(e)) => Some(Expr::Then(*e, t).into_id(new_loc)),
+            (t, Statement::Error) => {
+                Some(Expr::Then(Expr::Error.into_id(new_loc.clone()), t).into_id(new_loc))
+            }
         }
     });
     // log::debug!("stmts {:?}, e_pre: {:?}", stmts, e_pre);

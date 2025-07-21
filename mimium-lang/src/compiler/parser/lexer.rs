@@ -73,11 +73,13 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
             "|>" => Token::Op(Op::Pipe),
             _ => Token::Op(Op::Unknown(s)),
         });
-    let separator = one_of(",.:;").map(|c| match c {
+    let separator = one_of(",.:;`$").map(|c| match c {
         ',' => Token::Comma,
         '.' => Token::Dot,
         ':' => Token::Colon,
         ';' => Token::SemiColon,
+        '`' => Token::BackQuote,
+        '$' => Token::Dollar,
         _ => Token::Ident(c.to_string().to_symbol()),
     });
     // A parser for identifiers and keywords

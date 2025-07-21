@@ -236,7 +236,7 @@ pub struct InferContext {
     level: u64,
     instantiated_map: BTreeMap<u64, TypeNodeId>, //from type scheme to typevar
     generalize_map: BTreeMap<u64, u64>,
-    result_map: BTreeMap<ExprKey, TypeNodeId>,
+    result_memo: BTreeMap<ExprKey, TypeNodeId>,
     file_path: Symbol,
     pub env: Environment<TypeNodeId>,
     pub errors: Vec<Error>,
@@ -249,7 +249,7 @@ impl InferContext {
             level: Default::default(),
             instantiated_map: Default::default(),
             generalize_map: Default::default(),
-            result_map: Default::default(),
+            result_memo: Default::default(),
             file_path,
             env: Environment::<TypeNodeId>::default(),
             errors: Default::default(),
@@ -380,7 +380,7 @@ impl InferContext {
         }
     }
 
-    fn substitute_type(t: TypeNodeId) -> TypeNodeId {
+    pub fn substitute_type(t: TypeNodeId) -> TypeNodeId {
         match t.to_type() {
             Type::Intermediate(cell) => {
                 let TypeVar { parent, .. } = &cell.borrow() as &TypeVar;
@@ -394,14 +394,14 @@ impl InferContext {
     }
     fn substitute_all_intermediates(&mut self) {
         let mut e_list = self
-            .result_map
+            .result_memo
             .iter()
             .map(|(e, t)| (*e, Self::substitute_type(*t)))
             .collect::<Vec<_>>();
 
         e_list.iter_mut().for_each(|(e, t)| {
             log::trace!("e: {:?} t: {}", e, t.to_type());
-            let _old = self.result_map.insert(*e, *t);
+            let _old = self.result_memo.insert(*e, *t);
         })
     }
     fn unify_vec(
@@ -544,8 +544,9 @@ impl InferContext {
             }
             (Type::Failure, t) => Ok(t.clone().into_id_with_location(loc1.clone())),
             (t, Type::Failure) => Ok(t.clone().into_id_with_location(loc2.clone())),
-            (Type::Code(_p1), Type::Code(_p2)) => {
-                todo!("type system for multi-stage computation has not implemented yet")
+            (Type::Code(p1), Type::Code(p2)) => {
+                let ret = Self::unify_types((*p1, loc1.clone()), (*p2, loc2))?;
+                Ok(Type::Code(ret).into_id_with_location(loc1))
             }
             (_p1, _p2) => Err(vec![Error::TypeMismatch {
                 left: (t1, loc1),
@@ -662,7 +663,11 @@ impl InferContext {
         self.level -= 1;
         r
     }
-    fn infer_type(&mut self, e: ExprNodeId) -> Result<TypeNodeId, Vec<Error>> {
+    pub fn infer_type(&mut self, e: ExprNodeId) -> Result<TypeNodeId, Vec<Error>> {
+        if let Some(r) = self.result_memo.get(&e.0) {
+            //use cached result
+            return Ok(*r);
+        }
         let loc = Location::new(e.to_span(), self.file_path); //todo file
         let res: Result<TypeNodeId, Vec<Error>> = match &e.to_expr() {
             Expr::Literal(l) => Self::infer_type_literal(l).map_err(|e| vec![e]),
@@ -944,14 +949,29 @@ impl InferContext {
                 self.env.to_outer();
                 res
             }),
+            Expr::Escape(e) => {
+                let loc_e = Location::new(e.to_span(), self.file_path);
+                let res = self.infer_type(*e)?;
+                let intermediate = self.gen_intermediate_type_with_location(loc_e.clone());
+                let _res_unused = Self::unify_types(
+                    (res, loc_e.clone()),
+                    (
+                        Type::Code(intermediate).into_id_with_location(loc_e.clone()),
+                        loc_e,
+                    ),
+                )?;
+                Ok(intermediate)
+            }
+            Expr::Bracket(e) => {
+                let loc_e = Location::new(e.to_span(), self.file_path);
+                let res = self.infer_type(*e)?;
+                Ok(Type::Code(res).into_id_with_location(loc_e))
+            }
             _ => Ok(Type::Failure.into_id_with_location(loc)),
         };
         res.inspect(|ty| {
-            self.result_map.insert(e.0, *ty);
+            self.result_memo.insert(e.0, *ty);
         })
-    }
-    pub fn lookup_res(&self, e: ExprNodeId) -> TypeNodeId {
-        *self.result_map.get(&e.0).expect("type inference failed")
     }
     // Helper function to unify function parameters with names
     fn unify_named_params(
@@ -1011,7 +1031,7 @@ impl InferContext {
             .collect::<Vec<_>>();
         if ts.clone().into_iter().any(|x| x.is_err()) {
             let errs = ts.into_iter().filter_map(|x| x.err()).flatten().collect();
-            return (LabeledParams::new(vec![]), errs);
+            (LabeledParams::new(vec![]), errs)
         } else {
             let res = ts
                 .into_iter()
@@ -1021,7 +1041,7 @@ impl InferContext {
                     ty: ty.unwrap(),
                 })
                 .collect::<Vec<_>>();
-            return (LabeledParams::new(res), vec![]);
+            (LabeledParams::new(res), vec![])
         }
     }
 }

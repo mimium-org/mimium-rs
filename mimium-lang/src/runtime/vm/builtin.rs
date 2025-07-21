@@ -2,7 +2,7 @@ use crate::compiler::ExtFunTypeInfo;
 use crate::interner::ToSymbol;
 use crate::runtime::vm::ArrayIdx;
 use crate::types::{PType, Type};
-use crate::{function, numeric};
+use crate::{code, function, numeric};
 
 use super::{ExtFnInfo, Machine, ReturnCode};
 
@@ -48,8 +48,11 @@ fn get_length_array(machine: &mut Machine) -> ReturnCode {
     machine.set_stack(0, super::Machine::to_value(res));
     1
 }
-
-pub fn get_builtin_fns() -> [ExtFnInfo; 5] {
+fn lift_float_dummy(_machine: &mut Machine) -> ReturnCode {
+    unreachable!("lift_float_dummy should not be called at VM runtime");
+    1
+}
+pub fn get_builtin_fns() -> [ExtFnInfo; 6] {
     [
         (
             "probe".to_symbol(),
@@ -79,6 +82,11 @@ pub fn get_builtin_fns() -> [ExtFnInfo; 5] {
                 vec![Type::Array(Type::TypeScheme(u64::MAX).into_id()).into_id()],
                 numeric!()
             ),
+        ),
+        (
+            "lift_f".to_symbol(),
+            lift_float_dummy,
+            function!(vec![numeric!()], code!(numeric!())),
         ),
     ]
 }

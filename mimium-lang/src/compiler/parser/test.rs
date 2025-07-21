@@ -637,3 +637,13 @@ fn test_err_builtin_redefine() {
     });
     assert_eq!(err[0].to_string(), err_ans.to_string())
 }
+#[test]
+fn test_bracket_escape() {
+    let src = r"$`300";
+    let ans = Expr::Escape(
+        Expr::Bracket(Expr::Literal(Literal::Float("300".to_symbol())).into_id(loc(2..3)))
+            .into_id(loc(1..3)),
+    )
+    .into_id(loc(0..3));
+    test_expr_string(src, ans);
+}

@@ -71,6 +71,8 @@ pub enum Token {
     BlockBegin,
     BlockEnd,
     LambdaArgBeginEnd,
+    BackQuote,
+    Dollar,
 
     Function,    //"fn"
     Macro,       //"macro"
@@ -132,7 +134,7 @@ impl fmt::Display for Op {
             Op::Or => write!(f, "||"),
             Op::At => write!(f, "@"),
             Op::Pipe => write!(f, "|>"),
-            Op::Unknown(x) => write!(f, "{}", x),
+            Op::Unknown(x) => write!(f, "{x}"),
         }
     }
 }
@@ -140,16 +142,16 @@ impl fmt::Display for Op {
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Token::Ident(x) => write!(f, "{}", x),
-            Token::MacroExpand(x) => write!(f, "{}!", x),
+            Token::Ident(x) => write!(f, "{x}"),
+            Token::MacroExpand(x) => write!(f, "{x}!"),
             Token::FloatType => write!(f, "float"),
             Token::IntegerType => write!(f, "int"),
             Token::StringType => write!(f, "string"),
             Token::StructType => write!(f, "struct"),
-            Token::Int(x) => write!(f, "{}", x),
-            Token::Float(x) => write!(f, "{}", x),
-            Token::Str(x) => write!(f, "\"{}\"", x),
-            Token::Op(x) => write!(f, "{}", x),
+            Token::Int(x) => write!(f, "{x}"),
+            Token::Float(x) => write!(f, "{x}"),
+            Token::Str(x) => write!(f, "\"{x}\""),
+            Token::Op(x) => write!(f, "{x}"),
             Token::SelfLit => write!(f, "self"),
             Token::Now => write!(f, "now"),
             Token::SampleRate => write!(f, "samplerate"),
@@ -167,20 +169,17 @@ impl fmt::Display for Token {
             Token::BlockBegin => write!(f, "{{"),
             Token::BlockEnd => write!(f, "}}"),
             Token::LambdaArgBeginEnd => write!(f, "|"),
-
             Token::Function => write!(f, "fn"),
             Token::Macro => write!(f, "macro"),
             Token::Arrow => write!(f, "->"),
             Token::PlaceHolder => write!(f, "_"),
-
             Token::If => write!(f, "if"),
             Token::Else => write!(f, "else"),
-
-            // Token::Type => write!(f, "type"),
-            // Token::Alias => write!(f, "newtype"),
             Token::Include => write!(f, "include"),
             Token::LineBreak => write!(f, "linebreak"),
             Token::Comment(_) => write!(f, "comment"),
+            Token::BackQuote => write!(f, "`"),
+            Token::Dollar => write!(f, "$"),
         }
     }
 }
