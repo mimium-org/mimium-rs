@@ -1,4 +1,4 @@
-use crate::compiler::ExtFunTypeInfo;
+use crate::plugin::ExtFunTypeInfo;
 use crate::interner::ToSymbol;
 use crate::runtime::vm::ArrayIdx;
 use crate::types::{PType, Type};
@@ -93,10 +93,7 @@ pub fn get_builtin_fns() -> [ExtFunInfo; 6] {
 
 pub fn get_builtin_fn_types() -> Vec<ExtFunTypeInfo> {
     get_builtin_fns()
-        .iter()
-        .map(|ExtFunInfo { name, ty, .. }| ExtFunTypeInfo {
-            name: *name,
-            ty: *ty,
-        })
+        .into_iter()
+        .map(ExtFunTypeInfo::from)
         .collect()
 }

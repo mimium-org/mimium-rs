@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use mimium_lang::interner::ToSymbol;
-use mimium_lang::plugin::{ExtClsInfo, ExtFunInfo, ExtFunType, Plugin};
+use mimium_lang::plugin::{EvalStage, ExtClsInfo, ExtFunInfo, ExtFunType, ExtFunTypeInfo, MachineFunction, Plugin};
 use mimium_lang::runtime::vm::{self, Machine, ReturnCode};
 use mimium_lang::types::{PType, Type};
 use mimium_lang::utils::fileloader;
@@ -159,17 +159,28 @@ fn gen_sampler_mono(machine: &mut Machine) -> ReturnCode {
 pub struct SamplerPlugin;
 
 impl Plugin for SamplerPlugin {
-    fn get_ext_functions(&self) -> Vec<ExtFunInfo> {
+
+
+    fn get_ext_closures(&self) -> Vec<Box<dyn MachineFunction>> {
         let t = function!(vec![string_t!()], function!(vec![numeric!()], numeric!()));
-        let sig = ExtFunInfo::new(
+        let sig = ExtClsInfo::new(
             "gen_sampler_mono".to_symbol(),
             t,
-            gen_sampler_mono as ExtFunType,
+            Rc::new(RefCell::new(gen_sampler_mono)),
+        );
+        vec![Box::new(sig) as Box<dyn MachineFunction>]
+    }
+    
+    fn get_macro_functions(&self) -> Vec<Box<dyn mimium_lang::plugin::MacroFunction>> {
+        vec![]
+    }
+    
+    fn get_type_infos(&self) -> Vec<mimium_lang::plugin::ExtFunTypeInfo> {
+        let sig = ExtFunTypeInfo::new(
+            "gen_sampler_mono".to_symbol(),
+            function!(vec![string_t!()], function!(vec![numeric!()], numeric!())),
+            EvalStage::Stage(1),
         );
         vec![sig]
-    }
-
-    fn get_ext_closures(&self) -> Vec<ExtClsInfo> {
-        vec![]
     }
 }

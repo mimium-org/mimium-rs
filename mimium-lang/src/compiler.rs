@@ -3,8 +3,9 @@ pub mod typing;
 // pub mod hirgen;
 pub mod bytecodegen;
 mod intrinsics;
-pub(crate) mod pattern_destructor;
 pub mod mirgen;
+pub(crate) mod pattern_destructor;
+use crate::plugin::ExtFunTypeInfo;
 
 #[derive(Debug, Clone)]
 pub enum ErrorKind {
@@ -97,11 +98,6 @@ pub fn emit_ast(
         Err(errs)
     }
 }
-#[derive(Clone, Copy)]
-pub struct ExtFunTypeInfo {
-    pub name: Symbol,
-    pub ty: TypeNodeId,
-}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Config {
@@ -136,7 +132,7 @@ impl Context {
         self.ext_fns
             .clone()
             .into_iter()
-            .map(|ExtFunTypeInfo { name, ty }| (name, ty))
+            .map(|ExtFunTypeInfo { name, ty, .. }| (name, ty))
             .collect()
     }
 

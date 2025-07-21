@@ -15,7 +15,7 @@ pub use program::{FuncProto, Program};
 use crate::{
     compiler::bytecodegen::ByteCodeGenerator,
     interner::{Symbol, TypeNodeId},
-    plugin::{ExtClsInfo, ExtClsType, ExtFunInfo, ExtFunType},
+    plugin::{ExtClsInfo, ExtClsType, ExtFunInfo, ExtFunType, MachineFunction},
     types::{Type, TypeSize},
 };
 pub type RawVal = u64;
@@ -70,7 +70,7 @@ impl StateStorageStack {
 }
 
 #[derive(Debug, Clone, Default)]
-struct ArrayHeap {
+pub(crate) struct ArrayHeap {
     elem_word_size: u64,
     data: Vec<RawVal>,
 }
@@ -80,7 +80,7 @@ impl ArrayHeap {
     }
 }
 #[derive(Debug, Clone, Default)]
-struct ArrayStorage {
+pub(crate) struct ArrayStorage {
     data: SlotMap<DefaultKey, ArrayHeap>,
 }
 pub(crate) type ArrayIdx = slotmap::DefaultKey;
@@ -225,7 +225,7 @@ pub struct Machine {
     pub closures: ClosureStorage,
     pub ext_fun_table: Vec<(Symbol, ExtFunType)>,
     pub ext_cls_table: Vec<(Symbol, ExtClsType)>,
-    arrays: ArrayStorage,
+    pub arrays: ArrayStorage,
     fn_map: HashMap<usize, ExtFnIdx>, //index from fntable index of program to it of machine.
     // cls_map: HashMap<usize, usize>, //index from fntable index of program to it of machine.
     global_states: StateStorage,
@@ -353,7 +353,7 @@ impl Machine {
     pub fn new(
         prog: Program,
         extfns: impl Iterator<Item = ExtFunInfo>,
-        extcls: impl Iterator<Item = ExtClsInfo>,
+        extcls: impl Iterator<Item = Box<dyn MachineFunction>>,
     ) -> Self {
         let mut res = Self {
             prog,
@@ -374,8 +374,8 @@ impl Machine {
         extfns.for_each(|ExtFunInfo { name, fun, .. }| {
             let _ = res.install_extern_fn(name, fun);
         });
-        extcls.for_each(|ExtClsInfo { name, fun, .. }| {
-            let _ = res.install_extern_cls(name, fun);
+        extcls.for_each(|machine_function| {
+            let _ = res.install_extern_cls(machine_function.get_name(),machine_function.get_fn());
         });
         res.link_functions();
         res

@@ -65,18 +65,22 @@ pub trait SystemPlugin {
 }
 #[derive(Clone)]
 /// A dynamically dispatched plugin wrapped in reference-counted storage.
-pub struct DynSystemPlugin(pub Rc<UnsafeCell<dyn SystemPlugin>>);
+pub struct DynSystemPlugin {
+    pub inner: Rc<UnsafeCell<dyn SystemPlugin>>,
+    pub clsinfos: Vec<ExtClsInfo>,
+}
 
 /// Convert a plugin into the VM-facing representation.
 ///
 /// The returned [`DynSystemPlugin`] is stored by the runtime, while the
 /// accompanying `Vec<ExtClsInfo>` contains closures that expose the plugin's
 /// callback methods to mimium code.
-pub fn to_ext_cls_info<T: SystemPlugin + 'static>(
-    sysplugin: T,
-) -> (DynSystemPlugin, Vec<ExtClsInfo>) {
+pub fn to_ext_cls_info<T: SystemPlugin + Sized + 'static>(sysplugin: T) -> DynSystemPlugin {
     let ifs = sysplugin.gen_interfaces();
-    let dyn_plugin = DynSystemPlugin(Rc::new(UnsafeCell::new(sysplugin)));
+    let mut dyn_plugin = DynSystemPlugin {
+        inner: Rc::new(UnsafeCell::new(sysplugin)),
+        clsinfos: Vec::new(),
+    };
     let ifs_res = ifs
         .into_iter()
         .map(|SysPluginSignature { name, fun, ty }| -> ExtClsInfo {
@@ -89,14 +93,15 @@ pub fn to_ext_cls_info<T: SystemPlugin + 'static>(
                 // breaking double borrow rule at here!!!
                 // Also here I do dirty downcasting because here the type of plugin is ensured as T.
                 unsafe {
-                    let p = (plug.0.get() as *mut T).as_mut().unwrap();
+                    let p = (plug.inner.get() as *mut T).as_mut().unwrap();
                     fun(p, machine)
                 }
             }));
             ExtClsInfo::new(name.to_symbol(), ty, fun)
         })
         .collect::<Vec<_>>();
-    (dyn_plugin, ifs_res)
+    dyn_plugin.clsinfos = ifs_res;
+    dyn_plugin
 }
 
 // impl<T: Sized> SysPluginSignature<T> {}
