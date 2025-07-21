@@ -9,8 +9,8 @@ use std::sync::{
 };
 
 use mimium_lang::{
-    compiler::IoChannelInfo, interner::ToSymbol, plugin::{DynSystemPlugin, InstantPlugin}, runtime::{
-        vm::{self, ExtClsInfo, FuncProto, ReturnCode},
+    compiler::IoChannelInfo, interner::ToSymbol, plugin::{DynSystemPlugin, ExtClsInfo, InstantPlugin}, runtime::{
+        vm::{self, FuncProto, ReturnCode},
         Time,
     }, ExecContext
 };

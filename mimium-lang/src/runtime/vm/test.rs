@@ -209,11 +209,16 @@ fn rust_closure_test() {
     };
     let mut machine = Machine::new(
         prog,
-        [("lib_printi".to_symbol(), lib_printi as ExtFunType, unknownt)].into_iter(),
-        [(
-            "rustclosure".to_symbol(),
-            cls.clone() as ExtClsType,
+        [ExtFunInfo::new(
+            "lib_printi".to_symbol(),
             unknownt,
+            lib_printi as ExtFunType,
+        )]
+        .into_iter(),
+        [ExtClsInfo::new(
+            "rustclosure".to_symbol(),
+            unknownt,
+            cls.clone() as ExtClsType,
         )]
         .into_iter(),
     );

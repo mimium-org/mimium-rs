@@ -8,14 +8,148 @@
 //! 3. **System Plugin**. If your plugin needs to mutate states of system-wide instance (1 plugin instance per 1 vm), you need to implement `SystemPlugin` traits. System plugin can have callbacks invoked at the important timings of the system like `on_init`, `before_on_sample` & so on. Internal synchronous event scheduler is implemented through this plugins system. `mimium-rand` is also an example of this type of module.
 
 mod system_plugin;
+use std::{cell::RefCell, rc::Rc};
+
 pub use system_plugin::{
-    to_ext_cls_info, DynSystemPlugin, SysPluginSignature, SystemPlugin, SystemPluginFnType,
+    DynSystemPlugin, SysPluginSignature, SystemPlugin, SystemPluginFnType, to_ext_cls_info,
 };
 
 use crate::{
     compiler::ExtFunTypeInfo,
-    runtime::vm::{ExtClsInfo, ExtFnInfo},
+    interner::{ExprNodeId, Symbol, TypeNodeId},
+    vm::{Machine, ReturnCode},
 };
+enum EvalStage {
+    Persistent,
+    Stage(u8),
+}
+trait EvalStageT {
+    fn get_stage() -> EvalStage;
+}
+trait MacroStageT {}
+trait MachineStageT {}
+trait PersistentStageT: MacroStageT + MachineStageT {}
+trait ExternalFunction {
+    /// Declare the type signature of the external function.
+    fn get_type_info(&self) -> TypeNodeId;
+    fn get_name(&self) -> Symbol;
+    type Stage: EvalStageT;
+}
+struct MacroStage {}
+impl EvalStageT for MacroStage {
+    fn get_stage() -> EvalStage {
+        EvalStage::Stage(0)
+    }
+}
+struct MachineStage;
+impl EvalStageT for MachineStage {
+    fn get_stage() -> EvalStage {
+        EvalStage::Stage(1)
+    }
+}
+struct PersistentStage;
+impl EvalStageT for PersistentStage {
+    fn get_stage() -> EvalStage {
+        EvalStage::Persistent
+    }
+}
+trait MacroFunction<T>: ExternalFunction<Stage = T> {
+    type Context;
+    /// Main macro function. If you need to receive 2 or more arguments, you need to pass struct or tuple as the argument instead.
+    fn eval(
+        &self,
+        ctx: &mut Self::Context,
+        args: impl ExactSizeIterator<Item = (ExprNodeId, TypeNodeId)>,
+    ) -> ExprNodeId;
+}
+pub type ExtFunType = fn(&mut Machine) -> ReturnCode;
+pub type ExtClsType = Rc<RefCell<dyn FnMut(&mut Machine) -> ReturnCode>>;
+trait MachineFunction<T>: ExternalFunction<Stage = T> {
+    /// Main function that will be called by the machine.
+    fn call(&self, machine: &mut Machine) -> ReturnCode;
+}
+
+#[derive(Clone, Debug)]
+struct ExtFnInfo {
+    name: Symbol,
+    ty: TypeNodeId,
+    fun: ExtFunType,
+}
+impl ExtFnInfo {
+    pub fn new(name: Symbol, ty: TypeNodeId, fun: ExtFunType) -> Self {
+        Self { name, ty, fun }
+    }
+}
+impl ExternalFunction for ExtFnInfo {
+    type Stage = MachineStage;
+    fn get_type_info(&self) -> TypeNodeId {
+        self.ty
+    }
+    fn get_name(&self) -> Symbol {
+        self.name
+    }
+}
+impl MachineFunction<MachineStage> for ExtFnInfo {
+    fn call(&self, machine: &mut Machine) -> ReturnCode {
+        (self.fun)(machine)
+    }
+}
+#[derive(Clone)]
+struct ExtClsInfo {
+    name: Symbol,
+    ty: TypeNodeId,
+    fun: ExtClsType,
+}
+impl ExtClsInfo {
+    pub fn new(name: Symbol, ty: TypeNodeId, fun: ExtClsType) -> Self {
+        Self { name, ty, fun }
+    }
+}
+impl ExternalFunction for ExtClsInfo {
+    type Stage = MachineStage;
+    fn get_type_info(&self) -> TypeNodeId {
+        self.ty
+    }
+    fn get_name(&self) -> Symbol {
+        self.name
+    }
+}
+impl MachineFunction<MachineStage> for ExtClsInfo {
+    fn call(&self, machine: &mut Machine) -> ReturnCode {
+        (self.fun.borrow_mut())(machine)
+    }
+}
+
+struct CommonFunction {
+    name: Symbol,
+    ty: TypeNodeId,
+    macro_fun: Rc<RefCell<dyn Fn(&[(ExprNodeId, TypeNodeId)]) -> ExprNodeId>>,
+    fun: ExtFunType,
+}
+impl ExternalFunction for CommonFunction {
+    type Stage = PersistentStage;
+    fn get_type_info(&self) -> TypeNodeId {
+        self.ty
+    }
+    fn get_name(&self) -> Symbol {
+        self.name
+    }
+}
+impl MachineFunction<PersistentStage> for CommonFunction {
+    fn call(&self, machine: &mut Machine) -> ReturnCode {
+        (self.fun)(machine)
+    }
+}
+impl MacroFunction<PersistentStage> for CommonFunction {
+    type Context = ();
+    fn eval(
+        &self,
+        _ctx: &mut Self::Context,
+        args: impl ExactSizeIterator<Item = (ExprNodeId, TypeNodeId)>,
+    ) -> ExprNodeId {
+        (self.macro_fun.borrow_mut())(&args.collect::<Vec<_>>())
+    }
+}
 
 pub trait Plugin {
     fn get_ext_functions(&self) -> Vec<ExtFnInfo>;
@@ -66,17 +200,15 @@ pub trait UGenPlugin {
 
 pub fn get_extfun_types(plugins: &[Box<dyn Plugin>]) -> impl Iterator<Item = ExtFunTypeInfo> + '_ {
     plugins.iter().flat_map(|plugin| {
-        plugin
+        let extfns = plugin
             .get_ext_functions()
             .into_iter()
-            .map(|(name, _, ty)| ExtFunTypeInfo { name, ty })
-            .chain(
-                plugin
-                    .get_ext_closures()
-                    .into_iter()
-                    .map(|(name, _, ty)| ExtFunTypeInfo { name, ty }),
-            )
-            .collect::<Vec<_>>()
+            .map(|ExtFnInfo { name, ty, fun: _ }| ExtFunTypeInfo { name, ty });
+        let extcls = plugin
+            .get_ext_closures()
+            .into_iter()
+            .map(|ExtClsInfo { name, ty, fun: _ }| ExtFunTypeInfo { name, ty });
+        extfns.chain(extcls)
     })
 }
 

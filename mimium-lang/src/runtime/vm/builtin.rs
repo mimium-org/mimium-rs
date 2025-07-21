@@ -4,7 +4,7 @@ use crate::runtime::vm::ArrayIdx;
 use crate::types::{PType, Type};
 use crate::{code, function, numeric};
 
-use super::{ExtFnInfo, Machine, ReturnCode};
+use super::{ExtFunInfo, Machine, ReturnCode};
 
 fn probef(machine: &mut Machine) -> ReturnCode {
     let rv = machine.get_stack(0);
@@ -52,41 +52,41 @@ fn lift_float_dummy(_machine: &mut Machine) -> ReturnCode {
     unreachable!("lift_float_dummy should not be called at VM runtime");
     1
 }
-pub fn get_builtin_fns() -> [ExtFnInfo; 6] {
+pub fn get_builtin_fns() -> [ExtFunInfo; 6] {
     [
-        (
+        ExtFunInfo::new(
             "probe".to_symbol(),
+            function!(vec![numeric!()], numeric!()),
             probef,
-            function!(vec![numeric!()], numeric!()),
         ),
-        (
+        ExtFunInfo::new(
             "probeln".to_symbol(),
-            probelnf,
             function!(vec![numeric!()], numeric!()),
+            probelnf,
         ),
-        (
+        ExtFunInfo::new(
             "min".to_symbol(),
+            function!(vec![numeric!(), numeric!()], numeric!()),
             min,
-            function!(vec![numeric!(), numeric!()], numeric!()),
         ),
-        (
+        ExtFunInfo::new(
             "max".to_symbol(),
-            max,
             function!(vec![numeric!(), numeric!()], numeric!()),
+            max,
         ),
         //The function is generic but we don't know appropriate typescheme id, so we use u64::MAX for the workaround
-        (
+        ExtFunInfo::new(
             "length_array".to_symbol(),
-            get_length_array,
             function!(
                 vec![Type::Array(Type::TypeScheme(u64::MAX).into_id()).into_id()],
                 numeric!()
             ),
+            get_length_array,
         ),
-        (
+        ExtFunInfo::new(
             "lift_f".to_symbol(),
-            lift_float_dummy,
             function!(vec![numeric!()], code!(numeric!())),
+            lift_float_dummy,
         ),
     ]
 }
@@ -94,9 +94,9 @@ pub fn get_builtin_fns() -> [ExtFnInfo; 6] {
 pub fn get_builtin_fn_types() -> Vec<ExtFunTypeInfo> {
     get_builtin_fns()
         .iter()
-        .map(|(name, _f, t)| ExtFunTypeInfo {
+        .map(|ExtFunInfo { name, ty, .. }| ExtFunTypeInfo {
             name: *name,
-            ty: *t,
+            ty: *ty,
         })
         .collect()
 }

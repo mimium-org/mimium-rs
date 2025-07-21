@@ -4,11 +4,12 @@
 //! functions.  Each plugin exposes its callbacks through [`SysPluginSignature`]
 //! values that are registered as external closures.
 
+use super::ExtClsInfo;
 use crate::{
     interner::{ToSymbol, TypeNodeId},
     runtime::{
-        vm::{ExtClsInfo, Machine, ReturnCode},
         Time,
+        vm::{Machine, ReturnCode},
     },
 };
 use std::{
@@ -66,7 +67,6 @@ pub trait SystemPlugin {
 /// A dynamically dispatched plugin wrapped in reference-counted storage.
 pub struct DynSystemPlugin(pub Rc<UnsafeCell<dyn SystemPlugin>>);
 
-
 /// Convert a plugin into the VM-facing representation.
 ///
 /// The returned [`DynSystemPlugin`] is stored by the runtime, while the
@@ -93,8 +93,7 @@ pub fn to_ext_cls_info<T: SystemPlugin + 'static>(
                     fun(p, machine)
                 }
             }));
-            let res: ExtClsInfo = (name.to_symbol(), fun, ty);
-            res
+            ExtClsInfo::new(name.to_symbol(), ty, fun)
         })
         .collect::<Vec<_>>();
     (dyn_plugin, ifs_res)

@@ -16,11 +16,11 @@ pub mod plugin;
 use compiler::{ExtFunTypeInfo, IoChannelInfo};
 use interner::Symbol;
 pub use log;
-use plugin::{to_ext_cls_info, DynSystemPlugin, Plugin, SystemPlugin};
+use plugin::ExtClsInfo;
+use plugin::{DynSystemPlugin, Plugin, SystemPlugin, to_ext_cls_info};
 use runtime::vm::{
-    self,
+    self, Program, ReturnCode,
     builtin::{get_builtin_fn_types, get_builtin_fns},
-    ExtClsInfo, Program, ReturnCode,
 };
 use utils::error::ReportableError;
 
@@ -91,7 +91,7 @@ impl ExecContext {
         let sysplug_typeinfo = sysplug_info
             .iter()
             .cloned()
-            .map(|(name, _, ty)| ExtFunTypeInfo { name, ty });
+            .map(|ExtClsInfo { name, ty, .. }| ExtFunTypeInfo { name, ty });
         self.extfuntypes.extend(sysplug_typeinfo);
         self.extclsinfos_reserve.extend(sysplug_info);
         self.sys_plugins.push(plugin_dyn)
