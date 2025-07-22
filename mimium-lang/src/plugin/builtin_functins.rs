@@ -1,5 +1,6 @@
 use crate::{
     interner::ToSymbol,
+    mir::print,
     plugin::{CommonFunction, InstantPlugin, MacroInfo, Plugin},
 };
 mod lift_f {
@@ -8,7 +9,6 @@ mod lift_f {
     use crate::code;
     use crate::interner::TypeNodeId;
     use crate::interpreter::Value;
-    use crate::plugin::CommonFunction;
     use crate::{
         function, numeric,
         types::{PType, Type},
@@ -45,7 +45,7 @@ mod lift_f {
         }
     }
 }
-mod get_length_array {
+mod length_array {
     use super::*;
     use crate::interner::TypeNodeId;
     use crate::interpreter::Value;
@@ -79,7 +79,7 @@ mod get_length_array {
 
     pub(super) fn signature() -> CommonFunction {
         CommonFunction {
-            name: "get_length_array".to_symbol(),
+            name: "length_array".to_symbol(),
             ty: function!(
                 vec![Type::Array(Type::TypeScheme(u64::MAX).into_id()).into_id()],
                 numeric!()
@@ -208,6 +208,14 @@ declare_f2f_common!(atan2, |y: f64, x: f64| y.atan2(x));
 declare_f2f_common!(pow, |base: f64, exp: f64| base.powf(exp));
 declare_f2f_common!(min, f64::min);
 declare_f2f_common!(max, f64::max);
+declare_f1f_common!(probe, |x: f64| {
+    print!("{x}");
+    x
+});
+declare_f1f_common!(probeln, |x: f64| {
+    println!("{x}");
+    x
+});
 
 /// Main function to expose the definitions of built-in functions.
 fn generate_builtin_functions() -> impl ExactSizeIterator<Item = CommonFunction> {
@@ -240,7 +248,9 @@ fn generate_builtin_functions() -> impl ExactSizeIterator<Item = CommonFunction>
         atan::signature(),
         atan2::signature(),
         pow::signature(),
-        get_length_array::signature(),
+        length_array::signature(),
+        probe::signature(),
+        probeln::signature(),
     ]
     .into_iter()
 }
