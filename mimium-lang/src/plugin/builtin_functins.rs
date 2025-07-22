@@ -1,6 +1,5 @@
 use crate::{
     interner::ToSymbol,
-    mir::print,
     plugin::{CommonFunction, InstantPlugin, MacroInfo, Plugin},
 };
 mod lift_f {
@@ -167,18 +166,18 @@ macro_rules! declare_f2f_common {
 }
 
 declare_f1f_common!(neg, |x: f64| -x);
-declare_f1f_common!(abs, |x: f64| x.abs());
-declare_f1f_common!(sqrt, |x: f64| x.sqrt());
-declare_f1f_common!(round, |x: f64| x.round());
-declare_f1f_common!(floor, |x: f64| x.floor());
-declare_f1f_common!(ceil, |x: f64| x.ceil());
+declare_f1f_common!(abs, f64::abs);
+declare_f1f_common!(sqrt, f64::sqrt);
+declare_f1f_common!(round, f64::round);
+declare_f1f_common!(floor, f64::floor);
+declare_f1f_common!(ceil, f64::ceil);
 //these basic arithmetics are not actually used in the vm level because the primitive operations cover them.
 // but we still define them for the macro expansion.
-declare_f2f_common!(add, |a: f64, b: f64| a + b);
-declare_f2f_common!(sub, |a: f64, b: f64| a - b);
-declare_f2f_common!(mult, |a: f64, b: f64| a * b);
-declare_f2f_common!(div, |a: f64, b: f64| a / b);
-declare_f2f_common!(modulo, |a: f64, b: f64| a % b);
+declare_f2f_common!(add, std::ops::Add::add);
+declare_f2f_common!(sub, std::ops::Sub::sub);
+declare_f2f_common!(mult, std::ops::Mul::mul);
+declare_f2f_common!(div, std::ops::Div::div);
+declare_f2f_common!(modulo, std::ops::Rem::rem);
 declare_f2f_common!(eq, |a: f64, b: f64| if a == b { 1.0 } else { 0.0 });
 declare_f2f_common!(ne, |a: f64, b: f64| if a != b { 1.0 } else { 0.0 });
 declare_f2f_common!(lt, |a: f64, b: f64| if a < b { 1.0 } else { 0.0 });
@@ -186,13 +185,13 @@ declare_f2f_common!(le, |a: f64, b: f64| if a <= b { 1.0 } else { 0.0 });
 declare_f2f_common!(gt, |a: f64, b: f64| if a > b { 1.0 } else { 0.0 });
 declare_f2f_common!(ge, |a: f64, b: f64| if a >= b { 1.0 } else { 0.0 });
 declare_f1f_common!(not, |x: f64| if x == 0.0 { 1.0 } else { 0.0 });
-declare_f1f_common!(sin, |x: f64| x.sin());
-declare_f1f_common!(cos, |x: f64| x.cos());
-declare_f1f_common!(tan, |x: f64| x.tan());
-declare_f1f_common!(asin, |x: f64| x.asin());
-declare_f1f_common!(acos, |x: f64| x.acos());
-declare_f1f_common!(atan, |x: f64| x.atan());
-declare_f2f_common!(atan2, |y: f64, x: f64| y.atan2(x));
+declare_f1f_common!(sin, f64::sin);
+declare_f1f_common!(cos, f64::cos);
+declare_f1f_common!(tan, f64::tan);
+declare_f1f_common!(asin, f64::asin);
+declare_f1f_common!(acos, f64::acos);
+declare_f1f_common!(atan, f64::atan);
+declare_f2f_common!(atan2, f64::atan2);
 declare_f2f_common!(pow, |base: f64, exp: f64| base.powf(exp));
 declare_f2f_common!(min, f64::min);
 declare_f2f_common!(max, f64::max);
