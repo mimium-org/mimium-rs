@@ -16,14 +16,8 @@ pub mod plugin;
 use compiler::IoChannelInfo;
 use interner::Symbol;
 pub use log;
-use plugin::{
-    DynSystemPlugin, ExtFunTypeInfo, Plugin, SystemPlugin,
-    to_ext_cls_info,
-};
-use runtime::vm::{
-    self, Program, ReturnCode,
-    builtin::{get_builtin_fn_types, get_builtin_fns},
-};
+use plugin::{DynSystemPlugin, ExtFunTypeInfo, Plugin, SystemPlugin, to_ext_cls_info};
+use runtime::vm::{self, Program, ReturnCode};
 use utils::error::ReportableError;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -115,8 +109,10 @@ impl ExecContext {
             .collect()
     }
     pub fn prepare_compiler(&mut self) {
+        let macroinfos = plugin::get_macro_functions(&self.plugins);
         self.compiler = Some(compiler::Context::new(
-            self.get_extfun_types().into_iter(),
+            self.get_extfun_types(),
+            macroinfos,
             self.path,
             self.config.compiler,
         ));

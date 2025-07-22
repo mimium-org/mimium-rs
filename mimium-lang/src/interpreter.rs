@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 /// A tree walk interpreter of mimium, primarily used for macro expansion.
 /// This macro system is based on the multi-stage programming paradigm, like MetaML, MetaOCaml, Scala3, where expressions can be evaluated at multiple stages.
 use std::rc::Rc;
@@ -5,11 +6,11 @@ use std::rc::Rc;
 use itertools::Itertools;
 
 use crate::ast::{Expr, Literal, RecordField};
-use crate::interner::{ExprNodeId, Symbol, ToSymbol};
+use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
+use crate::plugin::{MacroFunType, MacroFunction, MacroInfo};
+use crate::types::Type;
 use crate::utils::environment::{Environment, LookupRes};
-
-mod builtin;
 
 const PERSISTENT_STAGE: i64 = i64::MIN;
 type Stage = i64;
@@ -25,7 +26,7 @@ pub trait ValueTrait {
     fn get_as_fixpoint(self) -> Option<(Symbol, ExprNodeId)>
     where
         Self: std::marker::Sized;
-    fn get_as_external_fn(self) -> Option<Rc<dyn Fn(Vec<Self>) -> Self>>
+    fn get_as_external_fn(self) -> Option<Rc<RefCell<dyn Fn(&[(Self, TypeNodeId)]) -> Self>>>
     where
         Self: std::marker::Sized;
 }
@@ -63,14 +64,14 @@ pub trait GeneralInterpreter {
     }
     fn eval_with_closure_env(
         &mut self,
-        binds: &[(Symbol, Self::Value)],
+        binds: &[(Symbol, (Self::Value, TypeNodeId))],
         mut ctx: Context<Self::Value>,
         e: ExprNodeId,
     ) -> Self::Value {
         let binds = binds
             .iter()
             .map(|(name, val)| {
-                let v = val.clone();
+                let (v, _ty) = val.clone();
                 (*name, (v, ctx.stage))
             })
             .collect_vec();
@@ -143,10 +144,10 @@ pub trait GeneralInterpreter {
                 let args = a
                     .clone()
                     .into_iter()
-                    .map(|arg| self.eval(ctx, arg))
-                    .collect();
+                    .map(|arg| (self.eval(ctx, arg), Type::Unknown.into_id()))
+                    .collect::<Vec<_>>();
                 if let Some(ext_fn) = fv.clone().get_as_external_fn() {
-                    ext_fn(args)
+                    ext_fn.borrow()(args.as_slice())
                 } else if let Some((c_env, names, body)) = fv.clone().get_as_closure() {
                     log::trace!("entering closure app with names: {:?}", names);
                     let binds = names.into_iter().zip(args).collect_vec();
@@ -182,13 +183,13 @@ trait MultiStageInterpreter {
 #[derive(Clone)]
 pub struct ExtFunction {
     name: Symbol,
-    f: Rc<dyn Fn(Vec<Value>) -> Value>,
+    f: Rc<RefCell<dyn Fn(&[(Value, TypeNodeId)]) -> Value>>,
 }
 impl ExtFunction {
-    pub fn new(name: Symbol, f: impl Fn(Vec<Value>) -> Value + 'static) -> Self {
+    pub fn new(name: Symbol, f: impl Fn(&[(Value, TypeNodeId)]) -> Value + 'static) -> Self {
         ExtFunction {
             name,
-            f: Rc::new(f),
+            f: Rc::new(RefCell::new(f)),
         }
     }
 }
@@ -212,7 +213,14 @@ pub enum Value {
     Code(ExprNodeId),
     ExternalFn(ExtFunction),
 }
-
+impl From<&Box<dyn MacroFunction>> for Value {
+    fn from(macro_fn: &Box<dyn MacroFunction>) -> Self {
+        Value::ExternalFn(ExtFunction {
+            name: macro_fn.get_name(),
+            f: macro_fn.get_fn().clone(),
+        })
+    }
+}
 impl ValueTrait for Value {
     fn make_closure(e: ExprNodeId, names: Vec<Symbol>, env: Environment<(Self, Stage)>) -> Self {
         // Create a closure value with the given expression, names, and environment
@@ -240,12 +248,9 @@ impl ValueTrait for Value {
             _ => None,
         }
     }
-    fn get_as_external_fn(self) -> Option<Rc<dyn Fn(Vec<Self>) -> Self>>
-    where
-        Self: std::marker::Sized,
-    {
+    fn get_as_external_fn(self) -> Option<Rc<RefCell<dyn Fn(&[(Self, TypeNodeId)]) -> Self>>> {
         match self {
-            Value::ExternalFn(f) => Some(f.f),
+            Value::ExternalFn(f) => Some(f.f.clone()),
             _ => None,
         }
     }
@@ -524,17 +529,17 @@ impl StageInterpreter {
     }
 }
 
-pub fn create_default_interpreter() -> (StageInterpreter, Context<Value>) {
-    let ext_fns = builtin::gen_default_fns();
+pub fn create_default_interpreter(
+    extern_macros: &[Box<dyn MacroFunction>],
+) -> (StageInterpreter, Context<Value>) {
     let mut env = Environment::new();
 
     env.extend();
     env.add_bind(
-        ext_fns
+        extern_macros
             .iter()
-            .map(|e| {
-                let v = Value::ExternalFn(e.clone());
-                (e.name, (v, PERSISTENT_STAGE)) // Stage is set to persistent for external functions
+            .map(|m| {
+                (m.get_name(), (Value::from(m), 0)) // Stage is set to persistent for external functions
             })
             .collect::<Vec<_>>()
             .as_slice(),
@@ -543,8 +548,8 @@ pub fn create_default_interpreter() -> (StageInterpreter, Context<Value>) {
     (StageInterpreter::default(), ctx)
 }
 
-pub fn expand_macro(expr: ExprNodeId) -> ExprNodeId {
-    let (mut interpreter, mut ctx) = create_default_interpreter();
+pub fn expand_macro(expr: ExprNodeId, extern_macros: &[Box<dyn MacroFunction>]) -> ExprNodeId {
+    let (mut interpreter, mut ctx) = create_default_interpreter(extern_macros);
     let res = interpreter.eval(&mut ctx, expr);
 
     match res {

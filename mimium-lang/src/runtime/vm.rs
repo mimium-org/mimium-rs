@@ -1,8 +1,6 @@
 use core::slice;
 use slotmap::{DefaultKey, SlotMap};
-use std::{cell::RefCell, cmp::Ordering, collections::HashMap, f32::consts::E, ops::Range, rc::Rc};
-
-pub mod builtin;
+use std::{cell::RefCell, cmp::Ordering, collections::HashMap, ops::Range, rc::Rc};
 pub mod bytecode;
 pub mod program;
 mod ringbuffer;
@@ -14,7 +12,7 @@ pub use program::{FuncProto, Program};
 
 use crate::{
     compiler::bytecodegen::ByteCodeGenerator,
-    interner::{Symbol, TypeNodeId},
+    interner::Symbol,
     plugin::{ExtClsInfo, ExtClsType, ExtFunInfo, ExtFunType, MachineFunction},
     types::{Type, TypeSize},
 };
@@ -375,7 +373,7 @@ impl Machine {
             let _ = res.install_extern_fn(name, fun);
         });
         extcls.for_each(|machine_function| {
-            let _ = res.install_extern_cls(machine_function.get_name(),machine_function.get_fn());
+            let _ = res.install_extern_cls(machine_function.get_name(), machine_function.get_fn());
         });
         res.link_functions();
         res

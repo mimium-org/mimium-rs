@@ -26,6 +26,14 @@ pub enum EvalStage {
     Persistent,
     Stage(u8),
 }
+impl EvalStage {
+    pub fn is_available_in_macro(&self) -> bool {
+        matches!(self, EvalStage::Persistent | EvalStage::Stage(0))
+    }
+    pub fn is_available_in_vm(&self) -> bool {
+        matches!(self, EvalStage::Persistent | EvalStage::Stage(1))
+    }
+}
 trait EvalStageT {
     fn get_stage() -> EvalStage;
 }
@@ -61,9 +69,12 @@ impl EvalStageT for PersistentStage {
 impl MacroStageT for PersistentStage {}
 impl MachineStageT for PersistentStage {}
 impl PersistentStageT for PersistentStage {}
+pub type MacroFunType = Rc<RefCell<dyn Fn(&[(Value, TypeNodeId)]) -> Value>>;
 pub trait MacroFunction {
+    //name is still needed for linking program
+    fn get_name(&self) -> Symbol;
     /// Main macro function. If you need to receive 2 or more arguments, you need to pass struct or tuple as the argument instead.
-    fn eval(&self, args: &[(Value, TypeNodeId)]) -> Value;
+    fn get_fn(&self) -> MacroFunType;
 }
 pub type ExtFunType = fn(&mut Machine) -> ReturnCode;
 pub type ExtClsType = Rc<RefCell<dyn FnMut(&mut Machine) -> ReturnCode>>;
@@ -77,7 +88,7 @@ pub trait MachineFunction {
 pub struct MacroInfo {
     pub name: Symbol,
     pub ty: TypeNodeId,
-    pub fun: Rc<RefCell<dyn Fn(&[(Value, TypeNodeId)]) -> Value>>,
+    pub fun: MacroFunType,
 }
 impl ExternalFunction for MacroInfo {
     type Stage = MacroStage;
@@ -89,8 +100,12 @@ impl ExternalFunction for MacroInfo {
     }
 }
 impl MacroFunction for MacroInfo {
-    fn eval(&self, args: &[(Value, TypeNodeId)]) -> Value {
-        (self.fun.borrow())(args)
+    fn get_name(&self) -> Symbol {
+        self.name
+    }
+
+    fn get_fn(&self) -> MacroFunType {
+        self.fun.clone()
     }
 }
 
@@ -195,8 +210,11 @@ impl MachineFunction for CommonFunction {
     }
 }
 impl MacroFunction for CommonFunction {
-    fn eval(&self, args: &[(Value, TypeNodeId)]) -> Value {
-        (self.macro_fun)(args)
+    fn get_name(&self) -> Symbol {
+        self.name
+    }
+    fn get_fn(&self) -> MacroFunType {
+        Rc::new(RefCell::new(self.macro_fun))
     }
 }
 #[derive(Clone, Copy)]
@@ -214,7 +232,7 @@ pub trait Plugin {
     // type MacroT: MacroFunction<MacroStage>;
     // type MachineT: MachineFunction<MachineStage>;
     fn get_macro_functions(&self) -> Vec<Box<dyn MacroFunction>>;
-    
+
     fn get_ext_closures(&self) -> Vec<Box<dyn MachineFunction>>;
 
     //limitation: if the functin contains persistent functions, you have to override this method.

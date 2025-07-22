@@ -14,15 +14,6 @@ mod lift_f {
         types::{PType, Type},
     };
 
-    fn machine_function(
-        machine: &mut crate::runtime::vm::Machine,
-    ) -> crate::runtime::vm::ReturnCode {
-        let v = crate::runtime::vm::Machine::get_as::<f64>(machine.get_stack(0));
-        let res = crate::runtime::vm::Machine::to_value(v);
-        machine.set_stack(0, res);
-        1
-    }
-
     fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(args.len(), 1);
         let v = &args[0].0;
@@ -35,13 +26,10 @@ mod lift_f {
     }
 
     pub(super) fn signature() -> MacroInfo {
-        fn fun_name(args: &[(Value, TypeNodeId)]) -> Value {
-            macro_function(args)
-        }
         MacroInfo {
             name: "lift_f".to_symbol(),
             ty: function!(vec![numeric!()], code!(numeric!())),
-            fun: std::rc::Rc::new(std::cell::RefCell::new(fun_name)),
+            fun: std::rc::Rc::new(std::cell::RefCell::new(macro_function)),
         }
     }
 }
