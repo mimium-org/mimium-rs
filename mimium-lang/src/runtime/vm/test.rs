@@ -215,11 +215,11 @@ fn rust_closure_test() {
             lib_printi as ExtFunType,
         )]
         .into_iter(),
-        [ExtClsInfo::new(
+        [Box::new(ExtClsInfo::new(
             "rustclosure".to_symbol(),
             unknownt,
             cls.clone() as ExtClsType,
-        )]
+        )) as Box<dyn MachineFunction>]
         .into_iter(),
     );
     let res = machine.execute_main();

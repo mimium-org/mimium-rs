@@ -72,8 +72,9 @@ pub trait Driver {
     fn is_playing(&self) -> bool;
     fn get_as_plugin(&self) -> InstantPlugin {
         InstantPlugin {
-            extfns: vec![],
             extcls: self.get_runtimefn_infos(),
+            macros: vec![],
+            commonfns: vec![]
         }
     }
 }
@@ -100,13 +101,13 @@ impl RuntimeData {
     pub fn run_main(&mut self) -> ReturnCode {
         self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
             //todo: encapsulate unsafety within SystemPlugin functionality
-            let p = unsafe { plug.0.get().as_mut().unwrap_unchecked() };
+            let p = unsafe { plug.inner.get().as_mut().unwrap_unchecked() };
             let _ = p.on_init(&mut self.vm);
         });
         let res = self.vm.execute_main();
         self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
             //todo: encapsulate unsafety within SystemPlugin functionality
-            let p = unsafe { plug.0.get().as_mut().unwrap_unchecked() };
+            let p = unsafe { plug.inner.get().as_mut().unwrap_unchecked() };
             let _ = p.after_main(&mut self.vm);
         });
         res
@@ -118,7 +119,7 @@ impl RuntimeData {
     pub fn run_dsp(&mut self, time: Time) -> ReturnCode {
         self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
             //todo: encapsulate unsafety within SystemPlugin functionality
-            let p = unsafe { plug.0.get().as_mut().unwrap_unchecked() };
+            let p = unsafe { plug.inner.get().as_mut().unwrap_unchecked() };
             let _ = p.on_sample(time, &mut self.vm);
         });
         self.vm.execute_idx(self.dsp_i)
