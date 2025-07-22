@@ -2,13 +2,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use mimium_lang::interner::ToSymbol;
-use mimium_lang::plugin::Plugin;
-use mimium_lang::runtime::vm::{self, ExtFunType, Machine, ReturnCode};
+use mimium_lang::plugin::{EvalStage, ExtClsInfo, ExtFunInfo, ExtFunType, ExtFunTypeInfo, MachineFunction, Plugin};
+use mimium_lang::runtime::vm::{self, Machine, ReturnCode};
 use mimium_lang::types::{PType, Type};
 use mimium_lang::utils::fileloader;
 use mimium_lang::{function, numeric, string_t};
 use symphonia::core::audio::{Layout, SampleBuffer, SignalSpec};
-use symphonia::core::codecs::{CodecParameters, Decoder, DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::{CODEC_TYPE_NULL, CodecParameters, Decoder, DecoderOptions};
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::{FormatOptions, SeekMode, SeekTo};
 use symphonia::core::io::{MediaSource, MediaSourceStream, MediaSourceStreamOptions};
@@ -147,7 +147,11 @@ fn gen_sampler_mono(machine: &mut Machine) -> ReturnCode {
         1
     };
     let ty = function!(vec![numeric!()], numeric!());
-    let idx = machine.wrap_extern_cls(("sampler_mono".to_symbol(), Rc::new(RefCell::new(res)), ty));
+    let idx = machine.wrap_extern_cls(ExtClsInfo::new(
+        "sampler_mono".to_symbol(),
+        ty,
+        Rc::new(RefCell::new(res)),
+    ));
     machine.set_stack(0, Machine::to_value(idx));
     1
 }
@@ -155,17 +159,28 @@ fn gen_sampler_mono(machine: &mut Machine) -> ReturnCode {
 pub struct SamplerPlugin;
 
 impl Plugin for SamplerPlugin {
-    fn get_ext_functions(&self) -> Vec<vm::ExtFnInfo> {
+
+
+    fn get_ext_closures(&self) -> Vec<Box<dyn MachineFunction>> {
         let t = function!(vec![string_t!()], function!(vec![numeric!()], numeric!()));
-        let sig = (
+        let sig = ExtClsInfo::new(
             "gen_sampler_mono".to_symbol(),
-            gen_sampler_mono as ExtFunType,
             t,
+            Rc::new(RefCell::new(gen_sampler_mono)),
+        );
+        vec![Box::new(sig) as Box<dyn MachineFunction>]
+    }
+    
+    fn get_macro_functions(&self) -> Vec<Box<dyn mimium_lang::plugin::MacroFunction>> {
+        vec![]
+    }
+    
+    fn get_type_infos(&self) -> Vec<mimium_lang::plugin::ExtFunTypeInfo> {
+        let sig = ExtFunTypeInfo::new(
+            "gen_sampler_mono".to_symbol(),
+            function!(vec![string_t!()], function!(vec![numeric!()], numeric!())),
+            EvalStage::Stage(1),
         );
         vec![sig]
-    }
-
-    fn get_ext_closures(&self) -> Vec<vm::ExtClsInfo> {
-        vec![]
     }
 }

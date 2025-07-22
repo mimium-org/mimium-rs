@@ -1,14 +1,15 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::driver::{Driver, RuntimeData, SampleRate};
 use crate::runtime_fn;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{self, BufferSize, StreamConfig};
+use mimium_lang::ExecContext;
 use mimium_lang::compiler::IoChannelInfo;
 use mimium_lang::log;
-use mimium_lang::runtime::{vm, Time};
-use mimium_lang::ExecContext;
+use mimium_lang::plugin::ExtClsInfo;
+use mimium_lang::runtime::{Time, vm};
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 pub struct NativeDriver {
@@ -209,7 +210,7 @@ impl NativeDriver {
 }
 impl Driver for NativeDriver {
     type Sample = f64;
-    fn get_runtimefn_infos(&self) -> Vec<vm::ExtClsInfo> {
+    fn get_runtimefn_infos(&self) -> Vec<ExtClsInfo> {
         let getnow = runtime_fn::gen_getnowfn(self.count.clone());
         let getsamplerate = runtime_fn::gen_getsampleratefn(self.sr.0.clone());
         vec![getnow, getsamplerate]

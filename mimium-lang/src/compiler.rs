@@ -3,8 +3,9 @@ pub mod typing;
 // pub mod hirgen;
 pub mod bytecodegen;
 mod intrinsics;
-pub(crate) mod pattern_destructor;
 pub mod mirgen;
+pub(crate) mod pattern_destructor;
+use crate::plugin::{ExtFunTypeInfo, MacroFunction};
 
 #[derive(Debug, Clone)]
 pub enum ErrorKind {
@@ -97,11 +98,6 @@ pub fn emit_ast(
         Err(errs)
     }
 }
-#[derive(Clone, Copy)]
-pub struct ExtFunTypeInfo {
-    pub name: Symbol,
-    pub ty: TypeNodeId,
-}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Config {
@@ -110,6 +106,7 @@ pub struct Config {
 
 pub struct Context {
     ext_fns: Vec<ExtFunTypeInfo>,
+    macros: Vec<Box<dyn MacroFunction>>,
     file_path: Option<Symbol>,
     config: Config,
 }
@@ -123,11 +120,13 @@ pub struct IoChannelInfo {
 impl Context {
     pub fn new(
         ext_fns: impl IntoIterator<Item = ExtFunTypeInfo>,
+        macros: impl IntoIterator<Item = Box<dyn MacroFunction>>,
         file_path: Option<Symbol>,
         config: Config,
     ) -> Self {
         Self {
             ext_fns: ext_fns.into_iter().collect(),
+            macros: macros.into_iter().collect(),
             file_path,
             config,
         }
@@ -136,7 +135,7 @@ impl Context {
         self.ext_fns
             .clone()
             .into_iter()
-            .map(|ExtFunTypeInfo { name, ty }| (name, ty))
+            .map(|ExtFunTypeInfo { name, ty, .. }| (name, ty))
             .collect()
     }
 
@@ -144,7 +143,7 @@ impl Context {
         let path = self.file_path.map(|sym| PathBuf::from(sym.to_string()));
         let (ast, mut parse_errs) = parser::parse(src, path);
         // let ast = parser::add_global_context(ast, self.file_path.unwrap_or_default());
-        let mir = mirgen::compile(ast, &self.get_ext_typeinfos(), self.file_path);
+        let mir = mirgen::compile(ast, &self.get_ext_typeinfos(), &self.macros, self.file_path);
         if parse_errs.is_empty() {
             mir
         } else {
@@ -191,7 +190,7 @@ fn dsp(input){
     #[test]
     fn mir_channelcount() {
         let src = &get_source();
-        let ctx = Context::new([], None, Config::default());
+        let ctx = Context::new([], [], None, Config::default());
         let mir = ctx.emit_mir(src).unwrap();
         let iochannels = mir.get_dsp_iochannels().unwrap();
         assert_eq!(iochannels.input, 1);
@@ -200,7 +199,7 @@ fn dsp(input){
     #[test]
     fn bytecode_channelcount() {
         let src = &get_source();
-        let ctx = Context::new([], None, Config::default());
+        let ctx = Context::new([], [], None, Config::default());
         let prog = ctx.emit_bytecode(src).unwrap();
         let iochannels = prog.iochannels.unwrap();
         assert_eq!(iochannels.input, 1);

@@ -7,8 +7,8 @@ use std::{
     cell::RefCell,
     rc::Rc,
     sync::{
-        atomic::{AtomicU32, AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU32, AtomicU64, Ordering},
     },
 };
 
@@ -16,7 +16,8 @@ use mimium_lang::{
     function,
     interner::ToSymbol,
     numeric,
-    runtime::vm::{ExtClsInfo, Machine},
+    plugin::ExtClsInfo,
+    runtime::vm::Machine,
     types::{PType, Type},
 };
 
@@ -27,10 +28,10 @@ pub fn gen_getnowfn(count: Arc<AtomicU64>) -> ExtClsInfo {
         machine.set_stack(0, Machine::to_value(count));
         1
     }));
-    (
+    ExtClsInfo::new(
         "_mimium_getnow".to_symbol(),
-        func,
         function!(vec![], numeric!()),
+        func,
     )
 }
 /// Generate an external closure returning the audio sample rate.
@@ -40,9 +41,9 @@ pub fn gen_getsampleratefn(samplerate: Arc<AtomicU32>) -> ExtClsInfo {
         machine.set_stack(0, Machine::to_value(count));
         1
     }));
-    (
+    ExtClsInfo::new(
         "_mimium_getsamplerate".to_symbol(),
-        func,
         function!(vec![], numeric!()),
+        func,
     )
 }

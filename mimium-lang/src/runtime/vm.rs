@@ -1,8 +1,6 @@
 use core::slice;
 use slotmap::{DefaultKey, SlotMap};
 use std::{cell::RefCell, cmp::Ordering, collections::HashMap, ops::Range, rc::Rc};
-
-pub mod builtin;
 pub mod bytecode;
 pub mod program;
 mod ringbuffer;
@@ -14,16 +12,12 @@ pub use program::{FuncProto, Program};
 
 use crate::{
     compiler::bytecodegen::ByteCodeGenerator,
-    interner::{Symbol, TypeNodeId},
+    interner::Symbol,
+    plugin::{ExtClsInfo, ExtClsType, ExtFunInfo, ExtFunType, MachineFunction},
     types::{Type, TypeSize},
 };
 pub type RawVal = u64;
 pub type ReturnCode = i64;
-
-pub type ExtFunType = fn(&mut Machine) -> ReturnCode;
-pub type ExtClsType = Rc<RefCell<dyn FnMut(&mut Machine) -> ReturnCode>>;
-pub type ExtFnInfo = (Symbol, ExtFunType, TypeNodeId);
-pub type ExtClsInfo = (Symbol, ExtClsType, TypeNodeId);
 
 #[derive(Debug, Default, PartialEq)]
 struct StateStorage {
@@ -74,7 +68,7 @@ impl StateStorageStack {
 }
 
 #[derive(Debug, Clone, Default)]
-struct ArrayHeap {
+pub(crate) struct ArrayHeap {
     elem_word_size: u64,
     data: Vec<RawVal>,
 }
@@ -84,7 +78,7 @@ impl ArrayHeap {
     }
 }
 #[derive(Debug, Clone, Default)]
-struct ArrayStorage {
+pub(crate) struct ArrayStorage {
     data: SlotMap<DefaultKey, ArrayHeap>,
 }
 pub(crate) type ArrayIdx = slotmap::DefaultKey;
@@ -229,7 +223,7 @@ pub struct Machine {
     pub closures: ClosureStorage,
     pub ext_fun_table: Vec<(Symbol, ExtFunType)>,
     pub ext_cls_table: Vec<(Symbol, ExtClsType)>,
-    arrays: ArrayStorage,
+    pub arrays: ArrayStorage,
     fn_map: HashMap<usize, ExtFnIdx>, //index from fntable index of program to it of machine.
     // cls_map: HashMap<usize, usize>, //index from fntable index of program to it of machine.
     global_states: StateStorage,
@@ -356,8 +350,8 @@ impl Machine {
     /// Create a new VM from a compiled [`Program`] and external functions.
     pub fn new(
         prog: Program,
-        extfns: impl Iterator<Item = ExtFnInfo>,
-        extcls: impl Iterator<Item = ExtClsInfo>,
+        extfns: impl Iterator<Item = ExtFunInfo>,
+        extcls: impl Iterator<Item = Box<dyn MachineFunction>>,
     ) -> Self {
         let mut res = Self {
             prog,
@@ -375,11 +369,11 @@ impl Machine {
             global_vals: vec![],
             debug_stacktype: vec![RawValType::Int; 255],
         };
-        extfns.for_each(|(name, f, _)| {
-            let _ = res.install_extern_fn(name, f);
+        extfns.for_each(|ExtFunInfo { name, fun, .. }| {
+            let _ = res.install_extern_fn(name, fun);
         });
-        extcls.for_each(|(name, f, _)| {
-            let _ = res.install_extern_cls(name, f);
+        extcls.for_each(|machine_function| {
+            let _ = res.install_extern_cls(machine_function.get_name(), machine_function.get_fn());
         });
         res.link_functions();
         res
@@ -557,19 +551,17 @@ impl Machine {
     /// Because the native closure cannot be called with CallCls directly, the vm appends an additional function the program,
     /// that wraps external closure call with an internal closure.
     pub fn wrap_extern_cls(&mut self, extcls: ExtClsInfo) -> ClosureIdx {
-        let (name, f, t) = extcls;
+        let ExtClsInfo { name, fun, ty } = extcls;
 
-        self.prog.ext_fun_table.push((name, t));
+        self.prog.ext_fun_table.push((name, ty));
         let prog_funid = self.prog.ext_fun_table.len() - 1;
-        self.ext_cls_table.push((name, f));
+        self.ext_cls_table.push((name, fun));
         let vm_clsid = self.ext_cls_table.len() - 1;
         self.fn_map.insert(prog_funid, ExtFnIdx::Cls(vm_clsid));
-        let (bytecodes, nargs, nret) = if let Type::Function(args, ret, _) = t.to_type() {
+        let (bytecodes, nargs, nret) = if let Type::Function(args, ret, _) = ty.to_type() {
             let mut wrap_bytecode = Vec::<Instruction>::new();
             // todo: decouple bytecode generator dependency
-            let asizes = args
-                .ty_iter()
-                .map(ByteCodeGenerator::word_size_for_type);
+            let asizes = args.ty_iter().map(ByteCodeGenerator::word_size_for_type);
             let nargs = asizes.clone().sum();
             // if there are 2 arguments of float for instance, base pointer should be 2
             let base = nargs;

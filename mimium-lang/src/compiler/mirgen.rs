@@ -3,6 +3,7 @@ use super::typing::{InferContext, infer_root};
 use crate::compiler::parser;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
+use crate::plugin::MacroFunction;
 use crate::{function, interpreter, numeric, unit};
 pub mod convert_pronoun;
 pub(crate) mod recursecheck;
@@ -904,6 +905,7 @@ fn is_code_contain_macro(typeenv: &mut InferContext, top_ast: ExprNodeId) -> boo
 pub fn compile(
     root_expr_id: ExprNodeId,
     builtin_types: &[(Symbol, TypeNodeId)],
+    macro_env: &[Box<dyn MacroFunction>],
     file_path: Option<Symbol>,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
     let ast2 = recursecheck::convert_recurse(root_expr_id, file_path.unwrap_or_default());
@@ -925,14 +927,11 @@ pub fn compile(
 
     if errors.is_empty() {
         let expr = if is_code_contain_macro(&mut infer_ctx, expr) {
-            interpreter::expand_macro(expr)
+            interpreter::expand_macro(expr, macro_env)
         } else {
             expr
         };
-        log::trace!(
-            "ast after macro expansion: {:?}",
-            expr.to_expr()
-        );
+        log::trace!("ast after macro expansion: {:?}", expr.to_expr());
         let expr = parser::add_global_context(expr, file_path.unwrap_or_default());
         let mut ctx = Context::new(infer_ctx, file_path);
         let _res = ctx.eval_expr(expr);

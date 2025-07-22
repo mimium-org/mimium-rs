@@ -13,19 +13,17 @@ pub mod runtime;
 
 pub mod plugin;
 
-use compiler::{ExtFunTypeInfo, IoChannelInfo};
+use compiler::IoChannelInfo;
 use interner::Symbol;
 pub use log;
-use plugin::{to_ext_cls_info, DynSystemPlugin, Plugin, SystemPlugin};
-use runtime::vm::{
-    self,
-    builtin::{get_builtin_fn_types, get_builtin_fns},
-    ExtClsInfo, Program, ReturnCode,
-};
+use plugin::{DynSystemPlugin, ExtFunTypeInfo, Plugin, SystemPlugin, to_ext_cls_info};
+use runtime::vm::{self, Program, ReturnCode};
 use utils::error::ReportableError;
 
 #[cfg(not(target_arch = "wasm32"))]
 use mimalloc::MiMalloc;
+
+use crate::plugin::MachineFunction;
 #[cfg(not(target_arch = "wasm32"))]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -49,8 +47,6 @@ pub struct ExecContext {
     plugins: Vec<Box<dyn Plugin>>,
     sys_plugins: Vec<DynSystemPlugin>,
     path: Option<Symbol>,
-    extclsinfos_reserve: Vec<ExtClsInfo>,
-    extfuntypes: Vec<ExtFunTypeInfo>,
     config: Config,
 }
 
@@ -62,9 +58,8 @@ impl ExecContext {
         path: Option<Symbol>,
         config: Config,
     ) -> Self {
-        let plugins = plugins.collect::<Vec<_>>();
-        let extfuntypes = plugin::get_extfun_types(&plugins)
-            .chain(get_builtin_fn_types())
+        let plugins = plugins
+            .chain([plugin::get_builtin_fns_as_plugins()])
             .collect::<Vec<_>>();
 
         let sys_plugins = vec![];
@@ -74,8 +69,6 @@ impl ExecContext {
             plugins,
             sys_plugins,
             path,
-            extclsinfos_reserve: vec![],
-            extfuntypes,
             config,
         }
     }
@@ -87,13 +80,8 @@ impl ExecContext {
     }
     //todo: make it to builder pattern
     pub fn add_system_plugin<T: SystemPlugin + 'static>(&mut self, plug: T) {
-        let (plugin_dyn, sysplug_info) = to_ext_cls_info(plug);
-        let sysplug_typeinfo = sysplug_info
-            .iter()
-            .cloned()
-            .map(|(name, _, ty)| ExtFunTypeInfo { name, ty });
-        self.extfuntypes.extend(sysplug_typeinfo);
-        self.extclsinfos_reserve.extend(sysplug_info);
+        let plugin_dyn = to_ext_cls_info(plug);
+
         self.sys_plugins.push(plugin_dyn)
     }
     pub fn get_compiler(&self) -> Option<&compiler::Context> {
@@ -111,9 +99,20 @@ impl ExecContext {
     pub fn get_vm_mut(&mut self) -> Option<&mut runtime::vm::Machine> {
         self.vm.as_mut()
     }
+    fn get_extfun_types(&self) -> Vec<ExtFunTypeInfo> {
+        plugin::get_extfun_types(&self.plugins)
+            .chain(
+                self.sys_plugins
+                    .iter()
+                    .flat_map(|p| p.clsinfos.clone().into_iter().map(ExtFunTypeInfo::from)),
+            )
+            .collect()
+    }
     pub fn prepare_compiler(&mut self) {
+        let macroinfos = plugin::get_macro_functions(&self.plugins);
         self.compiler = Some(compiler::Context::new(
-            self.extfuntypes.clone(),
+            self.get_extfun_types(),
+            macroinfos,
             self.path,
             self.config.compiler,
         ));
@@ -130,19 +129,19 @@ impl ExecContext {
     }
     /// Build a VM from the given bytecode [`Program`].
     pub fn prepare_machine_with_bytecode(&mut self, prog: Program) {
-        self.extclsinfos_reserve
-            .extend(plugin::get_extclsinfos(&self.plugins));
-        let extfninfos = plugin::get_extfuninfos(&self.plugins).chain(get_builtin_fns());
-        let vm = vm::Machine::new(
-            prog,
-            extfninfos,
-            self.extclsinfos_reserve.clone().into_iter(),
-        );
+        let cls =
+            plugin::get_ext_closures(&self.plugins).chain(self.sys_plugins.iter().flat_map(|p| {
+                p.clsinfos
+                    .clone()
+                    .into_iter()
+                    .map(|c| Box::new(c) as Box<dyn MachineFunction>)
+            }));
+        let vm = vm::Machine::new(prog, [].into_iter(), cls);
         self.vm = Some(vm);
     }
     pub fn try_get_main_loop(&mut self) -> Option<Box<dyn FnOnce()>> {
         let mut mainloops = self.sys_plugins.iter_mut().filter_map(|p| {
-            let p = unsafe { p.0.get().as_mut().unwrap_unchecked() };
+            let p = unsafe { p.inner.get().as_mut().unwrap_unchecked() };
             p.try_get_main_loop()
         });
         let res = mainloops.next();
@@ -159,13 +158,13 @@ impl ExecContext {
         if let Some(vm) = self.vm.as_mut() {
             self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
                 //todo: encapsulate unsafety within SystemPlugin functionality
-                let p = unsafe { plug.0.get().as_mut().unwrap_unchecked() };
+                let p = unsafe { plug.inner.get().as_mut().unwrap_unchecked() };
                 let _ = p.on_init(vm);
             });
             let res = vm.execute_main();
             self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
                 //todo: encapsulate unsafety within SystemPlugin functionality
-                let p = unsafe { plug.0.get().as_mut().unwrap_unchecked() };
+                let p = unsafe { plug.inner.get().as_mut().unwrap_unchecked() };
                 let _ = p.after_main(vm);
             });
             res
