@@ -4,6 +4,7 @@ pub mod typing;
 pub mod bytecodegen;
 mod intrinsics;
 pub mod mirgen;
+pub mod desugar;
 pub(crate) mod pattern_destructor;
 use crate::plugin::{ExtFunTypeInfo, MacroFunction};
 
