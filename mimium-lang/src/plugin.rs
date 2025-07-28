@@ -13,7 +13,7 @@ pub use builtin_functins::get_builtin_fns_as_plugins;
 use std::{cell::RefCell, rc::Rc};
 
 pub use system_plugin::{
-    DynSystemPlugin, SysPluginSignature, SystemPlugin, SystemPluginFnType, to_ext_cls_info,
+    DynSystemPlugin, SysPluginSignature, SystemPlugin, SystemPluginFnType,
 };
 
 use crate::{
@@ -21,7 +21,7 @@ use crate::{
     interpreter::Value,
     vm::{Machine, ReturnCode},
 };
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EvalStage {
     Persistent,
     Stage(u8),
@@ -89,6 +89,11 @@ pub struct MacroInfo {
     pub name: Symbol,
     pub ty: TypeNodeId,
     pub fun: MacroFunType,
+}
+impl MacroInfo {
+    pub fn new(name: Symbol, ty: TypeNodeId, fun: MacroFunType) -> Self {
+        Self { name, ty, fun }
+    }
 }
 impl ExternalFunction for MacroInfo {
     type Stage = MacroStage;
@@ -229,10 +234,7 @@ impl ExtFunTypeInfo {
     }
 }
 pub trait Plugin {
-    // type MacroT: MacroFunction<MacroStage>;
-    // type MachineT: MachineFunction<MachineStage>;
     fn get_macro_functions(&self) -> Vec<Box<dyn MacroFunction>>;
-
     fn get_ext_closures(&self) -> Vec<Box<dyn MachineFunction>>;
 
     //limitation: if the functin contains persistent functions, you have to override this method.

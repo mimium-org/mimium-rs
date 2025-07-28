@@ -7,6 +7,8 @@
 use super::ExtClsInfo;
 use crate::{
     interner::{ToSymbol, TypeNodeId},
+    interpreter::Value,
+    plugin::{EvalStage, MacroInfo},
     runtime::{
         Time,
         vm::{Machine, ReturnCode},
@@ -18,6 +20,8 @@ use std::{
     rc::Rc,
 };
 pub type SystemPluginFnType<T> = fn(&mut T, &mut Machine) -> ReturnCode;
+pub type SystemPluginMacroType<T> = fn(&mut T, &[(Value, TypeNodeId)]) -> Value;
+
 /// Metadata for a callback provided by a [`SystemPlugin`].
 ///
 /// Each signature stores the callback name, erased function pointer and the
@@ -28,6 +32,7 @@ pub struct SysPluginSignature {
     /// but the type is erased for dynamic dispatching. later the function is downcasted into their own type.
     fun: Rc<dyn Any>,
     ty: TypeNodeId,
+    stage: EvalStage,
 }
 impl SysPluginSignature {
     pub fn new<F, T>(name: &'static str, fun: F, ty: TypeNodeId) -> Self
@@ -39,6 +44,19 @@ impl SysPluginSignature {
             name,
             fun: Rc::new(fun),
             ty,
+            stage: EvalStage::Stage(1),
+        }
+    }
+    pub fn new_macro<F, T>(name: &'static str, fun: F, ty: TypeNodeId) -> Self
+    where
+        F: Fn(&mut T, &mut Machine) -> ReturnCode + 'static,
+        T: SystemPlugin,
+    {
+        Self {
+            name,
+            fun: Rc::new(fun),
+            ty,
+            stage: EvalStage::Stage(0),
         }
     }
 }
@@ -63,45 +81,82 @@ pub trait SystemPlugin {
         None
     }
 }
+
 #[derive(Clone)]
 /// A dynamically dispatched plugin wrapped in reference-counted storage.
 pub struct DynSystemPlugin {
     pub inner: Rc<UnsafeCell<dyn SystemPlugin>>,
     pub clsinfos: Vec<ExtClsInfo>,
+    pub macroinfos: Vec<MacroInfo>,
 }
-
 /// Convert a plugin into the VM-facing representation.
 ///
 /// The returned [`DynSystemPlugin`] is stored by the runtime, while the
 /// accompanying `Vec<ExtClsInfo>` contains closures that expose the plugin's
 /// callback methods to mimium code.
-pub fn to_ext_cls_info<T: SystemPlugin + Sized + 'static>(sysplugin: T) -> DynSystemPlugin {
-    let ifs = sysplugin.gen_interfaces();
-    let mut dyn_plugin = DynSystemPlugin {
-        inner: Rc::new(UnsafeCell::new(sysplugin)),
-        clsinfos: Vec::new(),
-    };
-    let ifs_res = ifs
-        .into_iter()
-        .map(|SysPluginSignature { name, fun, ty }| -> ExtClsInfo {
-            let plug = dyn_plugin.clone();
-            let fun = fun
-                .clone()
-                .downcast::<fn(&mut T, &mut Machine) -> ReturnCode>()
-                .expect("invalid conversion applied in the system plugin resolution.");
-            let fun = Rc::new(RefCell::new(move |machine: &mut Machine| -> ReturnCode {
-                // breaking double borrow rule at here!!!
-                // Also here I do dirty downcasting because here the type of plugin is ensured as T.
-                unsafe {
-                    let p = (plug.inner.get() as *mut T).as_mut().unwrap();
-                    fun(p, machine)
-                }
-            }));
-            ExtClsInfo::new(name.to_symbol(), ty, fun)
-        })
-        .collect::<Vec<_>>();
-    dyn_plugin.clsinfos = ifs_res;
-    dyn_plugin
-}
+impl<T> From<T> for DynSystemPlugin
+where
+    T: SystemPlugin + Sized + 'static,
+{
+    fn from(plugin: T) -> Self {
+        let ifs = plugin.gen_interfaces();
+        let inner = Rc::new(UnsafeCell::new(plugin));
+        let macroinfos = ifs
+            .iter()
+            .filter(|&SysPluginSignature { stage, .. }| stage.is_available_in_macro())
+            .map(|SysPluginSignature { name, fun, ty, .. }| {
+                let inner = inner.clone();
+                let fun = fun
+                    .clone()
+                    .downcast::<SystemPluginMacroType<T>>()
+                    .expect("invalid conversion applied in the system plugin resolution.");
+                MacroInfo::new(
+                    name.to_symbol(),
+                    *ty,
+                    Rc::new(RefCell::new(move |args: &[(Value, TypeNodeId)]| -> Value {
+                        // breaking double borrow rule at here!!!
+                        // Also here I do dirty downcasting because here the type of plugin is ensured as T.
+                        unsafe {
+                            let p = inner.get().as_mut().unwrap();
+                            fun(p, args)
+                        }
+                    })),
+                )
+            })
+            .collect();
+        let clsinfos =
+            ifs.into_iter()
+                .filter_map(
+                    |SysPluginSignature {
+                         name,
+                         fun,
+                         ty,
+                         stage,
+                     }| {
+                        stage.is_available_in_vm().then(|| {
+                            let inner = inner.clone();
+                            let fun = fun.clone().downcast::<SystemPluginFnType<T>>().expect(
+                                "invalid conversion applied in the system plugin resolution.",
+                            );
+                            let fun =
+                                Rc::new(RefCell::new(move |machine: &mut Machine| -> ReturnCode {
+                                    // breaking double borrow rule at here!!!
+                                    // Also here I do dirty downcasting because here the type of plugin is ensured as T.
+                                    unsafe {
+                                        let p = inner.get().as_mut().unwrap();
+                                        fun(p, machine)
+                                    }
+                                }));
+                            ExtClsInfo::new(name.to_symbol(), ty, fun)
+                        })
+                    },
+                )
+                .collect();
 
-// impl<T: Sized> SysPluginSignature<T> {}
+        DynSystemPlugin {
+            inner,
+            clsinfos,
+            macroinfos,
+        }
+    }
+}
