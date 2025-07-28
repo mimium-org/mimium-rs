@@ -16,7 +16,7 @@ pub mod plugin;
 use compiler::IoChannelInfo;
 use interner::Symbol;
 pub use log;
-use plugin::{DynSystemPlugin, ExtFunTypeInfo, Plugin, SystemPlugin, to_ext_cls_info};
+use plugin::{DynSystemPlugin, ExtFunTypeInfo, Plugin, SystemPlugin};
 use runtime::vm::{self, Program, ReturnCode};
 use utils::error::ReportableError;
 
@@ -80,7 +80,7 @@ impl ExecContext {
     }
     //todo: make it to builder pattern
     pub fn add_system_plugin<T: SystemPlugin + 'static>(&mut self, plug: T) {
-        let plugin_dyn = to_ext_cls_info(plug);
+        let plugin_dyn = DynSystemPlugin::from(plug);
 
         self.sys_plugins.push(plugin_dyn)
     }

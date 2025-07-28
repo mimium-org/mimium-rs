@@ -44,8 +44,7 @@ fn midi_to_hz(note){
 fn myadsr(gate){
     adsr(0.01,0.1,1.0,2.0,gate) *get_gain(gate)
 }
-fn synth(midiv){
-    let (note,vel) = midiv
+fn synth(note,vel){
     let sig = note |> midi_to_hz |> osc 
     let gain = vel /127.0;
     sig *  gain
