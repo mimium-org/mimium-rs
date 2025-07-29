@@ -1,7 +1,10 @@
-use super::{parse, Expr, Location, Span};
+use crate::ast::Expr;
+use crate::ast::program::Program;
+use crate::compiler::parser::parse;
 use crate::interner::{ExprNodeId, ToSymbol};
 use crate::utils::error::{ReportableError, SimpleError};
 use crate::utils::fileloader;
+use crate::utils::metadata::{Location, Span};
 
 fn make_vec_error<E: std::error::Error>(e: E, loc: Location) -> Vec<Box<dyn ReportableError>> {
     vec![Box::new(SimpleError {
@@ -14,7 +17,7 @@ pub(super) fn resolve_include(
     mmm_filepath: &str,
     target_path: &str,
     span: Span,
-) -> (ExprNodeId, Vec<Box<dyn ReportableError>>) {
+) -> (Program, Vec<Box<dyn ReportableError>>) {
     let loc = Location {
         span: span.clone(),
         path: mmm_filepath.to_symbol(),
@@ -23,7 +26,7 @@ pub(super) fn resolve_include(
         .map_err(|e| make_vec_error(e, loc.clone()));
     match res {
         Ok((content, path)) => parse(&content, Some(path)),
-        Err(err) => (Expr::Error.into_id(loc), err),
+        Err(err) => (Program::default(), err),
     }
 }
 
@@ -41,8 +44,10 @@ mod test {
         );
         let (id, errs) = resolve_include(&file, &file, 0..0);
         assert_eq!(errs.len(), 1);
-        assert!(errs[0]
-            .get_message()
-            .contains("File tried to include itself recusively"));
+        assert!(
+            errs[0]
+                .get_message()
+                .contains("File tried to include itself recusively")
+        );
     }
 }

@@ -8,13 +8,12 @@ use crate::utils::error::ReportableError;
 use crate::utils::metadata::*;
 use chumsky::{Parser, prelude::*};
 mod token;
-use resolve_include::resolve_include;
 use token::{Op, Token};
 mod error;
 mod lexer;
-mod resolve_include;
-mod statement;
-use statement::{Statement, into_then_expr, stmt_from_expr_top};
+use crate::ast::program::{Program, ProgramStatement};
+use crate::ast::statement;
+use statement::{Statement, into_then_expr};
 
 use super::intrinsics;
 
@@ -42,61 +41,76 @@ fn merge_span(a: Span, b: Span) -> Span {
 fn breakable_comma() -> impl Parser<Token, (), Error = ParseError> + Clone {
     just(Token::Comma)
         .then(just(Token::LineBreak).or_not())
-        .map(|_| ())
+        .ignored()
 }
 fn breakable_blockbegin() -> impl Parser<Token, (), Error = ParseError> + Clone {
     just(Token::BlockBegin)
-        .then_ignore(just(Token::LineBreak).or(just(Token::SemiColon)).repeated())
-        .map(|_| ())
+        .then(just(Token::LineBreak).or(just(Token::SemiColon)).repeated())
+        .ignored()
 }
 fn breakable_blockend() -> impl Parser<Token, (), Error = ParseError> + Clone {
     just(Token::LineBreak)
         .or(just(Token::SemiColon))
         .repeated()
-        .ignore_then(just(Token::BlockEnd))
-        .map(|_| ())
+        .then(just(Token::BlockEnd))
+        .ignored()
 }
+fn type_primitive(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = ParseError> + Clone {
+    select! {
+        Token::FloatType => PType::Numeric,
+        Token::StringType => PType::String,
+        Token::IntegerType => PType::Int,
+    }
+    .map_with_span(move |t, span| {
+        Type::Primitive(t).into_id_with_location(Location::new(span, ctx.file_path))
+    })
+    .labelled("primitive type")
+}
+fn recoverable_delimited<'a, T: Clone + 'a, U: 'a, F>(
+    parser: impl Parser<Token, U, Error = ParseError> + Clone + 'a,
+    delim: (Token, Token),
+    fallback: T,
+    map: F,
+) -> impl Parser<Token, T, Error = ParseError> + Clone
+where
+    F: Fn(U, Span) -> T + Clone + 'a,
+{
+    parser
+        .delimited_by(just(delim.0.clone()), just(delim.1.clone()))
+        .map_with_span(map)
+        .recover_with(nested_delimiters(delim.0, delim.1, [], move |_span| {
+            fallback.clone()
+        }))
+        .boxed()
+}
+
 fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = ParseError> + Clone {
     let path = ctx.file_path;
     recursive(move |ty| {
-        let primitive = select! {
-           Token::FloatType => Type::Primitive(PType::Numeric),
-           Token::IntegerType => Type::Primitive(PType::Int),
-           Token::StringType => Type::Primitive(PType::String)
-        }
-        .map_with_span(move |t, span| t.into_id_with_location(Location::new(span, path)));
-
-        let tuple = ty
-            .clone()
-            .separated_by(just(Token::Comma))
-            .at_least(1)
-            .allow_trailing()
-            .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
-            .map_with_span(move |t: Vec<TypeNodeId>, span: Span| {
-                Type::Tuple(t).into_id_with_location(Location::new(span, path))
-            })
-            .boxed()
-            .labelled("Tuple");
-        let record = ident_parser()
-            .clone()
-            .then_ignore(just(Token::Colon))
-            .then(ty.clone())
-            .separated_by(breakable_comma())
-            .allow_trailing()
-            .delimited_by(breakable_blockbegin(), breakable_blockend())
-            .map_with_span(move |fields, span| {
-                let mut fields = fields;
-                fields.sort_by(|(a, _), (b, _)| a.cmp(b));
+        let tuple = recoverable_delimited(
+            ty.clone()
+                .separated_by(just(Token::Comma))
+                .at_least(1)
+                .allow_trailing(),
+            (Token::ParenBegin, Token::ParenEnd),
+            Type::Failure.into_id(),
+            move |t, span: Span| Type::Tuple(t).into_id_with_location(Location::new(span, path)),
+        )
+        .labelled("Tuple Type");
+        let record = recoverable_delimited(
+            ident_parser()
+                .clone()
+                .then_ignore(just(Token::Colon))
+                .then(ty.clone())
+                .separated_by(breakable_comma())
+                .allow_trailing(),
+            (Token::BlockBegin, Token::BlockEnd),
+            Type::Failure.into_id(),
+            move |fields, span: Span| {
                 Type::Record(fields).into_id_with_location(Location::new(span, path))
-            })
-            .recover_with(nested_delimiters(
-                Token::BlockBegin,
-                Token::BlockEnd,
-                [],
-                |_| Type::Failure.into_id(),
-            ))
-            .boxed()
-            .labelled("Record");
+            },
+        )
+        .labelled("Record Type");
         // Parse array type [T]
         let array = ty
             .clone()
@@ -108,7 +122,7 @@ fn type_parser(ctx: ParseContext) -> impl Parser<Token, TypeNodeId, Error = Pars
             .labelled("Array");
 
         // let _struct_t = todo!();
-        let atom = choice((primitive, record, tuple, array));
+        let atom = choice((type_primitive(ctx.clone()), record, tuple, array));
         let func = atom
             .clone()
             .separated_by(just(Token::Comma))
@@ -538,29 +552,6 @@ fn expr_parser(expr_group: ExprParser<'_>, ctx: ParseContext) -> ExprParser<'_> 
         op_parser(apply, ctx)
     })
 }
-// fn expr_statement_parser<'a>(
-//     expr_group: ExprParser<'a>,
-//     then: ExprParser<'a>,
-// ) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone + 'a {
-//     let let_stmt = just(Token::Let)
-//         .ignore_then(pattern_parser().clone())
-//         .then_ignore(just(Token::Assign))
-//         .then(expr_group.clone())
-//         .then_ignore(just(Token::LineBreak).or(just(Token::SemiColon)).repeated())
-//         .then(then.clone().or_not())
-//         .map_with_span(|((ident, body), then), span| Expr::Let(ident, body, then).into_id(span))
-//         .labelled("let_stmt");
-//     let assign = placement_parser()
-//         .then_ignore(just(Token::Assign))
-//         .then(expr_group.clone())
-//         .then_ignore(just(Token::LineBreak).or(just(Token::SemiColon)).repeated())
-//         .then(then.or_not())
-//         .map_with_span(|((ident, body), then), span| {
-//             Expr::Then(Expr::Assign(ident, body).into_id(span.clone()), then).into_id(span)
-//         })
-//         .labelled("assign");
-//     let_stmt.or(assign)
-// }
 fn validate_reserved_pat(id: &TypedPattern, span: Span) -> Result<(), ParseError> {
     match &id.pat {
         Pattern::Single(symbol) => validate_reserved_ident(*symbol, span),
@@ -719,15 +710,9 @@ fn gen_unknown_function_type(
     )
     .into_id_with_location(loc)
 }
-fn func_parser(ctx: ParseContext) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone {
+fn toplevel_parser(ctx: ParseContext) -> impl Parser<Token, Program, Error = ParseError> + Clone {
     let exprgroup = exprgroup_parser(ctx.clone());
     let lvar = lvar_parser_typed(ctx.clone());
-    let blockstart = just(Token::BlockBegin)
-        .then_ignore(just(Token::LineBreak).or(just(Token::SemiColon)).repeated());
-    let blockend = just(Token::LineBreak)
-        .or(just(Token::SemiColon))
-        .repeated()
-        .ignore_then(just(Token::BlockEnd));
     let fnparams = lvar
         .clone()
         .separated_by(just(Token::Comma))
@@ -735,8 +720,8 @@ fn func_parser(ctx: ParseContext) -> impl Parser<Token, ExprNodeId, Error = Pars
         .labelled("fnparams");
 
     let function_s = just(Token::Function)
-        .ignore_then(lvar.clone().validate(|ident, span, emit| {
-            if let Err(e) = validate_reserved_ident(ident.id, span) {
+        .ignore_then(ident_parser().clone().validate(|ident, span, emit| {
+            if let Err(e) = validate_reserved_ident(ident, span) {
                 emit(e);
             }
             ident
@@ -753,108 +738,104 @@ fn func_parser(ctx: ParseContext) -> impl Parser<Token, ExprNodeId, Error = Pars
                 _ => e,
             }),
         )
-        .map_with_span(move |(((fname, ids), r_type), block), span| {
+        .map_with_span(move |(((name, args), return_type), body), span| {
             let loc = Location {
                 span: span.clone(),
                 path: ctx.file_path,
             };
-            let fname = TypedId {
-                id: fname.id,
-                ty: gen_unknown_function_type(&ids, r_type, loc.clone()),
-            };
+
             (
-                Statement::LetRec(fname, Expr::Lambda(ids, r_type, block).into_id(loc.clone())),
+                ProgramStatement::FnDefinition {
+                    name,
+                    args,
+                    return_type,
+                    body,
+                },
                 loc,
             )
         })
         .labelled("function decl");
 
-    let macro_s = just(Token::Macro)
-        .ignore_then(lvar.clone())
-        .then(fnparams.clone())
-        .then(
-            exprgroup
-                .clone()
-                .delimited_by(blockstart.clone(), blockend.clone())
-                .map(Expr::Bracket),
+    let global_stmt = statement_parser(exprgroup.clone(), ctx.clone())
+        .map(|(s, span)| (ProgramStatement::GlobalStatement(s), span));
+    let import = just(Token::Include)
+        .ignore_then(
+            select! {Token::Str(s) => s.to_symbol()}
+                .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd)),
         )
-        .map_with_span(move |((fname, ids), block), span| {
-            let loc = Location {
-                span,
-                path: ctx.file_path,
-            };
+        .map_with_span(move |path, span: Span| {
             (
-                Statement::MacroExpand(
-                    fname,
-                    Expr::Lambda(ids, None, block.into_id(loc.clone())).into_id(loc.clone()),
-                ),
-                loc,
+                ProgramStatement::Import(path),
+                Location::new(span.clone(), ctx.file_path),
             )
-        })
-        .labelled("macro definition");
-    let global_stmt = statement_parser(exprgroup.clone(), ctx.clone());
-    let stmt = function_s.or(macro_s).or(global_stmt);
+        });
+    let stmt = choice((function_s, global_stmt, import));
     let separator = just(Token::LineBreak).or(just(Token::SemiColon)).repeated();
+    // let stmts = stmt
+    //     .map(|s: (Statement, Location)| vec![s])
+    //     .or(
+    //         preprocess_parser(ctx.clone()).map_with_span(move |e, span| {
+    //             stmt_from_expr_top(e)
+    //                 .into_iter()
+    //                 .map(|st| (st, Location::new(span.clone(), ctx.file_path)))
+    //                 .collect()
+    //         }),
+    //     )
+    //     .separated_by(separator)
+    //     .allow_leading()
+    //     .allow_trailing()
+    //     .recover_with(skip_until([Token::LineBreak, Token::SemiColon], |_| vec![]))
+    //     .flatten()
+    //     .map(|stmt| into_then_expr(&stmt).unwrap_or(Expr::Error.into_id_without_span()));
     let stmts = stmt
-        .map(|s: (Statement, Location)| vec![s])
-        .or(
-            preprocess_parser(ctx.clone()).map_with_span(move |e, span| {
-                stmt_from_expr_top(e)
-                    .into_iter()
-                    .map(|st| (st, Location::new(span.clone(), ctx.file_path)))
-                    .collect()
-            }),
-        )
         .separated_by(separator)
-        .allow_leading()
-        .allow_trailing()
+        .then_ignore(end())
         .recover_with(skip_until([Token::LineBreak, Token::SemiColon], |_| vec![]))
-        .flatten()
-        .map(|stmt| into_then_expr(&stmt).unwrap_or(Expr::Error.into_id_without_span()));
+        .map(|stmts: Vec<(ProgramStatement, Location)>| Program {
+            statements: stmts
+                .into_iter()
+                .map(|(s, loc)| (s, loc.span))
+                .collect::<Vec<_>>(),
+        });
     stmts
 }
 
-fn preprocess_parser(
-    ctx: ParseContext,
-) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone {
-    just(Token::Include)
-        .ignore_then(
-            select! {Token::Str(s) => s}
-                .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd)),
-        )
-        .try_map(move |filename, span: Span| {
-            let cfile = ctx.file_path.as_str();
-            let (c, errs) = resolve_include(cfile, &filename, span.clone());
-            if errs.is_empty() {
-                Ok(c)
-            } else {
-                let e = errs.into_iter().fold(
-                    Simple::<Token>::custom(
-                        span.clone(),
-                        format!("failed to resolve include for {filename}"),
-                    ),
-                    |simple_e, reportable_e| {
-                        let wrapped =
-                            Simple::<Token>::custom(span.clone(), reportable_e.to_string());
-                        wrapped.merge(simple_e)
-                    },
-                );
-                Err(e)
-            }
-        })
-}
+// fn preprocess_parser(
+//     ctx: ParseContext,
+// ) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone {
+//     just(Token::Include)
+//         .ignore_then(
+//             select! {Token::Str(s) => s}
+//                 .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd)),
+//         )
+//         .try_map(move |filename, span: Span| {
+//             let cfile = ctx.file_path.as_str();
+//             let (c, errs) = resolve_include(cfile, &filename, span.clone());
+//             if errs.is_empty() {
+//                 Ok(c)
+//             } else {
+//                 let e = errs.into_iter().fold(
+//                     Simple::<Token>::custom(
+//                         span.clone(),
+//                         format!("failed to resolve include for {filename}"),
+//                     ),
+//                     |simple_e, reportable_e| {
+//                         let wrapped =
+//                             Simple::<Token>::custom(span.clone(), reportable_e.to_string());
+//                         wrapped.merge(simple_e)
+//                     },
+//                 );
+//                 Err(e)
+//             }
+//         })
+// }
 fn parser(
     current_file: Option<PathBuf>,
-) -> impl Parser<Token, ExprNodeId, Error = ParseError> + Clone {
-    let separator = just(Token::LineBreak)
-        .ignored()
-        .or(just(Token::SemiColon).ignored());
+) -> impl Parser<Token, Program, Error = ParseError> + Clone {
     let ctx = ParseContext {
         file_path: current_file.map_or("".to_symbol(), |p| p.to_string_lossy().to_symbol()),
     };
-    func_parser(ctx)
-        .padded_by(separator.repeated())
-        .then_ignore(end())
+    toplevel_parser(ctx)
 }
 
 pub(crate) fn add_global_context(ast: ExprNodeId, file_path: Symbol) -> ExprNodeId {
@@ -901,10 +882,7 @@ pub(super) fn convert_parse_errors(
     })
 }
 
-pub fn parse(
-    src: &str,
-    current_file: Option<PathBuf>,
-) -> (ExprNodeId, Vec<Box<dyn ReportableError>>) {
+pub fn parse(src: &str, current_file: Option<PathBuf>) -> (Program, Vec<Box<dyn ReportableError>>) {
     let (tokens, lex_errs) = lex(src, current_file.clone());
     if let Some(t) = tokens {
         let tokens_comment_filtered = t.into_iter().filter_map(|(tkn, span)| match tkn {
@@ -919,8 +897,8 @@ pub fn parse(
         let errs = convert_parse_errors(&parse_errs)
             .chain(lex_errs)
             .collect::<Vec<_>>();
-        (ast.unwrap_or(Expr::Error.into_id_without_span()), errs)
+        (ast.unwrap_or_default(), errs)
     } else {
-        (Expr::Error.into_id_without_span(), lex_errs)
+        (Program::default(), lex_errs)
     }
 }

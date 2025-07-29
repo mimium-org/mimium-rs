@@ -1,4 +1,7 @@
 pub mod builder;
+pub mod statement;
+mod resolve_include;
+pub mod program;
 
 use crate::interner::{ExprNodeId, Symbol, TypeNodeId, with_session_globals};
 use crate::pattern::{TypedId, TypedPattern};

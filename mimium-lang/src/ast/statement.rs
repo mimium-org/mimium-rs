@@ -2,14 +2,15 @@ use crate::{
     ast::Expr,
     interner::ExprNodeId,
     pattern::{TypedId, TypedPattern},
+    utils::metadata::{Location, Span}
 };
 
-use super::{Location, Span};
+
 // an intermediate representation used in parser.
 // Note that this struct do not distinct between a global statement(allows `fn(){}`) and a local statement.
 // The distinction is done in the actual parser logic.
 #[derive(Clone, Debug, PartialEq)]
-pub(super) enum Statement {
+pub(crate) enum Statement {
     Let(TypedPattern, ExprNodeId),
     MacroExpand(TypedId, ExprNodeId),
     LetRec(TypedId, ExprNodeId),
@@ -42,7 +43,7 @@ fn stmt_from_expr(expr: ExprNodeId, target: &mut Vec<Statement>) {
 }
 
 // A helper function to convert vector of statements to nested expression
-pub(super) fn into_then_expr(stmts: &[(Statement, Location)]) -> Option<ExprNodeId> {
+pub(crate) fn into_then_expr(stmts: &[(Statement, Location)]) -> Option<ExprNodeId> {
     let get_span = |spana: Span, spanb: Option<ExprNodeId>| match spanb {
         Some(b) => {
             let start = spana.start;
