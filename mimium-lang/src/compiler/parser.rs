@@ -11,7 +11,7 @@ mod token;
 use token::{Op, Token};
 mod error;
 mod lexer;
-use crate::ast::program::{Program, ProgramStatement};
+use crate::ast::program::{Program, ProgramStatement, expr_from_program};
 use crate::ast::statement;
 use statement::{Statement, into_then_expr};
 
@@ -442,14 +442,14 @@ pub(super) fn atom_parser<'a>(
             })
         })
         .then_ignore(just(Token::ParenBegin))
-        .then(expr_group.clone())
+        .then(expr_group.clone().separated_by(breakable_comma()))
         .then_ignore(just(Token::ParenEnd))
         .map_with_span(move |(id, then), span| {
             let loc = Location {
                 span,
                 path: ctx.file_path,
             };
-            Expr::Escape(Expr::Apply(id, vec![then]).into_id(loc.clone())).into_id(loc)
+            Expr::MacroExpand(id, then).into_id(loc.clone())
         })
         .labelled("macroexpand");
 
@@ -901,4 +901,17 @@ pub fn parse(src: &str, current_file: Option<PathBuf>) -> (Program, Vec<Box<dyn 
     } else {
         (Program::default(), lex_errs)
     }
+}
+pub fn parse_to_expr(
+    src: &str,
+    current_file: Option<PathBuf>,
+) -> (ExprNodeId, Vec<Box<dyn ReportableError>>) {
+    let (prog, errs) = parse(src, current_file.clone());
+    if prog.statements.is_empty() {
+        return (Expr::Error.into_id_without_span(), errs);
+    }
+    expr_from_program(
+        prog,
+        current_file.map_or("".to_symbol(), |p| p.to_string_lossy().to_symbol()),
+    )
 }

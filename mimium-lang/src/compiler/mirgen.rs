@@ -7,7 +7,7 @@ use crate::plugin::MacroFunction;
 use crate::{function, interpreter, numeric, unit};
 pub mod convert_pronoun;
 pub(crate) mod recursecheck;
-use super::pattern_destructor::destruct_let_pattern;
+// use super::pattern_destructor::destruct_let_pattern;
 use crate::mir::{self, Argument, Instruction, Mir, StateSize, VPtr, VReg, Value};
 
 use std::sync::Arc;
@@ -882,8 +882,9 @@ impl Context {
 
                 (res, ty)
             }
-            Expr::Bracket(_) => todo!(),
-            Expr::Escape(_) => todo!(),
+            Expr::Bracket(_) | Expr::Escape(_) | Expr::MacroExpand(_, _) => {
+                unreachable!("Macro code should be expanded before mirgen")
+            }
             Expr::Error => {
                 self.push_inst(Instruction::Error);
                 (Arc::new(Value::None), unit!())

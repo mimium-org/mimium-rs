@@ -8,7 +8,7 @@ use crate::utils::miniprint::MiniPrint;
 macro_rules! test_string {
     ($src:literal, $ans:expr) => {
         let srcstr = $src.to_string();
-        let (ast, errs) = parse(&srcstr, None);
+        let (ast, errs) = parse_to_expr(&srcstr, None);
         if errs.is_empty() {
             assert!(
                 ast.to_expr() == $ans.to_expr(),

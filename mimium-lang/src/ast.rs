@@ -1,7 +1,7 @@
 pub mod builder;
-pub mod statement;
-mod resolve_include;
 pub mod program;
+mod resolve_include;
+pub mod statement;
 
 use crate::interner::{ExprNodeId, Symbol, TypeNodeId, with_session_globals};
 use crate::pattern::{TypedId, TypedPattern};
@@ -55,7 +55,8 @@ pub enum Expr {
     RecordLiteral(Vec<RecordField>), // Record literal {field1: expr1, field2: expr2, ...}
     FieldAccess(ExprNodeId, Symbol), // Record field access: record.field
     Apply(ExprNodeId, Vec<ExprNodeId>),
-    PipeApply(ExprNodeId, ExprNodeId), // LHS and RHS
+    MacroExpand(ExprNodeId, Vec<ExprNodeId>), // hoge!(a,b) is a syntax sugar for ${hoge(a,b)}
+    PipeApply(ExprNodeId, ExprNodeId),        // LHS and RHS
     Lambda(Vec<TypedId>, Option<TypeNodeId>, ExprNodeId), //lambda, maybe information for internal state is needed
     Assign(ExprNodeId, ExprNodeId),
     Then(ExprNodeId, Option<ExprNodeId>),
@@ -140,6 +141,9 @@ impl MiniPrint for Expr {
             Expr::Apply(e1, e2) => {
                 format!("(app {} ({}))", e1.simple_print(), concat_vec(e2))
             }
+            Expr::MacroExpand(e1, e2s) => {
+                format!("(macro {} ({}))", e1.simple_print(), concat_vec(e2s))
+            }
             Expr::ArrayAccess(e, i) => {
                 format!("(arrayaccess {} ({}))", e.simple_print(), i.simple_print())
             }
@@ -199,4 +203,3 @@ impl MiniPrint for Expr {
         }
     }
 }
-

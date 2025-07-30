@@ -12,7 +12,6 @@ use crate::{
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Statement {
     Let(TypedPattern, ExprNodeId),
-    MacroExpand(TypedId, ExprNodeId),
     LetRec(TypedId, ExprNodeId),
     Assign(ExprNodeId, ExprNodeId),
     Single(ExprNodeId),
@@ -68,10 +67,6 @@ pub(crate) fn into_then_expr(stmts: &[(Statement, Location)]) -> Option<ExprNode
             (_, Statement::Assign(name, body)) => Some(
                 Expr::Then(Expr::Assign(*name, *body).into_id(loc.clone()), then).into_id(new_loc),
             ),
-            (_, Statement::MacroExpand(fname, body)) => {
-                //todo!
-                Some(Expr::LetRec(fname.clone(), *body, then).into_id(new_loc))
-            }
             (None, Statement::Single(e)) => Some(*e),
             (t, Statement::Single(e)) => Some(Expr::Then(*e, t).into_id(new_loc)),
             (t, Statement::Error) => {

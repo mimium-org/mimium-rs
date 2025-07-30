@@ -63,17 +63,14 @@ fn stmts_from_program(
         .collect();
     res
 }
-fn expr_from_program(
+pub(crate) fn expr_from_program(
     program: Program,
     file_path: Symbol,
-) -> Result<ExprNodeId, Vec<Box<dyn ReportableError>>> {
+) -> (ExprNodeId, Vec<Box<dyn ReportableError>>) {
     let mut errs = vec![];
     let stmts = stmts_from_program(program, file_path, &mut errs);
 
     let res = into_then_expr(stmts.as_slice()).unwrap_or(Expr::Error.into_id_without_span());
-    if errs.is_empty() {
-        Ok(res)
-    } else {
-        Err(errs)
-    }
+
+    (res, errs)
 }

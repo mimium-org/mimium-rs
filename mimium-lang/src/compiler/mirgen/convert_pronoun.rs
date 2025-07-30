@@ -61,14 +61,14 @@ where
         Expr::Let(id, body, then) => {
             let (bodyres, errs) = conversion(body);
             let (then_res, errs2) = opt_conversion(then);
-            let found_any = bodyres.found_any | then_res.as_ref().map_or(false, |r| r.found_any);
+            let found_any = bodyres.found_any | then_res.as_ref().is_some_and(|r| r.found_any);
             let expr = Expr::Let(id, bodyres.expr, then_res.map(|r| r.expr)).into_id(loc);
             (ConvertResult { expr, found_any }, [errs, errs2].concat())
         }
         Expr::LetRec(id, body, then) => {
             let (bodyres, errs) = conversion(body);
             let (then_res, errs2) = opt_conversion(then);
-            let found_any = bodyres.found_any | then_res.as_ref().map_or(false, |r| r.found_any);
+            let found_any = bodyres.found_any | then_res.as_ref().is_some_and(|r| r.found_any);
             let expr = Expr::LetRec(id, bodyres.expr, then_res.map(|r| r.expr)).into_id(loc);
             (ConvertResult { expr, found_any }, [errs, errs2].concat())
         }
@@ -293,10 +293,28 @@ fn convert_pipe(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
         _ => convert_recursively_pure(e_id, |e| convert_pipe(e, file_path), file_path),
     }
 }
+fn convert_macroexpand(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
+    let loc = Location::new(e_id.to_span().clone(), file_path);
+    match e_id.to_expr() {
+        Expr::MacroExpand(callee, args) => {
+            let callee = convert_pipe(callee, file_path);
+            let args = args
+                .into_iter()
+                .map(|arg| convert_pipe(arg, file_path))
+                .collect();
+
+            Expr::Escape(Expr::Apply(callee, args).into_id(loc.clone())).into_id(loc)
+        }
+        _ => convert_recursively_pure(e_id, |e| convert_macroexpand(e, file_path), file_path),
+    }
+}
 
 pub fn convert_pronoun(expr: ExprNodeId, file_path: Symbol) -> (ExprNodeId, Vec<Error>) {
+    // these 3 operations can be done in any order, and ideally, merged to one pattern matching. 
+    // However, for clarity, we split them into separated operations.
     let expr = convert_placeholder(expr, file_path);
     let expr = convert_pipe(expr, file_path);
+    let expr = convert_macroexpand(expr, file_path);
     let (res, errs) = convert_self(expr, FeedId::Global, file_path);
     (res.expr, errs)
 }

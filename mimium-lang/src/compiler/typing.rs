@@ -79,7 +79,7 @@ impl ReportableError for Error {
             Error::IndexOutOfRange { len, idx, .. } => {
                 format!("Length of tuple elements is {len} but index was {idx}")
             }
-            Error::IndexForNonTuple(_, ty) => {
+            Error::IndexForNonTuple(_, _) => {
                 format!("Index access for non-tuple variable.")
             }
             Error::VariableNotFound(symbol, _) => {
