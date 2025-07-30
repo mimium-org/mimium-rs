@@ -244,13 +244,20 @@ mod expr {
             Expr::Bracket(e) => allocator.text("`").append(pretty(e, allocator)),
             Expr::Escape(e) => allocator.text("$").append(pretty(e, allocator)),
             Expr::Error => allocator.text("error"),
-            Expr::PipeApply(lhs, rhs) => {
+            Expr::BinOp(lhs, (op, _opspan), rhs) => {
                 let lhs_doc = pretty(lhs, allocator);
                 let rhs_doc = pretty(rhs, allocator);
                 lhs_doc
-                    .append(allocator.text(" |> "))
+                    .append(allocator.text(op.to_string()))
                     .append(allocator.softline())
                     .append(rhs_doc)
+            }
+            Expr::UniOp((op, _span), expr) => {
+                let expr_doc = pretty(expr, allocator);
+                allocator
+                    .text(op.to_string())
+                    .append(allocator.softline())
+                    .append(expr_doc)
             }
             Expr::FieldAccess(expr_node_id, symbol) => {
                 let expr_doc = pretty(expr_node_id, allocator);

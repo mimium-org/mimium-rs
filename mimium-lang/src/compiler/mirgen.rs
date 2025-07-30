@@ -689,7 +689,11 @@ impl Context {
                     (res, rt)
                 }
             }
-            Expr::PipeApply(_, _) => unreachable!(),
+            Expr::BinOp(_, _, _) | Expr::UniOp(_, _) => {
+                unreachable!(
+                    "syntactic sugar for infix&unary operators are removed before this stage"
+                )
+            }
             Expr::Lambda(ids, _rett, body) => {
                 let (atypes, rt) = match ty.to_type() {
                     Type::Function(atypes, rt, _) => (atypes.ty_iter().collect::<Vec<_>>(), rt),
@@ -909,9 +913,9 @@ pub fn compile(
     macro_env: &[Box<dyn MacroFunction>],
     file_path: Option<Symbol>,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
-    let ast2 = recursecheck::convert_recurse(root_expr_id, file_path.unwrap_or_default());
     let (expr, convert_errs) =
-        convert_pronoun::convert_pronoun(ast2, file_path.unwrap_or_default());
+        convert_pronoun::convert_pronoun(root_expr_id, file_path.unwrap_or_default());
+    let expr = recursecheck::convert_recurse(expr, file_path.unwrap_or_default());
     // let expr = destruct_let_pattern(expr);
     let mut infer_ctx = infer_root(expr, builtin_types, file_path.unwrap_or_default());
     let errors = infer_ctx

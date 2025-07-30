@@ -396,8 +396,11 @@ impl GeneralInterpreter for StageInterpreter {
                 Expr::Feed(_, _) => {
                     panic!("Feed expression cannot be evaluated in macro expansion")
                 }
-                Expr::PipeApply(_, _) => {
-                    panic!("Pipe apply expression should be removed in the previous stage")
+                Expr::BinOp(_,_, _) => {
+                    panic!("BinOp expression should be removed in the previous stage")
+                }
+                Expr::UniOp(_, _) => {
+                    panic!("UniOp expression should be removed in the previous stage")
                 }
                 Expr::If(cond, then, else_opt) => {
                     let cond_val = self.eval(ctx, cond);

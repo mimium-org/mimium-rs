@@ -150,39 +150,34 @@ hoge}",
 }
 #[test]
 fn test_add() {
-    let ans = Expr::Apply(
-        Expr::Var("add".to_symbol()).into_id(loc(6..7)),
-        vec![
-            Expr::Literal(Literal::Float("3466.0".to_symbol())).into_id(loc(0..6)),
-            Expr::Literal(Literal::Float("2000.0".to_symbol())).into_id(loc(7..13)),
-        ],
+    let ans = Expr::BinOp(
+        Expr::Literal(Literal::Float("3466.0".to_symbol())).into_id(loc(0..6)),
+        (Op::Sum, 6..7),
+        Expr::Literal(Literal::Float("2000.0".to_symbol())).into_id(loc(7..13)),
     )
     .into_id(loc(0..13));
     test_string!("3466.0+2000.0", ans);
 }
 #[test]
 fn test_at() {
-    let ans1 = Expr::Apply(
-        Expr::Var("_mimium_schedule_at".to_symbol()).into_id(loc(3..4)),
-        vec![
-            Expr::Literal(Literal::Float("1.0".to_symbol())).into_id(loc(4..7)),
-            Expr::Var("foo".to_symbol()).into_id(loc(0..3)),
-        ],
+    let ans1 = Expr::BinOp(
+        Expr::Var("foo".to_symbol()).into_id(loc(0..3)),
+        (Op::At, 3..4),
+        Expr::Literal(Literal::Float("1.0".to_symbol())).into_id(loc(4..7)),
     )
     .into_id(loc(0..7));
     test_string!("foo@1.0", ans1);
 
-    let time = Expr::Apply(
-        Expr::Var("pow".to_symbol()).into_id(loc(7..8)),
-        vec![
-            Expr::Literal(Literal::Float("1.0".to_symbol())).into_id(loc(4..7)),
-            Expr::Literal(Literal::Float("2.0".to_symbol())).into_id(loc(8..11)),
-        ],
+    let time = Expr::BinOp(
+        Expr::Literal(Literal::Float("1.0".to_symbol())).into_id(loc(4..7)),
+        (Op::Exponent, 7..8),
+        Expr::Literal(Literal::Float("2.0".to_symbol())).into_id(loc(8..11)),
     )
     .into_id(loc(4..11));
-    let ans2 = Expr::Apply(
-        Expr::Var("_mimium_schedule_at".to_symbol()).into_id(loc(3..4)),
-        vec![time, Expr::Var("foo".to_symbol()).into_id(loc(0..3))],
+    let ans2 = Expr::BinOp(
+        Expr::Var("foo".to_symbol()).into_id(loc(0..3)),
+        (Op::At, 3..4),
+        time,
     )
     .into_id(loc(0..11));
     test_string!("foo@1.0^2.0", ans2);
@@ -451,12 +446,10 @@ fn test_array_access() {
     test_string!("arr[0.5]", ans);
 
     // Array access with expression index
-    let index_expr = Expr::Apply(
-        Expr::Var("add".to_symbol()).into_id(loc(5..6)),
-        vec![
-            Expr::Literal(Literal::Float("1".to_symbol())).into_id(loc(4..5)),
-            Expr::Literal(Literal::Float("2".to_symbol())).into_id(loc(6..7)),
-        ],
+    let index_expr = Expr::BinOp(
+        Expr::Literal(Literal::Float("1".to_symbol())).into_id(loc(4..5)),
+        (Op::Sum, 5..6),
+        Expr::Literal(Literal::Float("2".to_symbol())).into_id(loc(6..7)),
     )
     .into_id(loc(4..7));
 
@@ -542,12 +535,10 @@ fn test_stmt_without_return() {
                     pat: Pattern::Single("v".to_symbol()),
                     ty: Type::Unknown.into_id_with_location(loc(24..25)),
                 },
-                Expr::Apply(
-                    Expr::Var("add".to_symbol()).into_id(loc(33..34)),
-                    vec![
-                        Expr::Var("input".to_symbol()).into_id(loc(28..33)),
-                        Expr::Literal(Literal::Float("1".to_symbol())).into_id(loc(34..35)),
-                    ],
+                Expr::BinOp(
+                    Expr::Var("input".to_symbol()).into_id(loc(28..33)),
+                    (Op::Sum, 33..34),
+                    Expr::Literal(Literal::Float("1".to_symbol())).into_id(loc(34..35)),
                 )
                 .into_id(loc(28..35)),
                 Some(

@@ -1,9 +1,9 @@
-pub mod parser;
-pub mod typing;
 pub mod bytecodegen;
-mod intrinsics;
+pub(crate) mod intrinsics;
 pub mod mirgen;
+pub mod parser;
 pub(crate) mod pattern_destructor;
+pub mod typing;
 use crate::plugin::{ExtFunTypeInfo, MacroFunction};
 
 #[derive(Debug, Clone)]
@@ -87,6 +87,8 @@ pub fn emit_ast(
     let (ast, errs) = parser::parse_to_expr(src, path);
     if errs.is_empty() {
         let ast = parser::add_global_context(ast, filepath.unwrap_or_default());
+        let (ast, _errs) =
+            mirgen::convert_pronoun::convert_pronoun(ast, filepath.unwrap_or_default());
         Ok(recursecheck::convert_recurse(
             ast,
             filepath.unwrap_or_default(),

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::ast::operators::Op;
 use crate::ast::*;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
@@ -8,7 +9,7 @@ use crate::utils::error::ReportableError;
 use crate::utils::metadata::*;
 use chumsky::{Parser, prelude::*};
 mod token;
-use token::{Op, Token};
+use token::Token;
 mod error;
 mod lexer;
 use crate::ast::program::{Program, ProgramStatement, expr_from_program};
@@ -270,20 +271,7 @@ where
                 span,
                 path: ctx.file_path,
             };
-            let arg = match op {
-                Op::Pipe => return Expr::PipeApply(x, y).into_id(loc.clone()),
-                // A@B is a syntactic sugar of _mimium_schedule_at(B, A)
-                Op::At => vec![y, x],
-                _ => vec![x, y],
-            };
-            Expr::Apply(
-                Expr::Var(op.get_associated_fn_name()).into_id(Location {
-                    span: opspan,
-                    path: ctx.file_path,
-                }),
-                arg,
-            )
-            .into_id(loc)
+            Expr::BinOp(x, (op, opspan), y).into_id(loc)
         })
         .boxed()
 }
@@ -350,10 +338,7 @@ where
             match op {
                 Token::BackQuote => Expr::Bracket(rhs).into_id(loc.clone()),
                 Token::Dollar => Expr::Escape(rhs).into_id(loc.clone()),
-                Token::Op(Op::Minus) => {
-                    let neg_op = Expr::Var("neg".to_symbol()).into_id(loc.clone());
-                    Expr::Apply(neg_op, vec![rhs]).into_id(loc)
-                }
+                Token::Op(Op::Minus) => Expr::UniOp((Op::Minus, op_span), rhs).into_id(loc),
                 _ => unreachable!("Unexpected unary operator: {:?}", op),
             }
         })
