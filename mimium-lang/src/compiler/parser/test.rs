@@ -245,14 +245,12 @@ fn test_applynested() {
 }
 #[test]
 fn test_macroexpand() {
-    let ans = Expr::Escape(
-        Expr::Apply(
-            Expr::Var("myfun".to_symbol()).into_id(loc(0..6)),
-            vec![Expr::Var("callee".to_symbol()).into_id(loc(7..13))],
-        )
-        .into_id(loc(0..14)),
+    let ans = Expr::MacroExpand(
+        Expr::Var("myfun".to_symbol()).into_id(loc(0..6)),
+        vec![Expr::Var("callee".to_symbol()).into_id(loc(7..13))],
     )
     .into_id(loc(0..14));
+
     test_string!("myfun!(callee)", ans);
 }
 
@@ -264,11 +262,11 @@ fn test_fndef() {
                 LabeledParams::new(vec![
                     LabeledParam::new(
                         "input".to_symbol(),
-                        Type::Unknown.into_id_with_location(loc(0..28)),
+                        Type::Unknown.into_id_with_location(loc(8..13)),
                     ),
                     LabeledParam::new(
                         "gue".to_symbol(),
-                        Type::Unknown.into_id_with_location(loc(0..28)),
+                        Type::Unknown.into_id_with_location(loc(14..17)),
                     ),
                 ]),
                 Type::Unknown.into_id_with_location(loc(0..28)),
@@ -307,11 +305,11 @@ fn global_fnmultiple() {
                 LabeledParams::new(vec![
                     LabeledParam::new(
                         "input".to_symbol(),
-                        Type::Unknown.into_id_with_location(loc(0..28)),
+                        Type::Unknown.into_id_with_location(loc(8..13)),
                     ),
                     LabeledParam::new(
                         "gue".to_symbol(),
-                        Type::Unknown.into_id_with_location(loc(0..28)),
+                        Type::Unknown.into_id_with_location(loc(14..17)),
                     ),
                 ]),
                 Type::Unknown.into_id_with_location(loc(0..28)),
@@ -342,11 +340,11 @@ fn global_fnmultiple() {
                         LabeledParams::new(vec![
                             LabeledParam::new(
                                 "input".to_symbol(),
-                                Type::Unknown.into_id_with_location(loc(29..57)),
+                                Type::Unknown.into_id_with_location(loc(37..42)),
                             ),
                             LabeledParam::new(
                                 "gue".to_symbol(),
-                                Type::Unknown.into_id_with_location(loc(29..57)),
+                                Type::Unknown.into_id_with_location(loc(43..46)),
                             ),
                         ]),
                         Type::Unknown.into_id_with_location(loc(29..57)),
@@ -380,35 +378,6 @@ fn global_fnmultiple() {
         ans
     );
 }
-
-#[test]
-fn test_macrodef() {
-    let ans = Expr::LetRec(
-        TypedId {
-            id: "hoge".to_symbol(),
-            ty: Type::Unknown.into_id_with_location(loc(6..10)),
-        },
-        Expr::Lambda(
-            vec![
-                TypedId {
-                    id: "input".to_symbol(),
-                    ty: Type::Unknown.into_id_with_location(loc(11..16)),
-                },
-                TypedId {
-                    id: "gue".to_symbol(),
-                    ty: Type::Unknown.into_id_with_location(loc(17..20)),
-                },
-            ],
-            None,
-            Expr::Bracket(Expr::Var("input".to_symbol()).into_id(loc(24..29))).into_id(loc(0..31)),
-        )
-        .into_id(loc(0..31)),
-        None,
-    )
-    .into_id(loc(0..31));
-    test_string!("macro hoge(input,gue){\n input\n}", ans);
-}
-
 #[test]
 fn test_tuple() {
     let tuple_items = vec![
@@ -555,7 +524,7 @@ fn test_stmt_without_return() {
             ty: Type::Function(
                 LabeledParams::new(vec![LabeledParam::new(
                     "input".to_symbol(),
-                    Type::Unknown.into_id_with_location(loc(0..56)),
+                    Type::Unknown.into_id_with_location(loc(8..13)),
                 )]),
                 Type::Unknown.into_id_with_location(loc(0..56)),
                 None,

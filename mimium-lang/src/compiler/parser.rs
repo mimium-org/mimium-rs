@@ -788,7 +788,8 @@ fn toplevel_parser(ctx: ParseContext) -> impl Parser<Token, Program, Error = Par
     //     .flatten()
     //     .map(|stmt| into_then_expr(&stmt).unwrap_or(Expr::Error.into_id_without_span()));
     let stmts = stmt
-        .separated_by(separator)
+        .separated_by(separator.clone())
+        .padded_by(separator)
         .then_ignore(end())
         .recover_with(skip_until([Token::LineBreak, Token::SemiColon], |_| vec![]))
         .map(|stmts: Vec<(ProgramStatement, Location)>| Program {
@@ -891,6 +892,10 @@ pub fn parse(src: &str, current_file: Option<PathBuf>) -> (Program, Vec<Box<dyn 
             _ => Some((tkn.clone(), span)),
         });
         let len = tokens_comment_filtered.clone().count();
+        log::trace!(
+            "tokens: {:?}",
+            tokens_comment_filtered.clone().collect::<Vec<_>>()
+        );
         let (ast, parse_errs) = parser(current_file.clone()).parse_recovery(
             chumsky::Stream::from_iter(len..len + 1, tokens_comment_filtered),
         );
@@ -906,12 +911,14 @@ pub fn parse_to_expr(
     src: &str,
     current_file: Option<PathBuf>,
 ) -> (ExprNodeId, Vec<Box<dyn ReportableError>>) {
-    let (prog, errs) = parse(src, current_file.clone());
+    let (prog, mut errs) = parse(src, current_file.clone());
     if prog.statements.is_empty() {
         return (Expr::Error.into_id_without_span(), errs);
     }
-    expr_from_program(
+    let (expr, mut new_errs) = expr_from_program(
         prog,
         current_file.map_or("".to_symbol(), |p| p.to_string_lossy().to_symbol()),
-    )
+    );
+    errs.append(&mut new_errs);
+    (expr, errs)
 }

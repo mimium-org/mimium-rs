@@ -160,7 +160,7 @@ mod test {
         if let Some(tok) = res {
             assert_eq!(tok, ans);
         } else {
-            println!("{:#?}", _errs);
+            println!("{_errs:#?}");
             panic!()
         }
     }
