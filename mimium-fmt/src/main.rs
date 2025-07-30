@@ -19,10 +19,30 @@ struct Args {
     /// Width of the editor
     #[arg(long, default_value = "80")]
     width: usize,
+    /// Indentation size
+    #[arg(long, default_value = "4")]
+    indent_size: usize,
 }
+use std::sync::LazyLock;
+use std::sync::Mutex;
+struct GlobalConfig {
+    indent_size: usize,
+}
+impl Default for GlobalConfig {
+    fn default() -> Self {
+        Self { indent_size: 4 }
+    }
+}
+static GLOBAL_DATA: LazyLock<Mutex<GlobalConfig>> =
+    LazyLock::new(|| Mutex::new(GlobalConfig::default()));
 
 fn main() {
     let args = Args::parse();
+
+    if let Ok(mut gdata) = GLOBAL_DATA.try_lock() {
+        gdata.indent_size = args.indent_size;
+    }
+
     let file_path = args.file;
     let code = match file_path.as_ref() {
         Some(path) => fs::read_to_string(path).expect("Unable to read file"),

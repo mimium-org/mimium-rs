@@ -1,13 +1,22 @@
 use mimium_lang::{
     ast::{
         program::{Program, ProgramStatement},
-        Expr, Literal, RecordField,
+        Expr, Literal,
     },
-    interner::{with_session_globals, ExprNodeId, Symbol},
-    pattern::TypedId,
+    interner::ExprNodeId,
     types::Type,
 };
-use pretty::{Arena, DocAllocator, DocBuilder, Pretty, RefDoc};
+use pretty::{DocAllocator, DocBuilder, Pretty};
+
+use crate::{GlobalConfig, GLOBAL_DATA};
+
+fn get_indent_size() -> usize {
+    if let Ok(gdata) = GLOBAL_DATA.try_lock() {
+        gdata.indent_size
+    } else {
+        GlobalConfig::default().indent_size
+    }
+}
 mod types {
     use mimium_lang::{
         interner::TypeNodeId,
@@ -19,6 +28,7 @@ mod types {
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone + Pretty<'a, D, A>,
+        A: Clone,
     {
         match ty.to_type() {
             Type::Unknown => allocator.nil(),
@@ -49,7 +59,7 @@ mod types {
             Type::Function(params, ret, _state) => {
                 let param_docs = params
                     .get_as_slice()
-                    .into_iter()
+                    .iter()
                     .map(|LabeledParam { label: _, ty }| types::pretty(*ty, allocator))
                     .collect::<Vec<_>>();
                 let ret_doc = types::pretty(ret, allocator);
@@ -75,6 +85,7 @@ mod patterns {
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone + Pretty<'a, D, A>,
+        A: Clone,
     {
         match pat {
             Pattern::Single(name) => allocator.text(name),
@@ -106,6 +117,7 @@ mod typedpattern {
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone + Pretty<'a, D, A>,
+        A: Clone,
     {
         patterns::pretty(pat.pat, allocator).append(types::pretty(pat.ty, allocator))
     }
@@ -117,9 +129,10 @@ mod expr {
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone + Pretty<'a, D, A>,
+        A: Clone,
     {
         match expr.to_expr() {
-            Expr::Literal(Literal::String(s)) => allocator.text(s),
+            Expr::Literal(Literal::String(s)) => allocator.text(s).double_quotes(),
             Expr::Literal(Literal::Int(i)) => allocator.text(i.to_string()),
             Expr::Literal(Literal::Float(s)) => allocator.text(s),
             Expr::Literal(Literal::SelfLit) => allocator.text("self"),
@@ -127,7 +140,12 @@ mod expr {
             Expr::Literal(Literal::SampleRate) => allocator.text("samplerate"),
             Expr::Literal(Literal::PlaceHolder) => allocator.text("_"),
             Expr::Var(name) => allocator.text(name),
-            Expr::Block(Some(e)) => pretty(e, allocator).nest(1).enclose("{\n", "\n}"),
+            Expr::Block(Some(e)) => allocator
+                .text("{")
+                .append(allocator.line())
+                .append(pretty(e, allocator).nest(get_indent_size() as isize))
+                .append(allocator.line())
+                .append(allocator.text("}")),
             Expr::Block(None) => allocator.nil().braces(),
             Expr::Tuple(es) => {
                 let docs = es
@@ -147,9 +165,9 @@ mod expr {
                 let doc1 = pretty(e1, allocator);
                 let docs2 = e2
                     .into_iter()
-                    .map(|e| pretty(e, allocator))
+                    .map(|e| pretty(e, allocator).group())
                     .collect::<Vec<_>>();
-                doc1.append(allocator.intersperse(docs2, ", ").parens())
+                doc1.append(allocator.intersperse(docs2, ", ").group().parens())
             }
             Expr::RecordLiteral(fields) => {
                 let docs = fields
@@ -183,10 +201,11 @@ mod expr {
                 let expr_doc = pretty(expr, allocator);
                 let then_doc = then.map_or(allocator.nil(), |e| pretty(e, allocator));
                 allocator
-                    .text("let")
+                    .text("let ")
                     .append(pat_doc)
-                    .append(allocator.text(" = "))
-                    .append(expr_doc)
+                    .append(allocator.text(" ="))
+                    .append(allocator.softline())
+                    .append(expr_doc.align())
                     .append(allocator.hardline())
                     .append(then_doc)
             }
@@ -194,9 +213,10 @@ mod expr {
                 let body_doc = pretty(body, allocator);
                 let then_doc = then.map_or(allocator.nil(), |e| pretty(e, allocator));
                 allocator
-                    .text("letrec")
+                    .text("letrec ")
                     .append(allocator.text(id.id))
                     .append(allocator.text(" = "))
+                    .append(allocator.softline())
                     .append(body_doc)
                     .append(allocator.hardline())
                     .append(then_doc)
@@ -206,9 +226,12 @@ mod expr {
                 let else_doc = optelse.map_or(allocator.nil(), |e| pretty(e, allocator));
                 allocator
                     .text("if")
-                    .append(pretty(cond, allocator).parens().group())
+                    .append(pretty(cond, allocator).enclose(" (", ")").group())
+                    .append(allocator.softline())
                     .append(then_doc.group())
+                    .append(allocator.softline())
                     .append(allocator.text(" else "))
+                    .append(allocator.softline())
                     .append(else_doc.group())
             }
             Expr::Lambda(params, ret_type, body) => {
@@ -248,8 +271,10 @@ mod expr {
                 let lhs_doc = pretty(lhs, allocator);
                 let rhs_doc = pretty(rhs, allocator);
                 lhs_doc
-                    .append(allocator.text(op.to_string()))
                     .append(allocator.softline())
+                    .nest(get_indent_size() as isize)
+                    .append(allocator.text(op.to_string()))
+                    .append(allocator.space())
                     .append(rhs_doc)
             }
             Expr::UniOp((op, _span), expr) => {
@@ -286,21 +311,23 @@ mod statement {
     where
         D: DocAllocator<'a, A>,
         D::Doc: Clone + Pretty<'a, D, A>,
+        A: Clone,
     {
         match stmt {
             Statement::Let(pat, body) => {
                 let pat_doc = typedpattern::pretty(pat, allocator);
                 let body_doc = expr::pretty(body, allocator);
                 allocator
-                    .text("let")
+                    .text("let ")
                     .append(pat_doc)
                     .append(allocator.text(" = "))
-                    .append(body_doc)
+                    .append(body_doc.align())
+                    .group()
             }
             Statement::LetRec(id, body) => {
                 let body_doc = expr::pretty(body, allocator);
                 allocator
-                    .text("letrec")
+                    .text("letrec ")
                     .append(allocator.text(id.id))
                     .append(allocator.text(" = "))
                     .append(body_doc)
@@ -317,6 +344,7 @@ mod statement {
     }
 }
 pub mod program {
+
     use super::*;
     pub fn pretty<'a, D, A>(prog: Program, allocator: &'a D) -> DocBuilder<'a, D, A>
     where
@@ -348,7 +376,14 @@ pub mod program {
                     .append(return_type.map_or(allocator.nil(), |rtype| {
                         allocator.text("->").append(types::pretty(rtype, allocator))
                     }))
-                    .append(expr::pretty(body, allocator))
+                    .append(
+                        allocator
+                            .text("{")
+                            .append(allocator.hardline())
+                            .append(expr::pretty(body, allocator).nest(get_indent_size() as isize))
+                            .append(allocator.hardline())
+                            .append(allocator.text("}")),
+                    )
             }
             ProgramStatement::GlobalStatement(stmt) => statement::pretty(stmt, allocator),
             ProgramStatement::Import(symbol) => allocator
