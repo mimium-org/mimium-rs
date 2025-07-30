@@ -10,7 +10,7 @@ use crate::{
 // Note that this struct do not distinct between a global statement(allows `fn(){}`) and a local statement.
 // The distinction is done in the actual parser logic.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Statement {
+pub enum Statement {
     Let(TypedPattern, ExprNodeId),
     LetRec(TypedId, ExprNodeId),
     Assign(ExprNodeId, ExprNodeId),

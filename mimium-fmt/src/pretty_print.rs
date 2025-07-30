@@ -1,283 +1,359 @@
-
 use mimium_lang::{
-    ast::{Expr, ExprNodeId, Literal, RecordField},
-    interner::{with_session_globals, Symbol},
-    pattern::{Pattern, TypedId, TypedPattern},
+    ast::{
+        program::{Program, ProgramStatement},
+        Expr, Literal, RecordField,
+    },
+    interner::{with_session_globals, ExprNodeId, Symbol},
+    pattern::TypedId,
+    types::Type,
 };
-use pretty::{DocAllocator, DocBuilder};
+use pretty::{Arena, DocAllocator, DocBuilder, Pretty, RefDoc};
+mod types {
+    use mimium_lang::{
+        interner::TypeNodeId,
+        types::{LabeledParam, PType},
+    };
 
-pub trait ToDoc {
-    fn to_doc<'a, A>(&self, allocator: &'a A) -> DocBuilder<'a, A>
+    use super::*;
+    pub(super) fn pretty<'a, D, A>(ty: TypeNodeId, allocator: &'a D) -> DocBuilder<'a, D, A>
     where
-        A: DocAllocator<'a, Annotation = ()>;
-}
-
-fn intersperse<'a, A>(
-    docs: impl IntoIterator<Item = DocBuilder<'a, A>>,
-    separator: DocBuilder<'a, A>,
-    allocator: &'a A,
-) -> DocBuilder<'a, A>
-where
-    A: DocAllocator<'a, Annotation = ()>,
-{
-    allocator.intersperse(docs, separator)
-}
-
-impl ToDoc for Symbol {
-    fn to_doc<'a, A>(&self, allocator: &'a A) -> DocBuilder<'a, A>
-    where
-        A: DocAllocator<'a, Annotation = ()>,
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone + Pretty<'a, D, A>,
     {
-        allocator.text(self.as_str())
-    }
-}
-
-impl ToDoc for TypedId {
-    fn to_doc<'a, A>(&self, allocator: &'a A) -> DocBuilder<'a, A>
-    where
-        A: DocAllocator<'a, Annotation = ()>,
-    {
-        // For now, we don't print types.
-        self.id.to_doc(allocator)
-    }
-}
-
-impl ToDoc for Pattern {
-    fn to_doc<'a, A>(&self, allocator: &'a A) -> DocBuilder<'a, A>
-    where
-        A: DocAllocator<'a, Annotation = ()>,
-    {
-        match self {
-            Pattern::Single(s) => s.to_doc(allocator),
-            Pattern::Tuple(pats) => allocator
-                .intersperse(
-                    pats.iter().map(|p| p.to_doc(allocator)),
-                    allocator.text(",").append(allocator.space()),
-                )
-                .parens(),
-            Pattern::Record(fields) => allocator
-                .intersperse(
-                    fields.iter().map(|(name, pat)| {
-                        name.to_doc(allocator)
+        match ty.to_type() {
+            Type::Unknown => allocator.nil(),
+            Type::Primitive(PType::Int) => allocator.text("int"),
+            Type::Primitive(PType::Numeric) => allocator.text("float"),
+            Type::Primitive(PType::String) => allocator.text("string"),
+            Type::Primitive(PType::Unit) => allocator.text("()"),
+            Type::Array(item) => types::pretty(item, allocator).brackets(),
+            Type::Tuple(items) => {
+                let docs = items
+                    .into_iter()
+                    .map(|item| types::pretty(item, allocator))
+                    .collect::<Vec<_>>();
+                allocator.intersperse(docs, ", ").parens()
+            }
+            Type::Record(items) => {
+                let docs = items
+                    .into_iter()
+                    .map(|(name, ty)| {
+                        allocator
+                            .text(name)
                             .append(allocator.text(": "))
-                            .append(pat.to_doc(allocator))
-                    }),
-                    allocator.text(",").append(allocator.space()),
-                )
-                .braces()
-                .nest(2),
-            Pattern::Error => allocator.text("<error>"),
+                            .append(types::pretty(ty, allocator))
+                    })
+                    .collect::<Vec<_>>();
+                allocator.intersperse(docs, ", ").braces()
+            }
+            Type::Function(params, ret, _state) => {
+                let param_docs = params
+                    .get_as_slice()
+                    .into_iter()
+                    .map(|LabeledParam { label: _, ty }| types::pretty(*ty, allocator))
+                    .collect::<Vec<_>>();
+                let ret_doc = types::pretty(ret, allocator);
+                allocator
+                    .intersperse(param_docs, ", ")
+                    .parens()
+                    .append(allocator.text(" -> "))
+                    .append(ret_doc)
+            }
+            Type::Code(ty) => allocator.text("`").append(types::pretty(ty, allocator)),
+            Type::TypeScheme(_) => unreachable!(),
+            Type::Intermediate(_) => unreachable!(),
+            Type::Ref(_) => unreachable!(),
+            Type::Failure => unreachable!(),
         }
     }
 }
+mod patterns {
+    use mimium_lang::pattern::Pattern;
 
-impl ToDoc for TypedPattern {
-    fn to_doc<'a, A>(&self, allocator: &'a A) -> DocBuilder<'a, A>
+    use super::*;
+    pub(super) fn pretty<'a, D, A>(pat: Pattern, allocator: &'a D) -> DocBuilder<'a, D, A>
     where
-        A: DocAllocator<'a, Annotation = ()>,
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone + Pretty<'a, D, A>,
     {
-        // For now, we don't print types.
-        self.pat.to_doc(allocator)
-    }
-}
-
-impl ToDoc for Literal {
-    fn to_doc<'a, A>(&self, allocator: &'a A) -> DocBuilder<'a, A>
-    where
-        A: DocAllocator<'a, Annotation = ()>,
-    {
-        match self {
-            Literal::String(s) => allocator.text(format!(r#""{}""#, s)),
-            Literal::Int(i) => allocator.text(i.to_string()),
-            Literal::Float(f) => allocator.text(f.to_string()),
-            Literal::SelfLit => allocator.text("self"),
-            Literal::Now => allocator.text("now"),
-            Literal::SampleRate => allocator.text("samplerate"),
-            Literal::PlaceHolder => allocator.text("_"),
+        match pat {
+            Pattern::Single(name) => allocator.text(name),
+            Pattern::Tuple(pats) => {
+                let docs = pats
+                    .into_iter()
+                    .map(|p| pretty(p, allocator))
+                    .collect::<Vec<_>>();
+                allocator.intersperse(docs, ", ").parens()
+            }
+            Pattern::Record(items) => {
+                let docs = items.into_iter().map(|(name, pattern)| {
+                    allocator
+                        .text(name)
+                        .append(allocator.text(" = "))
+                        .append(pretty(pattern, allocator))
+                });
+                allocator.intersperse(docs, ", ").braces()
+            }
+            Pattern::Error => todo!(),
         }
     }
 }
+mod typedpattern {
+    use mimium_lang::pattern::TypedPattern;
 
-impl ToDoc for RecordField {
-    fn to_doc<'a, A>(&self, allocator: &'a A) -> DocBuilder<'a, A>
+    use super::*;
+    pub(super) fn pretty<'a, D, A>(pat: TypedPattern, allocator: &'a D) -> DocBuilder<'a, D, A>
     where
-        A: DocAllocator<'a, Annotation = ()>,
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone + Pretty<'a, D, A>,
     {
-        self.name
-            .to_doc(allocator)
-            .append(allocator.text(": "))
-            .append(self.expr.to_doc(allocator))
+        patterns::pretty(pat.pat, allocator).append(types::pretty(pat.ty, allocator))
     }
 }
 
-impl ToDoc for ExprNodeId {
-    fn to_doc<'a, A>(&self, allocator: &'a A) -> DocBuilder<'a, A>
+mod expr {
+    use super::*;
+    pub(super) fn pretty<'a, D, A>(expr: ExprNodeId, allocator: &'a D) -> DocBuilder<'a, D, A>
     where
-        A: DocAllocator<'a, Annotation = ()>,
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone + Pretty<'a, D, A>,
     {
-        with_session_globals(|g| g.get_expr(*self).to_doc(allocator))
-    }
-}
-
-impl ToDoc for Expr {
-    fn to_doc<'a, A>(&self, allocator: &'a A) -> DocBuilder<'a, A>
-    where
-        A: DocAllocator<'a, Annotation = ()>,
-    {
-        match self {
-            Expr::Literal(l) => l.to_doc(allocator),
-            Expr::Var(s) => s.to_doc(allocator),
-            Expr::Block(Some(expr)) => allocator
-                .line()
-                .append(expr.to_doc(allocator))
-                .nest(2)
-                .braces(),
-            Expr::Block(None) => allocator.text("{}"),
-            Expr::Tuple(exprs) => intersperse(
-                exprs.iter().map(|e| e.to_doc(allocator)),
-                allocator.text(",").append(allocator.space()),
-                allocator,
-            )
-            .parens(),
-            Expr::Proj(expr, idx) => expr.to_doc(allocator).append(allocator.text(format!(".{}", idx))),
-            Expr::ArrayAccess(array, index) => array
-                .to_doc(allocator)
-                .append(index.to_doc(allocator).brackets()),
-            Expr::ArrayLiteral(exprs) => intersperse(
-                exprs.iter().map(|e| e.to_doc(allocator)),
-                allocator.text(",").append(allocator.space()),
-                allocator,
-            )
-            .brackets(),
-            Expr::RecordLiteral(fields) => intersperse(
-                fields.iter().map(|f| f.to_doc(allocator)),
-                allocator.text(",").append(allocator.space()),
-                allocator,
-            )
-            .braces()
-            .nest(2),
-            Expr::FieldAccess(expr, field) => expr.to_doc(allocator).append(allocator.text(".")).append(field.to_doc(allocator)),
-            Expr::Apply(func, args) => func.to_doc(allocator).append(
-                intersperse(
-                    args.iter().map(|a| a.to_doc(allocator)),
-                    allocator.text(",").append(allocator.space()),
-                    allocator,
-                )
-                .parens(),
-            ),
-            Expr::PipeApply(lhs, rhs) => lhs
-                .to_doc(allocator)
-                .append(allocator.space())
-                .append(allocator.text("|>"))
-                .append(allocator.space())
-                .append(rhs.to_doc(allocator)),
-            Expr::Lambda(args, _ret_type, body) => allocator
-                .text("|")
-                .append(intersperse(
-                    args.iter().map(|a| a.to_doc(allocator)),
-                    allocator.text(", "),
-                    allocator,
-                ))
-                .append(allocator.text("|"))
-                .append(allocator.space())
-                .append(body.to_doc(allocator)),
-            Expr::Assign(lhs, rhs) => lhs
-                .to_doc(allocator)
-                .append(allocator.space())
-                .append(allocator.text("="))
-                .append(allocator.space())
-                .append(rhs.to_doc(allocator)),
-            Expr::Then(first, Some(second)) => first
-                .to_doc(allocator)
-                .append(allocator.text(";"))
-                .append(allocator.line())
-                .append(second.to_doc(allocator)),
-            Expr::Then(first, None) => first.to_doc(allocator),
-            Expr::Feed(s, expr) => s
-                .to_doc(allocator)
-                .append(allocator.space())
-                .append(allocator.text("<-"))
-                .append(allocator.space())
-                .append(expr.to_doc(allocator)),
-            Expr::Let(pat, expr, Some(then)) => allocator
-                .text("let ")
-                .append(pat.to_doc(allocator))
-                .append(allocator.space())
-                .append(allocator.text("="))
-                .append(allocator.space())
-                .append(expr.to_doc(allocator))
-                .append(allocator.text(";"))
-                .append(allocator.line())
-                .append(then.to_doc(allocator)),
-            Expr::Let(pat, expr, None) => allocator
-                .text("let ")
-                .append(pat.to_doc(allocator))
-                .append(allocator.space())
-                .append(allocator.text("="))
-                .append(allocator.space())
-                .append(expr.to_doc(allocator)),
-            Expr::LetRec(id, expr, Some(then)) => allocator
-                .text("let rec ")
-                .append(id.to_doc(allocator))
-                .append(allocator.space())
-                .append(allocator.text("="))
-                .append(allocator.space())
-                .append(expr.to_doc(allocator))
-                .append(allocator.text(";"))
-                .append(allocator.line())
-                .append(then.to_doc(allocator)),
-            Expr::LetRec(id, expr, None) => allocator
-                .text("let rec ")
-                .append(id.to_doc(allocator))
-                .append(allocator.space())
-                .append(allocator.text("="))
-                .append(allocator.space())
-                .append(expr.to_doc(allocator)),
-            Expr::FnDef(name, args, _ret_type, body, Some(then)) => allocator
-                .text("fn ")
-                .append(name.to_doc(allocator))
-                .append(
-                    intersperse(
-                        args.iter().map(|a| a.to_doc(allocator)),
-                        allocator.text(", "),
-                        allocator,
+        match expr.to_expr() {
+            Expr::Literal(Literal::String(s)) => allocator.text(s),
+            Expr::Literal(Literal::Int(i)) => allocator.text(i.to_string()),
+            Expr::Literal(Literal::Float(s)) => allocator.text(s),
+            Expr::Literal(Literal::SelfLit) => allocator.text("self"),
+            Expr::Literal(Literal::Now) => allocator.text("now"),
+            Expr::Literal(Literal::SampleRate) => allocator.text("samplerate"),
+            Expr::Literal(Literal::PlaceHolder) => allocator.text("_"),
+            Expr::Var(name) => allocator.text(name),
+            Expr::Block(Some(e)) => pretty(e, allocator).nest(1).enclose("{\n", "\n}"),
+            Expr::Block(None) => allocator.nil().braces(),
+            Expr::Tuple(es) => {
+                let docs = es
+                    .into_iter()
+                    .map(|e| pretty(e, allocator))
+                    .collect::<Vec<_>>();
+                allocator
+                    .intersperse(
+                        docs,
+                        allocator.text(",").append(allocator.softline()).into_doc(),
                     )
-                    .parens(),
-                )
-                .append(allocator.space())
-                .append(body.to_doc(allocator))
-                .append(allocator.text(";"))
-                .append(allocator.line())
-                .append(then.to_doc(allocator)),
-            Expr::FnDef(name, args, _ret_type, body, None) => allocator
-                .text("fn ")
-                .append(name.to_doc(allocator))
-                .append(
-                    intersperse(
-                        args.iter().map(|a| a.to_doc(allocator)),
-                        allocator.text(", "),
-                        allocator,
-                    )
-                    .parens(),
-                )
-                .append(allocator.space())
-                .append(body.to_doc(allocator)),
-            Expr::If(cond, then_branch, Some(else_branch)) => allocator
-                .text("if ")
-                .append(cond.to_doc(allocator))
-                .append(allocator.space())
-                .append(then_branch.to_doc(allocator))
-                .append(allocator.space())
-                .append(allocator.text("else "))
-                .append(else_branch.to_doc(allocator)),
-            Expr::If(cond, then_branch, None) => allocator
-                .text("if ")
-                .append(cond.to_doc(allocator))
-                .append(allocator.space())
-                .append(then_branch.to_doc(allocator)),
-            Expr::Bracket(expr) => allocator.text("`").append(expr.to_doc(allocator)),
-            Expr::Escape(expr) => allocator.text("$").append(expr.to_doc(allocator)),
-            Expr::Error => allocator.text("<error>"),
+                    .parens()
+            }
+            Expr::Proj(e, idx) => pretty(e, allocator)
+                .append(allocator.text(".").append(allocator.text(idx.to_string()))),
+            Expr::Apply(e1, e2) => {
+                let doc1 = pretty(e1, allocator);
+                let docs2 = e2
+                    .into_iter()
+                    .map(|e| pretty(e, allocator))
+                    .collect::<Vec<_>>();
+                doc1.append(allocator.intersperse(docs2, ", ").parens())
+            }
+            Expr::RecordLiteral(fields) => {
+                let docs = fields
+                    .into_iter()
+                    .map(|f| {
+                        allocator
+                            .text(f.name)
+                            .append(allocator.text(" = "))
+                            .append(pretty(f.expr, allocator))
+                    })
+                    .collect::<Vec<_>>();
+                allocator.intersperse(docs, ", ").braces()
+            }
+            Expr::ArrayAccess(e, i) => pretty(e, allocator).append(pretty(i, allocator).brackets()),
+            Expr::ArrayLiteral(items) => {
+                let docs = items
+                    .into_iter()
+                    .map(|e| pretty(e, allocator))
+                    .collect::<Vec<_>>();
+                allocator.intersperse(docs, ", ").brackets()
+            }
+            Expr::Feed(s, e) => {
+                //will not be used actually
+                allocator
+                    .text("feed")
+                    .append(allocator.text(s).parens())
+                    .append(pretty(e, allocator))
+            }
+            Expr::Let(pat, expr, then) => {
+                let pat_doc = typedpattern::pretty(pat, allocator);
+                let expr_doc = pretty(expr, allocator);
+                let then_doc = then.map_or(allocator.nil(), |e| pretty(e, allocator));
+                allocator
+                    .text("let")
+                    .append(pat_doc)
+                    .append(allocator.text(" = "))
+                    .append(expr_doc)
+                    .append(allocator.hardline())
+                    .append(then_doc)
+            }
+            Expr::LetRec(id, body, then) => {
+                let body_doc = pretty(body, allocator);
+                let then_doc = then.map_or(allocator.nil(), |e| pretty(e, allocator));
+                allocator
+                    .text("letrec")
+                    .append(allocator.text(id.id))
+                    .append(allocator.text(" = "))
+                    .append(body_doc)
+                    .append(allocator.hardline())
+                    .append(then_doc)
+            }
+            Expr::If(cond, then, optelse) => {
+                let then_doc = pretty(then, allocator);
+                let else_doc = optelse.map_or(allocator.nil(), |e| pretty(e, allocator));
+                allocator
+                    .text("if")
+                    .append(pretty(cond, allocator).parens().group())
+                    .append(then_doc.group())
+                    .append(allocator.text(" else "))
+                    .append(else_doc.group())
+            }
+            Expr::Lambda(params, ret_type, body) => {
+                let params_doc = params
+                    .iter()
+                    .map(|p| {
+                        let name = allocator.text(p.id);
+                        let t = match p.ty.to_type() {
+                            Type::Unknown => allocator.nil(),
+                            _ => allocator.text(":").append(types::pretty(p.ty, allocator)),
+                        };
+                        name.append(t)
+                    })
+                    .collect::<Vec<_>>();
+                let ret_type_doc = ret_type.as_ref().map_or(allocator.nil(), |t| {
+                    allocator.text("->").append(types::pretty(*t, allocator))
+                });
+                allocator
+                    .intersperse(params_doc, ", ")
+                    .enclose("|", "|")
+                    .append(ret_type_doc)
+                    .append(pretty(body, allocator))
+            }
+            Expr::Assign(lid, rhs) => pretty(lid, allocator)
+                .append(allocator.text(" = "))
+                .append(pretty(rhs, allocator)),
+            Expr::Then(first, second) => {
+                let first_doc = pretty(first, allocator);
+                let second_doc = second.map_or(allocator.nil(), |e| pretty(e, allocator));
+
+                first_doc.append(allocator.hardline()).append(second_doc)
+            }
+            Expr::Bracket(e) => allocator.text("`").append(pretty(e, allocator)),
+            Expr::Escape(e) => allocator.text("$").append(pretty(e, allocator)),
+            Expr::Error => allocator.text("error"),
+            Expr::PipeApply(lhs, rhs) => {
+                let lhs_doc = pretty(lhs, allocator);
+                let rhs_doc = pretty(rhs, allocator);
+                lhs_doc
+                    .append(allocator.text(" |> "))
+                    .append(allocator.softline())
+                    .append(rhs_doc)
+            }
+            Expr::FieldAccess(expr_node_id, symbol) => {
+                let expr_doc = pretty(expr_node_id, allocator);
+                expr_doc
+                    .append(allocator.softline())
+                    .append(allocator.text("."))
+                    .append(allocator.text(symbol))
+            }
+            Expr::MacroExpand(callee, args_e) => {
+                let expr_doc = pretty(callee, allocator);
+                let args = args_e
+                    .into_iter()
+                    .map(|e| pretty(e, allocator))
+                    .collect::<Vec<_>>();
+                expr_doc
+                    .append(allocator.text("!"))
+                    .append(allocator.intersperse(args, ", ").parens())
+            }
         }
+    }
+}
+mod statement {
+    use super::*;
+    use mimium_lang::ast::statement::Statement;
+    pub(super) fn pretty<'a, D, A>(stmt: Statement, allocator: &'a D) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone + Pretty<'a, D, A>,
+    {
+        match stmt {
+            Statement::Let(pat, body) => {
+                let pat_doc = typedpattern::pretty(pat, allocator);
+                let body_doc = expr::pretty(body, allocator);
+                allocator
+                    .text("let")
+                    .append(pat_doc)
+                    .append(allocator.text(" = "))
+                    .append(body_doc)
+            }
+            Statement::LetRec(id, body) => {
+                let body_doc = expr::pretty(body, allocator);
+                allocator
+                    .text("letrec")
+                    .append(allocator.text(id.id))
+                    .append(allocator.text(" = "))
+                    .append(body_doc)
+            }
+            Statement::Assign(name, body) => {
+                let name_doc = expr::pretty(name, allocator);
+                let body_doc = expr::pretty(body, allocator);
+                name_doc.append(allocator.text(" = ")).append(body_doc)
+            }
+            Statement::Single(expr) => expr::pretty(expr, allocator),
+
+            Statement::Error => allocator.text("error"),
+        }
+    }
+}
+pub mod program {
+    use super::*;
+    pub fn pretty<'a, D, A>(prog: Program, allocator: &'a D) -> DocBuilder<'a, D, A>
+    where
+        D: DocAllocator<'a, A>,
+        D::Doc: Clone + Pretty<'a, D, A>,
+        A: Clone,
+    {
+        let stmt_docs = prog.statements.into_iter().map(|(stmt, _span)| match stmt {
+            ProgramStatement::FnDefinition {
+                name,
+                args,
+                return_type,
+                body,
+            } => {
+                let args = args.iter().map(|a| {
+                    let name = allocator.text(a.id);
+                    let t = match a.ty.to_type() {
+                        Type::Unknown => allocator.nil(),
+                        _ => allocator.text(":").append(types::pretty(a.ty, allocator)),
+                    };
+                    name.append(t)
+                });
+                let args = allocator.intersperse(args, ", ").parens();
+
+                allocator
+                    .text("fn ")
+                    .append(allocator.text(name))
+                    .append(args)
+                    .append(return_type.map_or(allocator.nil(), |rtype| {
+                        allocator.text("->").append(types::pretty(rtype, allocator))
+                    }))
+                    .append(expr::pretty(body, allocator))
+            }
+            ProgramStatement::GlobalStatement(stmt) => statement::pretty(stmt, allocator),
+            ProgramStatement::Import(symbol) => allocator
+                .text("import")
+                .append(allocator.text(symbol).double_quotes().parens()),
+            ProgramStatement::Comment(symbol) => {
+                allocator.text("//").append(allocator.text(symbol))
+            }
+            ProgramStatement::DocComment(symbol) => {
+                allocator.text("///").append(allocator.text(symbol))
+            }
+        });
+        allocator.intersperse(stmt_docs, "\n")
     }
 }

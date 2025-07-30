@@ -4,6 +4,7 @@
 //! AST nodes created while parsing.
 
 use std::{
+    borrow::Cow,
     cell::RefCell,
     collections::BTreeMap,
     fmt::{self, Display},
@@ -107,7 +108,19 @@ impl<T: AsRef<str>> ToSymbol for T {
         }))
     }
 }
-
+impl<'a> From<Symbol> for Cow<'a, str> {
+    fn from(val: Symbol) -> Self {
+        with_session_globals(|session_globals| {
+            Cow::Owned(
+                session_globals
+                    .symbol_interner
+                    .resolve(val.0)
+                    .unwrap()
+                    .to_string(),
+            )
+        })
+    }
+}
 impl Symbol {
     pub fn as_str(&self) -> &str {
         with_session_globals(|session_globals| unsafe {
@@ -228,11 +241,9 @@ impl ExprNodeId {
             }
             Expr::Assign(lid, rhs) => Expr::Assign(apply_node(lid), apply_node(rhs)),
             Expr::Then(first, second) => Expr::Then(apply_node(first), second.map(apply_node)),
-            Expr::If(cond, then, optelse) => Expr::If(
-                apply_node(cond),
-                apply_node(then),
-                optelse.map(apply_node),
-            ),
+            Expr::If(cond, then, optelse) => {
+                Expr::If(apply_node(cond), apply_node(then), optelse.map(apply_node))
+            }
             Expr::Bracket(e) => Expr::Bracket(apply_node(e)),
             Expr::Escape(e) => Expr::Escape(apply_node(e)),
             _ => self.to_expr(),
