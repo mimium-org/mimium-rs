@@ -5,7 +5,15 @@ use crate::utils::metadata::*;
 use chumsky::Parser;
 use chumsky::prelude::*;
 
-fn comment_parser() -> impl Parser<char, Comment, Error = Simple<char>> + Clone {
+type LexerError<'src> = chumsky::extra::Err<Rich<'src, char>>;
+
+macro_rules! LexerTrait {
+    ($lifetime:lifetime, $output:ty) => {
+       impl Parser<$lifetime, &$lifetime str, $output, LexerError<$lifetime>> + Clone + $lifetime
+    };
+}
+
+fn comment_parser<'src>() -> LexerTrait!('src, Comment) {
     // comment parser that keep its contents length, not to break line number for debugging.
     // replaces all characters except for newline.
     let single_line = (just("//"))
@@ -18,13 +26,13 @@ fn comment_parser() -> impl Parser<char, Comment, Error = Simple<char>> + Clone 
 
     single_line.or(multi_line)
 }
-fn linebreak_parser() -> impl Parser<char, Token, Error = Simple<char>> + Clone {
+fn linebreak_parser<'src>() -> LexerTrait!('src, Token) {
     text::newline()
         .repeated()
         .at_least(1)
         .map(|_s| Token::LineBreak)
 }
-pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
+pub fn lexer<'src>() -> LexerTrait!('src,Vec<(Token, Span)>) {
     // A parser for numbers
     let int = text::int(10).map(|s: String| Token::Int(s.parse().unwrap()));
 
@@ -32,13 +40,18 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
         .then_ignore(just('.'))
         .then(text::digits(10))
         .then_ignore(just('.').not().ignored().or(end()).rewind())
-        .map(|(s, n)| Token::Float(format!("{s}.{n}")));
+        .to_slice()
+        .unwrapped()
+        .map(|(s, n): (String, String)| Token::Float(format!("{}.{}", s, n)));
 
     // A parser for strings
     let str_ = just('"')
-        .ignore_then(filter(|c| *c != '"').repeated())
-        .then_ignore(just('"'))
-        .collect::<String>()
+        .not()
+        .repeated()
+        .to_slice()
+        .from_str()
+        .unwrapped()
+        .delimited_by(just('"'), just('"'))
         .map(Token::Str);
 
     // A parser for operators, we must disallow // or /* */, not to mixed with comment parser.
@@ -109,7 +122,7 @@ pub fn lexer() -> impl Parser<char, Vec<(Token, Span)>, Error = Simple<char>> {
         .then_ignore(just('!'))
         .map(|ident: String| Token::MacroExpand(ident.to_symbol()));
 
-    let parens = one_of::<_, _, Simple<char>>("(){}[]").map(|c| match c {
+    let parens = one_of("(){}[]").map(|c| match c {
         '(' => Token::ParenBegin,
         ')' => Token::ParenEnd,
         '{' => Token::BlockBegin,
@@ -148,7 +161,9 @@ mod test {
     #[test]
     fn test_let() {
         let src = "let hoge = 36\nfuga";
-        let (res, _errs) = lexer().parse_recovery(src);
+        let res= lexer().parse(src);
+        let tok = res.output();
+        let errs = res.errors();
         let ans = [
             (Token::Let, 0..3),
             (Token::Ident("hoge".to_symbol()), 4..8),
@@ -158,10 +173,10 @@ mod test {
             (Token::Ident("fuga".to_symbol()), 14..18),
         ];
         // dbg!(res.clone());
-        if let Some(tok) = res {
-            assert_eq!(tok, ans);
+        if let Some(tok) = tok {
+            assert_eq!(*tok, ans);
         } else {
-            println!("{_errs:#?}");
+            println!("{:#?}", errs.collect::<Vec<_>>());
             panic!()
         }
     }
