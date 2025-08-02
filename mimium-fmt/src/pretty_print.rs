@@ -143,7 +143,8 @@ mod expr {
             Expr::Block(Some(e)) => allocator
                 .text("{")
                 .append(allocator.line())
-                .append(pretty(e, allocator).nest(get_indent_size() as isize))
+                .append(pretty(e, allocator))
+                .nest(get_indent_size() as isize)
                 .append(allocator.line())
                 .append(allocator.text("}")),
             Expr::Block(None) => allocator.nil().braces(),
@@ -199,14 +200,15 @@ mod expr {
             Expr::Let(pat, expr, then) => {
                 let pat_doc = typedpattern::pretty(pat, allocator);
                 let expr_doc = pretty(expr, allocator);
-                let then_doc = then.map_or(allocator.nil(), |e| pretty(e, allocator));
+                let then_doc = then.map_or(allocator.nil(), |e| {
+                    allocator.hardline().append(pretty(e, allocator))
+                });
                 allocator
                     .text("let ")
                     .append(pat_doc)
                     .append(allocator.text(" ="))
                     .append(allocator.softline())
                     .append(expr_doc.align())
-                    .append(allocator.hardline())
                     .append(then_doc)
             }
             Expr::LetRec(id, body, then) => {
@@ -380,7 +382,8 @@ pub mod program {
                         allocator
                             .text("{")
                             .append(allocator.hardline())
-                            .append(expr::pretty(body, allocator).nest(get_indent_size() as isize))
+                            .append(expr::pretty(body, allocator))
+                            .nest(get_indent_size() as isize)
                             .append(allocator.hardline())
                             .append(allocator.text("}")),
                     )
