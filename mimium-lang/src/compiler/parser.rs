@@ -680,8 +680,10 @@ where
         .allow_trailing()
         .collect::<Vec<_>>()
         .recover_with(skip_then_retry_until(
-            one_of([Token::LineBreak, Token::SemiColon]).not().ignored(),
-            one_of([Token::LineBreak, Token::SemiColon]).ignored(),
+            any().ignored(),
+            one_of([Token::LineBreak, Token::SemiColon])
+                .ignored()
+                .or(end()),
         ))
         .map(|stmts| into_then_expr(&stmts))
 }
@@ -829,8 +831,10 @@ where
         .padded_by(separator)
         .then_ignore(end())
         .recover_with(skip_then_retry_until(
-            one_of([Token::LineBreak, Token::SemiColon]).not().ignored(),
-            one_of([Token::LineBreak, Token::SemiColon]).ignored(),
+            any().ignored(),
+            one_of([Token::LineBreak, Token::SemiColon])
+                .ignored()
+                .or(end()),
         ))
         .map(|stmts: Vec<(ProgramStatement, Location)>| Program {
             statements: stmts
@@ -931,14 +935,20 @@ pub fn parse(
 ) -> (Program, Vec<Box<dyn ReportableError>>) {
     let (tokens, lex_errs) = lex(src, current_file.clone());
     if let Some(t) = tokens {
-        let tokens_comment_filtered = t.into_iter().filter_map(move |(tkn, _span)| match tkn {
-            Token::Comment(token::Comment::SingleLine(_)) => Some(Token::LineBreak),
-            Token::Comment(token::Comment::MultiLine(_)) => None,
-            _ => Some(tkn.clone()),
-        });
+        let tokens_comment_filtered = t
+            .into_iter()
+            .filter_map(move |(tkn, span)| match tkn {
+                Token::Comment(token::Comment::SingleLine(_)) => Some((Token::LineBreak, span)),
+                Token::Comment(token::Comment::MultiLine(_)) => None,
+                _ => Some((tkn.clone(), span)),
+            })
+            .collect::<Vec<_>>();
 
         let (ast, errs) = parser(current_file.clone())
-            .parse(Stream::from_iter(tokens_comment_filtered))
+            .parse(
+                Stream::from_iter(tokens_comment_filtered)
+                    .map((src.len()..src.len()).into(), |(t, s)| (t, s)),
+            )
             .into_output_errors();
         let errs = convert_parse_errors(&errs)
             .chain(lex_errs)

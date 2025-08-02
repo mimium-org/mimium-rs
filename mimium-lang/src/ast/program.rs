@@ -20,7 +20,7 @@ pub enum ProgramStatement {
     Import(Symbol),
     Comment(Symbol),
     DocComment(Symbol),
-    //ModuleDefinition(Symbol),
+    Error, //ModuleDefinition(Symbol),
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -72,6 +72,9 @@ fn stmts_from_program(
                 errs.append(&mut new_errs);
                 let res = stmts_from_program(imported_program, file_path, errs);
                 Some(res)
+            }
+            ProgramStatement::Error => {
+                Some(vec![(Statement::Error, Location::new(span, file_path))])
             }
         })
         .flatten()

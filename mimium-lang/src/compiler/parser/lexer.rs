@@ -122,9 +122,12 @@ where
             _ => Token::Ident(ident.to_symbol()),
         });
     let macro_expand = text::ident()
+        .and_is(just('!').not())
         .then_ignore(just('!'))
         .to_slice()
-        .map(|ident: &'src str| Token::MacroExpand(ident.to_symbol()));
+        .map(|ident: &'src str| {
+            Token::MacroExpand(ident[0..ident.len() - 1].to_string().to_symbol())
+        });
 
     let parens = one_of("(){}[]").map(|c| match c {
         '(' => Token::ParenBegin,
@@ -167,6 +170,16 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    #[test]
+    fn test_str() {
+        let src = r#""hello world""#;
+        let (res, errs) = lexer().parse(src).into_output_errors();
+        assert!(errs.is_empty());
+        assert!(res.is_some());
+        let res = res.unwrap();
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].0, Token::Str("hello world".to_string()));
+    }
     #[test]
     fn test_let() {
         let src = "let hoge = 36\nfuga";
@@ -312,6 +325,27 @@ another line
             assert_eq!(tok, ans);
         } else {
             panic!("failed to parse dot operator");
+        }
+    }
+    #[test]
+    fn test_macroexpand() {
+        let src = "macro! test";
+        let (res, _errs) = lexer().parse(src).into_output_errors();
+        let res = res.map(|tokens| {
+            tokens
+                .iter()
+                .map(|(t, s)| (t.clone(), s.start()..s.end()))
+                .collect::<Vec<_>>()
+        });
+        let ans = vec![
+            (Token::MacroExpand("macro".to_symbol()), 0..6),
+            (Token::Ident("test".to_symbol()), 7..11),
+        ];
+        // dbg!(res.clone());
+        if let Some(tok) = res {
+            assert_eq!(tok, ans);
+        } else {
+            panic!("failed to parse macro expand");
         }
     }
 }

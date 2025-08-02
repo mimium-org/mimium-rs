@@ -572,14 +572,14 @@ fn test_stmt_without_return() {
 }
 
 #[test]
-#[should_panic]
 fn test_fail() {
     let src = "let 100 == hoge\n fuga";
     let (_ast, errs) = parse(src, None);
 
     if !errs.is_empty() {
-        panic!("{}", utils::error::dump_to_string(&errs))
+        eprintln!("{}", utils::error::dump_to_string(&errs))
     };
+    assert!(errs.len() == 1)
 }
 
 #[test]
