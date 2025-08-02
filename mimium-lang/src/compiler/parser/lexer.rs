@@ -1,58 +1,59 @@
 use super::ToSymbol;
 use super::token::*;
 use crate::ast::operators::Op;
-use crate::utils::metadata::*;
 use chumsky::Parser;
+use chumsky::container::Seq;
+use chumsky::input::StrInput;
 use chumsky::prelude::*;
 
-type LexerError<'src> = chumsky::extra::Err<Rich<'src, char>>;
+type LexerError<'src> = chumsky::extra::Err<Rich<'src, char, SimpleSpan>>;
 
-macro_rules! LexerTrait {
-    ($lifetime:lifetime, $output:ty) => {
-       impl Parser<$lifetime, &$lifetime str, $output, LexerError<$lifetime>> + Clone + $lifetime
-    };
-}
-
-fn comment_parser<'src>() -> LexerTrait!('src, Comment) {
+fn comment_parser<'src, I>() -> impl Parser<'src, I, Comment, LexerError<'src>> + Clone
+where
+    I: StrInput<'src, Token = char, Span = SimpleSpan>,
+{
     // comment parser that keep its contents length, not to break line number for debugging.
     // replaces all characters except for newline.
-    let single_line = (just("//"))
-        .ignore_then(take_until(text::newline().or(end())))
-        .map(|(c, _)| Comment::SingleLine(String::from_iter(c.iter())));
+    let endline = text::newline().or(end());
+    let single_line = just("//")
+        .then(endline.clone().not().repeated().then_ignore(endline))
+        .map(|(c, _)| Comment::SingleLine(String::from(c)));
 
     let multi_line = just("/*")
-        .ignore_then(take_until(just("*/")))
-        .map(|(c, _)| Comment::MultiLine(String::from_iter(c.iter())));
+        .then(just("*/").not().repeated())
+        .map(|(c, _)| Comment::MultiLine(String::from(c)));
 
     single_line.or(multi_line)
 }
-fn linebreak_parser<'src>() -> LexerTrait!('src, Token) {
+fn linebreak_parser<'src, I>() -> impl Parser<'src, I, Token, LexerError<'src>> + Clone
+where
+    I: StrInput<'src, Token = char, Span = SimpleSpan>,
+{
     text::newline()
         .repeated()
         .at_least(1)
         .map(|_s| Token::LineBreak)
 }
-pub fn lexer<'src>() -> LexerTrait!('src,Vec<(Token, Span)>) {
+pub fn tokenizer<'src, I>() -> impl Parser<'src, I, Token, LexerError<'src>> + Clone
+where
+    I: StrInput<'src, Token = char, Span = SimpleSpan, Slice = &'src str>,
+{
     // A parser for numbers
-    let int = text::int(10).map(|s: String| Token::Int(s.parse().unwrap()));
+    let int = text::int::<I, LexerError<'src>>(10)
+        .map(|s| Token::Int(String::from_iter(s.seq_iter()).parse().unwrap()));
 
-    let float = text::int(10)
+    let float = (text::int::<I, _>(10).to_slice())
         .then_ignore(just('.'))
-        .then(text::digits(10))
+        .then(text::digits::<I, _>(10).to_slice())
         .then_ignore(just('.').not().ignored().or(end()).rewind())
-        .to_slice()
-        .unwrapped()
-        .map(|(s, n): (String, String)| Token::Float(format!("{}.{}", s, n)));
+        .map(|(s, n)| Token::Float(format!("{}.{}", s, n)));
 
     // A parser for strings
-    let str_ = just('"')
-        .not()
+    let str_ = none_of('"')
         .repeated()
         .to_slice()
-        .from_str()
-        .unwrapped()
         .delimited_by(just('"'), just('"'))
-        .map(Token::Str);
+        .map(|s: &'src str| Token::Str(format!("{s}")));
 
     // A parser for operators, we must disallow // or /* */, not to mixed with comment parser.
     // let op_special = just("*")
@@ -97,30 +98,33 @@ pub fn lexer<'src>() -> LexerTrait!('src,Vec<(Token, Span)>) {
         _ => Token::Ident(c.to_string().to_symbol()),
     });
     // A parser for identifiers and keywords
-    let ident = text::ident().map(|ident: String| match ident.as_str() {
-        "fn" => Token::Function,
-        "macro" => Token::Macro,
-        "self" => Token::SelfLit,
-        "now" => Token::Now,
-        "samplerate" => Token::SampleRate,
-        "let" => Token::Let,
-        "letrec" => Token::LetRec,
-        "if" => Token::If,
-        "else" => Token::Else,
-        // "true" => Token::Bool(true),
-        // "false" => Token::Bool(false),
-        // "null" => Token::Null,
-        "float" => Token::FloatType,
-        "int" => Token::IntegerType,
-        "string" => Token::StringType,
-        "struct" => Token::StructType,
-        "include" => Token::Include,
-        "_" => Token::PlaceHolder,
-        _ => Token::Ident(ident.to_symbol()),
-    });
+    let ident = text::ident()
+        .to_slice()
+        .map(|ident: &'src str| match ident {
+            "fn" => Token::Function,
+            "macro" => Token::Macro,
+            "self" => Token::SelfLit,
+            "now" => Token::Now,
+            "samplerate" => Token::SampleRate,
+            "let" => Token::Let,
+            "letrec" => Token::LetRec,
+            "if" => Token::If,
+            "else" => Token::Else,
+            // "true" => Token::Bool(true),
+            // "false" => Token::Bool(false),
+            // "null" => Token::Null,
+            "float" => Token::FloatType,
+            "int" => Token::IntegerType,
+            "string" => Token::StringType,
+            "struct" => Token::StructType,
+            "include" => Token::Include,
+            "_" => Token::PlaceHolder,
+            _ => Token::Ident(ident.to_symbol()),
+        });
     let macro_expand = text::ident()
         .then_ignore(just('!'))
-        .map(|ident: String| Token::MacroExpand(ident.to_symbol()));
+        .to_slice()
+        .map(|ident: &'src str| Token::MacroExpand(ident.to_symbol()));
 
     let parens = one_of("(){}[]").map(|c| match c {
         '(' => Token::ParenBegin,
@@ -144,26 +148,35 @@ pub fn lexer<'src>() -> LexerTrait!('src,Vec<(Token, Span)>) {
         op,
         parens,
         linebreak_parser(),
-    ))
-    .recover_with(skip_then_retry_until([]));
-
-    let whitespaces = one_of(" \t\u{0020}").repeated().ignored();
+    ));
 
     token
-        .map_with_span(|tok, span| (tok, span))
-        .padded_by(whitespaces)
-        .repeated()
 }
 
+pub fn lexer<'src, I>() -> impl Parser<'src, I, Vec<(Token, SimpleSpan)>, LexerError<'src>> + Clone
+where
+    I: StrInput<'src, Token = char, Span = SimpleSpan, Slice = &'src str>,
+{
+    let whitespaces = one_of(" \t\u{0020}").repeated().ignored();
+
+    tokenizer()
+        .map_with(|t, e| (t, e.span()))
+        .padded_by(whitespaces)
+        .repeated()
+        .collect::<Vec<_>>()
+}
 #[cfg(test)]
 mod test {
     use super::*;
     #[test]
     fn test_let() {
         let src = "let hoge = 36\nfuga";
-        let res= lexer().parse(src);
-        let tok = res.output();
-        let errs = res.errors();
+        let (output, errs) = lexer().parse(src).into_output_errors();
+        let tok = output.map(|o| {
+            o.into_iter()
+                .map(|(t, s)| (t, s.start..s.end))
+                .collect::<Vec<_>>()
+        });
         let ans = [
             (Token::Let, 0..3),
             (Token::Ident("hoge".to_symbol()), 4..8),
@@ -176,7 +189,7 @@ mod test {
         if let Some(tok) = tok {
             assert_eq!(*tok, ans);
         } else {
-            println!("{:#?}", errs.collect::<Vec<_>>());
+            println!("{:#?}", errs);
             panic!()
         }
     }
@@ -185,11 +198,15 @@ mod test {
     fn comment() {
         let test_parser = comment_parser()
             .map(Token::Comment)
-            .or(text::ident().map(|s: String| Token::Ident(s.to_symbol())))
+            .or(text::ident().map(|s: &str| Token::Ident(s.to_symbol())))
             .or(linebreak_parser())
-            .map_with_span(|t, s| (t, s))
+            .map_with(|t, e| {
+                let s: SimpleSpan<usize> = e.span();
+                (t, s.start()..s.end())
+            })
             .padded_by(just(" ").repeated())
-            .repeated();
+            .repeated()
+            .collect::<Vec<_>>();
         let src = "test
 //comment start
 conrains src
@@ -217,7 +234,7 @@ another line
             (Token::LineBreak, 74..75),
         ];
 
-        let (res, errs) = test_parser.parse_recovery(src);
+        let (res, errs) = test_parser.parse(src).into_output_errors();
         assert!(errs.is_empty());
         assert!(res.is_some());
         assert_eq!(ans, res.unwrap());
@@ -232,7 +249,13 @@ another line
             "foo  \n", // linebreak at end
         ];
         for c in cases {
-            let (res, errs) = lexer().parse_recovery(c);
+            let (res, errs) = lexer().parse(c).into_output_errors();
+            let res = res.map(|tokens| {
+                tokens
+                    .iter()
+                    .map(|(t, s)| (t.clone(), s.start()..s.end()))
+                    .collect::<Vec<_>>()
+            });
             assert!(errs.is_empty(), "failed to parse");
             assert_eq!(res.unwrap()[0], (Token::Ident("foo".to_symbol()), 0..3))
         }
@@ -243,7 +266,13 @@ another line
         // The source contains "1.0" but it should not be parsed as a float.
         // The float tokenizer read one character ahead and ensure the dot operator do not comes next.
         let src = "x.0.field1.1.0.field2";
-        let (res, _errs) = lexer().parse_recovery(src);
+        let (res, _errs) = lexer().parse(src).into_output_errors();
+        let res = res.map(|tokens| {
+            tokens
+                .iter()
+                .map(|(t, s)| (t.clone(), s.start()..s.end()))
+                .collect::<Vec<_>>()
+        });
         let ans = vec![
             (Token::Ident("x".to_symbol()), 0..1),
             (Token::Dot, 1..2),
@@ -268,7 +297,12 @@ another line
     fn test_dotoperator2() {
         //test if the normal float parser works
         let src = "3466.0+2000.0 ";
-        let (res, _errs) = lexer().parse_recovery(src);
+        let res = lexer().parse(src).output().map(|tokens| {
+            tokens
+                .iter()
+                .map(|(t, s)| (t.clone(), s.start()..s.end()))
+                .collect::<Vec<_>>()
+        });
         let ans = vec![
             (Token::Float("3466.0".to_string()), 0..6),
             (Token::Op(Op::Sum), 6..7),
