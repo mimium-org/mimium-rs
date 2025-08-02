@@ -136,6 +136,21 @@ impl Symbol {
         })
     }
 }
+impl AsRef<str> for Symbol {
+    fn as_ref(&self) -> &str {
+        with_session_globals(|session_globals| unsafe {
+            // This transmute is needed to convince the borrow checker. Since
+            // the session_global should exist until the end of the session,
+            // this &str should live sufficiently long.
+            std::mem::transmute::<&str, &str>(
+                session_globals
+                    .symbol_interner
+                    .resolve(self.0)
+                    .expect("invalid symbol"),
+            )
+        })
+    }
+}
 
 // Note: to_string() is auto-implemented by this
 impl Display for Symbol {

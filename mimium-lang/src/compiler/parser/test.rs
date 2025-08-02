@@ -7,8 +7,7 @@ use crate::utils::miniprint::MiniPrint;
 
 macro_rules! test_string {
     ($src:literal, $ans:expr) => {
-        let srcstr = $src.to_string();
-        let (ast, errs) = parse_to_expr(&srcstr, None);
+        let (ast, errs) = parse_to_expr(&$src, None);
         if errs.is_empty() {
             assert!(
                 ast.to_expr() == $ans.to_expr(),
@@ -17,7 +16,7 @@ macro_rules! test_string {
                 $ans.simple_print()
             );
         } else {
-            utils::error::report(&srcstr, "".to_symbol(), &errs);
+            utils::error::report(&$src, "".to_symbol(), &errs);
             panic!();
         }
     };
@@ -34,25 +33,28 @@ fn test_lex(src: &str) -> Vec<Token> {
         panic!("lex error: {errs:?}");
     }
 }
-fn test_expr_parser() -> impl Parser<Token, ExprNodeId, Error = Simple<Token>> {
+fn test_expr_parser<'src, I>() -> impl Parser<'src, I, ExprNodeId, ParseError<'src>> + Clone
+where
+    I: ValueInput<'src, Token = Token, Span = SimpleSpan>,
+{
+    use chumsky::prelude::*;
     let ctx = ParseContext {
         file_path: "/".to_symbol(),
     };
-    chumsky::prelude::recursive(|e| expr_parser(e, ctx))
+    recursive(|e| expr_parser(e, ctx))
 }
 fn test_expr_string(src: &str, expr: ExprNodeId) {
-    let (ast, errs) = test_expr_parser().parse_recovery(test_lex(src));
+    let tokens = test_lex(src);
+    let tokens = tokens.as_slice();
+    let (ast, errs) = test_expr_parser().parse(tokens).into_output_errors();
     if errs.is_empty() && ast.is_some() {
         assert!(
             ast.unwrap().to_expr() == expr.to_expr(),
             "res:{ast:?}\nans:{expr:?}",
         );
     } else {
-        utils::error::report(
-            src,
-            "".to_symbol(),
-            &convert_parse_errors(&errs).collect_vec(),
-        );
+        let errs = convert_parse_errors(&errs).collect_vec();
+        utils::error::report(src, "".to_symbol(), &errs);
         panic!();
     }
 }
@@ -589,10 +591,13 @@ fn test_err_builtin_redefine() {
     let (_ast, err) = &parse(src, None);
 
     assert_eq!(err.len(), 1);
+    let msg = Rich::custom(
+        SimpleSpan::from(3..6),
+        "Builtin functions cannot be re-defined.",
+    );
 
     let err_ans: Box<dyn ReportableError> = Box::new(error::ParseError::<Token> {
-        content: Simple::custom(3..6, "Builtin functions cannot be re-defined.")
-            .with_label("function decl"),
+        content: msg,
         file: "/".to_symbol(),
     });
     assert_eq!(err[0].to_string(), err_ans.to_string())

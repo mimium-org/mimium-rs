@@ -12,7 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 chumsky = { version = "0.10", default-features = false, features = ["std"] }
-ariadne = "0.4"
+ariadne = "0.5"
 log = "0.4.22"
 string-interner = "0.17.0"
 slotmap = "1.0.7"

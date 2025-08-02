@@ -1,6 +1,8 @@
+use std::ops::Range;
+
 use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
 
-use crate::interner::Symbol;
+use crate::interner::{Symbol, ToSymbol};
 
 use super::metadata::Location;
 
@@ -40,45 +42,41 @@ impl ReportableError for SimpleError {
 }
 
 struct FileCache {
-    path: Symbol,
-    src: ariadne::Source<String>,
+    src: ariadne::Source<Symbol>,
 }
 
-impl ariadne::Cache<Symbol> for FileCache {
-    type Storage = String;
+impl ariadne::Cache<usize> for FileCache {
+    type Storage = Symbol;
 
-    fn fetch(
-        &mut self,
-        _id: &Symbol,
-    ) -> Result<&Source<Self::Storage>, Box<dyn std::fmt::Debug + '_>> {
-        Ok(&self.src)
+    fn fetch(&mut self, _id: &usize) -> Result<&Source<Self::Storage>, impl std::fmt::Debug> {
+        Ok::<&ariadne::Source<Symbol>, String>(&self.src)
     }
 
-    fn display<'a>(&self, id: &'a Symbol) -> Option<Box<dyn std::fmt::Display + 'a>> {
+    fn display<'a>(&self, id: &'a usize) -> Option<impl std::fmt::Display + 'a> {
         Some(Box::new(id.to_string()))
     }
 }
 
-pub fn report(src: &str, path: Symbol, errs: &[Box<dyn ReportableError>]) {
+pub fn report(src: &str, path: Symbol, errs: &[Box<dyn ReportableError + '_>]) {
     let mut colors = ColorGenerator::new();
     for e in errs {
         // let a_span = (src.source(), span);color
         let rawlabels = e.get_labels();
-        let labels = rawlabels.iter().map(|(span, message)| {
-            Label::new(span.clone())
+        let labels = rawlabels.iter().map(|(loc, message)| {
+            let span = (path.0, loc.span.clone());
+            Label::new(span)
                 .with_message(message)
                 .with_color(colors.next())
         });
-        let builder = Report::build(ReportKind::Error, path, 4)
+        let span: (usize, Range<usize>) = (path.0, rawlabels[0].0.span.clone());
+        let builder = Report::build(ReportKind::Error, span)
             .with_message(e.get_message())
             .with_labels(labels)
             .finish();
-        builder
-            .eprint(FileCache {
-                path,
-                src: ariadne::Source::from(src.to_owned()),
-            })
-            .unwrap();
+        let cache = FileCache {
+            src: ariadne::Source::from(src.to_symbol()),
+        };
+        builder.eprint(cache).unwrap();
     }
 }
 

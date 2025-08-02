@@ -2,28 +2,32 @@ use crate::interner::Symbol;
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::Location;
 use chumsky;
+use chumsky::error::{Rich, RichReason};
+use chumsky::span::Span;
 use std::fmt;
 use std::hash::Hash;
-// pub struct LexError(chumsky::error::Simple<char>);
 #[derive(Debug)]
-pub struct ParseError<T>
+pub struct ParseError<'a, T>
 where
     T: Hash + std::cmp::Eq + fmt::Debug + fmt::Display,
 {
-    pub content: chumsky::error::Simple<T>,
+    pub content: Rich<'a, T>,
     pub file: Symbol,
 }
 
-impl<T> From<ParseError<T>> for chumsky::error::Simple<T>
+impl<'src, 'b, T> ParseError<'b, T>
 where
-    T: Hash + std::cmp::Eq + fmt::Debug + fmt::Display,
+    T: Hash + std::cmp::Eq + fmt::Debug + fmt::Display + Clone,
 {
-    fn from(value: ParseError<T>) -> Self {
-        value.content
+    pub fn new(content: Rich<'src, T>, file: Symbol) -> Self {
+        Self {
+            content: content.into_owned(),
+            file,
+        }
     }
 }
 
-impl<T> fmt::Display for ParseError<T>
+impl<'src, T> fmt::Display for ParseError<'src, T>
 where
     T: Hash + std::cmp::Eq + fmt::Debug + fmt::Display,
 {
@@ -32,50 +36,36 @@ where
     }
 }
 
-impl<T> std::error::Error for ParseError<T> where T: Hash + std::cmp::Eq + fmt::Debug + fmt::Display {}
+impl<'a, T> std::error::Error for ParseError<'a, T> where
+    T: Hash + std::cmp::Eq + fmt::Debug + fmt::Display
+{
+}
 
-impl<T> ReportableError for ParseError<T>
+impl<'a, T> ReportableError for ParseError<'a, T>
 where
     T: Hash + std::cmp::Eq + fmt::Debug + fmt::Display,
 {
     fn get_message(&self) -> String {
         match self.content.reason() {
-            chumsky::error::SimpleReason::Unexpected
-            | chumsky::error::SimpleReason::Unclosed { .. } => {
-                format!(
-                    "{}{}, expected {}",
-                    if self.content.found().is_some() {
-                        "unexpected token"
-                    } else {
-                        "unexpected end of input"
-                    },
-                    if let Some(label) = self.content.label() {
-                        format!(" while parsing {label}")
-                    } else {
-                        " something else".to_string()
-                    },
-                    if self.content.expected().count() == 0 {
-                        "somemething else".to_string()
-                    } else {
-                        self.content
-                            .expected()
-                            .map(|expected| match expected {
-                                Some(expected) => expected.to_string(),
-                                None => "end of input".to_string(),
-                            })
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    }
-                )
+            RichReason::ExpectedFound { expected, found } => {
+                let label = found
+                    .as_ref()
+                    .map_or_else(|| "unexpected token".to_string(), |found| found.to_string());
+                let expected_labels = expected
+                    .iter()
+                    .map(|expected| expected.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{label}, expected {expected_labels}")
             }
-            chumsky::error::SimpleReason::Custom(msg) => msg.clone(),
+            RichReason::Custom(msg) => msg.clone(),
         }
     }
 
     fn get_labels(&self) -> Vec<(Location, String)> {
         vec![(
             Location {
-                span: self.content.span(),
+                span: self.content.span().start()..self.content.span().end(),
                 path: self.file,
             },
             self.get_message(),

@@ -16,7 +16,7 @@ where
     // replaces all characters except for newline.
     let endline = text::newline().or(end());
     let single_line = just("//")
-        .then(endline.clone().not().repeated().then_ignore(endline))
+        .then(endline.not().repeated().then_ignore(endline))
         .map(|(c, _)| Comment::SingleLine(String::from(c)));
 
     let multi_line = just("/*")
@@ -46,7 +46,7 @@ where
         .then_ignore(just('.'))
         .then(text::digits::<I, _>(10).to_slice())
         .then_ignore(just('.').not().ignored().or(end()).rewind())
-        .map(|(s, n)| Token::Float(format!("{}.{}", s, n)));
+        .map(|(s, n)| Token::Float(format!("{s}.{n}")));
 
     // A parser for strings
     let str_ = none_of('"')
@@ -137,7 +137,8 @@ where
     });
 
     // A single token can be one of the above
-    let token = choice((
+
+    choice((
         comment_parser().map(Token::Comment),
         float,
         int,
@@ -148,9 +149,7 @@ where
         op,
         parens,
         linebreak_parser(),
-    ));
-
-    token
+    ))
 }
 
 pub fn lexer<'src, I>() -> impl Parser<'src, I, Vec<(Token, SimpleSpan)>, LexerError<'src>> + Clone
@@ -189,7 +188,7 @@ mod test {
         if let Some(tok) = tok {
             assert_eq!(*tok, ans);
         } else {
-            println!("{:#?}", errs);
+            println!("{errs:#?}");
             panic!()
         }
     }

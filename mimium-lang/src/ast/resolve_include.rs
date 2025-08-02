@@ -1,7 +1,6 @@
-use crate::ast::Expr;
 use crate::ast::program::Program;
 use crate::compiler::parser::parse;
-use crate::interner::{ExprNodeId, ToSymbol};
+use crate::interner::ToSymbol;
 use crate::utils::error::{ReportableError, SimpleError};
 use crate::utils::fileloader;
 use crate::utils::metadata::{Location, Span};
