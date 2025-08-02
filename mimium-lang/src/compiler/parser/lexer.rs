@@ -10,29 +10,31 @@ type LexerError<'src> = chumsky::extra::Err<Rich<'src, char, SimpleSpan>>;
 
 fn comment_parser<'src, I>() -> impl Parser<'src, I, Comment, LexerError<'src>> + Clone
 where
-    I: StrInput<'src, Token = char, Span = SimpleSpan>,
+    I: StrInput<'src, Token = char, Span = SimpleSpan, Slice = &'src str>,
 {
     // comment parser that keep its contents length, not to break line number for debugging.
     // replaces all characters except for newline.
     let endline = text::newline().or(end());
     let single_line = just("//")
-        .then(endline.not().repeated().then_ignore(endline))
-        .map(|(c, _)| Comment::SingleLine(String::from(c)));
+        .ignore_then(any().and_is(endline.not()).repeated().to_slice())
+        .then_ignore(endline)
+        .map(|c| Comment::SingleLine(String::from(c)));
 
     let multi_line = just("/*")
-        .then(just("*/").not().repeated())
-        .map(|(c, _)| Comment::MultiLine(String::from(c)));
+        .ignore_then(any().and_is(just("*/").not()).repeated().to_slice())
+        .then_ignore(just("*/"))
+        .map(|c| Comment::MultiLine(String::from(c)));
 
     single_line.or(multi_line)
 }
 fn linebreak_parser<'src, I>() -> impl Parser<'src, I, Token, LexerError<'src>> + Clone
 where
-    I: StrInput<'src, Token = char, Span = SimpleSpan>,
+    I: StrInput<'src, Token = char, Span = SimpleSpan, Slice = &'src str>,
 {
     text::newline()
         .repeated()
         .at_least(1)
-        .map(|_s| Token::LineBreak)
+        .map(|_| Token::LineBreak)
 }
 pub fn tokenizer<'src, I>() -> impl Parser<'src, I, Token, LexerError<'src>> + Clone
 where
@@ -169,6 +171,9 @@ where
 }
 #[cfg(test)]
 mod test {
+
+    use chumsky::text::whitespace;
+
     use super::*;
     #[test]
     fn test_str() {
@@ -208,20 +213,9 @@ mod test {
 
     #[test]
     fn comment() {
-        let test_parser = comment_parser()
-            .map(Token::Comment)
-            .or(text::ident().map(|s: &str| Token::Ident(s.to_symbol())))
-            .or(linebreak_parser())
-            .map_with(|t, e| {
-                let s: SimpleSpan<usize> = e.span();
-                (t, s.start()..s.end())
-            })
-            .padded_by(just(" ").repeated())
-            .repeated()
-            .collect::<Vec<_>>();
         let src = "test
 //comment start
-conrains src
+contains src
 /*multiline comment
 here */
 another line
@@ -233,7 +227,7 @@ another line
                 Token::Comment(Comment::SingleLine("comment start".into())),
                 5..21,
             ),
-            (Token::Ident("conrains".to_symbol()), 21..29),
+            (Token::Ident("contains".to_symbol()), 21..29),
             (Token::Ident("src".to_symbol()), 30..33),
             (Token::LineBreak, 33..34),
             (
@@ -246,7 +240,13 @@ another line
             (Token::LineBreak, 74..75),
         ];
 
-        let (res, errs) = test_parser.parse(src).into_output_errors();
+        let (res, errs) = lexer().parse(src).into_output_errors();
+        let res = res.map(|tokens| {
+            tokens
+                .iter()
+                .map(|(t, s)| (t.clone(), s.start()..s.end()))
+                .collect::<Vec<_>>()
+        });
         assert!(errs.is_empty());
         assert!(res.is_some());
         assert_eq!(ans, res.unwrap());
