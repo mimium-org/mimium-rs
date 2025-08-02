@@ -777,10 +777,22 @@ where
                 .or_not(),
         )
         .then(
-            block_parser(exprgroup.clone(), ctx.clone()).map(|e| match e.to_expr() {
-                Expr::Block(e) => e.unwrap(),
-                _ => e,
-            }),
+            block_parser(exprgroup.clone(), ctx.clone())
+                .map(|e| match e.to_expr() {
+                    Expr::Block(e) => e.unwrap(),
+                    _ => e,
+                })
+                .recover_with(via_parser(nested_delimiters(
+                    Token::BlockBegin,
+                    Token::BlockEnd,
+                    [(Token::ParenBegin, Token::ParenEnd)],
+                    move |span| {
+                        Expr::Error.into_id(Location {
+                            span: get_span(span),
+                            path: ctx.file_path,
+                        })
+                    },
+                ))),
         )
         .map_with(move |(((name, args), return_type), body), e| {
             let loc = Location {
