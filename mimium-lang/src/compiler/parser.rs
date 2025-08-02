@@ -527,17 +527,6 @@ where
                 path: ctx.file_path,
             })
         })
-        .recover_with(via_parser(nested_delimiters(
-            Token::BlockBegin,
-            Token::BlockEnd,
-            [],
-            move |_| {
-                Expr::Error.into_id(Location {
-                    span: Span::default(),
-                    path: ctx.file_path,
-                })
-            },
-        )))
         .labelled("record_literal");
     let parenexpr = expr
         .clone()
@@ -696,17 +685,10 @@ where
     I: ValueInput<'src, Token = Token, Span = SimpleSpan>,
 {
     let stmts = statements_parser(expr, ctx.clone());
-    let ctx2 = ctx.clone();
     let ctx3 = ctx.clone();
     let block = stmts
         .delimited_by(breakable_blockbegin(), breakable_blockend())
-        .map_with(move |stmts, e| Expr::Block(stmts).into_id(ctx.clone().gen_loc(e.span())))
-        .recover_with(via_parser(nested_delimiters(
-            Token::BlockBegin,
-            Token::BlockEnd,
-            [],
-            move |span| Expr::Error.into_id(ctx2.clone().gen_loc(span)),
-        )));
+        .map_with(move |stmts, e| Expr::Block(stmts).into_id(ctx.clone().gen_loc(e.span())));
     one_of([Token::BackQuote, Token::Dollar])
         .map_with(move |op, e| (op, get_span(e.span())))
         .repeated()
@@ -755,6 +737,14 @@ where
             .or(if_)
             // .or(expr_statement_parser(expr_group.clone(), expr_group))
             .or(expr.clone())
+            // we have to recover from nested delimiters at exactly here, not each of record literal parser and block parser,
+            // because we have to try parsing to distinguish them.
+            .recover_with(via_parser(nested_delimiters(
+                Token::BlockBegin,
+                Token::BlockEnd,
+                [(Token::ParenBegin, Token::ParenEnd)],
+                move |span| Expr::Error.into_id(ctx.clone().gen_loc(span)),
+            )))
     })
 }
 
@@ -823,7 +813,14 @@ where
                 Location::new(get_span(e.span()), ctx.file_path),
             )
         });
-    let stmt = choice((function_s, global_stmt, import));
+    let stmt = choice((function_s, global_stmt, import))
+        .recover_with(skip_then_retry_until(
+            any().ignored(),
+            one_of([Token::LineBreak, Token::SemiColon])
+                .ignored()
+                .or(end()),
+        ))
+        .labelled("toplevel statement");
     let separator = just(Token::LineBreak).or(just(Token::SemiColon)).repeated();
 
     stmt.separated_by(separator.clone())

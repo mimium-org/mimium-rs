@@ -395,6 +395,7 @@ pub mod program {
             ProgramStatement::DocComment(symbol) => {
                 allocator.text("///").append(allocator.text(symbol))
             }
+            ProgramStatement::Error => allocator.text("error"),
         });
         allocator.intersperse(stmt_docs, "\n")
     }
