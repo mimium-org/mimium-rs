@@ -20,6 +20,15 @@ fn get_indent_size() -> usize {
         GlobalConfig::default().indent_size
     }
 }
+fn breakable_comma<'a, D, A>(allocator: &'a D) -> DocBuilder<'a, D, A>
+where
+    D: DocAllocator<'a, A>,
+    D::Doc: Clone + Pretty<'a, D, A>,
+    A: Clone,
+{
+    allocator.text(",").append(allocator.softline())
+}
+
 mod types {
     use mimium_lang::{
         interner::TypeNodeId,
@@ -45,7 +54,9 @@ mod types {
                     .into_iter()
                     .map(|item| types::pretty(item, allocator))
                     .collect::<Vec<_>>();
-                allocator.intersperse(docs, ", ").parens()
+                allocator
+                    .intersperse(docs, breakable_comma(allocator))
+                    .parens()
             }
             Type::Record(items) => {
                 let docs = items
@@ -57,7 +68,9 @@ mod types {
                             .append(types::pretty(ty, allocator))
                     })
                     .collect::<Vec<_>>();
-                allocator.intersperse(docs, ", ").braces()
+                allocator
+                    .intersperse(docs, breakable_comma(allocator))
+                    .braces()
             }
             Type::Function(params, ret, _state) => {
                 let param_docs = params
@@ -67,7 +80,7 @@ mod types {
                     .collect::<Vec<_>>();
                 let ret_doc = types::pretty(ret, allocator);
                 allocator
-                    .intersperse(param_docs, ", ")
+                    .intersperse(param_docs, breakable_comma(allocator))
                     .parens()
                     .append(allocator.text(" -> "))
                     .append(ret_doc)
@@ -97,7 +110,9 @@ mod patterns {
                     .into_iter()
                     .map(|p| pretty(p, allocator))
                     .collect::<Vec<_>>();
-                allocator.intersperse(docs, ", ").parens()
+                allocator
+                    .intersperse(docs, breakable_comma(allocator))
+                    .parens()
             }
             Pattern::Record(items) => {
                 let docs = items.into_iter().map(|(name, pattern)| {
@@ -106,7 +121,9 @@ mod patterns {
                         .append(allocator.text(" = "))
                         .append(pretty(pattern, allocator))
                 });
-                allocator.intersperse(docs, ", ").braces()
+                allocator
+                    .intersperse(docs, breakable_comma(allocator))
+                    .braces()
             }
             Pattern::Error => todo!(),
         }
@@ -149,6 +166,7 @@ mod expr {
                 .text("{")
                 .append(allocator.line())
                 .append(pretty(e, allocator))
+                .group()
                 .nest(get_indent_size() as isize)
                 .append(allocator.line())
                 .append(allocator.text("}")),
@@ -159,10 +177,7 @@ mod expr {
                     .map(|e| pretty(e, allocator))
                     .collect::<Vec<_>>();
                 allocator
-                    .intersperse(
-                        docs,
-                        allocator.text(",").append(allocator.softline()).into_doc(),
-                    )
+                    .intersperse(docs, breakable_comma(allocator))
                     .parens()
             }
             Expr::Proj(e, idx) => pretty(e, allocator)
@@ -183,9 +198,13 @@ mod expr {
                             .text(f.name)
                             .append(allocator.text(" = "))
                             .append(pretty(f.expr, allocator))
+                            .group()
                     })
                     .collect::<Vec<_>>();
-                allocator.intersperse(docs, ", ").braces()
+                allocator
+                    .intersperse(docs, breakable_comma(allocator))
+                    .group()
+                    .braces()
             }
             Expr::ArrayAccess(e, i) => pretty(e, allocator).append(pretty(i, allocator).brackets()),
             Expr::ArrayLiteral(items) => {
@@ -193,7 +212,9 @@ mod expr {
                     .into_iter()
                     .map(|e| pretty(e, allocator))
                     .collect::<Vec<_>>();
-                allocator.intersperse(docs, ", ").brackets()
+                allocator
+                    .intersperse(docs, breakable_comma(allocator))
+                    .brackets()
             }
             Expr::Feed(s, e) => {
                 //will not be used actually
@@ -229,7 +250,9 @@ mod expr {
                     .append(allocator.text(id.id))
                     .append(allocator.text(" ="))
                     .append(allocator.softline())
-                    .append(body_doc)
+                    .append(body_doc.group())
+                    .nest(get_indent_size() as isize)
+                    .group()
                     .append(then_doc)
             }
             Expr::If(cond, then, optelse) => {
@@ -237,26 +260,31 @@ mod expr {
                 let else_doc = optelse.map_or(allocator.nil(), |e| pretty(e, allocator));
                 allocator
                     .text("if")
-                    .append(pretty(cond, allocator).enclose(" (", ")").group())
+                    .append(pretty(cond, allocator).group().enclose("(", ")"))
                     .append(allocator.softline())
                     .append(then_doc.group())
                     .append(allocator.softline())
-                    .append(allocator.text(" else "))
+                    .append(allocator.text("else"))
                     .append(allocator.softline())
                     .append(else_doc.group())
+                    .group()
             }
             Expr::Lambda(params, ret_type, body) => {
-                let params_doc = params
-                    .iter()
-                    .map(|p| {
-                        let name = allocator.text(p.id);
-                        let t = match p.ty.to_type() {
-                            Type::Unknown => allocator.nil(),
-                            _ => allocator.text(":").append(types::pretty(p.ty, allocator)),
-                        };
-                        name.append(t)
-                    })
-                    .collect::<Vec<_>>();
+                let params_doc = if params.is_empty() {
+                    vec![allocator.space()]
+                } else {
+                    params
+                        .iter()
+                        .map(|p| {
+                            let name = allocator.text(p.id);
+                            let t = match p.ty.to_type() {
+                                Type::Unknown => allocator.nil(),
+                                _ => allocator.text(":").append(types::pretty(p.ty, allocator)),
+                            };
+                            name.append(t)
+                        })
+                        .collect::<Vec<_>>()
+                };
                 let ret_type_doc = ret_type.as_ref().map_or(allocator.nil(), |t| {
                     allocator.text("->").append(types::pretty(*t, allocator))
                 });
@@ -264,7 +292,8 @@ mod expr {
                     .intersperse(params_doc, ", ")
                     .enclose("|", "|")
                     .append(ret_type_doc)
-                    .append(pretty(body, allocator))
+                    .append(allocator.space())
+                    .append(pretty(body, allocator).group())
             }
             Expr::Assign(lid, rhs) => pretty(lid, allocator)
                 .append(allocator.text(" = "))
@@ -275,21 +304,24 @@ mod expr {
 
                 first_doc.append(allocator.hardline()).append(second_doc)
             }
-            Expr::Bracket(e) => allocator.text("`").append(pretty(e, allocator)),
-            Expr::Escape(e) => allocator.text("$").append(pretty(e, allocator)),
+            Expr::Bracket(e) => allocator.text("`").append(pretty(e, allocator)).group(),
+            Expr::Escape(e) => allocator.text("$").append(pretty(e, allocator)).group(),
             Expr::Error => allocator.text("error"),
             Expr::BinOp(lhs, (op, _opspan), rhs) => {
                 let lhs_doc = pretty(lhs, allocator);
                 let rhs_doc = pretty(rhs, allocator);
                 if op == Op::Pipe {
                     //only pipe operator is prefer to be in the head of the line
-                    lhs_doc.append(allocator.line()).append(
-                        allocator
-                            .text(op.to_string())
-                            .append(allocator.space())
-                            .append(rhs_doc)
-                            .group(),
-                    ).group()
+                    lhs_doc
+                        .append(allocator.line())
+                        .append(
+                            allocator
+                                .text(op.to_string())
+                                .append(allocator.space())
+                                .append(rhs_doc)
+                                .group(),
+                        )
+                        .group()
                 } else {
                     // the other operators can not be in the head of the line preventing
                     // from confusing with Then Expression w/ Unary operator
@@ -301,7 +333,8 @@ mod expr {
                                 .group(),
                         )
                         .append(allocator.line())
-                        .append(rhs_doc.nest(get_indent_size() as isize)).group()
+                        .append(rhs_doc.nest(get_indent_size() as isize))
+                        .group()
                 }
             }
             Expr::UniOp((op, _span), expr) => {
@@ -402,7 +435,8 @@ pub mod program {
                     name.append(t).align()
                 });
                 let args = allocator
-                    .intersperse(args, allocator.text(",").append(allocator.softline())).group()
+                    .intersperse(args, breakable_comma(allocator))
+                    .group()
                     .nest(get_indent_size() as isize)
                     .parens();
 

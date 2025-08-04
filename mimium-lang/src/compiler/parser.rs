@@ -654,15 +654,17 @@ where
     let single = expr
         .map_with(|s, e| (Statement::Single(s), get_span(e.span())))
         .labelled("single");
-    choice((let_, letrec, assign, single)).map(move |(t, span)| {
-        (
-            t,
-            Location {
-                span: span.start()..span.end(),
-                path: ctx.file_path,
-            },
-        )
-    })
+    choice((let_, letrec, assign, single))
+        .map(move |(t, span)| {
+            (
+                t,
+                Location {
+                    span: span.start()..span.end(),
+                    path: ctx.file_path,
+                },
+            )
+        })
+        .boxed()
 }
 fn statements_parser<'src, I>(
     expr: impl Parser<'src, I, ExprNodeId, ParseError<'src>> + Clone + 'src,
