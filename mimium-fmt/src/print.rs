@@ -127,6 +127,8 @@ mod typedpattern {
 }
 
 mod expr {
+    use mimium_lang::ast::operators::Op;
+
     use super::*;
     pub(super) fn pretty<'a, D, A>(expr: ExprNodeId, allocator: &'a D) -> DocBuilder<'a, D, A>
     where
@@ -279,12 +281,28 @@ mod expr {
             Expr::BinOp(lhs, (op, _opspan), rhs) => {
                 let lhs_doc = pretty(lhs, allocator);
                 let rhs_doc = pretty(rhs, allocator);
-                lhs_doc
-                    .append(allocator.line())
-                    .append(allocator.text(op.to_string()))
-                    .append(allocator.space())
-                    .append(rhs_doc)
-                    .group()
+                if op == Op::Pipe {
+                    //only pipe operator is prefer to be in the head of the line
+                    lhs_doc.append(allocator.line()).append(
+                        allocator
+                            .text(op.to_string())
+                            .append(allocator.space())
+                            .append(rhs_doc)
+                            .group(),
+                    ).group()
+                } else {
+                    // the other operators can not be in the head of the line preventing
+                    // from confusing with Then Expression w/ Unary operator
+                    lhs_doc
+                        .append(
+                            allocator
+                                .space()
+                                .append(allocator.text(op.to_string()))
+                                .group(),
+                        )
+                        .append(allocator.line())
+                        .append(rhs_doc.nest(get_indent_size() as isize)).group()
+                }
             }
             Expr::UniOp((op, _span), expr) => {
                 let expr_doc = pretty(expr, allocator);
@@ -293,7 +311,7 @@ mod expr {
                     .append(allocator.softline())
                     .append(expr_doc)
             }
-            Expr::Paren(expr_node_id) => pretty(expr_node_id, allocator).parens(),
+            Expr::Paren(expr_node_id) => pretty(expr_node_id, allocator).parens().group(),
 
             Expr::FieldAccess(expr_node_id, symbol) => {
                 let expr_doc = pretty(expr_node_id, allocator);
@@ -334,8 +352,8 @@ mod statement {
                     .append(allocator.text(" ="))
                     .append(allocator.softline())
                     .append(body_doc.group())
-                    .nest(get_indent_size() as isize)
                     .group()
+                    .nest(get_indent_size() as isize)
             }
             Statement::LetRec(id, body) => {
                 let body_doc = expr::pretty(body, allocator);
@@ -381,9 +399,12 @@ pub mod program {
                         Type::Unknown => allocator.nil(),
                         _ => allocator.text(":").append(types::pretty(a.ty, allocator)),
                     };
-                    name.append(t)
+                    name.append(t).align()
                 });
-                let args = allocator.intersperse(args, ", ").parens();
+                let args = allocator
+                    .intersperse(args, allocator.text(",").append(allocator.softline())).group()
+                    .nest(get_indent_size() as isize)
+                    .parens();
 
                 allocator
                     .text("fn ")
