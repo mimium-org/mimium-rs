@@ -181,14 +181,20 @@ mod expr {
                     .parens()
             }
             Expr::Proj(e, idx) => pretty(e, allocator)
-                .append(allocator.text(".").append(allocator.text(idx.to_string()))),
+                .append(allocator.text(".").append(allocator.text(idx.to_string())))
+                .group(),
             Expr::Apply(e1, e2) => {
                 let doc1 = pretty(e1, allocator);
                 let docs2 = e2
                     .into_iter()
                     .map(|e| pretty(e, allocator).group())
                     .collect::<Vec<_>>();
-                doc1.append(allocator.intersperse(docs2, ", ").group().parens())
+                doc1.append(
+                    allocator
+                        .intersperse(docs2, breakable_comma(allocator))
+                        .group()
+                        .parens(),
+                )
             }
             Expr::RecordLiteral(fields) => {
                 let docs = fields
@@ -205,6 +211,13 @@ mod expr {
                     .intersperse(docs, breakable_comma(allocator))
                     .group()
                     .braces()
+            }
+            Expr::FieldAccess(expr_node_id, symbol) => {
+                let expr_doc = pretty(expr_node_id, allocator);
+                expr_doc
+                    .append(allocator.softline())
+                    .append(allocator.text(".").append(allocator.text(symbol)))
+                    .group()
             }
             Expr::ArrayAccess(e, i) => pretty(e, allocator).append(pretty(i, allocator).brackets()),
             Expr::ArrayLiteral(items) => {
@@ -346,13 +359,6 @@ mod expr {
             }
             Expr::Paren(expr_node_id) => pretty(expr_node_id, allocator).parens().group(),
 
-            Expr::FieldAccess(expr_node_id, symbol) => {
-                let expr_doc = pretty(expr_node_id, allocator);
-                expr_doc
-                    .append(allocator.softline())
-                    .append(allocator.text("."))
-                    .append(allocator.text(symbol))
-            }
             Expr::MacroExpand(callee, args_e) => {
                 let expr_doc = pretty(callee, allocator);
                 let args = args_e
