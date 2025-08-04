@@ -531,6 +531,12 @@ where
     let parenexpr = expr
         .clone()
         .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
+        .map_with(move |e, e_s| {
+            Expr::Paren(e).into_id(Location {
+                span: get_span(e_s.span()),
+                path: ctx.file_path,
+            })
+        })
         .labelled("paren_expr");
     //tuple must  lower precedence than parenexpr, not to parse single element tuple without trailing comma
     choice((

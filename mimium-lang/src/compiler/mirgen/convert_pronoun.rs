@@ -422,6 +422,7 @@ fn convert_operators(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
             let fname = Expr::Var(op_var).into_id(oploc);
             Expr::Apply(fname, vec![e]).into_id(loc)
         }
+        Expr::Paren(e) => convert_operators(e, file_path),
         // because convert_pipe never fails, it propagate dummy error
         _ => convert_recursively_pure(e_id, |e| convert_operators(e, file_path), file_path),
     }

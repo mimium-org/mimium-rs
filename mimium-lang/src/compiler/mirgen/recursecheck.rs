@@ -42,6 +42,8 @@ fn try_find_recurse(e_s: ExprNodeId, name: Symbol) -> bool {
         Expr::BinOp(_, _, _) => unreachable!(),
         Expr::UniOp(_, _) => unreachable!(),
         Expr::MacroExpand(_, _) => unreachable!(),
+        Expr::Paren(_) => unreachable!(),
+
         Expr::Literal(_) | Expr::Error => false,
     }
 }
@@ -95,6 +97,7 @@ pub fn convert_recurse(e_s: ExprNodeId, file_path: Symbol) -> ExprNodeId {
         Expr::BinOp(_, _, _) => unreachable!(),
         Expr::UniOp(_, _) => unreachable!(),
         Expr::MacroExpand(_, _) => unreachable!(),
+        Expr::Paren(_) => unreachable!(),
         Expr::Literal(_) | Expr::Var(_) | Expr::Error => e_s.to_expr(),
     };
     let loc = Location {

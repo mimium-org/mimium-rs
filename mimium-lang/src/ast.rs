@@ -60,6 +60,7 @@ pub enum Expr {
     MacroExpand(ExprNodeId, Vec<ExprNodeId>), // syntax sugar: hoge!(a,b) => ${hoge(a,b)}
     BinOp(ExprNodeId, (Op, Span), ExprNodeId), // syntax sugar: LHS op RHS =>  OP(LHS, RHS) except for pipe operator : RHS(LHS)
     UniOp((Op, Span), ExprNodeId), // syntax sugar: LHS op RHS =>  OP(LHS, RHS) except for pipe operator : RHS(LHS)
+    Paren(ExprNodeId),             // syntax sugar to preserve context for pretty printing
 
     Lambda(Vec<TypedId>, Option<TypeNodeId>, ExprNodeId), //lambda, maybe information for internal state is needed
     Assign(ExprNodeId, ExprNodeId),
@@ -212,6 +213,7 @@ impl MiniPrint for Expr {
             Expr::Bracket(e) => format!("(bracket {})", e.simple_print()),
             Expr::Escape(e) => format!("(escape {})", e.simple_print()),
             Expr::Error => "(error)".to_string(),
+            Expr::Paren(expr_node_id) => format!("(paren {})", expr_node_id.simple_print()),
         }
     }
 }

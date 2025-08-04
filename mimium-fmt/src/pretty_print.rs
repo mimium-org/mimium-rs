@@ -203,24 +203,28 @@ mod expr {
                 let then_doc = then.map_or(allocator.nil(), |e| {
                     allocator.hardline().append(pretty(e, allocator))
                 });
+
                 allocator
                     .text("let ")
                     .append(pat_doc)
                     .append(allocator.text(" ="))
                     .append(allocator.softline())
-                    .append(expr_doc.align())
+                    .append(expr_doc.group())
+                    .nest(get_indent_size() as isize)
+                    .group()
                     .append(then_doc)
             }
             Expr::LetRec(id, body, then) => {
                 let body_doc = pretty(body, allocator);
-                let then_doc = then.map_or(allocator.nil(), |e| pretty(e, allocator));
+                let then_doc = then.map_or(allocator.nil(), |e| {
+                    allocator.hardline().append(pretty(e, allocator))
+                });
                 allocator
                     .text("letrec ")
                     .append(allocator.text(id.id))
-                    .append(allocator.text(" = "))
+                    .append(allocator.text(" ="))
                     .append(allocator.softline())
                     .append(body_doc)
-                    .append(allocator.hardline())
                     .append(then_doc)
             }
             Expr::If(cond, then, optelse) => {
@@ -273,11 +277,11 @@ mod expr {
                 let lhs_doc = pretty(lhs, allocator);
                 let rhs_doc = pretty(rhs, allocator);
                 lhs_doc
-                    .append(allocator.softline())
-                    .nest(get_indent_size() as isize)
+                    .append(allocator.line())
                     .append(allocator.text(op.to_string()))
                     .append(allocator.space())
                     .append(rhs_doc)
+                    .group()
             }
             Expr::UniOp((op, _span), expr) => {
                 let expr_doc = pretty(expr, allocator);
@@ -286,6 +290,8 @@ mod expr {
                     .append(allocator.softline())
                     .append(expr_doc)
             }
+            Expr::Paren(expr_node_id) => pretty(expr_node_id, allocator).parens(),
+
             Expr::FieldAccess(expr_node_id, symbol) => {
                 let expr_doc = pretty(expr_node_id, allocator);
                 expr_doc
@@ -322,8 +328,10 @@ mod statement {
                 allocator
                     .text("let ")
                     .append(pat_doc)
-                    .append(allocator.text(" = "))
-                    .append(body_doc.align())
+                    .append(allocator.text(" ="))
+                    .append(allocator.softline())
+                    .append(body_doc.group())
+                    .nest(get_indent_size() as isize)
                     .group()
             }
             Statement::LetRec(id, body) => {
@@ -331,8 +339,11 @@ mod statement {
                 allocator
                     .text("letrec ")
                     .append(allocator.text(id.id))
-                    .append(allocator.text(" = "))
-                    .append(body_doc)
+                    .append(allocator.text(" ="))
+                    .append(allocator.softline())
+                    .append(body_doc.group())
+                    .nest(get_indent_size() as isize)
+                    .group()
             }
             Statement::Assign(name, body) => {
                 let name_doc = expr::pretty(name, allocator);
