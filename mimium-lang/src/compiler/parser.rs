@@ -285,16 +285,18 @@ where
         .labelled("record pattern");
         choice((single_pat, tup, record)).labelled("pattern")
     });
-    with_type_annotation(pat, ctx.clone()).map_with(move |(pat, ty), e| match ty {
-        Some(ty) => TypedPattern { pat, ty },
-        None => TypedPattern {
-            pat,
-            ty: Type::Unknown.into_id_with_location(Location {
-                span: get_span(e.span()),
-                path: ctx.file_path,
-            }),
-        },
-    }).boxed()
+    with_type_annotation(pat, ctx.clone())
+        .map_with(move |(pat, ty), e| match ty {
+            Some(ty) => TypedPattern { pat, ty },
+            None => TypedPattern {
+                pat,
+                ty: Type::Unknown.into_id_with_location(Location {
+                    span: get_span(e.span()),
+                    path: ctx.file_path,
+                }),
+            },
+        })
+        .boxed()
 }
 
 fn items_parser<'src, I, E>(
@@ -627,7 +629,7 @@ where
             }
             pat
         }))
-        .then_ignore(just(Token::Assign))
+        .then_ignore(just(Token::Assign).then(just(Token::LineBreak).repeated()))
         .then(expr.clone())
         .map_with(|(ident, body), e| (Statement::Let(ident, body), get_span(e.span())))
         .labelled("let");
@@ -640,7 +642,7 @@ where
                 ident
             }),
         )
-        .then_ignore(just(Token::Assign))
+        .then_ignore(just(Token::Assign).then(just(Token::LineBreak).repeated()))
         .then(expr.clone())
         .map_with(|(ident, body), e| (Statement::LetRec(ident, body), get_span(e.span())))
         .labelled("letrec");
@@ -680,7 +682,8 @@ where
                 .ignored()
                 .or(end()),
         ))
-        .map(|stmts| into_then_expr(&stmts)).boxed()
+        .map(|stmts| into_then_expr(&stmts))
+        .boxed()
 }
 
 fn block_parser<'src, I>(
@@ -751,7 +754,8 @@ where
                 [(Token::ParenBegin, Token::ParenEnd)],
                 move |span| Expr::Error.into_id(ctx.clone().gen_loc(span)),
             )))
-    }).boxed()
+    })
+    .boxed()
 }
 
 fn toplevel_parser<'src, I>(
@@ -856,7 +860,8 @@ where
                 .into_iter()
                 .map(|(s, loc)| (s, loc.span))
                 .collect::<Vec<_>>(),
-        }).boxed()
+        })
+        .boxed()
 }
 
 // fn preprocess_parser(
