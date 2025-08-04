@@ -1579,7 +1579,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-fmt"
-version = "0.1.0"
+version = "2.3.1"
 dependencies = [
  "clap",
  "mimium-lang",
