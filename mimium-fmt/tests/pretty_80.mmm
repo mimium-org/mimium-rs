@@ -3,37 +3,37 @@ let pi = 3.14159265359
 let sr = 48000.0
 let _ =
     set_midi_port("from Max 1")
-let test_record =
-    {hoge = 100, fuga = 200}
+let test_record = {hoge = 100,
+    fuga = 200}
 let test_tuple = (100, 200, 400)
 fn sec2samp(sec){
     sec * 48000.0
 }
 fn countup(active){
     let r = (self + 1.0)
-    let rr = if (active) r  else  0.0
+    let rr = if(active) r else 0.0
     rr
 }
 fn countupn(time, active){
     let res = countup(active)
-    let r = if (res < time) res  else  0.0
+    let r = if(res < time) res else 0.0
     r
 }
 fn hold(time, active){
     countupn(time, active) > 0.0
 }
 fn get_gain(gate){
-    if (gate > 0.1) gate  else  self
+    if(gate > 0.1) gate else self
 }
 fn adsr(attack, decay, sustain, release, input){
     let s = self
     let atsig = min(1.0, (s + 1.0 / sec2samp(attack)))
     let decsig = max(sustain, (s - 1.0 / sec2samp(decay)))
     let at_or_dec = hold(sec2samp(attack), input > 0.1)
-    let res = if (input > 0.1) {
-            let at_dec_sus_sig = if (at_or_dec > 0.1) atsig  else  decsig
+    let res = if(input > 0.1) {
+            let at_dec_sus_sig = if(at_or_dec > 0.1) atsig else decsig
             at_dec_sus_sig
-        }  else  {
+        } else {
             let releasesig = max(0.0, (s - 1.0 / sec2samp(release)))
             releasesig
         }
