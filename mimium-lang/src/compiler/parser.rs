@@ -413,7 +413,7 @@ where
     ops.into_iter().fold(unary.boxed(), move |prec, op| {
         prec.clone()
             .foldl(
-                op.then_ignore(just(Token::LineBreak).or(just(Token::SemiColon)).repeated())
+                op.then_ignore(just(Token::LineBreak).repeated())
                     .map_with(move |op, e| (op, get_span(e.span())))
                     .then(prec)
                     .repeated(),
@@ -732,8 +732,14 @@ where
                     .clone()
                     .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd)),
             )
+            .padded_by(just(Token::LineBreak).repeated())
             .then(expr_group.clone())
-            .then(just(Token::Else).ignore_then(expr_group.clone()).or_not())
+            .then(
+                just(Token::Else)
+                    .padded_by(just(Token::LineBreak).repeated())
+                    .ignore_then(expr_group.clone())
+                    .or_not(),
+            )
             .map_with(move |((cond, then), opt_else), e| {
                 Expr::If(cond, then, opt_else).into_id(Location {
                     span: get_span(e.span()),
@@ -768,7 +774,7 @@ where
     let lvar = lvar_parser_typed(ctx.clone());
     let fnparams = lvar
         .clone()
-        .separated_by(just(Token::Comma))
+        .separated_by(breakable_comma())
         .collect()
         .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
         .labelled("fnparams");
