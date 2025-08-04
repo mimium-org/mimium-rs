@@ -294,7 +294,7 @@ where
                 path: ctx.file_path,
             }),
         },
-    })
+    }).boxed()
 }
 
 fn items_parser<'src, I, E>(
@@ -589,7 +589,7 @@ where
             .foldl(angle_paren_expr.or(parenitems).repeated(), folder)
             .labelled("apply");
 
-        op_parser(apply, ctx)
+        op_parser(apply, ctx).boxed()
     })
 }
 fn validate_reserved_pat<'src>(
@@ -680,7 +680,7 @@ where
                 .ignored()
                 .or(end()),
         ))
-        .map(|stmts| into_then_expr(&stmts))
+        .map(|stmts| into_then_expr(&stmts)).boxed()
 }
 
 fn block_parser<'src, I>(
@@ -751,7 +751,7 @@ where
                 [(Token::ParenBegin, Token::ParenEnd)],
                 move |span| Expr::Error.into_id(ctx.clone().gen_loc(span)),
             )))
-    })
+    }).boxed()
 }
 
 fn toplevel_parser<'src, I>(
@@ -856,7 +856,7 @@ where
                 .into_iter()
                 .map(|(s, loc)| (s, loc.span))
                 .collect::<Vec<_>>(),
-        })
+        }).boxed()
 }
 
 // fn preprocess_parser(
