@@ -50,6 +50,11 @@ impl From<TypeNodeId> for LabeledParam {
         Self { label: None, ty }
     }
 }
+impl From<(Symbol, TypeNodeId)> for LabeledParam {
+    fn from((label, ty): (Symbol, TypeNodeId)) -> Self {
+        Self { label: Some(label), ty }
+    }
+}
 /// A parameter representation for function type, with an optional label and a type.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LabeledParams(Vec<LabeledParam>);

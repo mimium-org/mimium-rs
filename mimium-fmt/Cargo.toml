@@ -1,0 +1,13 @@
+[package]
+name = "mimium-fmt"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Pretty printing module for mimium"
+
+
+[dependencies]
+pretty = "0.12.0"
+mimium-lang = { path = "../mimium-lang" }
+clap = { version = "4.4.2", features = ["derive"] }

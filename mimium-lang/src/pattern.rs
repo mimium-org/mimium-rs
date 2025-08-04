@@ -50,7 +50,14 @@ pub struct TypedId {
     // specification at all. This can be used for querying for the span.
     pub ty: TypeNodeId,
 }
-
+impl TypedId{
+    pub fn new(id:Symbol) -> Self {
+        TypedId {
+            id,
+            ty: Type::Unknown.into_id(),
+        }
+    }
+}
 impl TypedId {
     pub fn to_span(&self) -> Span {
         self.ty.to_span()

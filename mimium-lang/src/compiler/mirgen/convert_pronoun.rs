@@ -1,10 +1,13 @@
-use crate::ast::{Expr, Literal};
+use crate::ast::operators::Op;
+use crate::ast::{Expr, Literal, RecordField};
 use crate::interner::{ExprNodeId, Symbol, ToSymbol};
 use crate::pattern::TypedId;
 use crate::types::Type;
 use crate::utils::error::SimpleError;
 use crate::utils::metadata::Location;
+use crate::utils::miniprint::MiniPrint;
 pub type Error = SimpleError;
+#[derive(Clone)]
 struct ConvertResult {
     expr: ExprNodeId,
     found_any: bool,
@@ -61,14 +64,14 @@ where
         Expr::Let(id, body, then) => {
             let (bodyres, errs) = conversion(body);
             let (then_res, errs2) = opt_conversion(then);
-            let found_any = bodyres.found_any | then_res.as_ref().map_or(false, |r| r.found_any);
+            let found_any = bodyres.found_any | then_res.as_ref().is_some_and(|r| r.found_any);
             let expr = Expr::Let(id, bodyres.expr, then_res.map(|r| r.expr)).into_id(loc);
             (ConvertResult { expr, found_any }, [errs, errs2].concat())
         }
         Expr::LetRec(id, body, then) => {
             let (bodyres, errs) = conversion(body);
             let (then_res, errs2) = opt_conversion(then);
-            let found_any = bodyres.found_any | then_res.as_ref().map_or(false, |r| r.found_any);
+            let found_any = bodyres.found_any | then_res.as_ref().is_some_and(|r| r.found_any);
             let expr = Expr::LetRec(id, bodyres.expr, then_res.map(|r| r.expr)).into_id(loc);
             (ConvertResult { expr, found_any }, [errs, errs2].concat())
         }
@@ -89,12 +92,34 @@ where
                 [errs, errs2.concat()].concat(),
             )
         }
-        Expr::PipeApply(callee, fun) => {
-            let (callee, errs) = conversion(callee);
-            let (fun, errs2) = conversion(fun);
-            let expr = Expr::PipeApply(callee.expr, fun.expr).into_id(loc);
-            let found_any = callee.found_any | fun.found_any;
+        Expr::BinOp(lhs, (op, opspan), rhs) => {
+            let (lhs, errs) = conversion(lhs);
+            let (rhs, errs2) = conversion(rhs);
+            let expr = Expr::BinOp(lhs.expr, (op, opspan), rhs.expr).into_id(loc);
+            let found_any = lhs.found_any | rhs.found_any;
             (ConvertResult { expr, found_any }, [errs, errs2].concat())
+        }
+        Expr::UniOp((op, opspan), expr) => {
+            let (res, errs) = conversion(expr);
+            let expr = Expr::UniOp((op, opspan), res.expr).into_id(loc);
+            (
+                ConvertResult {
+                    expr,
+                    found_any: res.found_any,
+                },
+                errs,
+            )
+        }
+        Expr::MacroExpand(fun, callee) => {
+            let (fun, errs) = conversion(fun);
+            let (res_vec, errs2): (Vec<_>, Vec<_>) = callee.into_iter().map(&conversion).unzip();
+            let expr =
+                Expr::MacroExpand(fun.expr, res_vec.iter().map(|e| e.expr).collect()).into_id(loc);
+            let found_any = res_vec.into_iter().any(|e| e.found_any) | fun.found_any;
+            (
+                ConvertResult { expr, found_any },
+                [errs, errs2.concat()].concat(),
+            )
         }
         Expr::If(cond, then, opt_else) => {
             let (cond, err) = conversion(cond);
@@ -133,6 +158,73 @@ where
                 },
                 errs,
             )
+        }
+        Expr::FieldAccess(record, field) => {
+            let (res, errs) = conversion(record);
+            let expr = Expr::FieldAccess(res.expr, field).into_id(loc);
+            (
+                ConvertResult {
+                    expr,
+                    found_any: res.found_any,
+                },
+                errs,
+            )
+        }
+        Expr::ArrayAccess(array, index) => {
+            let (array_res, errs) = conversion(array);
+            let (index_res, errs2) = conversion(index);
+            let expr = Expr::ArrayAccess(array_res.expr, index_res.expr).into_id(loc);
+            (
+                ConvertResult {
+                    expr,
+                    found_any: array_res.found_any | index_res.found_any,
+                },
+                [errs, errs2].concat(),
+            )
+        }
+        Expr::ArrayLiteral(items) => {
+            let (res_vec, errs): (Vec<_>, Vec<_>) = items.into_iter().map(&conversion).unzip();
+            let expr = Expr::ArrayLiteral(res_vec.iter().map(|e| e.expr).collect()).into_id(loc);
+            let found_any = res_vec.into_iter().any(|e| e.found_any);
+            (ConvertResult { expr, found_any }, errs.concat())
+        }
+        Expr::RecordLiteral(fields) => {
+            let (res_vec, errs): (Vec<_>, Vec<_>) = fields
+                .into_iter()
+                .map(|f| {
+                    let (res, errs) = conversion(f.expr);
+                    (
+                        (
+                            RecordField {
+                                name: f.name,
+                                expr: res.expr,
+                            },
+                            res.found_any,
+                        ),
+                        errs,
+                    )
+                })
+                .unzip();
+            let expr = Expr::RecordLiteral(res_vec.clone().into_iter().map(|e| e.0).collect())
+                .into_id(loc);
+            let found_any = res_vec.into_iter().any(|f| f.1);
+            (ConvertResult { expr, found_any }, errs.concat())
+        }
+        Expr::Assign(left, right) => {
+            let (left, err) = conversion(left);
+            let (right, err2) = conversion(right);
+            let found_any = left.found_any | right.found_any;
+            let expr = Expr::Assign(left.expr, right.expr).into_id(loc);
+            let errs = [err, err2].concat();
+            (ConvertResult { expr, found_any }, errs)
+        }
+        Expr::Then(cond, body) => {
+            let (cond, err) = conversion(cond);
+            let (body, err2) = opt_conversion(body);
+            let found_any = cond.found_any | body.clone().map_or(false, |b| b.found_any);
+            let expr = Expr::Then(cond.expr, body.map(|b| b.expr)).into_id(loc);
+            let errs = [err, err2].concat();
+            (ConvertResult { expr, found_any }, errs)
         }
         _ => (
             ConvertResult {
@@ -281,22 +373,82 @@ fn convert_placeholder(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
     }
 }
 
-fn convert_pipe(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
+fn convert_operators(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
     let loc = Location::new(e_id.to_span().clone(), file_path);
     match e_id.to_expr() {
-        Expr::PipeApply(callee, fun) => {
-            let callee = convert_pipe(callee, file_path);
-            let fun = convert_pipe(fun, file_path);
-            Expr::Apply(fun, vec![callee]).into_id(loc)
+        Expr::BinOp(arg, (Op::Pipe, _opspan), fun) => {
+            let arg = convert_operators(arg, file_path);
+            let fun = convert_operators(fun, file_path);
+            Expr::Apply(fun, vec![arg]).into_id(loc)
         }
+        Expr::BinOp(lhs, (op, opspan), rhs) => {
+            log::trace!(
+                "convert_operators: {} {} {}",
+                lhs.to_expr().simple_print(),
+                op,
+                rhs.to_expr().simple_print()
+            );
+            let lhs = convert_operators(lhs, file_path);
+            let rhs = convert_operators(rhs, file_path);
+            let op_var = op.get_associated_fn_name();
+            let oploc = Location {
+                span: opspan.clone(),
+                path: loc.path,
+            };
+            let fname = Expr::Var(op_var).into_id(oploc);
+            match op {
+                Op::At => Expr::Apply(fname, vec![rhs, lhs]).into_id(loc), // applies in reversed order,
+                _ => Expr::Apply(fname, vec![lhs, rhs]).into_id(loc),
+            }
+        }
+        Expr::UniOp((Op::Minus, opspan), expr) => {
+            let e = convert_operators(expr, file_path);
+            let op_var = Op::Minus.get_associated_fn_name();
+            let oploc = Location {
+                span: opspan.clone(),
+                path: loc.path,
+            };
+            let fname = Expr::Var(op_var).into_id(oploc);
+            let zero = Expr::Literal(Literal::Float("0.0".to_symbol())).into_id(loc.clone());
+            Expr::Apply(fname, vec![zero, e]).into_id(loc)
+        }
+        Expr::UniOp((op, opspan), expr) => {
+            let e = convert_operators(expr, file_path);
+            let op_var = op.get_associated_fn_name();
+            let oploc = Location {
+                span: opspan.clone(),
+                path: loc.path,
+            };
+            let fname = Expr::Var(op_var).into_id(oploc);
+            Expr::Apply(fname, vec![e]).into_id(loc)
+        }
+        Expr::Paren(e) => convert_operators(e, file_path),
         // because convert_pipe never fails, it propagate dummy error
-        _ => convert_recursively_pure(e_id, |e| convert_pipe(e, file_path), file_path),
+        _ => convert_recursively_pure(e_id, |e| convert_operators(e, file_path), file_path),
+    }
+}
+fn convert_macroexpand(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
+    let loc = Location::new(e_id.to_span().clone(), file_path);
+    match e_id.to_expr() {
+        Expr::MacroExpand(callee, args) => {
+            let callee = convert_macroexpand(callee, file_path);
+            let args = args
+                .into_iter()
+                .map(|arg| convert_macroexpand(arg, file_path))
+                .collect();
+
+            Expr::Escape(Expr::Apply(callee, args).into_id(loc.clone())).into_id(loc)
+        }
+        _ => convert_recursively_pure(e_id, |e| convert_macroexpand(e, file_path), file_path),
     }
 }
 
 pub fn convert_pronoun(expr: ExprNodeId, file_path: Symbol) -> (ExprNodeId, Vec<Error>) {
+    // these 3 operations can be done in any order, and ideally, merged to one pattern matching.
+    // However, for clarity, we split them into separated operations.
+    let expr = convert_operators(expr, file_path);
     let expr = convert_placeholder(expr, file_path);
-    let expr = convert_pipe(expr, file_path);
+    let expr = convert_macroexpand(expr, file_path);
     let (res, errs) = convert_self(expr, FeedId::Global, file_path);
     (res.expr, errs)
 }

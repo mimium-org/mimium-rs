@@ -135,7 +135,14 @@ impl PatternDestructor {
                 apply_node(func),
                 args.clone().into_iter().map(apply_node).collect(),
             ),
-            Expr::PipeApply(lhs, rhs) => Expr::PipeApply(apply_node(lhs), apply_node(rhs)),
+            Expr::BinOp(lhs, (op, span), rhs) => {
+                Expr::BinOp(apply_node(lhs), (op, span), apply_node(rhs))
+            }
+            Expr::UniOp((op, span), expr) => Expr::UniOp((op, span), apply_node(expr)),
+            Expr::MacroExpand(callee, args) => Expr::MacroExpand(
+                apply_node(callee),
+                args.clone().into_iter().map(apply_node).collect(),
+            ),
             Expr::FieldAccess(record, field) => Expr::FieldAccess(apply_node(record), field),
             Expr::Lambda(params, ty, body) => Expr::Lambda(params.clone(), ty, apply_node(body)),
             Expr::Feed(id, body) => Expr::Feed(id, apply_node(body)),

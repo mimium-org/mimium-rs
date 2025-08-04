@@ -1,6 +1,6 @@
 ///remove redundunt letrec definition and convert them to plain let
 use crate::{
-    ast::Expr,
+    ast::{Expr, RecordField},
     interner::{ExprNodeId, Symbol},
     pattern::TypedPattern,
     utils::metadata::Location,
@@ -34,8 +34,17 @@ fn try_find_recurse(e_s: ExprNodeId, name: Symbol) -> bool {
                 || opt_else.is_some_and(|e| try_find_recurse(e, name))
         }
         Expr::Bracket(e) | Expr::Escape(e) => try_find_recurse(e, name),
-        Expr::Feed(_x, _body) => panic!("feed should not be shown in recurse removal process"),
-        _ => false,
+        Expr::Feed(_x, body) => try_find_recurse(body, name),
+        Expr::ArrayAccess(e, i) => try_find_recurse(e, name) || try_find_recurse(i, name),
+        Expr::ArrayLiteral(items) => items.iter().any(|e| try_find_recurse(*e, name)),
+        Expr::RecordLiteral(fields) => fields.iter().any(|f| try_find_recurse(f.expr, name)),
+        Expr::FieldAccess(record, _field) => try_find_recurse(record, name),
+        Expr::BinOp(_, _, _) => unreachable!(),
+        Expr::UniOp(_, _) => unreachable!(),
+        Expr::MacroExpand(_, _) => unreachable!(),
+        Expr::Paren(_) => unreachable!(),
+
+        Expr::Literal(_) | Expr::Error => false,
     }
 }
 
@@ -70,10 +79,26 @@ pub fn convert_recurse(e_s: ExprNodeId, file_path: Symbol) -> ExprNodeId {
             Expr::If(convert(cond), convert(then), opt_else.map(convert))
         }
         Expr::Lambda(ids, opt_type, body) => Expr::Lambda(ids.clone(), opt_type, convert(body)),
-        Expr::Feed(_x, _body) => panic!("feed should not be shown in recurse removal process"),
+        Expr::Feed(x, body) => Expr::Feed(x, convert(body)),
         Expr::Bracket(e) => Expr::Bracket(convert(e)),
         Expr::Escape(e) => Expr::Escape(convert(e)),
-        e => e.clone(),
+        Expr::ArrayAccess(e, i) => Expr::ArrayAccess(convert(e), convert(i)),
+        Expr::ArrayLiteral(items) => Expr::ArrayLiteral(convert_vec(items)),
+        Expr::RecordLiteral(fields) => Expr::RecordLiteral(
+            fields
+                .iter()
+                .map(|f| RecordField {
+                    name: f.name,
+                    expr: convert(f.expr),
+                })
+                .collect(),
+        ),
+        Expr::FieldAccess(record, field) => Expr::FieldAccess(convert(record), field),
+        Expr::BinOp(_, _, _) => unreachable!(),
+        Expr::UniOp(_, _) => unreachable!(),
+        Expr::MacroExpand(_, _) => unreachable!(),
+        Expr::Paren(_) => unreachable!(),
+        Expr::Literal(_) | Expr::Var(_) | Expr::Error => e_s.to_expr(),
     };
     let loc = Location {
         span,

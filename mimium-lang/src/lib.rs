@@ -4,7 +4,7 @@ pub mod ast;
 pub mod interner;
 pub mod interpreter;
 pub mod mir;
-pub(crate) mod pattern;
+pub mod pattern;
 pub mod types;
 pub mod utils;
 

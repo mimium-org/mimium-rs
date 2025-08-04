@@ -7,7 +7,7 @@ use crate::plugin::MacroFunction;
 use crate::{function, interpreter, numeric, unit};
 pub mod convert_pronoun;
 pub(crate) mod recursecheck;
-use super::pattern_destructor::destruct_let_pattern;
+// use super::pattern_destructor::destruct_let_pattern;
 use crate::mir::{self, Argument, Instruction, Mir, StateSize, VPtr, VReg, Value};
 
 use std::sync::Arc;
@@ -605,7 +605,6 @@ impl Context {
                 ));
                 (result, ty)
             }
-
             Expr::Apply(f, args) => {
                 let (f, ft) = self.eval_expr(*f);
                 let del = self.try_make_delay(&f, args);
@@ -625,34 +624,34 @@ impl Context {
                         log::trace!("Unpacking argument for {:?}", ty);
                         // Check if the argument is a tuple or record that we need to unpack
                         match ty.to_type() {
-                            Type::Tuple(tys) => tys
-                                .into_iter()
-                                .enumerate()
-                                .map(|(i, t)| {
-                                    let elem_val = self.push_inst(Instruction::GetElement {
-                                        value: arg_val.clone(),
-                                        ty,
-                                        tuple_offset: i as u64,
-                                    });
-                                    (elem_val, t)
-                                })
-                                .collect(),
-                            Type::Record(kvs) => param_types.get_as_slice().iter().map(|param|{
-                                kvs.iter().enumerate().find(|(_i,(k, _))| param.label.is_some_and(| l| l == *k))
-                                    .map_or_else(
-                                        || unreachable!("parameter pack failed, possible type inference bug"),
-                                        |(i,(_, t))| {
-                                            let field_val = self.push_inst(Instruction::GetElement {
+                                    Type::Tuple(tys) => tys
+                                        .into_iter()
+                                        .enumerate()
+                                        .map(|(i, t)| {
+                                            let elem_val = self.push_inst(Instruction::GetElement {
                                                 value: arg_val.clone(),
                                                 ty,
                                                 tuple_offset: i as u64,
                                             });
-                                            (field_val, *t)
-                                        },
-                                    )
-                            }).collect(),
-                            _ => vec![self.eval_expr(args[0])],
-                        }
+                                            (elem_val, t)
+                                        })
+                                        .collect(),
+                                    Type::Record(kvs) => param_types.get_as_slice().iter().map(|param|{
+                                        kvs.iter().enumerate().find(|(_i,(k, _))| param.label.is_some_and(| l| l == *k))
+                                            .map_or_else(
+                                                || unreachable!("parameter pack failed, possible type inference bug"),
+                                                |(i,(_, t))| {
+                                                    let field_val = self.push_inst(Instruction::GetElement {
+                                                        value: arg_val.clone(),
+                                                        ty,
+                                                        tuple_offset: i as u64,
+                                                    });
+                                                    (field_val, *t)
+                                                },
+                                            )
+                                    }).collect(),
+                                    _ => vec![self.eval_expr(args[0])],
+                                }
                     } else {
                         self.eval_args(args)
                     };
@@ -689,7 +688,7 @@ impl Context {
                     (res, rt)
                 }
             }
-            Expr::PipeApply(_, _) => unreachable!(),
+
             Expr::Lambda(ids, _rett, body) => {
                 let (atypes, rt) = match ty.to_type() {
                     Type::Function(atypes, rt, _) => (atypes.ty_iter().collect::<Vec<_>>(), rt),
@@ -828,7 +827,6 @@ impl Context {
                     (Arc::new(Value::None), unit!())
                 }
             }
-
             Expr::Assign(assignee, body) => {
                 let (src, ty) = self.eval_expr(*body);
                 self.eval_assign(*assignee, src, ty, &span);
@@ -882,8 +880,14 @@ impl Context {
 
                 (res, ty)
             }
-            Expr::Bracket(_) => todo!(),
-            Expr::Escape(_) => todo!(),
+            Expr::Bracket(_) | Expr::Escape(_) | Expr::MacroExpand(_, _) => {
+                unreachable!("Macro code should be expanded before mirgen")
+            }
+            Expr::BinOp(_, _, _) | Expr::UniOp(_, _) | Expr::Paren(_) => {
+                unreachable!(
+                    "syntactic sugar for infix&unary operators are removed before this stage"
+                )
+            }
             Expr::Error => {
                 self.push_inst(Instruction::Error);
                 (Arc::new(Value::None), unit!())
@@ -908,9 +912,9 @@ pub fn compile(
     macro_env: &[Box<dyn MacroFunction>],
     file_path: Option<Symbol>,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
-    let ast2 = recursecheck::convert_recurse(root_expr_id, file_path.unwrap_or_default());
     let (expr, convert_errs) =
-        convert_pronoun::convert_pronoun(ast2, file_path.unwrap_or_default());
+        convert_pronoun::convert_pronoun(root_expr_id, file_path.unwrap_or_default());
+    let expr = recursecheck::convert_recurse(expr, file_path.unwrap_or_default());
     // let expr = destruct_let_pattern(expr);
     let mut infer_ctx = infer_root(expr, builtin_types, file_path.unwrap_or_default());
     let errors = infer_ctx

@@ -7,8 +7,7 @@ use crate::utils::miniprint::MiniPrint;
 
 macro_rules! test_string {
     ($src:literal, $ans:expr) => {
-        let srcstr = $src.to_string();
-        let (ast, errs) = parse(&srcstr, None);
+        let (ast, errs) = parse_to_expr(&$src, None);
         if errs.is_empty() {
             assert!(
                 ast.to_expr() == $ans.to_expr(),
@@ -17,7 +16,7 @@ macro_rules! test_string {
                 $ans.simple_print()
             );
         } else {
-            utils::error::report(&srcstr, "".to_symbol(), &errs);
+            utils::error::report(&$src, "".to_symbol(), &errs);
             panic!();
         }
     };
@@ -34,25 +33,28 @@ fn test_lex(src: &str) -> Vec<Token> {
         panic!("lex error: {errs:?}");
     }
 }
-fn test_expr_parser() -> impl Parser<Token, ExprNodeId, Error = Simple<Token>> {
+fn test_expr_parser<'src, I>() -> impl Parser<'src, I, ExprNodeId, ParseError<'src>> + Clone
+where
+    I: ValueInput<'src, Token = Token, Span = SimpleSpan>,
+{
+    use chumsky::prelude::*;
     let ctx = ParseContext {
         file_path: "/".to_symbol(),
     };
-    chumsky::prelude::recursive(|e| expr_parser(e, ctx))
+    recursive(|e| expr_parser(e, ctx))
 }
 fn test_expr_string(src: &str, expr: ExprNodeId) {
-    let (ast, errs) = test_expr_parser().parse_recovery(test_lex(src));
+    let tokens = test_lex(src);
+    let tokens = tokens.as_slice();
+    let (ast, errs) = test_expr_parser().parse(tokens).into_output_errors();
     if errs.is_empty() && ast.is_some() {
         assert!(
             ast.unwrap().to_expr() == expr.to_expr(),
             "res:{ast:?}\nans:{expr:?}",
         );
     } else {
-        utils::error::report(
-            src,
-            "".to_symbol(),
-            &convert_parse_errors(&errs).collect_vec(),
-        );
+        let errs = convert_parse_errors(&errs).collect_vec();
+        utils::error::report(src, "".to_symbol(), &errs);
         panic!();
     }
 }
@@ -150,39 +152,34 @@ hoge}",
 }
 #[test]
 fn test_add() {
-    let ans = Expr::Apply(
-        Expr::Var("add".to_symbol()).into_id(loc(6..7)),
-        vec![
-            Expr::Literal(Literal::Float("3466.0".to_symbol())).into_id(loc(0..6)),
-            Expr::Literal(Literal::Float("2000.0".to_symbol())).into_id(loc(7..13)),
-        ],
+    let ans = Expr::BinOp(
+        Expr::Literal(Literal::Float("3466.0".to_symbol())).into_id(loc(0..6)),
+        (Op::Sum, 6..7),
+        Expr::Literal(Literal::Float("2000.0".to_symbol())).into_id(loc(7..13)),
     )
     .into_id(loc(0..13));
     test_string!("3466.0+2000.0", ans);
 }
 #[test]
 fn test_at() {
-    let ans1 = Expr::Apply(
-        Expr::Var("_mimium_schedule_at".to_symbol()).into_id(loc(3..4)),
-        vec![
-            Expr::Literal(Literal::Float("1.0".to_symbol())).into_id(loc(4..7)),
-            Expr::Var("foo".to_symbol()).into_id(loc(0..3)),
-        ],
+    let ans1 = Expr::BinOp(
+        Expr::Var("foo".to_symbol()).into_id(loc(0..3)),
+        (Op::At, 3..4),
+        Expr::Literal(Literal::Float("1.0".to_symbol())).into_id(loc(4..7)),
     )
     .into_id(loc(0..7));
     test_string!("foo@1.0", ans1);
 
-    let time = Expr::Apply(
-        Expr::Var("pow".to_symbol()).into_id(loc(7..8)),
-        vec![
-            Expr::Literal(Literal::Float("1.0".to_symbol())).into_id(loc(4..7)),
-            Expr::Literal(Literal::Float("2.0".to_symbol())).into_id(loc(8..11)),
-        ],
+    let time = Expr::BinOp(
+        Expr::Literal(Literal::Float("1.0".to_symbol())).into_id(loc(4..7)),
+        (Op::Exponent, 7..8),
+        Expr::Literal(Literal::Float("2.0".to_symbol())).into_id(loc(8..11)),
     )
     .into_id(loc(4..11));
-    let ans2 = Expr::Apply(
-        Expr::Var("_mimium_schedule_at".to_symbol()).into_id(loc(3..4)),
-        vec![time, Expr::Var("foo".to_symbol()).into_id(loc(0..3))],
+    let ans2 = Expr::BinOp(
+        Expr::Var("foo".to_symbol()).into_id(loc(0..3)),
+        (Op::At, 3..4),
+        time,
     )
     .into_id(loc(0..11));
     test_string!("foo@1.0^2.0", ans2);
@@ -245,14 +242,12 @@ fn test_applynested() {
 }
 #[test]
 fn test_macroexpand() {
-    let ans = Expr::Escape(
-        Expr::Apply(
-            Expr::Var("myfun".to_symbol()).into_id(loc(0..6)),
-            vec![Expr::Var("callee".to_symbol()).into_id(loc(7..13))],
-        )
-        .into_id(loc(0..14)),
+    let ans = Expr::MacroExpand(
+        Expr::Var("myfun".to_symbol()).into_id(loc(0..6)),
+        vec![Expr::Var("callee".to_symbol()).into_id(loc(7..13))],
     )
     .into_id(loc(0..14));
+
     test_string!("myfun!(callee)", ans);
 }
 
@@ -264,11 +259,11 @@ fn test_fndef() {
                 LabeledParams::new(vec![
                     LabeledParam::new(
                         "input".to_symbol(),
-                        Type::Unknown.into_id_with_location(loc(0..28)),
+                        Type::Unknown.into_id_with_location(loc(8..13)),
                     ),
                     LabeledParam::new(
                         "gue".to_symbol(),
-                        Type::Unknown.into_id_with_location(loc(0..28)),
+                        Type::Unknown.into_id_with_location(loc(14..17)),
                     ),
                 ]),
                 Type::Unknown.into_id_with_location(loc(0..28)),
@@ -307,11 +302,11 @@ fn global_fnmultiple() {
                 LabeledParams::new(vec![
                     LabeledParam::new(
                         "input".to_symbol(),
-                        Type::Unknown.into_id_with_location(loc(0..28)),
+                        Type::Unknown.into_id_with_location(loc(8..13)),
                     ),
                     LabeledParam::new(
                         "gue".to_symbol(),
-                        Type::Unknown.into_id_with_location(loc(0..28)),
+                        Type::Unknown.into_id_with_location(loc(14..17)),
                     ),
                 ]),
                 Type::Unknown.into_id_with_location(loc(0..28)),
@@ -342,11 +337,11 @@ fn global_fnmultiple() {
                         LabeledParams::new(vec![
                             LabeledParam::new(
                                 "input".to_symbol(),
-                                Type::Unknown.into_id_with_location(loc(29..57)),
+                                Type::Unknown.into_id_with_location(loc(37..42)),
                             ),
                             LabeledParam::new(
                                 "gue".to_symbol(),
-                                Type::Unknown.into_id_with_location(loc(29..57)),
+                                Type::Unknown.into_id_with_location(loc(43..46)),
                             ),
                         ]),
                         Type::Unknown.into_id_with_location(loc(29..57)),
@@ -380,35 +375,6 @@ fn global_fnmultiple() {
         ans
     );
 }
-
-#[test]
-fn test_macrodef() {
-    let ans = Expr::LetRec(
-        TypedId {
-            id: "hoge".to_symbol(),
-            ty: Type::Unknown.into_id_with_location(loc(6..10)),
-        },
-        Expr::Lambda(
-            vec![
-                TypedId {
-                    id: "input".to_symbol(),
-                    ty: Type::Unknown.into_id_with_location(loc(11..16)),
-                },
-                TypedId {
-                    id: "gue".to_symbol(),
-                    ty: Type::Unknown.into_id_with_location(loc(17..20)),
-                },
-            ],
-            None,
-            Expr::Bracket(Expr::Var("input".to_symbol()).into_id(loc(24..29))).into_id(loc(0..31)),
-        )
-        .into_id(loc(0..31)),
-        None,
-    )
-    .into_id(loc(0..31));
-    test_string!("macro hoge(input,gue){\n input\n}", ans);
-}
-
 #[test]
 fn test_tuple() {
     let tuple_items = vec![
@@ -428,7 +394,7 @@ fn test_tuple() {
     test_string!("(1.0, )", ans);
 
     // This is not a tuple
-    let ans = tuple_items[0];
+    let ans = Expr::Paren(tuple_items[0]).into_id(loc(0..5));
     test_string!("(1.0)", ans);
 }
 
@@ -482,12 +448,10 @@ fn test_array_access() {
     test_string!("arr[0.5]", ans);
 
     // Array access with expression index
-    let index_expr = Expr::Apply(
-        Expr::Var("add".to_symbol()).into_id(loc(5..6)),
-        vec![
-            Expr::Literal(Literal::Float("1".to_symbol())).into_id(loc(4..5)),
-            Expr::Literal(Literal::Float("2".to_symbol())).into_id(loc(6..7)),
-        ],
+    let index_expr = Expr::BinOp(
+        Expr::Literal(Literal::Float("1".to_symbol())).into_id(loc(4..5)),
+        (Op::Sum, 5..6),
+        Expr::Literal(Literal::Float("2".to_symbol())).into_id(loc(6..7)),
     )
     .into_id(loc(4..7));
 
@@ -511,7 +475,7 @@ fn test_array_access() {
 }
 
 #[test]
-fn test_record_type_decl() {
+fn test_record_literal() {
     let x_s = "x".to_symbol();
     let y_s = "y".to_symbol();
     let ans = Expr::RecordLiteral(vec![
@@ -524,7 +488,7 @@ fn test_record_type_decl() {
             expr: Expr::Literal(Literal::Float("2.0".to_symbol())).into_id(loc(7..8)),
         },
     ]);
-    test_expr_string("{x = 0.0,y = 2.0}", ans.into_id(loc(0..9)));
+    test_expr_string("{x = 0.0, y = 2.0}", ans.into_id(loc(0..9)));
 }
 #[test]
 fn test_field_access() {
@@ -555,7 +519,7 @@ fn test_stmt_without_return() {
             ty: Type::Function(
                 LabeledParams::new(vec![LabeledParam::new(
                     "input".to_symbol(),
-                    Type::Unknown.into_id_with_location(loc(0..56)),
+                    Type::Unknown.into_id_with_location(loc(8..13)),
                 )]),
                 Type::Unknown.into_id_with_location(loc(0..56)),
                 None,
@@ -573,12 +537,10 @@ fn test_stmt_without_return() {
                     pat: Pattern::Single("v".to_symbol()),
                     ty: Type::Unknown.into_id_with_location(loc(24..25)),
                 },
-                Expr::Apply(
-                    Expr::Var("add".to_symbol()).into_id(loc(33..34)),
-                    vec![
-                        Expr::Var("input".to_symbol()).into_id(loc(28..33)),
-                        Expr::Literal(Literal::Float("1".to_symbol())).into_id(loc(34..35)),
-                    ],
+                Expr::BinOp(
+                    Expr::Var("input".to_symbol()).into_id(loc(28..33)),
+                    (Op::Sum, 33..34),
+                    Expr::Literal(Literal::Float("1".to_symbol())).into_id(loc(34..35)),
                 )
                 .into_id(loc(28..35)),
                 Some(
@@ -610,14 +572,14 @@ fn test_stmt_without_return() {
 }
 
 #[test]
-#[should_panic]
 fn test_fail() {
     let src = "let 100 == hoge\n fuga";
     let (_ast, errs) = parse(src, None);
 
     if !errs.is_empty() {
-        panic!("{}", utils::error::dump_to_string(&errs))
+        eprintln!("{}", utils::error::dump_to_string(&errs))
     };
+    assert!(errs.len() == 1)
 }
 
 #[test]
@@ -629,10 +591,13 @@ fn test_err_builtin_redefine() {
     let (_ast, err) = &parse(src, None);
 
     assert_eq!(err.len(), 1);
+    let msg = Rich::custom(
+        SimpleSpan::from(3..6),
+        "Builtin functions cannot be re-defined.",
+    );
 
     let err_ans: Box<dyn ReportableError> = Box::new(error::ParseError::<Token> {
-        content: Simple::custom(3..6, "Builtin functions cannot be re-defined.")
-            .with_label("function decl"),
+        content: msg,
         file: "/".to_symbol(),
     });
     assert_eq!(err[0].to_string(), err_ans.to_string())

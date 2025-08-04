@@ -2,16 +2,16 @@ use crate::{
     ast::Expr,
     interner::ExprNodeId,
     pattern::{TypedId, TypedPattern},
+    utils::metadata::{Location, Span}
 };
 
-use super::{Location, Span};
+
 // an intermediate representation used in parser.
 // Note that this struct do not distinct between a global statement(allows `fn(){}`) and a local statement.
 // The distinction is done in the actual parser logic.
 #[derive(Clone, Debug, PartialEq)]
-pub(super) enum Statement {
+pub enum Statement {
     Let(TypedPattern, ExprNodeId),
-    MacroExpand(TypedId, ExprNodeId),
     LetRec(TypedId, ExprNodeId),
     Assign(ExprNodeId, ExprNodeId),
     Single(ExprNodeId),
@@ -42,7 +42,7 @@ fn stmt_from_expr(expr: ExprNodeId, target: &mut Vec<Statement>) {
 }
 
 // A helper function to convert vector of statements to nested expression
-pub(super) fn into_then_expr(stmts: &[(Statement, Location)]) -> Option<ExprNodeId> {
+pub(crate) fn into_then_expr(stmts: &[(Statement, Location)]) -> Option<ExprNodeId> {
     let get_span = |spana: Span, spanb: Option<ExprNodeId>| match spanb {
         Some(b) => {
             let start = spana.start;
@@ -67,10 +67,6 @@ pub(super) fn into_then_expr(stmts: &[(Statement, Location)]) -> Option<ExprNode
             (_, Statement::Assign(name, body)) => Some(
                 Expr::Then(Expr::Assign(*name, *body).into_id(loc.clone()), then).into_id(new_loc),
             ),
-            (_, Statement::MacroExpand(fname, body)) => {
-                //todo!
-                Some(Expr::LetRec(fname.clone(), *body, then).into_id(new_loc))
-            }
             (None, Statement::Single(e)) => Some(*e),
             (t, Statement::Single(e)) => Some(Expr::Then(*e, t).into_id(new_loc)),
             (t, Statement::Error) => {

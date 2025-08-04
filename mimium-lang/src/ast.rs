@@ -1,8 +1,12 @@
 pub mod builder;
-
+pub mod operators;
+pub mod program;
+mod resolve_include;
+pub mod statement;
+use crate::ast::operators::Op;
 use crate::interner::{ExprNodeId, Symbol, TypeNodeId, with_session_globals};
 use crate::pattern::{TypedId, TypedPattern};
-use crate::utils::metadata::Location;
+use crate::utils::metadata::{Location, Span};
 use crate::utils::miniprint::MiniPrint;
 use std::fmt::{self};
 pub type Time = i64;
@@ -52,7 +56,12 @@ pub enum Expr {
     RecordLiteral(Vec<RecordField>), // Record literal {field1: expr1, field2: expr2, ...}
     FieldAccess(ExprNodeId, Symbol), // Record field access: record.field
     Apply(ExprNodeId, Vec<ExprNodeId>),
-    PipeApply(ExprNodeId, ExprNodeId), // LHS and RHS
+
+    MacroExpand(ExprNodeId, Vec<ExprNodeId>), // syntax sugar: hoge!(a,b) => ${hoge(a,b)}
+    BinOp(ExprNodeId, (Op, Span), ExprNodeId), // syntax sugar: LHS op RHS =>  OP(LHS, RHS) except for pipe operator : RHS(LHS)
+    UniOp((Op, Span), ExprNodeId), // syntax sugar: LHS op RHS =>  OP(LHS, RHS) except for pipe operator : RHS(LHS)
+    Paren(ExprNodeId),             // syntax sugar to preserve context for pretty printing
+
     Lambda(Vec<TypedId>, Option<TypeNodeId>, ExprNodeId), //lambda, maybe information for internal state is needed
     Assign(ExprNodeId, ExprNodeId),
     Then(ExprNodeId, Option<ExprNodeId>),
@@ -137,6 +146,9 @@ impl MiniPrint for Expr {
             Expr::Apply(e1, e2) => {
                 format!("(app {} ({}))", e1.simple_print(), concat_vec(e2))
             }
+            Expr::MacroExpand(e1, e2s) => {
+                format!("(macro {} ({}))", e1.simple_print(), concat_vec(e2s))
+            }
             Expr::ArrayAccess(e, i) => {
                 format!("(arrayaccess {} ({}))", e.simple_print(), i.simple_print())
             }
@@ -159,8 +171,16 @@ impl MiniPrint for Expr {
             Expr::FieldAccess(record, field) => {
                 format!("(field-access {} {})", record.simple_print(), field)
             }
-            Expr::PipeApply(lhs, rhs) => {
-                format!("(pipe {} {})", lhs.simple_print(), rhs.simple_print())
+            Expr::UniOp(op, expr) => {
+                format!("(unary {} {})", op.0, expr.simple_print())
+            }
+            Expr::BinOp(lhs, op, rhs) => {
+                format!(
+                    "(binop {} {} {})",
+                    op.0,
+                    lhs.simple_print(),
+                    rhs.simple_print()
+                )
             }
             Expr::Lambda(params, _, body) => {
                 format!("(lambda ({}) {})", concat_vec(params), body.simple_print())
@@ -193,7 +213,7 @@ impl MiniPrint for Expr {
             Expr::Bracket(e) => format!("(bracket {})", e.simple_print()),
             Expr::Escape(e) => format!("(escape {})", e.simple_print()),
             Expr::Error => "(error)".to_string(),
+            Expr::Paren(expr_node_id) => format!("(paren {})", expr_node_id.simple_print()),
         }
     }
 }
-
