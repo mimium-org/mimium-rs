@@ -1,14 +1,17 @@
+use std::path::PathBuf;
+
 use mimium_lang::{
     ast::{
-        program::{Program, ProgramStatement},
         Expr, Literal,
+        program::{Program, ProgramStatement},
     },
     interner::ExprNodeId,
     types::Type,
+    utils::error::ReportableError,
 };
-use pretty::{DocAllocator, DocBuilder, Pretty};
+use pretty::{Arena, DocAllocator, DocBuilder, Pretty};
 
-use crate::{GlobalConfig, GLOBAL_DATA};
+use crate::{GLOBAL_DATA, GlobalConfig};
 
 fn get_indent_size() -> usize {
     if let Ok(gdata) = GLOBAL_DATA.try_lock() {
@@ -413,4 +416,21 @@ pub mod program {
         });
         allocator.intersperse(stmt_docs, "\n")
     }
+}
+
+pub fn pretty_print(
+    src: &str,
+    file_path: &Option<PathBuf>,
+    width: usize,
+) -> Result<String, Vec<Box<dyn ReportableError>>> {
+    use mimium_lang::compiler::parser::parse;
+    let (prog, errs) = parse(src, file_path.clone());
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+    let allocator = Arena::new();
+    let doc = program::pretty::<_, ()>(prog, &allocator);
+    let mut w = Vec::new();
+    doc.render(width, &mut w).unwrap();
+    Ok(String::from_utf8(w).unwrap())
 }

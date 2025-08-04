@@ -1,13 +1,9 @@
 mod pretty_print;
 
 use clap::Parser;
-use mimium_lang::compiler::parser::parse;
 use mimium_lang::interner::ToSymbol;
-use pretty::Arena;
 use std::fs;
 use std::path::PathBuf;
-
-use crate::pretty_print::program;
 use mimium_lang::utils::error::report;
 
 #[derive(Parser, Debug)]
@@ -55,20 +51,17 @@ fn main() {
             buf
         }
     };
-    let (prog, errs) = parse(&code, file_path.clone());
-    if !errs.is_empty() {
-        report(
-            code.as_str(),
-            file_path.map_or("<stdin>".to_symbol(), |p| p.to_string_lossy().to_symbol()),
-            &errs,
-        );
-
-        return;
+    let res = pretty_print::pretty_print(code.as_str(), &file_path, args.width);
+    match res {
+        Ok(rendered) => {
+            println!("{rendered}");
+        }
+        Err(errs) => {
+            report(
+                code.as_str(),
+                file_path.map_or("<stdin>".to_symbol(), |p| p.to_string_lossy().to_symbol()),
+                &errs,
+            );
+        }
     }
-
-    let allocator = Arena::new();
-    let doc = program::pretty::<_, ()>(prog, &allocator);
-    let mut w = Vec::new();
-    doc.render(args.width, &mut w).unwrap();
-    println!("{}", String::from_utf8(w).unwrap());
 }
