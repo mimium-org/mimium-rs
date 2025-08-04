@@ -1,10 +1,8 @@
-mod pretty_print;
-
 use clap::Parser;
 use mimium_lang::interner::ToSymbol;
+use mimium_lang::utils::error::report;
 use std::fs;
 use std::path::PathBuf;
-use mimium_lang::utils::error::report;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -19,23 +17,11 @@ struct Args {
     #[arg(long, default_value = "4")]
     indent_size: usize,
 }
-use std::sync::LazyLock;
-use std::sync::Mutex;
-struct GlobalConfig {
-    indent_size: usize,
-}
-impl Default for GlobalConfig {
-    fn default() -> Self {
-        Self { indent_size: 4 }
-    }
-}
-static GLOBAL_DATA: LazyLock<Mutex<GlobalConfig>> =
-    LazyLock::new(|| Mutex::new(GlobalConfig::default()));
 
 fn main() {
     let args = Args::parse();
 
-    if let Ok(mut gdata) = GLOBAL_DATA.try_lock() {
+    if let Ok(mut gdata) = mimium_fmt::GLOBAL_DATA.try_lock() {
         gdata.indent_size = args.indent_size;
     }
 
@@ -51,7 +37,7 @@ fn main() {
             buf
         }
     };
-    let res = pretty_print::pretty_print(code.as_str(), &file_path, args.width);
+    let res = mimium_fmt::pretty_print(code.as_str(), &file_path, args.width);
     match res {
         Ok(rendered) => {
             println!("{rendered}");
