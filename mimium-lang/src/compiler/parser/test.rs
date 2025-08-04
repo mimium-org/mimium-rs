@@ -394,7 +394,7 @@ fn test_tuple() {
     test_string!("(1.0, )", ans);
 
     // This is not a tuple
-    let ans = tuple_items[0];
+    let ans = Expr::Paren(tuple_items[0]).into_id(loc(0..5));
     test_string!("(1.0)", ans);
 }
 
