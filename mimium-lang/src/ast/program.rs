@@ -56,7 +56,7 @@ fn stmts_from_program(
                 .into_id_with_location(loc.clone());
                 Some(vec![(
                     Statement::LetRec(
-                        TypedId { id: name, ty: fnty },
+                        TypedId::new(name, fnty),
                         Expr::Lambda(args, return_type, body).into_id(loc.clone()),
                     ),
                     loc,

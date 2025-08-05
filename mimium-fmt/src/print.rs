@@ -212,6 +212,25 @@ mod expr {
                     .group()
                     .braces()
             }
+            Expr::ImcompleteRecord(fields) => {
+                let docs = fields
+                    .into_iter()
+                    .map(|f| {
+                        allocator
+                            .text(f.name)
+                            .append(allocator.text(" = "))
+                            .append(pretty(f.expr, allocator))
+                            .group()
+                    })
+                    .collect::<Vec<_>>();
+                allocator
+                    .intersperse(docs, breakable_comma(allocator))
+                    .append(allocator.softline())
+                    .append(allocator.text(".."))
+                    .group()
+                    .braces()
+            }
+
             Expr::FieldAccess(expr_node_id, symbol) => {
                 let expr_doc = pretty(expr_node_id, allocator);
                 expr_doc
@@ -358,7 +377,6 @@ mod expr {
                     .append(expr_doc)
             }
             Expr::Paren(expr_node_id) => pretty(expr_node_id, allocator).parens().group(),
-
             Expr::MacroExpand(callee, args_e) => {
                 let expr_doc = pretty(callee, allocator);
                 let args = args_e
