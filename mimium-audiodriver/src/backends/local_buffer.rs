@@ -4,10 +4,7 @@ use std::sync::{
 };
 
 use mimium_lang::{
-    compiler::IoChannelInfo,
-    interner::ToSymbol,
-    runtime::{vm, Time},
-    ExecContext,
+    compiler::IoChannelInfo, interner::ToSymbol, plugin::ExtClsInfo, runtime::{vm, Time}, ExecContext
 };
 
 use crate::driver::{Driver, RuntimeData, SampleRate};
@@ -56,7 +53,7 @@ impl LocalBufferDriver {
 impl Driver for LocalBufferDriver {
     type Sample = f64;
 
-    fn get_runtimefn_infos(&self) -> Vec<vm::ExtClsInfo> {
+    fn get_runtimefn_infos(&self) -> Vec<ExtClsInfo> {
         let getnow = crate::runtime_fn::gen_getnowfn(self.count.clone());
         let getsamplerate = crate::runtime_fn::gen_getsampleratefn(self.samplerate.0.clone());
 

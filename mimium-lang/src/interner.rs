@@ -4,6 +4,7 @@
 //! AST nodes created while parsing.
 
 use std::{
+    borrow::Cow,
     cell::RefCell,
     collections::BTreeMap,
     fmt::{self, Display},
@@ -11,9 +12,14 @@ use std::{
 };
 
 use slotmap::SlotMap;
-use string_interner::{backend::StringBackend, StringInterner};
+use string_interner::{StringInterner, backend::StringBackend};
 
-use crate::{ast::Expr, dummy_span, types::Type, utils::metadata::{Location, Span}};
+use crate::{
+    ast::{Expr, RecordField},
+    dummy_span,
+    types::Type,
+    utils::metadata::{Location, Span},
+};
 slotmap::new_key_type! {
     pub struct ExprKey;
     pub struct TypeKey;
@@ -42,13 +48,13 @@ impl SessionGlobals {
         TypeNodeId(key)
     }
 
-    pub fn store_expr_with_location(&mut self, expr: Expr, loc:Location) -> ExprNodeId {
+    pub fn store_expr_with_location(&mut self, expr: Expr, loc: Location) -> ExprNodeId {
         let expr_id = self.store_expr(expr);
         self.store_loc(expr_id, loc);
         expr_id
     }
 
-    pub fn store_type_with_location(&mut self, ty: Type, loc:Location) -> TypeNodeId {
+    pub fn store_type_with_location(&mut self, ty: Type, loc: Location) -> TypeNodeId {
         let type_id = self.store_type(ty);
         self.store_loc(type_id, loc);
         type_id
@@ -88,7 +94,7 @@ where
     SESSION_GLOBALS.with_borrow_mut(f)
 }
 
-#[derive(Default, Copy, Clone, PartialEq, Debug, Hash, Eq, PartialOrd, Ord)]
+#[derive(Default, Copy, Clone, PartialEq, Hash, Eq, PartialOrd, Ord)]
 pub struct Symbol(pub usize); //Symbol Trait is implemented on usize
 
 pub trait ToSymbol {
@@ -102,9 +108,36 @@ impl<T: AsRef<str>> ToSymbol for T {
         }))
     }
 }
-
+impl<'a> From<Symbol> for Cow<'a, str> {
+    fn from(val: Symbol) -> Self {
+        with_session_globals(|session_globals| {
+            Cow::Owned(
+                session_globals
+                    .symbol_interner
+                    .resolve(val.0)
+                    .unwrap()
+                    .to_string(),
+            )
+        })
+    }
+}
 impl Symbol {
     pub fn as_str(&self) -> &str {
+        with_session_globals(|session_globals| unsafe {
+            // This transmute is needed to convince the borrow checker. Since
+            // the session_global should exist until the end of the session,
+            // this &str should live sufficiently long.
+            std::mem::transmute::<&str, &str>(
+                session_globals
+                    .symbol_interner
+                    .resolve(self.0)
+                    .expect("invalid symbol"),
+            )
+        })
+    }
+}
+impl AsRef<str> for Symbol {
+    fn as_ref(&self) -> &str {
         with_session_globals(|session_globals| unsafe {
             // This transmute is needed to convince the borrow checker. Since
             // the session_global should exist until the end of the session,
@@ -123,6 +156,11 @@ impl Symbol {
 impl Display for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
+    }
+}
+impl std::fmt::Debug for Symbol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}({})", self.as_str(), self.0)
     }
 }
 
@@ -167,6 +205,15 @@ impl ExprNodeId {
         with_session_globals(|session_globals| match session_globals.get_span(*self) {
             Some(loc) => loc.span.clone(),
             None => dummy_span!(),
+        })
+    }
+    pub fn to_location(&self) -> Location {
+        with_session_globals(|session_globals| match session_globals.get_span(*self) {
+            Some(loc) => loc.clone(),
+            None => Location {
+                span: dummy_span!(),
+                path: "".to_symbol(),
+            },
         })
     }
 }

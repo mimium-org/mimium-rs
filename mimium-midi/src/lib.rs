@@ -9,7 +9,7 @@ use mimium_lang::{
     function,
     interner::ToSymbol,
     log, numeric,
-    plugin::{SysPluginSignature, SystemPlugin, SystemPluginFnType},
+    plugin::{ExtClsInfo, SysPluginSignature, SystemPlugin, SystemPluginFnType},
     runtime::vm,
     string_t, tuple,
     types::{PType, Type},
@@ -18,7 +18,7 @@ use mimium_lang::{
 use std::{
     cell::{OnceCell, RefCell},
     rc::Rc,
-    sync::{atomic::Ordering, Arc},
+    sync::{Arc, atomic::Ordering},
 };
 use wmidi::MidiMessage;
 
@@ -103,7 +103,11 @@ impl MidiPlugin {
             2
         };
         let ty = function!(vec![], tuple!(numeric!(), numeric!()));
-        let rcls = vm.wrap_extern_cls(("get_midi_val".to_symbol(), Rc::new(RefCell::new(cls)), ty));
+        let rcls = vm.wrap_extern_cls(ExtClsInfo::new(
+            "get_midi_val".to_symbol(),
+            ty,
+            Rc::new(RefCell::new(cls)),
+        ));
         vm.set_stack(0, vm::Machine::to_value(rcls));
         1
     }

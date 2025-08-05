@@ -63,6 +63,12 @@ macro_rules! tuple {
         Type::Tuple(vec![$($t,)*]).into_id()
     };
 }
+#[macro_export]
+macro_rules! code {
+    ($t:expr) => {
+        Type::Code($t).into_id()
+    };
+}
 
 #[cfg(test)]
 mod typemacro_test {

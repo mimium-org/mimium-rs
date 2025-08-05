@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## v2.4.0
+
+- Added a hygienic macro feature with multi stage computation paradigm.(#136)
+
 ## v2.3.1
 
 (2.3.0 is skipped due to the release workflow)

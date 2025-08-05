@@ -1,10 +1,9 @@
 use super::*;
 use crate::{
-    function,
     interner::ToSymbol,
     mir::OpenUpValue,
-    numeric,
-    types::{PType, Type},
+    plugin::{self, ExtFunTypeInfo},
+    types::Type,
     utils::half_float::HFloat,
 };
 
@@ -58,7 +57,7 @@ fn size_of_extern_func() {
 fn lib_printi(state: &mut Machine) -> i64 {
     let v = state.get_top_n(1)[0];
     let i = Machine::get_as::<i64>(v);
-    println!("{}", i);
+    println!("{i}");
     1
 }
 
@@ -157,12 +156,18 @@ fn closuretest() {
     ];
 
     // machine.install_extern_fn("lib_printi".to_string(), lib_printi);
+    let default_plugin = plugin::get_builtin_fns_as_plugins();
+    let builtins = default_plugin.get_ext_closures().into_iter();
+    let ext_fun_table = plugin::get_extfun_types(&[default_plugin])
+        .filter(|ExtFunTypeInfo { stage, .. }| stage.is_available_in_vm())
+        .map(|ExtFunTypeInfo { name, ty, .. }| (name, ty))
+        .collect();
     let prog = Program {
         global_fn_table,
-        ext_fun_table: vec![("probe".to_symbol(), function!(vec![numeric!()], numeric!()))],
+        ext_fun_table,
         ..Default::default()
     };
-    let mut machine = Machine::new(prog, builtin::get_builtin_fns().into_iter(), [].into_iter());
+    let mut machine = Machine::new(prog, [].into_iter(), builtins);
     let res = machine.execute_main();
     assert_eq!(res, 0);
 }
@@ -192,7 +197,7 @@ fn rust_closure_test() {
     let cls = Rc::new(RefCell::new(|m: &mut Machine| -> ReturnCode {
         let v = m.get_stack(1);
         let i = Machine::get_as::<u64>(v) + 3;
-        println!("Call from closure: {}", i);
+        println!("Call from closure: {i}");
         //?????
         m.set_stack(-1, Machine::to_value(i));
         1
@@ -209,19 +214,24 @@ fn rust_closure_test() {
     };
     let mut machine = Machine::new(
         prog,
-        [("lib_printi".to_symbol(), lib_printi as ExtFunType, unknownt)].into_iter(),
-        [(
-            "rustclosure".to_symbol(),
-            cls.clone() as ExtClsType,
+        [ExtFunInfo::new(
+            "lib_printi".to_symbol(),
             unknownt,
+            lib_printi as ExtFunType,
         )]
+        .into_iter(),
+        [Box::new(ExtClsInfo::new(
+            "rustclosure".to_symbol(),
+            unknownt,
+            cls.clone() as ExtClsType,
+        )) as Box<dyn MachineFunction>]
         .into_iter(),
     );
     let res = machine.execute_main();
     assert_eq!(res, 0);
 }
 
-fn prep_closure_gc_program(is_closed: bool) -> Program {
+fn prep_closure_gc_program(is_closed: bool) -> Machine {
     let inner_insts = vec![
         Instruction::MoveConst(0, 0),
         Instruction::Return(0, 1), // return just 0
@@ -250,30 +260,33 @@ fn prep_closure_gc_program(is_closed: bool) -> Program {
         ..Default::default()
     };
     let global_fn_table = vec![("main".to_symbol(), main_f), ("cls".to_symbol(), cls_f)];
+    let default_plugin = plugin::get_builtin_fns_as_plugins();
+    let builtins = default_plugin.get_ext_closures().into_iter();
+    let ext_fun_table = plugin::get_extfun_types(&[default_plugin])
+        .filter(|ExtFunTypeInfo { stage, .. }| stage.is_available_in_vm())
+        .map(|ExtFunTypeInfo { name, ty, .. }| (name, ty))
+        .collect();
     let prog = Program {
         global_fn_table,
-        ext_fun_table: vec![("probe".to_symbol(), function!(vec![numeric!()], numeric!()))],
+        ext_fun_table,
         ..Default::default()
     };
-    prog
+    Machine::new(prog, [].into_iter(), builtins.into_iter())
 }
 
 // closure gc is disabled until correct implementation comes.
 
 #[test]
 fn closure_gc_open() {
-    let prog = prep_closure_gc_program(false);
-    let mut machine: Machine =
-        Machine::new(prog, builtin::get_builtin_fns().into_iter(), [].into_iter());
+    let mut machine = prep_closure_gc_program(false);
+
     machine.execute_main();
     //open closure should be released.
     assert_eq!(machine.closures.len(), 0);
 }
 #[test]
 fn closure_gc_closed() {
-    let prog = prep_closure_gc_program(true);
-    let mut machine: Machine =
-        Machine::new(prog, builtin::get_builtin_fns().into_iter(), [].into_iter());
+    let mut machine = prep_closure_gc_program(true);
     machine.execute_main();
     //closed closure should be kept.
     assert_eq!(machine.closures.len(), 1);
@@ -304,19 +317,17 @@ fn prep_array_program() -> Program {
         ..Default::default()
     };
     let global_fn_table = vec![("main".to_symbol(), main_f)];
-    let prog = Program {
+    Program {
         global_fn_table,
         ext_fun_table: vec![],
         ..Default::default()
-    };
-    prog
+    }
 }
 
 #[test]
 fn array_init() {
     let prog = prep_array_program();
-    let mut machine: Machine =
-        Machine::new(prog, builtin::get_builtin_fns().into_iter(), [].into_iter());
+    let mut machine = Machine::new(prog, [].into_iter(), [].into_iter());
     machine.execute_main();
     let res = machine.get_top_n(1)[0];
     //open closure should be released.

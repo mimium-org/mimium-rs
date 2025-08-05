@@ -1,9 +1,10 @@
-pub mod parser;
-pub mod typing;
-// pub mod hirgen;
 pub mod bytecodegen;
-mod intrinsics;
+pub(crate) mod intrinsics;
 pub mod mirgen;
+pub mod parser;
+pub(crate) mod pattern_destructor;
+pub mod typing;
+use crate::plugin::{ExtFunTypeInfo, MacroFunction};
 
 #[derive(Debug, Clone)]
 pub enum ErrorKind {
@@ -30,18 +31,16 @@ impl std::fmt::Display for ErrorKind {
             ErrorKind::TypeMismatch(expect, actual) => {
                 write!(
                     f,
-                    "Type Mismatch, expected {}, but the actual was {}.",
-                    expect, actual
+                    "Type Mismatch, expected {expect}, but the actual was {actual}."
                 )
             }
             ErrorKind::IndexForNonTuple(t) => {
-                write!(f, "Index access for non tuple-type {}.", t)
+                write!(f, "Index access for non tuple-type {t}.")
             }
             ErrorKind::IndexOutOfRange(r, a) => {
                 write!(
                     f,
-                    "Tuple index out of range, number of elements are {} but accessed with {}.",
-                    r, a
+                    "Tuple index out of range, number of elements are {r} but accessed with {a}."
                 )
             }
             ErrorKind::NotApplicable => {
@@ -74,7 +73,6 @@ use std::path::PathBuf;
 use mirgen::recursecheck;
 
 use crate::{
-    ast_interpreter,
     interner::{ExprNodeId, Symbol, TypeNodeId},
     mir::Mir,
     runtime::vm,
@@ -86,9 +84,11 @@ pub fn emit_ast(
     filepath: Option<Symbol>,
 ) -> Result<ExprNodeId, Vec<Box<dyn ReportableError>>> {
     let path = filepath.map(|sym| PathBuf::from(sym.to_string()));
-    let (ast, errs) = parser::parse(src, path);
+    let (ast, errs) = parser::parse_to_expr(src, path);
     if errs.is_empty() {
         let ast = parser::add_global_context(ast, filepath.unwrap_or_default());
+        let (ast, _errs) =
+            mirgen::convert_pronoun::convert_pronoun(ast, filepath.unwrap_or_default());
         Ok(recursecheck::convert_recurse(
             ast,
             filepath.unwrap_or_default(),
@@ -96,11 +96,6 @@ pub fn emit_ast(
     } else {
         Err(errs)
     }
-}
-#[derive(Clone, Copy)]
-pub struct ExtFunTypeInfo {
-    pub name: Symbol,
-    pub ty: TypeNodeId,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -110,6 +105,7 @@ pub struct Config {
 
 pub struct Context {
     ext_fns: Vec<ExtFunTypeInfo>,
+    macros: Vec<Box<dyn MacroFunction>>,
     file_path: Option<Symbol>,
     config: Config,
 }
@@ -123,11 +119,13 @@ pub struct IoChannelInfo {
 impl Context {
     pub fn new(
         ext_fns: impl IntoIterator<Item = ExtFunTypeInfo>,
+        macros: impl IntoIterator<Item = Box<dyn MacroFunction>>,
         file_path: Option<Symbol>,
         config: Config,
     ) -> Self {
         Self {
             ext_fns: ext_fns.into_iter().collect(),
+            macros: macros.into_iter().collect(),
             file_path,
             config,
         }
@@ -136,15 +134,15 @@ impl Context {
         self.ext_fns
             .clone()
             .into_iter()
-            .map(|ExtFunTypeInfo { name, ty }| (name, ty))
+            .map(|ExtFunTypeInfo { name, ty, .. }| (name, ty))
             .collect()
     }
 
     pub fn emit_mir(&self, src: &str) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
         let path = self.file_path.map(|sym| PathBuf::from(sym.to_string()));
-        let (ast, mut parse_errs) = parser::parse(src, path);
-        let ast = parser::add_global_context(ast, self.file_path.unwrap_or_default());
-        let mir = mirgen::compile(ast, &self.get_ext_typeinfos(), self.file_path);
+        let (ast, mut parse_errs) = parser::parse_to_expr(src, path);
+        // let ast = parser::add_global_context(ast, self.file_path.unwrap_or_default());
+        let mir = mirgen::compile(ast, &self.get_ext_typeinfos(), &self.macros, self.file_path);
         if parse_errs.is_empty() {
             mir
         } else {
@@ -163,16 +161,16 @@ impl Context {
     }
 }
 
-pub fn interpret_top(
-    content: String,
-    global_ctx: &mut ast_interpreter::Context,
-) -> Result<ast_interpreter::Value, Vec<Box<dyn ReportableError>>> {
-    let ast = emit_ast(&content, None)?;
-    ast_interpreter::eval_ast(ast, global_ctx).map_err(|e| {
-        let eb: Box<dyn ReportableError> = Box::new(e);
-        vec![eb]
-    })
-}
+// pub fn interpret_top(
+//     content: String,
+//     global_ctx: &mut ast_interpreter::Context,
+// ) -> Result<ast_interpreter::Value, Vec<Box<dyn ReportableError>>> {
+//     let ast = emit_ast(&content, None)?;
+//     ast_interpreter::eval_ast(ast, global_ctx).map_err(|e| {
+//         let eb: Box<dyn ReportableError> = Box::new(e);
+//         vec![eb]
+//     })
+// }
 
 #[cfg(test)]
 mod test {
@@ -191,7 +189,7 @@ fn dsp(input){
     #[test]
     fn mir_channelcount() {
         let src = &get_source();
-        let ctx = Context::new([], None, Config::default());
+        let ctx = Context::new([], [], None, Config::default());
         let mir = ctx.emit_mir(src).unwrap();
         let iochannels = mir.get_dsp_iochannels().unwrap();
         assert_eq!(iochannels.input, 1);
@@ -200,7 +198,7 @@ fn dsp(input){
     #[test]
     fn bytecode_channelcount() {
         let src = &get_source();
-        let ctx = Context::new([], None, Config::default());
+        let ctx = Context::new([], [], None, Config::default());
         let prog = ctx.emit_bytecode(src).unwrap();
         let iochannels = prog.iochannels.unwrap();
         assert_eq!(iochannels.input, 1);

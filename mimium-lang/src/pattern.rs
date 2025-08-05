@@ -21,7 +21,7 @@ impl std::fmt::Display for Pattern {
                     .iter()
                     .map(|p| p.to_string())
                     .collect::<Vec<_>>()
-                    .concat();
+                    .join(",");
                 write!(f, "({s})")
             }
             Pattern::Record(items) => {

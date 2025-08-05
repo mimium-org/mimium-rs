@@ -1,6 +1,6 @@
 ///remove redundunt letrec definition and convert them to plain let
 use crate::{
-    ast::Expr,
+    ast::{Expr, RecordField},
     interner::{ExprNodeId, Symbol},
     pattern::TypedPattern,
     utils::metadata::Location,
@@ -10,7 +10,7 @@ fn try_find_recurse(e_s: ExprNodeId, name: Symbol) -> bool {
     match e_s.to_expr() {
         Expr::Var(n) => n == name,
         Expr::Let(_id, body, then) => {
-            try_find_recurse(body, name) || then.map_or(false, |e| try_find_recurse(e, name))
+            try_find_recurse(body, name) || then.is_some_and(|e| try_find_recurse(e, name))
         }
         Expr::LetRec(_id, _body, _then) => {
             //todo: start new search so we return false here
@@ -19,11 +19,11 @@ fn try_find_recurse(e_s: ExprNodeId, name: Symbol) -> bool {
         Expr::Assign(_v, e) => try_find_recurse(e, name),
         Expr::Then(body, then_opt) => {
             try_find_recurse(body, name)
-                || then_opt.map_or(false, |then| try_find_recurse(then, name))
+                || then_opt.is_some_and(|then| try_find_recurse(then, name))
         }
         Expr::Lambda(_ids, _opt_type, body) => try_find_recurse(body, name),
         Expr::Proj(body, _idx) => try_find_recurse(body, name),
-        Expr::Block(body) => body.map_or(false, |b| try_find_recurse(b, name)),
+        Expr::Block(body) => body.is_some_and(|b| try_find_recurse(b, name)),
         Expr::Apply(fun, callee) => {
             try_find_recurse(fun, name) || callee.into_iter().any(|v| try_find_recurse(v, name))
         }
@@ -31,10 +31,20 @@ fn try_find_recurse(e_s: ExprNodeId, name: Symbol) -> bool {
         Expr::If(cond, then, opt_else) => {
             try_find_recurse(cond, name)
                 || try_find_recurse(then, name)
-                || opt_else.map_or(false, |e| try_find_recurse(e, name))
+                || opt_else.is_some_and(|e| try_find_recurse(e, name))
         }
-        Expr::Feed(_x, _body) => panic!("feed should not be shown in recurse removal process"),
-        _ => false,
+        Expr::Bracket(e) | Expr::Escape(e) => try_find_recurse(e, name),
+        Expr::Feed(_x, body) => try_find_recurse(body, name),
+        Expr::ArrayAccess(e, i) => try_find_recurse(e, name) || try_find_recurse(i, name),
+        Expr::ArrayLiteral(items) => items.iter().any(|e| try_find_recurse(*e, name)),
+        Expr::RecordLiteral(fields) => fields.iter().any(|f| try_find_recurse(f.expr, name)),
+        Expr::FieldAccess(record, _field) => try_find_recurse(record, name),
+        Expr::BinOp(_, _, _) => unreachable!(),
+        Expr::UniOp(_, _) => unreachable!(),
+        Expr::MacroExpand(_, _) => unreachable!(),
+        Expr::Paren(_) => unreachable!(),
+
+        Expr::Literal(_) | Expr::Error => false,
     }
 }
 
@@ -69,8 +79,26 @@ pub fn convert_recurse(e_s: ExprNodeId, file_path: Symbol) -> ExprNodeId {
             Expr::If(convert(cond), convert(then), opt_else.map(convert))
         }
         Expr::Lambda(ids, opt_type, body) => Expr::Lambda(ids.clone(), opt_type, convert(body)),
-        Expr::Feed(_x, _body) => panic!("feed should not be shown in recurse removal process"),
-        e => e.clone(),
+        Expr::Feed(x, body) => Expr::Feed(x, convert(body)),
+        Expr::Bracket(e) => Expr::Bracket(convert(e)),
+        Expr::Escape(e) => Expr::Escape(convert(e)),
+        Expr::ArrayAccess(e, i) => Expr::ArrayAccess(convert(e), convert(i)),
+        Expr::ArrayLiteral(items) => Expr::ArrayLiteral(convert_vec(items)),
+        Expr::RecordLiteral(fields) => Expr::RecordLiteral(
+            fields
+                .iter()
+                .map(|f| RecordField {
+                    name: f.name,
+                    expr: convert(f.expr),
+                })
+                .collect(),
+        ),
+        Expr::FieldAccess(record, field) => Expr::FieldAccess(convert(record), field),
+        Expr::BinOp(_, _, _) => unreachable!(),
+        Expr::UniOp(_, _) => unreachable!(),
+        Expr::MacroExpand(_, _) => unreachable!(),
+        Expr::Paren(_) => unreachable!(),
+        Expr::Literal(_) | Expr::Var(_) | Expr::Error => e_s.to_expr(),
     };
     let loc = Location {
         span,

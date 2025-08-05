@@ -1,10 +1,13 @@
 use super::intrinsics;
 use super::typing::{InferContext, infer_root};
+use crate::compiler::parser;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
-use crate::{function, numeric, unit};
+use crate::plugin::MacroFunction;
+use crate::{function, interpreter, numeric, unit};
 pub mod convert_pronoun;
 pub(crate) mod recursecheck;
+// use super::pattern_destructor::destruct_let_pattern;
 use crate::mir::{self, Argument, Instruction, Mir, StateSize, VPtr, VReg, Value};
 
 use std::sync::Arc;
@@ -373,10 +376,12 @@ impl Context {
                 _ => unreachable!("non global_value"),
             },
             LookupRes::None => {
-                let ty = self
-                    .typeenv
-                    .lookup(name, loc)
-                    .expect("variable not found. it should be detected at type checking stage");
+                let ty = self.typeenv.lookup(name, loc).expect(
+                    format!(
+                        "variable {name} not found. it should be detected at type checking stage"
+                    )
+                    .as_str(),
+                );
                 Arc::new(Value::ExtFunction(name, ty))
             }
         };
@@ -513,7 +518,11 @@ impl Context {
     }
     pub fn eval_expr(&mut self, e: ExprNodeId) -> (VPtr, TypeNodeId) {
         let span = e.to_span();
-        let ty = self.typeenv.lookup_res(e);
+        let ty = self
+            .typeenv
+            .infer_type(e)
+            .expect("type inference failed, should be an error at type checker stage");
+
         match &e.to_expr() {
             Expr::Literal(lit) => {
                 let v = self.eval_literal(lit, &span);
@@ -590,21 +599,17 @@ impl Context {
                 (reg, Type::Array(elem_ty).into_id())
             }
             Expr::ArrayAccess(array, index) => {
-                let (array_v, array_ty) = self.eval_expr(*array);
+                let (array_v, _array_ty) = self.eval_expr(*array);
                 let (index_v, _) = self.eval_expr(*index);
-                let elem_ty = match array_ty.to_type() {
-                    Type::Array(elem_ty) => elem_ty,
-                    _ => panic!("Expected array type for array access"),
-                };
+
                 // Get element at the specified index
                 let result = self.push_inst(Instruction::GetArrayElem(
                     array_v.clone(),
                     index_v.clone(),
-                    elem_ty,
+                    ty,
                 ));
-                (result, elem_ty)
+                (result, ty)
             }
-
             Expr::Apply(f, args) => {
                 let (f, ft) = self.eval_expr(*f);
                 let del = self.try_make_delay(&f, args);
@@ -624,34 +629,34 @@ impl Context {
                         log::trace!("Unpacking argument for {:?}", ty);
                         // Check if the argument is a tuple or record that we need to unpack
                         match ty.to_type() {
-                            Type::Tuple(tys) => tys
-                                .into_iter()
-                                .enumerate()
-                                .map(|(i, t)| {
-                                    let elem_val = self.push_inst(Instruction::GetElement {
-                                        value: arg_val.clone(),
-                                        ty,
-                                        tuple_offset: i as u64,
-                                    });
-                                    (elem_val, t)
-                                })
-                                .collect(),
-                            Type::Record(kvs) => param_types.get_as_slice().iter().map(|param|{
-                                kvs.iter().enumerate().find(|(_i,(k, _))| param.label.is_some_and(| l| l == *k))
-                                    .map_or_else(
-                                        || unreachable!("parameter pack failed, possible type inference bug"),
-                                        |(i,(_, t))| {
-                                            let field_val = self.push_inst(Instruction::GetElement {
+                                    Type::Tuple(tys) => tys
+                                        .into_iter()
+                                        .enumerate()
+                                        .map(|(i, t)| {
+                                            let elem_val = self.push_inst(Instruction::GetElement {
                                                 value: arg_val.clone(),
                                                 ty,
                                                 tuple_offset: i as u64,
                                             });
-                                            (field_val, *t)
-                                        },
-                                    )
-                            }).collect(),
-                            _ => vec![self.eval_expr(args[0])],
-                        }
+                                            (elem_val, t)
+                                        })
+                                        .collect(),
+                                    Type::Record(kvs) => param_types.get_as_slice().iter().map(|param|{
+                                        kvs.iter().enumerate().find(|(_i,(k, _))| param.label.is_some_and(| l| l == *k))
+                                            .map_or_else(
+                                                || unreachable!("parameter pack failed, possible type inference bug"),
+                                                |(i,(_, t))| {
+                                                    let field_val = self.push_inst(Instruction::GetElement {
+                                                        value: arg_val.clone(),
+                                                        ty,
+                                                        tuple_offset: i as u64,
+                                                    });
+                                                    (field_val, *t)
+                                                },
+                                            )
+                                    }).collect(),
+                                    _ => vec![self.eval_expr(args[0])],
+                                }
                     } else {
                         self.eval_args(args)
                     };
@@ -688,7 +693,7 @@ impl Context {
                     (res, rt)
                 }
             }
-            Expr::PipeApply(_, _) => unreachable!(),
+
             Expr::Lambda(ids, _rett, body) => {
                 let (atypes, rt) = match ty.to_type() {
                     Type::Function(atypes, rt, _) => (atypes.ty_iter().collect::<Vec<_>>(), rt),
@@ -806,7 +811,10 @@ impl Context {
                 let is_global = self.get_ctxdata().func_i == 0;
                 self.fn_label = Some(id.id);
                 let nextfunid = self.program.functions.len();
-                let t = self.typeenv.lookup_res(e);
+                let t = self
+                    .typeenv
+                    .infer_type(e)
+                    .expect("type inference failed, should be an error at type checker stage");
                 let v = if is_global {
                     Arc::new(Value::Function(nextfunid))
                 } else {
@@ -824,7 +832,6 @@ impl Context {
                     (Arc::new(Value::None), unit!())
                 }
             }
-
             Expr::Assign(assignee, body) => {
                 let (src, ty) = self.eval_expr(*body);
                 self.eval_assign(*assignee, src, ty, &span);
@@ -878,8 +885,14 @@ impl Context {
 
                 (res, ty)
             }
-            Expr::Bracket(_) => todo!(),
-            Expr::Escape(_) => todo!(),
+            Expr::Bracket(_) | Expr::Escape(_) | Expr::MacroExpand(_, _) => {
+                unreachable!("Macro code should be expanded before mirgen")
+            }
+            Expr::BinOp(_, _, _) | Expr::UniOp(_, _) | Expr::Paren(_) => {
+                unreachable!(
+                    "syntactic sugar for infix&unary operators are removed before this stage"
+                )
+            }
             Expr::Error => {
                 self.push_inst(Instruction::Error);
                 (Arc::new(Value::None), unit!())
@@ -887,18 +900,28 @@ impl Context {
         }
     }
 }
+
+fn is_code_contain_macro(typeenv: &mut InferContext, top_ast: ExprNodeId) -> bool {
+    typeenv
+        .infer_type(top_ast)
+        .is_ok_and(|t| matches!(t.to_type(), Type::Code(_)))
+}
+
 /// Generate MIR from AST.
 /// The input ast (`root_expr_id`) should contain global context. (See [[compiler::parser::add_global_context]].)
 /// MIR generator itself does not emit any error, the any compile errors are analyzed before generating MIR, mostly in type checker.
+/// Note that the AST may contain partial error nodes, to do type check and report them as possible.
 pub fn compile(
     root_expr_id: ExprNodeId,
     builtin_types: &[(Symbol, TypeNodeId)],
+    macro_env: &[Box<dyn MacroFunction>],
     file_path: Option<Symbol>,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
-    let ast2 = recursecheck::convert_recurse(root_expr_id, file_path.unwrap_or_default());
-    let (expr2, convert_errs) =
-        convert_pronoun::convert_pronoun(ast2, file_path.unwrap_or_default());
-    let infer_ctx = infer_root(expr2, builtin_types, file_path.unwrap_or_default());
+    let (expr, convert_errs) =
+        convert_pronoun::convert_pronoun(root_expr_id, file_path.unwrap_or_default());
+    let expr = recursecheck::convert_recurse(expr, file_path.unwrap_or_default());
+    // let expr = destruct_let_pattern(expr);
+    let mut infer_ctx = infer_root(expr, builtin_types, file_path.unwrap_or_default());
     let errors = infer_ctx
         .errors
         .iter()
@@ -912,8 +935,15 @@ pub fn compile(
         .collect::<Vec<_>>();
 
     if errors.is_empty() {
+        let expr = if is_code_contain_macro(&mut infer_ctx, expr) {
+            interpreter::expand_macro(expr, macro_env)
+        } else {
+            expr
+        };
+        log::trace!("ast after macro expansion: {:?}", expr.to_expr());
+        let expr = parser::add_global_context(expr, file_path.unwrap_or_default());
         let mut ctx = Context::new(infer_ctx, file_path);
-        let _res = ctx.eval_expr(expr2);
+        let _res = ctx.eval_expr(expr);
         ctx.program.file_path = file_path;
         Ok(ctx.program.clone())
     } else {

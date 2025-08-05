@@ -4,15 +4,15 @@ use mimium_lang::{
     function,
     interner::{ToSymbol, TypeNodeId},
     log, numeric,
-    plugin::{SysPluginSignature, SystemPlugin, SystemPluginFnType},
-    runtime::vm::{ExtClsInfo, Machine, ReturnCode},
+    plugin::{ExtClsInfo, SysPluginSignature, SystemPlugin, SystemPluginFnType},
+    runtime::vm::{Machine, ReturnCode},
     string_t,
     types::{PType, Type},
 };
 use plot_window::PlotApp;
 use ringbuf::{
-    traits::{Producer, Split},
     HeapRb,
+    traits::{Producer, Split},
 };
 pub(crate) mod plot_ui;
 pub mod plot_window;
@@ -48,10 +48,10 @@ impl GuiToolPlugin {
                 //do not modify any stack values
                 1
             };
-            let info: ExtClsInfo = (
+            let info = ExtClsInfo::new(
                 "probegetter".to_symbol(),
-                Rc::new(RefCell::new(cb)),
                 Self::get_closure_type(),
+                Rc::new(RefCell::new(cb)),
             );
             let cls = vm.wrap_extern_cls(info);
             vm.set_stack(0, Machine::to_value(cls));

@@ -1,0 +1,9 @@
+//gen_sampler_mono returns higher-order function that takes playback position in samples as an argument
+let sampler = gen_sampler_mono("../tests/assets/konnichiwa.aif")
+fn counter(){
+    self+1.0 
+}
+//add -1.0 offset so that the counter start from 0 at t=0
+fn dsp(){
+    counter()-1.0 |> sampler
+}

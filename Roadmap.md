@@ -9,7 +9,7 @@
  - [x] Parameter Pack
  - [ ] Default Parameter System
 - [ ] More stable support for web platform
-- [ ] Multi-stage computation (Hygienic Macro)
+- [x] Multi-stage computation (Hygienic Macro)
 - [ ] Generics
 - [ ] Module System
 - [ ] Package Manager

@@ -4,7 +4,7 @@ use std::{
     path::Path,
 };
 
-use mimium_lang::{compiler::IoChannelInfo, runtime::vm, ExecContext};
+use mimium_lang::{compiler::IoChannelInfo, plugin::ExtClsInfo, runtime::vm, ExecContext};
 
 use crate::driver::Driver;
 
@@ -33,7 +33,7 @@ impl CsvDriver {
 
 impl Driver for CsvDriver {
     type Sample = <LocalBufferDriver as Driver>::Sample;
-    fn get_runtimefn_infos(&self) -> Vec<vm::ExtClsInfo> {
+    fn get_runtimefn_infos(&self) -> Vec<ExtClsInfo> {
         self.driver.get_runtimefn_infos()
     }
 

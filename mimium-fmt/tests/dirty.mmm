@@ -1,8 +1,17 @@
+// the comment will be removed
+///this comment will also be removed
+     import("dummy.mmm")
 let pi = 3.14159265359
-let sr = 48000.0
-let _ = set_midi_port("from Max 1")
+    let sr = 48000.0
+let _ =     set_midi_port("from Max 1")
+
+let test_record = {hoge = 100,
+ fuga = 200}
+let test_tuple = (100,200,400)
+
 fn sec2samp(sec){
-    sec*48000.0
+    sec *
+     48000.0
 }
 fn countup(active){
     let r  =(self+1.0);
@@ -24,10 +33,13 @@ fn adsr(attack,decay,sustain,release,input){
     let s = self
     let atsig = min(1.0,(s + 1.0/sec2samp(attack)))
     let decsig = max(sustain,(s-1.0/sec2samp(decay)))
-    let releasesig =max(0.0,(s-1.0/sec2samp(release)))
     let at_or_dec = hold(sec2samp(attack),input>0.1)
-    let at_dec_sus_sig = if (at_or_dec>0.1) atsig else decsig
-    let res = if (input>0.1) at_dec_sus_sig else releasesig
+    let res = if (input>0.1) {
+            let at_dec_sus_sig = if (at_or_dec>0.1) atsig else decsig
+        at_dec_sus_sig
+        } else {
+                let releasesig =max(0.0,(s-1.0/sec2samp(release)))
+            releasesig}
     res
 }
 
@@ -45,7 +57,7 @@ fn myadsr(gate){
     adsr(0.01,0.1,1.0,2.0,gate) *get_gain(gate)
 }
 fn synth(note,vel){
-    let sig = note |> midi_to_hz |> osc 
+    let sig = note |>    midi_to_hz    |> osc 
     let gain = vel /127.0;
     sig *  gain
 }
