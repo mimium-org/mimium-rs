@@ -17,7 +17,7 @@ pub enum PType {
 }
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct IntermediateId(pub u64);
+pub struct IntermediateId(pub u64);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeVar {
@@ -117,7 +117,7 @@ impl RecordTypeField {
     }
 }
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct TypeSchemeId(pub u64);
+pub struct TypeSchemeId(pub u64);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Type {
@@ -283,7 +283,7 @@ impl TypeNodeId {
                              has_default,
                          }| {
                             RecordTypeField::new(
-                                key.clone(),
+                                *key,
                                 apply_scalar(*ty, &mut closure),
                                 *has_default,
                             )
