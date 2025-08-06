@@ -543,7 +543,6 @@ where
         .labelled("array_literal");
     let record_literal = record_fields(expr.clone())
         .separated_by(breakable_comma())
-        .at_least(1)
         .allow_trailing()
         .collect::<Vec<_>>()
         .then(just(Token::DoubleDot).or_not())
