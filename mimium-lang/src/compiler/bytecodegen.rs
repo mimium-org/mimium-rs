@@ -5,7 +5,7 @@ use crate::interner::{Symbol, TypeNodeId};
 use crate::mir::{self, Mir, StateSize};
 use crate::runtime::vm::bytecode::{ConstPos, GlobalPos, Reg};
 use crate::runtime::vm::{self, StateOffset};
-use crate::types::{PType, Type, TypeSize};
+use crate::types::{PType, RecordTypeField, Type, TypeSize};
 use crate::utils::half_float::HFloat;
 use vm::bytecode::Instruction as VmInstruction;
 
@@ -142,7 +142,7 @@ impl ByteCodeGenerator {
             Type::Tuple(types) => types.iter().map(|t| Self::word_size_for_type(*t)).sum(),
             Type::Record(types) => types
                 .iter()
-                .map(|(_s, t)| Self::word_size_for_type(*t))
+                .map(|RecordTypeField { ty, .. }| Self::word_size_for_type(*ty))
                 .sum(),
             Type::Function(_, _, _) => 1,
             Type::Ref(_) => 1,
@@ -819,22 +819,26 @@ fn remove_redundunt_mov(program: vm::Program) -> vm::Program {
 
         for (i, pair) in f.bytecodes.windows(2).enumerate() {
             match pair {
-                &[VmInstruction::Move(dst, src), VmInstruction::Move(dst2, src2)]
-                    if dst == src2 && src == dst2 =>
+                &[
+                    VmInstruction::Move(dst, src),
+                    VmInstruction::Move(dst2, src2),
+                ] if dst == src2 && src == dst2 =>
                 //case of swapping
                 {
                     remove_idx.insert(i);
                     remove_idx.insert(i + 1);
                 }
-                &[VmInstruction::Move(dst, src), VmInstruction::Move(dst2, src2)]
-                    if dst == src2 =>
-                {
+                &[
+                    VmInstruction::Move(dst, src),
+                    VmInstruction::Move(dst2, src2),
+                ] if dst == src2 => {
                     reduce_idx.insert(i, VmInstruction::Move(dst2, src));
                     remove_idx.insert(i + 1);
                 }
-                &[VmInstruction::MoveConst(dst, src), VmInstruction::Move(dst2, src2)]
-                    if dst == src2 =>
-                {
+                &[
+                    VmInstruction::MoveConst(dst, src),
+                    VmInstruction::Move(dst2, src2),
+                ] if dst == src2 => {
                     removeconst_idx.insert(i, VmInstruction::MoveConst(dst2, src));
                     remove_idx.insert(i + 1);
                 }

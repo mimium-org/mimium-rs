@@ -2,7 +2,7 @@ use crate::ast::operators::Op;
 use crate::ast::*;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
-use crate::types::{LabeledParam, LabeledParams, PType, Type};
+use crate::types::{LabeledParam, LabeledParams, PType, RecordTypeField, Type};
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::*;
 use std::path::PathBuf;
@@ -118,11 +118,12 @@ where
         let record = ident_parser()
             .then_ignore(just(Token::Colon))
             .then(ty.clone())
+            .map(|(key, ty)| RecordTypeField::new(key, ty, false))
             .separated_by(breakable_comma())
             .allow_trailing()
             .collect::<Vec<_>>()
             .delimited_by(just(Token::BlockBegin), just(Token::BlockEnd))
-            .map_with(move |fields: Vec<(Symbol, TypeNodeId)>, e| {
+            .map_with(move |fields, e| {
                 Type::Record(fields).into_id_with_location(Location {
                     span: get_span(e.span()),
                     path,

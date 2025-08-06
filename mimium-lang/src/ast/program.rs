@@ -46,7 +46,9 @@ fn stmts_from_program(
                 let argsty = args
                     .clone()
                     .iter()
-                    .map(|typedid| LabeledParam::new(typedid.id, typedid.ty))
+                    .map(|typedid| {
+                        LabeledParam::new(typedid.id, typedid.ty, typedid.default_value.is_some())
+                    })
                     .collect();
                 let fnty = Type::Function(
                     LabeledParams::new(argsty),

@@ -260,10 +260,12 @@ fn test_fndef() {
                     LabeledParam::new(
                         "input".to_symbol(),
                         Type::Unknown.into_id_with_location(loc(8..13)),
+                        false,
                     ),
                     LabeledParam::new(
                         "gue".to_symbol(),
                         Type::Unknown.into_id_with_location(loc(14..17)),
+                        false,
                     ),
                 ]),
                 Type::Unknown.into_id_with_location(loc(0..28)),
@@ -306,10 +308,12 @@ fn global_fnmultiple() {
                     LabeledParam::new(
                         "input".to_symbol(),
                         Type::Unknown.into_id_with_location(loc(8..13)),
+                        false,
                     ),
                     LabeledParam::new(
                         "gue".to_symbol(),
                         Type::Unknown.into_id_with_location(loc(14..17)),
+                        false,
                     ),
                 ]),
                 Type::Unknown.into_id_with_location(loc(0..28)),
@@ -344,10 +348,12 @@ fn global_fnmultiple() {
                             LabeledParam::new(
                                 "input".to_symbol(),
                                 Type::Unknown.into_id_with_location(loc(37..42)),
+                                false,
                             ),
                             LabeledParam::new(
                                 "gue".to_symbol(),
                                 Type::Unknown.into_id_with_location(loc(43..46)),
+                                false,
                             ),
                         ]),
                         Type::Unknown.into_id_with_location(loc(29..57)),
@@ -540,6 +546,7 @@ fn test_stmt_without_return() {
                 LabeledParams::new(vec![LabeledParam::new(
                     "input".to_symbol(),
                     Type::Unknown.into_id_with_location(loc(8..13)),
+                    false,
                 )]),
                 Type::Unknown.into_id_with_location(loc(0..56)),
                 None,

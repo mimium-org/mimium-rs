@@ -32,7 +32,11 @@ macro_rules! function {
             $crate::types::LabeledParams::new(
                 $params
                     .into_iter()
-                    .map(|t| $crate::types::LabeledParam { label: None, ty: t })
+                    .map(|t| $crate::types::LabeledParam {
+                        label: None,
+                        ty: t,
+                        has_default: false,
+                    })
                     .collect(),
             ),
             $return,
@@ -88,10 +92,12 @@ mod typemacro_test {
                         LabeledParam {
                             label: None,
                             ty: Type::Primitive(PType::Int).into_id(),
+                            has_default: false,
                         },
                         LabeledParam {
                             label: None,
                             ty: Type::Primitive(PType::Int).into_id(),
+                            has_default: false,
                         },
                     ]),
                     Type::Primitive(PType::Numeric).into_id(),

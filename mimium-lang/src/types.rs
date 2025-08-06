@@ -36,23 +36,33 @@ impl TypeVar {
 pub struct LabeledParam {
     pub label: Option<Symbol>,
     pub ty: TypeNodeId,
+    pub has_default: bool,
 }
 impl LabeledParam {
-    pub fn new(label: Symbol, ty: TypeNodeId) -> Self {
+    pub fn new(label: Symbol, ty: TypeNodeId, has_default: bool) -> Self {
         Self {
             label: Some(label),
             ty,
+            has_default,
         }
     }
 }
 impl From<TypeNodeId> for LabeledParam {
     fn from(ty: TypeNodeId) -> Self {
-        Self { label: None, ty }
+        Self {
+            label: None,
+            ty,
+            has_default: false,
+        }
     }
 }
-impl From<(Symbol, TypeNodeId)> for LabeledParam {
-    fn from((label, ty): (Symbol, TypeNodeId)) -> Self {
-        Self { label: Some(label), ty }
+impl From<RecordTypeField> for LabeledParam {
+    fn from(value: RecordTypeField) -> Self {
+        Self {
+            label: Some(value.key),
+            ty: value.ty,
+            has_default: value.has_default,
+        }
     }
 }
 /// A parameter representation for function type, with an optional label and a type.
@@ -75,6 +85,7 @@ impl LabeledParams {
         self.0.iter().map(move |p| LabeledParam {
             label: p.label,
             ty: f(p.ty),
+            has_default: p.has_default,
         })
     }
     pub fn has_label(&self) -> bool {
@@ -88,12 +99,28 @@ impl LabeledParams {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct RecordTypeField {
+    pub key: Symbol,
+    pub ty: TypeNodeId,
+    pub has_default: bool,
+}
+impl RecordTypeField {
+    pub fn new(key: Symbol, ty: TypeNodeId, has_default: bool) -> Self {
+        Self {
+            key,
+            ty,
+            has_default,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum Type {
     Primitive(PType),
     //aggregate types
     Array(TypeNodeId),
     Tuple(Vec<TypeNodeId>),
-    Record(Vec<(Symbol, TypeNodeId)>),
+    Record(Vec<RecordTypeField>),
     ///Function that has a vector of parameters, return type, and type for internal states.
     ///Parameters are represented as `Vec<(Option<Symbol>, TypeNodeId)>` to support parameter names
     Function(LabeledParams, TypeNodeId, Option<TypeNodeId>),
@@ -117,7 +144,9 @@ impl Type {
         match self {
             Type::Function(_, _, _) => true,
             Type::Tuple(t) => t.iter().any(|t| t.to_type().contains_function()),
-            Type::Record(t) => t.iter().any(|(_s, t)| t.to_type().contains_function()),
+            Type::Record(t) => t
+                .iter()
+                .any(|RecordTypeField { ty, .. }| ty.to_type().contains_function()),
             _ => false,
         }
     }
@@ -142,7 +171,12 @@ impl Type {
     pub fn get_as_tuple(&self) -> Option<Vec<TypeNodeId>> {
         match self {
             Type::Tuple(types) => Some(types.to_vec()),
-            Type::Record(fields) => Some(fields.iter().map(|(_s, t)| *t).collect::<Vec<_>>()),
+            Type::Record(fields) => Some(
+                fields
+                    .iter()
+                    .map(|RecordTypeField { ty, .. }| *ty)
+                    .collect::<Vec<_>>(),
+            ),
             _ => None,
         }
     }
@@ -188,10 +222,10 @@ impl Type {
             Type::Record(v) => {
                 let vf = format_vec!(
                     v.iter()
-                        .map(|(s, x)| format!(
+                        .map(|RecordTypeField { key, ty, .. }| format!(
                             "{}: {}",
-                            s.as_str(),
-                            x.to_type().to_string_for_error()
+                            key.as_str(),
+                            ty.to_type().to_string_for_error()
                         ))
                         .collect::<Vec<_>>(),
                     ","
@@ -237,7 +271,19 @@ impl TypeNodeId {
             Type::Tuple(v) => Type::Tuple(apply_vec(&v, &mut closure)),
             Type::Record(s) => Type::Record(
                 s.iter()
-                    .map(|(name, t)| (name.clone(), apply_scalar(*t, &mut closure)))
+                    .map(
+                        |RecordTypeField {
+                             key,
+                             ty,
+                             has_default,
+                         }| {
+                            RecordTypeField::new(
+                                key.clone(),
+                                apply_scalar(*ty, &mut closure),
+                                *has_default,
+                            )
+                        },
+                    )
                     .collect(),
             ),
             Type::Function(p, r, s) => {
@@ -290,6 +336,12 @@ impl fmt::Display for TypeVar {
         )
     }
 }
+impl fmt::Display for RecordTypeField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let def = if self.has_default { "(default)" } else { "" };
+        write!(f, "{}:{}{def}", self.key, self.ty)
+    }
+}
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
@@ -303,16 +355,7 @@ impl fmt::Display for Type {
                 write!(f, "({vf})")
             }
             Type::Record(v) => {
-                write!(
-                    f,
-                    "{{{}}}",
-                    format_vec!(
-                        v.iter()
-                            .map(|(k, v)| format!("{}: {}", k, v.to_type()))
-                            .collect::<Vec<_>>(),
-                        ", "
-                    )
-                )
+                write!(f, "{{{}}}", format_vec!(v, ", "))
             }
             Type::Function(p, r, _s) => {
                 let args = format_vec!(

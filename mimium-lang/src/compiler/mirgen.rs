@@ -12,7 +12,7 @@ use crate::mir::{self, Argument, Instruction, Mir, StateSize, VPtr, VReg, Value}
 
 use std::sync::Arc;
 
-use crate::types::{PType, Type};
+use crate::types::{PType, RecordTypeField, Type};
 use crate::utils::environment::{Environment, LookupRes};
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::{Location, Span};
@@ -240,7 +240,9 @@ impl Context {
             }
             (Pattern::Record(patterns), Type::Record(kvvec)) => {
                 for (k, pat) in patterns.iter() {
-                    let i = kvvec.iter().position(|(kk, _)| kk == k);
+                    let i = kvvec
+                        .iter()
+                        .position(|RecordTypeField { key, .. }| key == k);
                     if let Some(offset) = i {
                         let elem_v = self.push_inst(Instruction::GetElement {
                             value: v.clone(),
@@ -253,7 +255,7 @@ impl Context {
                             pat: pat.clone(),
                             ty: tid,
                         };
-                        let elem_t = kvvec[offset].1;
+                        let elem_t = kvvec[offset].ty;
                         self.add_bind_pattern(&tpat, elem_v, elem_t, is_global);
                     };
                 }
@@ -563,13 +565,13 @@ impl Context {
                 // The default values will be handled in the type system and during record construction
                 self.alloc_aggregates(&fields.iter().map(|f| f.expr).collect::<Vec<_>>(), ty)
             }
-            Expr::FieldAccess(expr, key) => {
+            Expr::FieldAccess(expr, accesskey) => {
                 let (expr_v, expr_ty) = self.eval_expr(*expr);
                 match expr_ty.to_type() {
                     Type::Record(fields) => {
                         let offset = fields
                             .iter()
-                            .position(|(k, _)| *k == *key)
+                            .position(|RecordTypeField { key, .. }| *key == *accesskey)
                             .expect("field access to non-existing field");
 
                         let res = self.push_inst(Instruction::GetElement {
@@ -577,7 +579,7 @@ impl Context {
                             ty: expr_ty,
                             tuple_offset: offset as u64,
                         });
-                        (res, fields[offset].1)
+                        (res, fields[offset].ty)
                     }
                     _ => panic!("expected record type for field access"),
                 }
@@ -642,16 +644,16 @@ impl Context {
                                         })
                                         .collect(),
                                     Type::Record(kvs) => param_types.get_as_slice().iter().map(|param|{
-                                        kvs.iter().enumerate().find(|(_i,(k, _))| param.label.is_some_and(| l| l == *k))
+                                        kvs.iter().enumerate().find(|(_i,RecordTypeField { key,.. })| param.label.is_some_and(| l| l == *key))
                                             .map_or_else(
                                                 || unreachable!("parameter pack failed, possible type inference bug"),
-                                                |(i,(_, t))| {
+                                                |(i,RecordTypeField { ty,.. })| {
                                                     let field_val = self.push_inst(Instruction::GetElement {
                                                         value: arg_val.clone(),
-                                                        ty,
+                                                        ty:*ty,
                                                         tuple_offset: i as u64,
                                                     });
-                                                    (field_val, *t)
+                                                    (field_val, *ty)
                                                 },
                                             )
                                     }).collect(),

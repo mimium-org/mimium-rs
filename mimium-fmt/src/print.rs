@@ -32,7 +32,7 @@ where
 mod types {
     use mimium_lang::{
         interner::TypeNodeId,
-        types::{LabeledParam, PType},
+        types::{LabeledParam, PType, RecordTypeField},
     };
 
     use super::*;
@@ -61,9 +61,9 @@ mod types {
             Type::Record(items) => {
                 let docs = items
                     .into_iter()
-                    .map(|(name, ty)| {
+                    .map(|RecordTypeField { key, ty, .. }| {
                         allocator
-                            .text(name)
+                            .text(key)
                             .append(allocator.text(": "))
                             .append(types::pretty(ty, allocator))
                     })
@@ -76,7 +76,13 @@ mod types {
                 let param_docs = params
                     .get_as_slice()
                     .iter()
-                    .map(|LabeledParam { label: _, ty }| types::pretty(*ty, allocator))
+                    .map(
+                        |LabeledParam {
+                             label: _,
+                             ty,
+                             has_default: _,
+                         }| types::pretty(*ty, allocator),
+                    )
                     .collect::<Vec<_>>();
                 let ret_doc = types::pretty(ret, allocator);
                 allocator
@@ -225,6 +231,7 @@ mod expr {
                     .collect::<Vec<_>>();
                 allocator
                     .intersperse(docs, breakable_comma(allocator))
+                    .append(allocator.text(",")) //trailing comma
                     .append(allocator.softline())
                     .append(allocator.text(".."))
                     .group()

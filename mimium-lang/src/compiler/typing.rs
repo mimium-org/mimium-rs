@@ -2,13 +2,13 @@ use crate::ast::{Expr, Literal, RecordField};
 use crate::compiler::intrinsics;
 use crate::interner::{ExprKey, ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
-use crate::types::{LabeledParam, LabeledParams, PType, Type, TypeVar};
+use crate::types::{LabeledParam, LabeledParams, PType, RecordTypeField, Type, TypeVar};
 use crate::utils::metadata::Location;
 use crate::utils::{environment::Environment, error::ReportableError};
 use crate::{function, integer, numeric, unit};
 use itertools::{EitherOrBoth, Itertools};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::rc::Rc;
 
@@ -52,8 +52,7 @@ pub enum Error {
     /// This is temporary error which is used when the type of 2 records contain different keys.
     /// If structural subtyping is implemented, this error should be removed.
     IncompatibleKeyInRecord {
-        key: Vec<Symbol>,
-        loc: Location,
+        keys: Vec<(Symbol, bool, Location)>,
     },
     VariableNotFound(Symbol, Location),
     NonPrimitiveInFeed(Location),
@@ -194,18 +193,13 @@ impl ReportableError for Error {
                     et.to_type().to_string_for_error()
                 ),
             )],
-            Error::IncompatibleKeyInRecord { key, loc } => {
-                vec![(
-                    loc.clone(),
-                    format!(
-                        "Incompatible key \"{}\" found in record type",
-                        key.iter()
-                            .map(|s| s.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                )]
-            }
+            Error::IncompatibleKeyInRecord { keys } => keys
+                .iter()
+                .map(|(key, has_default, loc)| {
+                    let def = if *has_default { "(default)" } else { "" };
+                    (loc.clone(), format!("{key}{def}"))
+                })
+                .collect(),
             Error::FieldNotExistInParams { field, loc, params } => vec![(
                 loc.clone(),
                 format!(
@@ -375,7 +369,12 @@ impl InferContext {
                     && cls(*r)
                     && cls(s.map(|x| x).unwrap_or_else(|| Type::Unknown.into_id()))
             }
-            Type::Record(s) => vec_cls(s.iter().map(|(_k, v)| *v).collect::<Vec<_>>().as_slice()),
+            Type::Record(s) => vec_cls(
+                s.iter()
+                    .map(|RecordTypeField { ty, .. }| *ty)
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+            ),
             _ => false,
         }
     }
@@ -498,27 +497,64 @@ impl InferContext {
             }
             (Type::Record(a1), Type::Record(a2)) => {
                 {
-                    let m1 = HashSet::<Symbol>::from_iter(a1.iter().map(|(k, _)| *k));
-                    let m2 = HashSet::<Symbol>::from_iter(a2.iter().map(|(k, _)| *k));
-                    if m1 != m2 {
-                        let key_diffs = m1.difference(&m2).cloned().collect();
-                        return Err(vec![Error::IncompatibleKeyInRecord {
-                            key: key_diffs,
-                            loc: loc1.clone(),
-                        }]);
+                    let m1 = HashMap::<(Symbol, bool), Location>::from_iter(a1.iter().map(
+                        |RecordTypeField {
+                             key,
+                             has_default,
+                             ty,
+                         }| {
+                            ((*key, *has_default), Location::new(ty.to_span(), loc1.path))
+                        },
+                    ));
+                    let m2 = HashMap::<(Symbol, bool), Location>::from_iter(a2.iter().map(
+                        |RecordTypeField {
+                             key,
+                             has_default,
+                             ty,
+                         }| {
+                            ((*key, *has_default), Location::new(ty.to_span(), loc2.path))
+                        },
+                    ));
+                    let diffs1 = m1.iter().filter(|(k, _)| m2.contains_key(k));
+                    let diffs2 = m2.iter().filter(|(k, _)| m1.contains_key(k));
+                    let errs = diffs1
+                        .chain(diffs2)
+                        .map(|((k, has_default), loc)| (*k, *has_default, loc.clone()))
+                        .collect::<Vec<_>>();
+
+                    if !errs.is_empty() {
+                        return Err(vec![Error::IncompatibleKeyInRecord { keys: errs }]);
                     }
                 }
-                let get_key_val = |v: &Vec<(Symbol, TypeNodeId)>| {
+                let get_key_val = |v: &Vec<RecordTypeField>| {
                     let mut v_c = v.clone();
-                    v_c.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
-                    let (ks, ts): (Vec<_>, Vec<_>) = v_c.into_iter().unzip();
+                    v_c.sort_by(|a, b| a.key.to_string().cmp(&b.key.to_string()));
+                    let (ks, ts): (Vec<_>, Vec<_>) = v_c
+                        .into_iter()
+                        .map(
+                            |RecordTypeField {
+                                 key,
+                                 ty,
+                                 has_default,
+                             }| ((key, has_default), ty),
+                        )
+                        .unzip();
                     (ks, ts)
                 };
+                //todo default value handling
                 let (ks1, ts1) = get_key_val(a1);
                 let (ks2, ts2) = get_key_val(a2);
                 debug_assert_eq!(ks1, ks2);
                 let (vec, err) = Self::unify_vec(&ts1, loc1, &ts2, loc2);
-                let rvec = ks1.into_iter().zip(vec).collect::<Vec<_>>();
+                let rvec = ks1
+                    .into_iter()
+                    .zip(vec)
+                    .map(|((key, has_default), ty)| RecordTypeField {
+                        key,
+                        ty,
+                        has_default,
+                    })
+                    .collect::<Vec<_>>();
                 if err.is_empty() {
                     Ok(Type::Record(rvec).into_id())
                 } else {
@@ -620,7 +656,13 @@ impl InferContext {
             Pattern::Record(items) => {
                 let res = items
                     .iter()
-                    .map(|(k, v)| bind_item(v.clone()).map(|t| (*k, t)))
+                    .map(|(key, v)| {
+                        bind_item(v.clone()).map(|ty| RecordTypeField {
+                            key: *key,
+                            ty,
+                            has_default: false,
+                        })
+                    })
                     .try_collect()?; //todo multiple errors
                 let res = Self::unify_types(
                     (Type::Record(res).into_id(), loc_p.clone()),
@@ -755,8 +797,12 @@ impl InferContext {
                     let kts: Vec<_> = kvs
                         .iter()
                         .map(|RecordField { name, expr }| {
-                            let t = self.infer_type(*expr);
-                            t.map(|t| (*name, t))
+                            let ty = self.infer_type(*expr);
+                            ty.map(|ty| RecordTypeField {
+                                key: *name,
+                                ty,
+                                has_default: true,
+                            })
                         })
                         .try_collect()?;
                     Ok(Type::Record(kts).into_id())
@@ -765,11 +811,21 @@ impl InferContext {
             Expr::FieldAccess(expr, field) => {
                 let et = self.infer_type(*expr)?;
                 log::trace!("field access {} : {}", field, et.to_type());
-                let fields_to_ans = |fields: &[(Symbol, TypeNodeId)]| {
+                let fields_to_ans = |fields: &[RecordTypeField]| {
                     fields
                         .iter()
-                        .find_map(|(name, t)| if *name == *field { Some(*t) } else { None })
-                        .ok_or_else(|| vec![Error::VariableNotFound(*field, loc.clone())])
+                        .find_map(
+                            |RecordTypeField { key, ty, .. }| {
+                                if *key == *field { Some(*ty) } else { None }
+                            },
+                        )
+                        .ok_or_else(|| {
+                            vec![Error::FieldNotExist {
+                                field: *field,
+                                loc: loc.clone(),
+                                et,
+                            }]
+                        })
                 };
                 // we directly inspect if the intermediate type is a record or not.
                 // this is because we can not infer the number of fields in the record from the fields access expression.
@@ -828,7 +884,7 @@ impl InferContext {
                                 self.gen_intermediate_type()
                             };
                             self.env.add_bind(&[(id.id, pt)]);
-                            LabeledParam::new(id.id, pt)
+                            LabeledParam::new(id.id, pt, id.default_value.is_some())
                         })
                         .collect(),
                 );
@@ -903,7 +959,15 @@ impl InferContext {
                         Type::Tuple(t) => t.into_iter().map(LabeledParam::from).collect(),
                         Type::Record(kvs) => kvs
                             .into_iter()
-                            .map(|(k, t)| LabeledParam::new(k, t))
+                            .map(
+                                |RecordTypeField {
+                                     key,
+                                     ty,
+                                     has_default,
+                                 }| {
+                                    LabeledParam::new(key, ty, has_default)
+                                },
+                            )
                             .collect(),
                         _ => vec![LabeledParam::from(callee_t)],
                     }
@@ -1013,7 +1077,11 @@ impl InferContext {
             let res = unified_types
                 .map(|x| x.unwrap())
                 .zip(ps2.get_as_slice().iter().map(|p| p.label))
-                .map(|(ty, label)| LabeledParam { label, ty })
+                .map(|(ty, label)| LabeledParam {
+                    label,
+                    ty,
+                    has_default: true,
+                })
                 .collect::<Vec<_>>();
             return (LabeledParams::new(res), vec![]);
         }
@@ -1039,6 +1107,7 @@ impl InferContext {
                 .map(|(ty, label)| LabeledParam {
                     label,
                     ty: ty.unwrap(),
+                    has_default: true,
                 })
                 .collect::<Vec<_>>();
             (LabeledParams::new(res), vec![])
