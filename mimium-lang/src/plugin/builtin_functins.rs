@@ -37,6 +37,7 @@ mod length_array {
     use crate::interner::TypeNodeId;
     use crate::interpreter::Value;
     use crate::plugin::CommonFunction;
+    use crate::types::TypeSchemeId;
     use crate::{
         function, numeric,
         types::{PType, Type},
@@ -68,7 +69,7 @@ mod length_array {
         CommonFunction {
             name: "length_array".to_symbol(),
             ty: function!(
-                vec![Type::Array(Type::TypeScheme(u64::MAX).into_id()).into_id()],
+                vec![Type::Array(Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id()).into_id()],
                 numeric!()
             ),
             macro_fun: macro_function,

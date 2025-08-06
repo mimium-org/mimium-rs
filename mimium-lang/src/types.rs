@@ -16,14 +16,17 @@ pub enum PType {
     String,
 }
 
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct IntermediateId(pub u64);
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeVar {
     pub parent: Option<TypeNodeId>,
-    pub var: u64,
+    pub var: IntermediateId,
     pub level: u64,
 }
 impl TypeVar {
-    pub fn new(var: u64, level: u64) -> Self {
+    pub fn new(var: IntermediateId, level: u64) -> Self {
         Self {
             parent: None,
             var,
@@ -113,6 +116,8 @@ impl RecordTypeField {
         }
     }
 }
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct TypeSchemeId(pub u64);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Type {
@@ -128,7 +133,7 @@ pub enum Type {
     //(experimental) code-type for multi-stage computation that will be evaluated on the next stage
     Code(TypeNodeId),
     Intermediate(Rc<RefCell<TypeVar>>),
-    TypeScheme(u64),
+    TypeScheme(TypeSchemeId),
     /// Failure type: it is bottom type that can be unified to any type and return bottom type.
     Failure,
     Unknown,
@@ -329,7 +334,7 @@ impl fmt::Display for TypeVar {
         write!(
             f,
             "?{}[{}]({})",
-            self.var,
+            self.var.0,
             self.level,
             self.parent
                 .map_or_else(|| "".to_string(), |t| t.to_type().to_string())
@@ -371,7 +376,7 @@ impl fmt::Display for Type {
                 write!(f, "{}", id.borrow())
             }
             Type::TypeScheme(id) => {
-                write!(f, "g({id})")
+                write!(f, "g({})", id.0)
             }
             Type::Failure => write!(f, "!"),
             Type::Unknown => write!(f, "unknown"),

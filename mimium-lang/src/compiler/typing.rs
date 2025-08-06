@@ -2,7 +2,10 @@ use crate::ast::{Expr, Literal, RecordField};
 use crate::compiler::intrinsics;
 use crate::interner::{ExprKey, ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
-use crate::types::{LabeledParam, LabeledParams, PType, RecordTypeField, Type, TypeVar};
+use crate::types::{
+    IntermediateId, LabeledParam, LabeledParams, PType, RecordTypeField, Type, TypeSchemeId,
+    TypeVar,
+};
 use crate::utils::metadata::Location;
 use crate::utils::{environment::Environment, error::ReportableError};
 use crate::{function, integer, numeric, unit};
@@ -82,7 +85,7 @@ impl ReportableError for Error {
                 format!("Index access for non-tuple variable.")
             }
             Error::VariableNotFound(symbol, _) => {
-                format!("Variable {} not found in this scope", symbol)
+                format!("Variable {symbol} not found in this scope")
             }
             Error::NonPrimitiveInFeed(_) => {
                 format!("Function that uses `self` cannot return function type.")
@@ -225,11 +228,11 @@ impl ReportableError for Error {
 
 #[derive(Clone, Debug)]
 pub struct InferContext {
-    interm_idx: u64,
-    typescheme_idx: u64,
+    interm_idx: IntermediateId,
+    typescheme_idx: TypeSchemeId,
     level: u64,
-    instantiated_map: BTreeMap<u64, TypeNodeId>, //from type scheme to typevar
-    generalize_map: BTreeMap<u64, u64>,
+    instantiated_map: BTreeMap<TypeSchemeId, TypeNodeId>, //from type scheme to typevar
+    generalize_map: BTreeMap<IntermediateId, TypeSchemeId>,
     result_memo: BTreeMap<ExprKey, TypeNodeId>,
     file_path: Symbol,
     pub env: Environment<TypeNodeId>,
@@ -317,10 +320,10 @@ impl InferContext {
             self.level,
         ))))
         .into_id();
-        self.interm_idx += 1;
+        self.interm_idx.0 += 1;
         res
     }
-    fn get_typescheme(&mut self, tvid: u64) -> TypeNodeId {
+    fn get_typescheme(&mut self, tvid: IntermediateId) -> TypeNodeId {
         self.generalize_map.get(&tvid).cloned().map_or_else(
             || self.gen_typescheme(),
             |id| Type::TypeScheme(id).into_id(),
@@ -328,7 +331,7 @@ impl InferContext {
     }
     fn gen_typescheme(&mut self) -> TypeNodeId {
         let res = Type::TypeScheme(self.typescheme_idx).into_id();
-        self.typescheme_idx += 1;
+        self.typescheme_idx.0 += 1;
         res
     }
 
@@ -338,7 +341,7 @@ impl InferContext {
             self.level,
         ))))
         .into_id_with_location(loc);
-        self.interm_idx += 1;
+        self.interm_idx.0 += 1;
         res
     }
     fn convert_unknown_to_intermediate(&mut self, t: TypeNodeId) -> TypeNodeId {
@@ -348,7 +351,7 @@ impl InferContext {
         }
     }
     // return true when the circular loop of intermediate variable exists.
-    fn occur_check(id1: u64, t2: TypeNodeId) -> bool {
+    fn occur_check(id1: IntermediateId, t2: TypeNodeId) -> bool {
         let cls = |t2dash: TypeNodeId| -> bool { Self::occur_check(id1, t2dash) };
 
         let vec_cls = |t: &[_]| -> bool { t.iter().any(|a| cls(*a)) };
