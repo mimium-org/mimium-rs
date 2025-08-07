@@ -155,14 +155,14 @@ where
             .clone()
             .separated_by(just(Token::Comma))
             .collect::<Vec<_>>()
+            .map_with(move |arg, e| (arg, e.span()))
             .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
             .then(just(Token::Arrow).ignore_then(ty.clone()))
-            .map_with(move |(a, body), e| {
-                Type::Function(
-                    LabeledParams::new(a.into_iter().map(LabeledParam::from).collect()),
-                    body,
-                    None,
-                )
+            .map_with(move |((body, bspan), ret), e| {
+                Type::Function {
+                    arg: Type::Tuple(body).into_id_with_location(ctx.gen_loc(bspan)),
+                    ret,
+                }
                 .into_id_with_location(ctx.gen_loc(e.span()))
             })
             .boxed()

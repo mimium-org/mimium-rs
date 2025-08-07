@@ -3,6 +3,7 @@ use std::{cell::RefCell, fmt, rc::Rc};
 use crate::{
     format_vec,
     interner::{Symbol, TypeNodeId, with_session_globals},
+    pattern::TypedId,
     utils::metadata::Location,
 };
 
@@ -116,6 +117,15 @@ impl RecordTypeField {
         }
     }
 }
+impl From<TypedId> for RecordTypeField {
+    fn from(value: TypedId) -> Self {
+        Self {
+            key: value.id,
+            ty: value.ty,
+            has_default: value.default_value.is_some(),
+        }
+    }
+}
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TypeSchemeId(pub u64);
 
@@ -126,9 +136,12 @@ pub enum Type {
     Array(TypeNodeId),
     Tuple(Vec<TypeNodeId>),
     Record(Vec<RecordTypeField>),
-    ///Function that has a vector of parameters, return type, and type for internal states.
-    ///Parameters are represented as `Vec<(Option<Symbol>, TypeNodeId)>` to support parameter names
-    Function(LabeledParams, TypeNodeId, Option<TypeNodeId>),
+    ///Function that takes some type and return some type
+    ///If the function takes multiple arguments, the arguments becomes record type.
+    Function {
+        arg: TypeNodeId,
+        ret: TypeNodeId,
+    },
     Ref(TypeNodeId),
     //(experimental) code-type for multi-stage computation that will be evaluated on the next stage
     Code(TypeNodeId),
@@ -147,7 +160,7 @@ impl Type {
     // if no functions are contained, it means that the value can be placed in linear memory.
     pub fn contains_function(&self) -> bool {
         match self {
-            Type::Function(_, _, _) => true,
+            Type::Function { arg: _, ret: _ } => true,
             Type::Tuple(t) => t.iter().any(|t| t.to_type().contains_function()),
             Type::Record(t) => t
                 .iter()
@@ -156,16 +169,9 @@ impl Type {
         }
     }
     pub fn is_function(&self) -> bool {
-        matches!(self, Type::Function(_, _, _))
+        matches!(self, Type::Function { arg: _, ret: _ })
     }
 
-    // Helper method to get parameter types without their names
-    pub fn get_param_types(&self) -> Option<Vec<TypeNodeId>> {
-        match self {
-            Type::Function(params, _, _) => Some(params.ty_iter().collect()),
-            _ => None,
-        }
-    }
     pub fn is_intermediate(&self) -> Option<Rc<RefCell<TypeVar>>> {
         match self {
             Type::Intermediate(tvar) => Some(tvar.clone()),
@@ -237,14 +243,12 @@ impl Type {
                 );
                 format!("({vf})")
             }
-            Type::Function(p, r, _s) => {
-                let args = format_vec!(
-                    p.ty_iter()
-                        .map(|x| x.to_type().to_string_for_error())
-                        .collect::<Vec<_>>(),
-                    ","
-                );
-                format!("({args})->{}", r.to_type().to_string_for_error())
+            Type::Function { arg, ret } => {
+                format!(
+                    "({})->{}",
+                    arg.to_type().to_string_for_error(),
+                    ret.to_type().to_string_for_error()
+                )
             }
             Type::Ref(x) => format!("&{}", x.to_type().to_string_for_error()),
             Type::Code(c) => format!("`({})", c.to_type().to_string_for_error()),
@@ -291,17 +295,10 @@ impl TypeNodeId {
                     )
                     .collect(),
             ),
-            Type::Function(p, r, s) => {
-                let at = p
-                    .ty_map(|t| apply_scalar(t, &mut closure))
-                    .collect::<Vec<_>>();
-                let rt = apply_scalar(r, &mut closure);
-                Type::Function(
-                    LabeledParams::new(at),
-                    rt,
-                    s.map(|t| apply_scalar(t, &mut closure)),
-                )
-            }
+            Type::Function { arg, ret } => Type::Function {
+                arg: apply_scalar(arg, &mut closure),
+                ret: apply_scalar(ret, &mut closure),
+            },
             Type::Ref(x) => Type::Ref(apply_scalar(x, &mut closure)),
             Type::Code(c) => Type::Code(apply_scalar(c, &mut closure)),
             Type::Intermediate(id) => Type::Intermediate(id.clone()),
@@ -362,12 +359,8 @@ impl fmt::Display for Type {
             Type::Record(v) => {
                 write!(f, "{{{}}}", format_vec!(v, ", "))
             }
-            Type::Function(p, r, _s) => {
-                let args = format_vec!(
-                    p.ty_iter().map(|x| x.to_type().clone()).collect::<Vec<_>>(),
-                    ","
-                );
-                write!(f, "({args})->{}", r.to_type())
+            Type::Function { arg, ret } => {
+                write!(f, "({})->{}", arg.to_type(), ret.to_type())
             }
             Type::Ref(x) => write!(f, "&{}", x.to_type()),
 

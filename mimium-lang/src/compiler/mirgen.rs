@@ -619,8 +619,8 @@ impl Context {
                     (d, numeric!())
                 } else {
                     // Get function parameter info
-                    let (param_types, rt) = if let Type::Function(params, rt, _) = ft.to_type() {
-                        (params, rt)
+                    let (param_types, rt) = if let Type::Function { arg, ret } = ft.to_type() {
+                        (arg, ret)
                     } else {
                         panic!("non function type {} {} ", ft.to_type(), ty.to_type());
                     };

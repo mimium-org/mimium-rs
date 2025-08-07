@@ -255,22 +255,22 @@ fn test_macroexpand() {
 fn test_fndef() {
     let ans = Expr::LetRec(
         TypedId {
-            ty: Type::Function(
-                LabeledParams::new(vec![
-                    LabeledParam::new(
+            ty: Type::Function {
+                arg: Type::Record(vec![
+                    RecordTypeField::new(
                         "input".to_symbol(),
                         Type::Unknown.into_id_with_location(loc(8..13)),
                         false,
                     ),
-                    LabeledParam::new(
+                    RecordTypeField::new(
                         "gue".to_symbol(),
                         Type::Unknown.into_id_with_location(loc(14..17)),
                         false,
                     ),
-                ]),
-                Type::Unknown.into_id_with_location(loc(0..28)),
-                None,
-            )
+                ])
+                .into_id_with_location(loc(8..17)),
+                ret: Type::Unknown.into_id_with_location(loc(0..28)),
+            }
             .into_id_with_location(loc(0..28)),
 
             id: "hoge".to_symbol(),
@@ -303,22 +303,22 @@ fn global_fnmultiple() {
     let ans = Expr::LetRec(
         TypedId {
             id: "hoge".to_symbol(),
-            ty: Type::Function(
-                LabeledParams::new(vec![
-                    LabeledParam::new(
+            ty: Type::Function {
+                arg: Type::Record(vec![
+                    RecordTypeField::new(
                         "input".to_symbol(),
                         Type::Unknown.into_id_with_location(loc(8..13)),
                         false,
                     ),
-                    LabeledParam::new(
+                    RecordTypeField::new(
                         "gue".to_symbol(),
                         Type::Unknown.into_id_with_location(loc(14..17)),
                         false,
                     ),
-                ]),
-                Type::Unknown.into_id_with_location(loc(0..28)),
-                None,
-            )
+                ])
+                .into_id_with_location(loc(8..17)),
+                ret: Type::Unknown.into_id_with_location(loc(0..28)),
+            }
             .into_id_with_location(loc(0..28)),
             default_value: None,
         },
@@ -343,22 +343,22 @@ fn global_fnmultiple() {
             Expr::LetRec(
                 TypedId {
                     id: "hoge".to_symbol(),
-                    ty: Type::Function(
-                        LabeledParams::new(vec![
-                            LabeledParam::new(
+                    ty: Type::Function {
+                        arg: Type::Record(vec![
+                            RecordTypeField::new(
                                 "input".to_symbol(),
                                 Type::Unknown.into_id_with_location(loc(37..42)),
                                 false,
                             ),
-                            LabeledParam::new(
+                            RecordTypeField::new(
                                 "gue".to_symbol(),
                                 Type::Unknown.into_id_with_location(loc(43..46)),
                                 false,
                             ),
-                        ]),
-                        Type::Unknown.into_id_with_location(loc(29..57)),
-                        None,
-                    )
+                        ])
+                        .into_id_with_location(loc(37..46)),
+                        ret: Type::Unknown.into_id_with_location(loc(29..57)),
+                    }
                     .into_id_with_location(loc(29..57)),
                     default_value: None,
                 },
@@ -542,16 +542,16 @@ fn test_stmt_without_return() {
     let ans = Expr::LetRec(
         TypedId {
             id: "test".to_symbol(),
-            ty: Type::Function(
-                LabeledParams::new(vec![LabeledParam::new(
+            ty: Type::Function {
+                arg: Type::Record(vec![RecordTypeField::new(
                     "input".to_symbol(),
                     Type::Unknown.into_id_with_location(loc(8..13)),
                     false,
-                )]),
-                Type::Unknown.into_id_with_location(loc(0..56)),
-                None,
-            )
-            .into_id_with_location(loc(0..56)),
+                )])
+                .into_id_with_location(loc(8..13)),
+                ret: Type::Unknown.into_id_with_location(loc(0..28)),
+            }
+            .into_id_with_location(loc(0..28)),
             default_value: None,
         },
         Expr::Lambda(

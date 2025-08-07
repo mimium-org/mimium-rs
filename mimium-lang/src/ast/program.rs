@@ -4,7 +4,7 @@ use crate::ast::Expr;
 use crate::ast::statement::into_then_expr;
 use crate::interner::{ExprNodeId, Symbol, TypeNodeId};
 use crate::pattern::TypedId;
-use crate::types::{LabeledParam, LabeledParams, Type};
+use crate::types::{RecordTypeField, Type};
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::{Location, Span};
 
@@ -45,16 +45,13 @@ fn stmts_from_program(
                 let loc = Location::new(span, file_path);
                 let argsty = args
                     .clone()
-                    .iter()
-                    .map(|typedid| {
-                        LabeledParam::new(typedid.id, typedid.ty, typedid.default_value.is_some())
-                    })
-                    .collect();
-                let fnty = Type::Function(
-                    LabeledParams::new(argsty),
-                    return_type.unwrap_or(Type::Unknown.into_id_with_location(loc.clone())),
-                    None,
-                )
+                    .into_iter()
+                    .map(RecordTypeField::from)
+                    .collect::<Vec<_>>();
+                let fnty = Type::Function {
+                    arg: Type::Record(argsty).into_id_with_location(loc.clone()),
+                    ret: return_type.unwrap_or(Type::Unknown.into_id_with_location(loc.clone())),
+                }
                 .into_id_with_location(loc.clone());
                 Some(vec![(
                     Statement::LetRec(
