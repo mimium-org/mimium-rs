@@ -2,8 +2,8 @@ use crate::utils::metadata::Span;
 
 use super::*;
 
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub(super) enum Relation {
-    Identical,
     Subtype,
     Supertype,
 }
@@ -14,16 +14,16 @@ pub(super) enum Error {
         right: TypeNodeId,
     },
     LengthMismatch {
-        left: Vec<TypeNodeId>,
-        right: Vec<TypeNodeId>,
+        left: (Vec<TypeNodeId>, Span),
+        right: (Vec<TypeNodeId>, Span),
     },
     CircularType {
         left: Span,
         right: Span,
     },
     ImcompatibleRecords {
-        left: Vec<Symbol>,
-        right: Vec<Symbol>,
+        left: (Vec<(Symbol, TypeNodeId)>, Span),
+        right: (Vec<(Symbol, TypeNodeId)>, Span),
     },
 }
 
@@ -43,12 +43,7 @@ fn occur_check(id1: IntermediateId, t2: TypeNodeId) -> bool {
             .unwrap_or(true),
         Type::Array(a) => cls(*a),
         Type::Tuple(t) => vec_cls(t),
-        Type::Function(p, r, s) => {
-            let vec = p.ty_iter().collect::<Vec<_>>();
-            vec_cls(vec.as_slice())
-                && cls(*r)
-                && cls(s.map(|x| x).unwrap_or_else(|| Type::Unknown.into_id()))
-        }
+        Type::Function { arg, ret } => cls(*arg) && cls(*ret),
         Type::Record(s) => vec_cls(
             s.iter()
                 .map(|RecordTypeField { ty, .. }| *ty)
@@ -61,112 +56,111 @@ fn occur_check(id1: IntermediateId, t2: TypeNodeId) -> bool {
 
 fn covariant(rel: Relation) -> Relation {
     match rel {
-        Relation::Identical => Relation::Identical,
         Relation::Subtype => Relation::Subtype,
         Relation::Supertype => Relation::Supertype,
     }
 }
 fn contravariant(rel: Relation) -> Relation {
     match rel {
-        Relation::Identical => Relation::Identical,
         Relation::Subtype => Relation::Supertype,
         Relation::Supertype => Relation::Subtype,
     }
 }
 
 //todo
-fn unify_vec(a1: &[TypeNodeId], a2: &[TypeNodeId]) -> Result<(), Vec<Error>> {
+fn unify_vec(a1: &[TypeNodeId], a2: &[TypeNodeId]) -> Result<Relation, Vec<Error>> {
+    assert_eq!(a1.len(), a2.len());
     let (res, errs): (Vec<_>, Vec<_>) = a1
         .iter()
-        .zip_longest(a2)
-        .map(|pair| match pair {
-            EitherOrBoth::Both(a1, a2) => unify_types((*a1, loc1.clone()), (*a2, loc2.clone())),
-            EitherOrBoth::Left(t) | EitherOrBoth::Right(t) => Ok(*t),
-        })
+        .zip(a2)
+        .map(|(a1, a2)| unify_types(*a1, *a2))
         .partition_result();
-    let mut errs: Vec<_> = errs.into_iter().flatten().collect();
-    if a1.len() != a2.len() {
-        errs.push(Error::LengthMismatch {
-            left: (a1.len(), loc1.clone()),
-            right: (a2.len(), loc2.clone()),
-        });
-    }
-    (res, errs)
+    let errs: Vec<_> = errs.into_iter().flatten().collect();
+
+    let res_relation = if res.iter().all(|r| *r != Relation::Subtype) {
+        Relation::Supertype
+    } else if res.iter().all(|r| *r != Relation::Supertype) {
+        Relation::Subtype
+    } else {
+        //TODO more specific error report, if the tuple contains both subtype and supertype
+        return Err(errs);
+    };
+    Ok(res_relation)
 }
 //todo
-fn unify_named_params(
-    ps1: &LabeledParams, //function
-    ps2: &LabeledParams, //arguments
-) -> (LabeledParams, Vec<Error>) {
-    let len1 = ps1.get_as_slice().len();
-    let len2 = ps2.get_as_slice().len();
-    let has_label_1 = ps1.has_label();
-    let has_label_2 = ps2.has_label();
-    if len1 != len2 {
-        let err = Error::LengthMismatch {
-            left: (len1, loc1.clone()),
-            right: (len2, loc2.clone()),
-        };
-        return (LabeledParams::new(vec![]), vec![err]);
-    }
-    if has_label_1 && has_label_2 {
-        //labels may be in different order
-        let unified_types = ps2.get_as_slice().iter().map(|p2| {
-            ps1.get_as_slice()
-                .iter()
-                .find(|p1| p1.label == p2.label)
-                .map_or(
-                    Err(vec![Error::FieldNotExistInParams {
-                        field: p2.label.unwrap(),
-                        loc: loc1.clone(),
-                        params: ps1.clone(),
-                    }]),
-                    |p1| unify_types((p1.ty, loc1.clone()), (p2.ty, loc2.clone())),
-                )
-        });
-        if unified_types.clone().any(|x| x.is_err()) {
-            let errs = unified_types.filter_map(|x| x.err()).flatten().collect();
-            return (LabeledParams::new(vec![]), errs);
-        }
-        let res = unified_types
-            .map(|x| x.unwrap())
-            .zip(ps2.get_as_slice().iter().map(|p| p.label))
-            .map(|(ty, label)| LabeledParam {
-                label,
-                ty,
-                has_default: true,
-            })
-            .collect::<Vec<_>>();
-        return (LabeledParams::new(res), vec![]);
-    }
-    let label_vec = if has_label_1 && !has_label_2 {
-        ps1.get_as_slice().iter().map(|p| p.label).collect()
-    } else if !has_label_1 && has_label_2 {
-        ps2.get_as_slice().iter().map(|p| p.label).collect()
-    } else {
-        vec![None; len1]
-    };
-    let ts = ps1
-        .ty_iter()
-        .zip(ps2.ty_iter())
-        .map(|(t1, t2)| unify_types((t1, loc1.clone()), (t2, loc2.clone())))
-        .collect::<Vec<_>>();
-    if ts.clone().into_iter().any(|x| x.is_err()) {
-        let errs = ts.into_iter().filter_map(|x| x.err()).flatten().collect();
-        (LabeledParams::new(vec![]), errs)
-    } else {
-        let res = ts
-            .into_iter()
-            .zip(label_vec)
-            .map(|(ty, label)| LabeledParam {
-                label,
-                ty: ty.unwrap(),
-                has_default: true,
-            })
-            .collect::<Vec<_>>();
-        (LabeledParams::new(res), vec![])
-    }
-}
+// fn unify_named_params(
+//     ps1: &LabeledParams, //function
+//     ps2: &LabeledParams, //arguments
+// ) -> (LabeledParams, Vec<Error>) {
+//     let len1 = ps1.get_as_slice().len();
+//     let len2 = ps2.get_as_slice().len();
+//     let has_label_1 = ps1.has_label();
+//     let has_label_2 = ps2.has_label();
+//     if len1 != len2 {
+//         let err = Error::LengthMismatch {
+//             left: (len1, loc1.clone()),
+//             right: (len2, loc2.clone()),
+//         };
+//         return (LabeledParams::new(vec![]), vec![err]);
+//     }
+//     if has_label_1 && has_label_2 {
+//         //labels may be in different order
+//         let unified_types = ps2.get_as_slice().iter().map(|p2| {
+//             ps1.get_as_slice()
+//                 .iter()
+//                 .find(|p1| p1.label == p2.label)
+//                 .map_or(
+//                     Err(vec![Error::FieldNotExistInParams {
+//                         field: p2.label.unwrap(),
+//                         loc: loc1.clone(),
+//                         params: ps1.clone(),
+//                     }]),
+//                     |p1| unify_types((p1.ty, loc1.clone()), (p2.ty, loc2.clone())),
+//                 )
+//         });
+//         if unified_types.clone().any(|x| x.is_err()) {
+//             let errs = unified_types.filter_map(|x| x.err()).flatten().collect();
+//             return (LabeledParams::new(vec![]), errs);
+//         }
+//         let res = unified_types
+//             .map(|x| x.unwrap())
+//             .zip(ps2.get_as_slice().iter().map(|p| p.label))
+//             .map(|(ty, label)| LabeledParam {
+//                 label,
+//                 ty,
+//                 has_default: true,
+//             })
+//             .collect::<Vec<_>>();
+//         return (LabeledParams::new(res), vec![]);
+//     }
+//     let label_vec = if has_label_1 && !has_label_2 {
+//         ps1.get_as_slice().iter().map(|p| p.label).collect()
+//     } else if !has_label_1 && has_label_2 {
+//         ps2.get_as_slice().iter().map(|p| p.label).collect()
+//     } else {
+//         vec![None; len1]
+//     };
+//     let ts = ps1
+//         .ty_iter()
+//         .zip(ps2.ty_iter())
+//         .map(|(t1, t2)| unify_types((t1, loc1.clone()), (t2, loc2.clone())))
+//         .collect::<Vec<_>>();
+//     if ts.clone().into_iter().any(|x| x.is_err()) {
+//         let errs = ts.into_iter().filter_map(|x| x.err()).flatten().collect();
+//         (LabeledParams::new(vec![]), errs)
+//     } else {
+//         let res = ts
+//             .into_iter()
+//             .zip(label_vec)
+//             .map(|(ty, label)| LabeledParam {
+//                 label,
+//                 ty: ty.unwrap(),
+//                 has_default: true,
+//             })
+//             .collect::<Vec<_>>();
+//         (LabeledParams::new(res), vec![])
+//     }
+// }
 
 /// Solve type constraints. Though the function arguments are immutable, it modified the content of Intermediate Type.
 /// If the result is `Relation::Subtype`, it means "t1 is subtype of t2".
@@ -178,7 +172,7 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
     let t1r = t1.get_root();
     let t2r = t2.get_root();
     let res = match &(t1r.to_type(), t2r.to_type()) {
-        (Type::Intermediate(i1), Type::Intermediate(i2)) if i1 == i2 => Relation::Identical,
+        (Type::Intermediate(i1), Type::Intermediate(i2)) if i1 == i2 => Relation::Subtype,
         (Type::Intermediate(i1), Type::Intermediate(i2)) => {
             let tv1 = &mut i1.borrow_mut() as &mut TypeVar;
             if occur_check(tv1.var, t2) {
@@ -206,42 +200,49 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                     tv2.parent = Some(p1);
                 }
             };
-            Relation::Identical
+            Relation::Subtype
         }
         (Type::Intermediate(i1), _) => {
             let tv1 = &mut i1.borrow_mut() as &mut TypeVar;
             tv1.parent = Some(t2r);
-            Relation::Identical
+            Relation::Subtype
         }
         (_, Type::Intermediate(i2)) => {
             let tv2 = &mut i2.borrow_mut() as &mut TypeVar;
             tv2.parent = Some(t1r);
-            Relation::Identical
+            Relation::Subtype
         }
         (Type::Array(a1), Type::Array(a2)) => {
             //theoriticaly, the array type can be covariant but it makes implementation complex and might be not intuitive for beginners.
             let _rel = unify_types(*a1, *a2)?;
-            Relation::Identical
+            Relation::Subtype
         }
         (Type::Ref(x1), Type::Ref(x2)) => {
             let _ = unify_types(*x1, *x2)?;
-            Relation::Identical
+            Relation::Subtype
         }
         (Type::Tuple(a1), Type::Tuple(a2)) => {
             // if a1 have nth elements, a2 must have at least n, or more elements.
+            // but for simplicity, currently the tuple length must be identical.
             use std::cmp::Ordering;
             match a1.len().cmp(&a2.len()) {
                 Ordering::Equal => {
                     let _ = unify_vec(a1, a2)?;
-                    Relation::Identical
-                }
-                Ordering::Less => {
-                    let _ = unify_vec(a1, &a2[0..a1.len()])?;
                     Relation::Subtype
                 }
-                Ordering::Greater => {
-                    let _ = unify_vec(&a1[0..a2.len()], a2)?;
-                    Relation::Supertype
+                // Ordering::Less => {
+                //     let _ = unify_vec(a1, &a2[0..a1.len()])?;
+                //     Relation::Subtype
+                // }
+                // Ordering::Greater => {
+                //     let _ = unify_vec(&a1[0..a2.len()], a2)?;
+                //     Relation::Supertype
+                // }
+                _ => {
+                    return Err(vec![Error::LengthMismatch {
+                        left: (a1.to_vec(), loc1),
+                        right: (a2.to_vec(), loc2),
+                    }]);
                 }
             }
         }
@@ -268,8 +269,9 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             };
             let keys_a = extract_key_and_sort(a1.iter());
             let keys_b = extract_key_and_sort(a2.iter());
-            let allkeys = keys_a.chain(keys_b).unique();
+            let allkeys = keys_a.clone().chain(keys_b.clone()).unique();
             let sparse_fields1 = allkeys
+                .clone()
                 .map(|skey: Symbol| a1.iter().find(|RecordTypeField { key, .. }| skey == *key));
             let sparse_fields2 = allkeys
                 .map(|skey: Symbol| a2.iter().find(|RecordTypeField { key, .. }| skey == *key));
@@ -279,13 +281,14 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 A,
                 B,
             }
-            let searchresults = sparse_fields1.zip(sparse_fields2).map(|pair| match pair {
+            let mut searchresults = sparse_fields1.zip(sparse_fields2).map(|pair| match pair {
                 (Some(s1), Some(s2)) => unify_types(s1.ty, s2.ty).map(|_| SearchRes::Both),
                 (Some(_), None) => Ok(SearchRes::A),
                 (None, Some(_)) => Ok(SearchRes::B),
                 (None, None) => unreachable!(),
             });
             let collected_errs = searchresults
+                .clone()
                 .filter_map(|r| r.err())
                 .flatten()
                 .collect::<Vec<_>>();
@@ -298,49 +301,69 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             let contains_b = searchresults.any(|r| r.is_ok_and(|r| r == SearchRes::B));
 
             if searchresults.all(|r| r == Ok(SearchRes::Both)) {
-                Relation::Identical
+                Relation::Subtype
             } else if !contains_err && contains_a && !contains_b {
                 //a has more fields than b, that means A is
                 Relation::Supertype
             } else if !contains_err && contains_b && !contains_a {
                 Relation::Subtype
             } else if contains_b && contains_a {
+                let keys_a = a1
+                    .iter()
+                    .map(|RecordTypeField { key, ty, .. }| (*key, *ty))
+                    .collect::<Vec<_>>();
+                let keys_b = a2
+                    .iter()
+                    .map(|RecordTypeField { key, ty, .. }| (*key, *ty))
+                    .collect::<Vec<_>>();
                 all_errs.push(Error::ImcompatibleRecords {
-                    left: keys_a.collect(),
-                    right: keys_b.collect(),
+                    left: (keys_a, t1.to_span()),
+                    right: (keys_b, t2.to_span()),
                 });
                 return Err(all_errs);
             } else {
                 return Err(all_errs);
             }
         }
-        (Type::Function(p1, r1, _s1), Type::Function(p2, r2, _s2)) => {
-            let (param, errs) = Self::unify_named_params(p1, &loc1, p2, &loc2);
-            let ret = Self::unify_types((*r1, loc1), (*r2, loc2));
-            match (ret, errs) {
-                (Ok(ret), errs) if errs.is_empty() => {
-                    Ok(Type::Function(param, ret, None).into_id())
+        (
+            Type::Function {
+                arg: arg1,
+                ret: ret1,
+            },
+            Type::Function {
+                arg: arg2,
+                ret: ret2,
+            },
+        ) => {
+            let arg_res = unify_types(*arg1, *arg2);
+            let ret_res = unify_types(*ret1, *ret2);
+            match (arg_res, ret_res) {
+                (Ok(Relation::Supertype), Ok(Relation::Subtype)) => Relation::Subtype,
+                (Ok(Relation::Subtype), Ok(Relation::Supertype)) => Relation::Supertype,
+                (Ok(_), Ok(_)) => {
+                    return Err(vec![Error::TypeMismatch {
+                        left: t1,
+                        right: t2,
+                    }]);
                 }
-                (Ok(_ret), errs) => Err(errs),
-                (Err(mut e), mut errs) => {
-                    errs.append(&mut e);
-                    Err(errs)
+                (Ok(_), errs) | (errs, Ok(_)) => {
+                    return errs;
+                }
+                (Err(mut e1), Err(mut e2)) => {
+                    e1.append(&mut e2);
+                    return Err(e1);
                 }
             }
         }
-        (Type::Primitive(p1), Type::Primitive(p2)) if p1 == p2 => {
-            Ok(Type::Primitive(p1.clone()).into_id())
+        (Type::Primitive(p1), Type::Primitive(p2)) if p1 == p2 => Relation::Subtype,
+        (Type::Failure, _t) | (_t, Type::Failure) => Relation::Subtype,
+        (Type::Code(p1), Type::Code(p2)) => unify_types(*p1, *p2)?,
+        (_p1, _p2) => {
+            return Err(vec![Error::TypeMismatch {
+                left: t1,
+                right: t2,
+            }]);
         }
-        (Type::Failure, t) => Ok(t.clone().into_id_with_location(loc1.clone())),
-        (t, Type::Failure) => Ok(t.clone().into_id_with_location(loc2.clone())),
-        (Type::Code(p1), Type::Code(p2)) => {
-            let ret = Self::unify_types((*p1, loc1.clone()), (*p2, loc2))?;
-            Ok(Type::Code(ret).into_id_with_location(loc1))
-        }
-        (_p1, _p2) => Err(vec![Error::TypeMismatch {
-            left: (t1, loc1),
-            right: (t2, loc2),
-        }]),
     };
     Ok(res)
 }
