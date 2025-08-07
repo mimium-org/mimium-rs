@@ -2,7 +2,7 @@ use crate::ast::operators::Op;
 use crate::ast::*;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
-use crate::types::{LabeledParam, LabeledParams, PType, RecordTypeField, Type};
+use crate::types::{PType, RecordTypeField, Type};
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::*;
 use std::path::PathBuf;
@@ -689,6 +689,7 @@ where
         .map_with(|s, e| (Statement::Single(s), get_span(e.span())))
         .labelled("single");
     choice((let_, letrec, assign, single))
+        .boxed()
         .map(move |(t, span)| {
             (
                 t,
@@ -698,7 +699,6 @@ where
                 },
             )
         })
-        .boxed()
 }
 fn statements_parser<'src, I>(
     expr: impl Parser<'src, I, ExprNodeId, ParseError<'src>> + Clone + 'src,

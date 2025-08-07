@@ -191,6 +191,13 @@ impl Type {
             _ => None,
         }
     }
+    pub fn can_be_unpacked(&self) -> bool {
+        match self {
+            Type::Tuple(_ts) => true,
+            Type::Record(_ts) => true,
+            _ => false,
+        }
+    }
     pub fn get_iochannel_count(&self) -> Option<u32> {
         match self {
             Type::Tuple(ts) => {

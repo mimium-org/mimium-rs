@@ -619,14 +619,15 @@ impl Context {
                     (d, numeric!())
                 } else {
                     // Get function parameter info
-                    let (param_types, rt) = if let Type::Function { arg, ret } = ft.to_type() {
+                    let (at, rt) = if let Type::Function { arg, ret } = ft.to_type() {
                         (arg, ret)
                     } else {
                         panic!("non function type {} {} ", ft.to_type(), ty.to_type());
                     };
 
                     // Handle parameter packing/unpacking if needed
-                    let atvvec = if args.len() == 1 && param_types.get_as_slice().len() > 1 {
+                    // How can we distinguish when the function takes a single tuple and argument is just a single tuple
+                    let atvvec = if args.len() == 1 && at.to_type().can_be_unpacked() {
                         let (arg_val, ty) = self.eval_expr(args[0]);
                         log::trace!("Unpacking argument for {:?}", ty);
                         // Check if the argument is a tuple or record that we need to unpack
