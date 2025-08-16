@@ -45,7 +45,7 @@ impl VRegister {
         let res = self.0.get(v).map(|r| r.0);
         match (res, v.as_ref()) {
             //argument is registered in absolute position
-            (Some(_), mir::Value::Argument(_, _)) | (Some(_), mir::Value::Global(_)) => res,
+            (Some(_), mir::Value::Argument(_)) | (Some(_), mir::Value::Global(_)) => res,
             (Some(_), _) => {
                 self.0.remove(v);
                 res
@@ -144,7 +144,7 @@ impl ByteCodeGenerator {
                 .iter()
                 .map(|RecordTypeField { ty, .. }| Self::word_size_for_type(*ty))
                 .sum(),
-            Type::Function(_, _, _) => 1,
+            Type::Function { arg: _, ret: _ } => 1,
             Type::Ref(_) => 1,
             Type::Code(_) => todo!(),
             _ => {
@@ -770,9 +770,10 @@ impl ByteCodeGenerator {
             ..Default::default()
         };
         self.vregister.0.push(VRegister::default());
-        for (a, t) in mirfunc.args.iter().zip(mirfunc.argtypes.iter()) {
-            let size = Self::word_size_for_type(*t);
-            self.vregister.push_stack(a, size as _);
+        for (i, a) in mirfunc.args.iter().enumerate() {
+            let size = Self::word_size_for_type(a.1);
+            self.vregister
+                .push_stack(&Arc::new(mir::Value::Argument(i)), size as _);
         }
 
         // succeeding block will be compiled recursively
@@ -890,12 +891,9 @@ mod test {
         //   hoge+1
         //}
         let mut src = mir::Mir::default();
-        let arg = Arc::new(mir::Value::Argument(
-            0,
-            Arc::new(mir::Argument("hoge".to_symbol(), numeric!())),
-        ));
-        let mut func =
-            mir::Function::new(0, "dsp".to_symbol(), &[arg.clone()], &[numeric!()], None);
+        let arg = mir::Argument("hoge".to_symbol(), numeric!());
+        let argv = Arc::new(mir::Value::Argument(0));
+        let mut func = mir::Function::new(0, "dsp".to_symbol(), &[arg.clone()], None);
         func.return_type.get_or_init(|| numeric!());
         let mut block = mir::Block::default();
         let resint = Arc::new(mir::Value::Register(1));
@@ -903,7 +901,7 @@ mod test {
         let res = Arc::new(mir::Value::Register(2));
         block
             .0
-            .push((res.clone(), mir::Instruction::AddF(arg, resint)));
+            .push((res.clone(), mir::Instruction::AddF(argv, resint)));
         block.0.push((
             Arc::new(mir::Value::None),
             mir::Instruction::Return(res.clone(), numeric!()),

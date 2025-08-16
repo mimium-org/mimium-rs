@@ -817,6 +817,13 @@ where
         .separated_by(breakable_comma())
         .collect()
         .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
+        .map_with(move |params, e| {
+            let loc = Location {
+                span: get_span(e.span()),
+                path: ctx.file_path,
+            };
+            (params, loc)
+        })
         .labelled("fnparams");
 
     let function_s = just(Token::Function)

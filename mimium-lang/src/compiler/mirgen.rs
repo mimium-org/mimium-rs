@@ -268,27 +268,35 @@ impl Context {
     fn make_new_function(
         &mut self,
         name: Symbol,
-        args: &[VPtr],
-        argtypes: &[TypeNodeId],
+        args: &[Argument],
         parent_i: Option<usize>,
     ) -> usize {
         let index = self.program.functions.len();
-        let newf = mir::Function::new(index, name, args, argtypes, parent_i);
+        let newf = mir::Function::new(index, name, args, parent_i);
         self.program.functions.push(newf);
         index
     }
     fn do_in_child_ctx<F: FnMut(&mut Self, usize) -> (VPtr, TypeNodeId)>(
         &mut self,
         fname: Symbol,
-        abinds: &[(Symbol, VPtr)],
-        types: &[TypeNodeId],
+        abinds: &[(Symbol, TypeNodeId)],
         mut action: F,
     ) -> (usize, VPtr) {
         self.valenv.extend();
-        self.valenv.add_bind(abinds);
-        let args = abinds.iter().map(|(_, a)| a.clone()).collect::<Vec<_>>();
+        self.valenv.add_bind(
+            abinds
+                .iter()
+                .enumerate()
+                .map(|(i, (s, _ty))| (*s, Arc::new(Value::Argument(i))))
+                .collect::<Vec<_>>()
+                .as_slice(),
+        );
+        let args = abinds
+            .iter()
+            .map(|(s, ty)| Argument(*s, *ty))
+            .collect::<Vec<_>>();
         let label = self.get_ctxdata().func_i;
-        let c_idx = self.make_new_function(fname, &args, types, Some(label));
+        let c_idx = self.make_new_function(fname, &args, Some(label));
 
         self.data.push(ContextData {
             func_i: c_idx,
@@ -399,7 +407,7 @@ impl Context {
         };
         match self.lookup(&name) {
             LookupRes::Local(v) => match v.as_ref() {
-                Value::Argument(_i, _a) => {
+                Value::Argument(_i) => {
                     //todo: collect warning for the language server
                     log::warn!(
                         "assignment to argument {name} does not affect to the external environments."
@@ -632,20 +640,22 @@ impl Context {
                         log::trace!("Unpacking argument for {:?}", ty);
                         // Check if the argument is a tuple or record that we need to unpack
                         match ty.to_type() {
-                                    Type::Tuple(tys) => tys
-                                        .into_iter()
-                                        .enumerate()
-                                        .map(|(i, t)| {
-                                            let elem_val = self.push_inst(Instruction::GetElement {
-                                                value: arg_val.clone(),
-                                                ty,
-                                                tuple_offset: i as u64,
-                                            });
-                                            (elem_val, t)
-                                        })
-                                        .collect(),
-                                    Type::Record(kvs) => param_types.get_as_slice().iter().map(|param|{
-                                        kvs.iter().enumerate().find(|(_i,RecordTypeField { key,.. })| param.label.is_some_and(| l| l == *key))
+                            Type::Tuple(tys) => tys
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, t)| {
+                                    let elem_val = self.push_inst(Instruction::GetElement {
+                                        value: arg_val.clone(),
+                                        ty,
+                                        tuple_offset: i as u64,
+                                    });
+                                    (elem_val, t)
+                                })
+                                .collect(),
+                            Type::Record(kvs) => {
+                                if let Type::Record(param_types) = at.to_type() {
+                                    param_types.as_slice().iter().map(|param|{
+                                        kvs.iter().enumerate().find(|(_i,RecordTypeField { key,.. })| param.key == *key)
                                             .map_or_else(
                                                 || unreachable!("parameter pack failed, possible type inference bug"),
                                                 |(i,RecordTypeField { ty,.. })| {
@@ -657,9 +667,15 @@ impl Context {
                                                     (field_val, *ty)
                                                 },
                                             )
-                                    }).collect(),
-                                    _ => vec![self.eval_expr(args[0])],
+                                    }).collect()
+                                } else {
+                                    unreachable!(
+                                        "parameter pack failed, possible type inference bug"
+                                    )
                                 }
+                            }
+                            _ => vec![self.eval_expr(args[0])],
+                        }
                     } else {
                         self.eval_args(args)
                     };
@@ -698,23 +714,35 @@ impl Context {
             }
 
             Expr::Lambda(ids, _rett, body) => {
-                let (atypes, rt) = match ty.to_type() {
-                    Type::Function(atypes, rt, _) => (atypes.ty_iter().collect::<Vec<_>>(), rt),
+                let (atype, rt) = match ty.to_type() {
+                    Type::Function { arg, ret } => (arg, ret),
                     _ => panic!(),
                 };
-                let binds = ids
-                    .iter()
-                    .enumerate()
-                    .zip(atypes.iter())
-                    .map(|((idx, name), t)| {
-                        let label = name.id;
-                        let a = Argument(label, *t);
-                        (label, Arc::new(Value::Argument(idx, Arc::new(a))))
-                    })
-                    .collect::<Vec<_>>();
+                let binds = match ids.len() {
+                    0 => vec![],
+                    1 => {
+                        let id = ids[0].clone();
+                        let label = id.id;
+                        vec![(label, atype)]
+                    }
+                    _ => {
+                        let tys = atype
+                            .to_type()
+                            .get_as_tuple()
+                            .expect("must be tuple or record type. type inference failed");
+                        //multiple arguments
+                        ids.iter()
+                            .zip(tys.iter())
+                            .map(|(id, ty)| {
+                                let label = id.id;
+                                (label, *ty)
+                            })
+                            .collect()
+                    }
+                };
 
                 let name = self.consume_fnlabel();
-                let (c_idx, f) = self.do_in_child_ctx(name, &binds, &atypes, |ctx, c_idx| {
+                let (c_idx, f) = self.do_in_child_ctx(name, &binds, |ctx, c_idx| {
                     let (res, _) = ctx.eval_expr(*body);
 
                     let push_sum = ctx.get_ctxdata().push_sum.clone();

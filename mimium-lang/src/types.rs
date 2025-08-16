@@ -348,7 +348,7 @@ impl fmt::Display for TypeVar {
 impl fmt::Display for RecordTypeField {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let def = if self.has_default { "(default)" } else { "" };
-        write!(f, "{}:{}{def}", self.key, self.ty)
+        write!(f, "{}:{}{def}", self.key, self.ty.to_type())
     }
 }
 impl fmt::Display for Type {

@@ -221,7 +221,7 @@ where
         Expr::Then(cond, body) => {
             let (cond, err) = conversion(cond);
             let (body, err2) = opt_conversion(body);
-            let found_any = cond.found_any | body.clone().map_or(false, |b| b.found_any);
+            let found_any = cond.found_any | body.clone().is_some_and(|b| b.found_any);
             let expr = Expr::Then(cond.expr, body.map(|b| b.expr)).into_id(loc);
             let errs = [err, err2].concat();
             (ConvertResult { expr, found_any }, errs)
@@ -451,6 +451,7 @@ pub fn convert_pronoun(expr: ExprNodeId, file_path: Symbol) -> (ExprNodeId, Vec<
     let expr = convert_macroexpand(expr, file_path);
     let (res, errs) = convert_self(expr, FeedId::Global, file_path);
     (res.expr, errs)
+    // (expr, vec![])
 }
 
 #[cfg(test)]

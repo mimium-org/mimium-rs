@@ -12,7 +12,7 @@ use crate::utils::metadata::{Location, Span};
 pub enum ProgramStatement {
     FnDefinition {
         name: Symbol,
-        args: Vec<TypedId>,
+        args: (Vec<TypedId>, Location),
         return_type: Option<TypeNodeId>,
         body: ExprNodeId,
     },
@@ -43,20 +43,22 @@ fn stmts_from_program(
                 body,
             } => {
                 let loc = Location::new(span, file_path);
+                let argloc = args.1.clone();
                 let argsty = args
                     .clone()
+                    .0
                     .into_iter()
                     .map(RecordTypeField::from)
                     .collect::<Vec<_>>();
                 let fnty = Type::Function {
-                    arg: Type::Record(argsty).into_id_with_location(loc.clone()),
+                    arg: Type::Record(argsty).into_id_with_location(argloc),
                     ret: return_type.unwrap_or(Type::Unknown.into_id_with_location(loc.clone())),
                 }
                 .into_id_with_location(loc.clone());
                 Some(vec![(
                     Statement::LetRec(
                         TypedId::new(name, fnty),
-                        Expr::Lambda(args, return_type, body).into_id(loc.clone()),
+                        Expr::Lambda(args.0, return_type, body).into_id(loc.clone()),
                     ),
                     loc,
                 )])

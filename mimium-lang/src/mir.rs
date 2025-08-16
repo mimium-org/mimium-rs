@@ -18,7 +18,8 @@ pub type VReg = u64;
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Value {
     Global(VPtr),
-    Argument(usize, Arc<Argument>), //index,
+    // Argument(usize, Arc<Argument>), //index,
+    Argument(usize),
     /// holds SSA index(position in infinite registers)
     Register(VReg),
     State(VPtr),
@@ -153,8 +154,8 @@ pub struct OpenUpValue {
 pub struct Function {
     pub index: usize,
     pub label: Symbol,
-    pub args: Vec<Arc<Value>>,
-    pub argtypes: Vec<TypeNodeId>,
+    pub args: Vec<Argument>,
+    // pub argtypes: Vec<TypeNodeId>,
     pub return_type: OnceCell<TypeNodeId>, // TODO: None is the state when the type is not inferred yet.
     pub upindexes: Vec<Arc<Value>>,
     pub upperfn_i: Option<usize>,
@@ -172,15 +173,15 @@ impl Function {
     pub fn new(
         index: usize,
         name: Symbol,
-        args: &[VPtr],
-        argtypes: &[TypeNodeId],
+        args: &[Argument],
+        // argtypes: &[TypeNodeId],
         upperfn_i: Option<usize>,
     ) -> Self {
         Self {
             index,
             label: name,
             args: args.to_vec(),
-            argtypes: argtypes.to_vec(),
+            // argtypes: argtypes.to_vec(),
             return_type: OnceCell::new(),
             upindexes: vec![],
             upperfn_i,
@@ -191,6 +192,9 @@ impl Function {
     pub fn add_new_basicblock(&mut self) -> usize {
         self.body.push(Block(vec![]));
         self.body.len() - 1
+    }
+    pub fn get_argtypes(&self) -> Vec<TypeNodeId> {
+        self.args.iter().map(|a| a.1).collect()
     }
     pub fn get_or_insert_upvalue(&mut self, v: &Arc<Value>) -> usize {
         self.upindexes
@@ -221,7 +225,7 @@ impl Mir {
             .iter()
             .find(|f| f.label.as_str() == "dsp")
             .and_then(|f| {
-                let input = match f.argtypes.as_slice() {
+                let input = match f.get_argtypes().as_slice() {
                     [] => Some(0),
                     [t] => t.to_type().get_iochannel_count(),
                     _ => None,

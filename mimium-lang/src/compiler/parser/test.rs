@@ -11,9 +11,9 @@ macro_rules! test_string {
         if errs.is_empty() {
             assert!(
                 ast.to_expr() == $ans.to_expr(),
-                "res:{:?}\nans:{:?}",
-                ast.simple_print(),
-                $ans.simple_print()
+                "res:{:#?}\nans:{:#?}",
+                ast,
+                $ans
             );
         } else {
             utils::error::report(&$src, "".to_symbol(), &errs);
@@ -268,7 +268,7 @@ fn test_fndef() {
                         false,
                     ),
                 ])
-                .into_id_with_location(loc(8..17)),
+                .into_id_with_location(loc(7..18)),
                 ret: Type::Unknown.into_id_with_location(loc(0..28)),
             }
             .into_id_with_location(loc(0..28)),
@@ -316,7 +316,7 @@ fn global_fnmultiple() {
                         false,
                     ),
                 ])
-                .into_id_with_location(loc(8..17)),
+                .into_id_with_location(loc(7..18)),
                 ret: Type::Unknown.into_id_with_location(loc(0..28)),
             }
             .into_id_with_location(loc(0..28)),
@@ -356,7 +356,7 @@ fn global_fnmultiple() {
                                 false,
                             ),
                         ])
-                        .into_id_with_location(loc(37..46)),
+                        .into_id_with_location(loc(36..47)),
                         ret: Type::Unknown.into_id_with_location(loc(29..57)),
                     }
                     .into_id_with_location(loc(29..57)),
@@ -548,10 +548,10 @@ fn test_stmt_without_return() {
                     Type::Unknown.into_id_with_location(loc(8..13)),
                     false,
                 )])
-                .into_id_with_location(loc(8..13)),
-                ret: Type::Unknown.into_id_with_location(loc(0..28)),
+                .into_id_with_location(loc(7..14)),
+                ret: Type::Unknown.into_id_with_location(loc(0..56)),
             }
-            .into_id_with_location(loc(0..28)),
+            .into_id_with_location(loc(0..56)),
             default_value: None,
         },
         Expr::Lambda(
