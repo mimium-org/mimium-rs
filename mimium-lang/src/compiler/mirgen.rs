@@ -634,26 +634,27 @@ impl Context {
 
                     // Handle parameter packing/unpacking if needed
                     // How can we distinguish when the function takes a single tuple and argument is just a single tuple
-                    let atvvec = if args.len() == 1 && at.to_type().can_be_unpacked() {
-                        let (arg_val, ty) = self.eval_expr(args[0]);
-                        log::trace!("Unpacking argument for {:?}", ty);
-                        // Check if the argument is a tuple or record that we need to unpack
-                        match ty.to_type() {
-                            Type::Tuple(tys) => tys
-                                .into_iter()
-                                .enumerate()
-                                .map(|(i, t)| {
-                                    let elem_val = self.push_inst(Instruction::GetElement {
-                                        value: arg_val.clone(),
-                                        ty,
-                                        tuple_offset: i as u64,
-                                    });
-                                    (elem_val, t)
-                                })
-                                .collect(),
-                            Type::Record(kvs) => {
-                                if let Type::Record(param_types) = at.to_type() {
-                                    param_types.as_slice().iter().map(|param|{
+                    let atvvec = if args.len() == 1 {
+                        let (arg_val, ty) = self.eval_args(args).first().unwrap().clone();
+                        if ty.to_type().can_be_unpacked() {
+                            log::trace!("Unpacking argument for {:?}", ty);
+                            // Check if the argument is a tuple or record that we need to unpack
+                            match ty.to_type() {
+                                Type::Tuple(tys) => tys
+                                    .into_iter()
+                                    .enumerate()
+                                    .map(|(i, t)| {
+                                        let elem_val = self.push_inst(Instruction::GetElement {
+                                            value: arg_val.clone(),
+                                            ty,
+                                            tuple_offset: i as u64,
+                                        });
+                                        (elem_val, t)
+                                    })
+                                    .collect(),
+                                Type::Record(kvs) => {
+                                    if let Type::Record(param_types) = at.to_type() {
+                                        param_types.as_slice().iter().map(|param|{
                                         kvs.iter().enumerate().find(|(_i,RecordTypeField { key,.. })| param.key == *key)
                                             .map_or_else(
                                                 || unreachable!("parameter pack failed, possible type inference bug"),
@@ -667,13 +668,16 @@ impl Context {
                                                 },
                                             )
                                     }).collect()
-                                } else {
-                                    unreachable!(
-                                        "parameter pack failed, possible type inference bug"
-                                    )
+                                    } else {
+                                        unreachable!(
+                                            "parameter pack failed, possible type inference bug"
+                                        )
+                                    }
                                 }
+                                _ => vec![(arg_val, ty)],
                             }
-                            _ => vec![(arg_val, ty)],
+                        } else {
+                            vec![(arg_val, ty)]
                         }
                     } else {
                         self.eval_args(args)
