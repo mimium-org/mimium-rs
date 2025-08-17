@@ -8,7 +8,7 @@ pub(super) enum Relation {
     Identical,
     Supertype,
 }
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub(super) enum Error {
     TypeMismatch {
         left: TypeNodeId,
@@ -354,18 +354,27 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 .map(|skey: Symbol| a1.iter().find(|RecordTypeField { key, .. }| skey == *key));
             let sparse_fields2 = allkeys
                 .map(|skey: Symbol| a2.iter().find(|RecordTypeField { key, .. }| skey == *key));
-            #[derive(PartialEq, Eq)]
+            #[derive(PartialEq, Eq, Debug)]
             enum SearchRes {
                 Both,
                 A,
                 B,
             }
-            let mut searchresults = sparse_fields1.zip(sparse_fields2).map(|pair| match pair {
+            let searchresults = sparse_fields1.zip(sparse_fields2).map(|pair| match pair {
                 (Some(s1), Some(s2)) => unify_types(s1.ty, s2.ty).map(|_| SearchRes::Both),
                 (Some(_), None) => Ok(SearchRes::A),
                 (None, Some(_)) => Ok(SearchRes::B),
                 (None, None) => unreachable!(),
             });
+            log::trace!(
+                "unify_records {} and {}: {:?}",
+                t1,
+                t2,
+                searchresults.clone().collect_vec()
+            );
+            let all_both = searchresults
+                .clone()
+                .all(|r| r.is_ok_and(|r| r == SearchRes::Both));
             let collected_errs = searchresults
                 .clone()
                 .filter_map(|r| r.err())
@@ -376,10 +385,13 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             if contains_err {
                 all_errs = collected_errs;
             }
-            let contains_a = searchresults.any(|r| r.is_ok_and(|r| r == SearchRes::A));
-            let contains_b = searchresults.any(|r| r.is_ok_and(|r| r == SearchRes::B));
-
-            if searchresults.all(|r| r == Ok(SearchRes::Both)) {
+            let contains_a = searchresults
+                .clone()
+                .any(|r| r.is_ok_and(|r| r == SearchRes::A));
+            let contains_b = searchresults
+                .clone()
+                .any(|r| r.is_ok_and(|r| r == SearchRes::B));
+            if all_both {
                 Relation::Identical
             } else if !contains_err && contains_a && !contains_b {
                 //a has more fields than b, that means A is
@@ -423,6 +435,7 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                         right: t2,
                     }]);
                 }
+                (Ok(Relation::Identical), Ok(Relation::Identical)) => Relation::Identical,
                 (Ok(_), Err(errs)) | (Err(errs), Ok(_)) => {
                     return Err(errs);
                 }
@@ -430,7 +443,7 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                     e1.append(&mut e2);
                     return Err(e1);
                 }
-                _ => Relation::Identical,
+                _ => Relation::Subtype,
             }
         }
         (Type::Primitive(p1), Type::Primitive(p2)) if p1 == p2 => Relation::Identical,

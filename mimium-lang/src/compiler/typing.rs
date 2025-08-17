@@ -3,8 +3,7 @@ use crate::compiler::intrinsics;
 use crate::interner::{ExprKey, ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
 use crate::types::{
-    IntermediateId, LabeledParam, LabeledParams, PType, RecordTypeField, Type, TypeSchemeId,
-    TypeVar,
+    IntermediateId, LabeledParams, PType, RecordTypeField, Type, TypeSchemeId, TypeVar,
 };
 use crate::utils::metadata::Location;
 use crate::utils::{environment::Environment, error::ReportableError};
@@ -31,6 +30,11 @@ pub enum Error {
     PatternMismatch((TypeNodeId, Location), (Pattern, Location)),
     NonFunctionForLetRec(TypeNodeId, Location),
     NonFunctionForApply(TypeNodeId, Location),
+    NonSupertypeArgument {
+        location: Location,
+        expected: TypeNodeId,
+        found: TypeNodeId,
+    },
     CircularType(Location, Location),
     IndexOutOfRange {
         len: u16,
@@ -109,6 +113,9 @@ impl ReportableError for Error {
             }
             Error::FieldNotExistInParams { .. } => {
                 format!("Field contains non-existing keys in the parameter list")
+            }
+            Error::NonSupertypeArgument { .. } => {
+                format!("Arguments for functions are less than required.")
             }
         }
     }
@@ -251,6 +258,20 @@ impl ReportableError for Error {
                         .join(", ")
                 ),
             )],
+            Error::NonSupertypeArgument {
+                location,
+                expected,
+                found,
+            } => {
+                vec![(
+                    location.clone(),
+                    format!(
+                        "Type {} is not a supertype of the expected type {}",
+                        found.to_type().to_string_for_error(),
+                        expected.to_type().to_string_for_error()
+                    ),
+                )]
+            }
         }
     }
 }
@@ -591,7 +612,7 @@ impl InferContext {
                 let loc_e = Location::new(e.to_span(), loc.path);
                 let idx_t = self.infer_type_unwrapping(*idx);
                 let loc_i = Location::new(idx.to_span(), loc.path);
-                
+
                 let elem_t = self.gen_intermediate_type_with_location(loc_e.clone());
 
                 let rel1 = self.unify_types(
@@ -819,8 +840,14 @@ impl InferContext {
                     ret: res_t,
                 }
                 .into_id_with_location(loc_f.clone());
-                let rel = self.unify_types(fnl, fntype)?;
-                Ok(res_t)
+                match self.unify_types(fnl, fntype)? {
+                    Relation::Subtype => Err(vec![Error::NonSupertypeArgument {
+                        location: loc_f.clone(),
+                        expected: fnl,
+                        found: fntype,
+                    }]),
+                    _ => Ok(res_t),
+                }
             }
             Expr::If(cond, then, opt_else) => {
                 let condt = self.infer_type_unwrapping(*cond);
