@@ -502,6 +502,7 @@ impl Context {
         (e, rt)
     }
     fn alloc_aggregates(&mut self, items: &[ExprNodeId], ty: TypeNodeId) -> (VPtr, TypeNodeId) {
+        log::trace!("alloc_aggregates: items = {:?}, ty = {:?}", items, ty);
         let len = items.len();
         if len == 0 {
             unreachable!("0-length tuple is not supported");
@@ -658,13 +659,13 @@ impl Context {
                                         kvs.iter().enumerate().find(|(_i,RecordTypeField { key,.. })| param.key == *key)
                                             .map_or_else(
                                                 || unreachable!("parameter pack failed, possible type inference bug"),
-                                                |(i,RecordTypeField { ty,.. })| {
+                                                |(i,RecordTypeField { ty:elem_ty,.. })| {
                                                     let field_val = self.push_inst(Instruction::GetElement {
                                                         value: arg_val.clone(),
-                                                        ty:*ty,
+                                                        ty,
                                                         tuple_offset: i as u64,
                                                     });
-                                                    (field_val, *ty)
+                                                    (field_val, *elem_ty)
                                                 },
                                             )
                                     }).collect()
