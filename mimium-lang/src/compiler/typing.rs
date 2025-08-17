@@ -560,10 +560,9 @@ impl InferContext {
     }
     fn infer_type_levelup(&mut self, e: ExprNodeId) -> TypeNodeId {
         self.level += 1;
-        let res = self.infer_type(e);
-        let r = self.unwrap_result(res);
+        let res = self.infer_type_unwrapping(e);
         self.level -= 1;
-        r
+        res
     }
     pub fn infer_type(&mut self, e: ExprNodeId) -> Result<TypeNodeId, Vec<Error>> {
         if let Some(r) = self.result_memo.get(&e.0) {
@@ -726,8 +725,8 @@ impl InferContext {
                 if dup.clone().count() > 0 {
                     return Err(vec![Error::DuplicateKeyInParams(dup.collect())]);
                 }
-                let ptype = Type::Record(
-                    p.iter()
+                let pvec = p
+                    .iter()
                         .map(|id| {
                             let ity = self.convert_unknown_to_intermediate(id.ty);
                             self.env.add_bind(&[(id.id, ity)]);
@@ -737,9 +736,12 @@ impl InferContext {
                                 has_default: false,
                             }
                         })
-                        .collect(),
-                )
-                .into_id(); //todo:span
+                    .collect::<Vec<_>>();
+                let ptype = if pvec.is_empty() {
+                    Type::Primitive(PType::Unit).into_id()
+                } else {
+                    Type::Record(pvec).into_id()
+                };
                 let bty = if let Some(r) = rtype {
                     let bty = self.infer_type_unwrapping(*body);
                     let _rel = self.unify_types(*r, bty)?;
@@ -801,7 +803,16 @@ impl InferContext {
             Expr::Apply(fun, callee) => {
                 let loc_f = Location::new(fun.to_span(), self.file_path);
                 let fnl = self.infer_type_unwrapping(*fun);
-                let callee_t = self.infer_type_unwrapping(callee[0]);
+                let callee_t = match callee.len() {
+                    0 => Type::Primitive(PType::Unit).into_id(),
+                    1 => self.infer_type_unwrapping(callee[0]),
+                    _ => {
+                        let at_vec = self.infer_vec(callee.as_slice())?;
+                        let span = callee[0].to_span().start..callee.last().unwrap().to_span().end;
+                        let loc = Location::new(span, self.file_path);
+                        Type::Tuple(at_vec).into_id_with_location(loc)
+                    }
+                };
                 let res_t = self.gen_intermediate_type();
                 let fntype = Type::Function {
                     arg: callee_t,
