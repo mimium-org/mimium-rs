@@ -168,6 +168,12 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
     let t1r = t1.get_root();
     let t2r = t2.get_root();
     let res = match &(t1r.to_type(), t2r.to_type()) {
+        (t, Type::Tuple(v)) | (Type::Tuple(v), t) if v.len() == 1 => {
+            unify_types_args(t.clone().into_id(), *v.first().unwrap())?
+        }
+        (t, Type::Record(v)) | (Type::Record(v), t) if v.len() == 1 => {
+            unify_types_args(t.clone().into_id(), v.first().unwrap().ty)?
+        }
         (Type::Intermediate(i1), Type::Intermediate(i2)) if i1 == i2 => Relation::Subtype,
         (Type::Intermediate(i1), Type::Intermediate(i2)) => {
             let tv1 = &mut i1.borrow_mut() as &mut TypeVar;
