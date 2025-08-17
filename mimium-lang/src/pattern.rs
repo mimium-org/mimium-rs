@@ -1,7 +1,7 @@
 use crate::interner::{ExprNodeId, Symbol, TypeNodeId};
 //todo! need to replace with interned string.
 use crate::types::Type;
-use crate::utils::metadata::Span;
+use crate::utils::metadata::{Location, Span};
 use crate::utils::miniprint::MiniPrint;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +110,9 @@ pub struct TypedPattern {
 impl TypedPattern {
     pub fn to_span(&self) -> Span {
         self.ty.to_span()
+    }
+    pub fn to_loc(&self) -> Location {
+        self.ty.to_loc()
     }
 
     pub fn is_unknown(&self) -> bool {

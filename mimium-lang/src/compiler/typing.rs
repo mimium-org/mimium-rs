@@ -364,23 +364,14 @@ impl InferContext {
             }
         }
     }
-    fn gen_intermediate_type(&mut self) -> TypeNodeId {
-        let res = Type::Intermediate(Rc::new(RefCell::new(TypeVar::new(
-            self.interm_idx,
-            self.level,
-        ))))
-        .into_id();
-        self.interm_idx.0 += 1;
-        res
-    }
-    fn get_typescheme(&mut self, tvid: IntermediateId) -> TypeNodeId {
+    fn get_typescheme(&mut self, tvid: IntermediateId, loc: Location) -> TypeNodeId {
         self.generalize_map.get(&tvid).cloned().map_or_else(
-            || self.gen_typescheme(),
+            || self.gen_typescheme(loc),
             |id| Type::TypeScheme(id).into_id(),
         )
     }
-    fn gen_typescheme(&mut self) -> TypeNodeId {
-        let res = Type::TypeScheme(self.typescheme_idx).into_id();
+    fn gen_typescheme(&mut self, loc: Location) -> TypeNodeId {
+        let res = Type::TypeScheme(self.typescheme_idx).into_id_with_location(loc);
         self.typescheme_idx.0 += 1;
         res
     }
@@ -394,10 +385,10 @@ impl InferContext {
         self.interm_idx.0 += 1;
         res
     }
-    fn convert_unknown_to_intermediate(&mut self, t: TypeNodeId) -> TypeNodeId {
+    fn convert_unknown_to_intermediate(&mut self, t: TypeNodeId, loc: Location) -> TypeNodeId {
         match t.to_type() {
-            Type::Unknown => self.gen_intermediate_type(),
-            _ => t.apply_fn(|t| self.convert_unknown_to_intermediate(t)),
+            Type::Unknown => self.gen_intermediate_type_with_location(loc.clone()),
+            _ => t.apply_fn(|t| self.convert_unknown_to_intermediate(t, loc.clone())),
         }
     }
     fn convert_unify_error(&self, e: UnificationError) -> Error {
@@ -478,7 +469,7 @@ impl InferContext {
             Type::Intermediate(tvar) => {
                 let &TypeVar { level, var, .. } = &tvar.borrow() as _;
                 if level > self.level {
-                    self.get_typescheme(var)
+                    self.get_typescheme(var, t.to_loc())
                 } else {
                     t
                 }
@@ -492,7 +483,7 @@ impl InferContext {
                 if let Some(tvar) = self.instantiated_map.get(&id) {
                     *tvar
                 } else {
-                    let res = self.gen_intermediate_type();
+                    let res = self.gen_intermediate_type_with_location(t.to_loc());
                     self.instantiated_map.insert(id, res);
                     res
                 }
@@ -513,25 +504,22 @@ impl InferContext {
         let (TypedPattern { pat, ty }, loc_p) = pat;
         let (body_t, loc_b) = body.clone();
         let mut bind_item = |pat| {
-            let newloc = Location::new(
-                ty.to_span(), // todo: add span to untyped pattern
-                loc_p.path,
-            );
+            let newloc = ty.to_loc();
             let ity = self.gen_intermediate_type_with_location(newloc.clone());
             let p = TypedPattern { pat, ty: ity };
             self.bind_pattern((p, newloc.clone()), (ity, newloc))
         };
         let pat_t = match pat {
             Pattern::Single(id) => {
-                let pat_t = self.convert_unknown_to_intermediate(ty);
+                let pat_t = self.convert_unknown_to_intermediate(ty, loc_p);
                 log::trace!("bind {} : {}", id, pat_t.to_type().to_string());
                 self.env.add_bind(&[(id, pat_t)]);
                 Ok::<TypeNodeId, Vec<Error>>(pat_t)
             }
             Pattern::Tuple(pats) => {
                 let elems = pats.iter().map(|p| bind_item(p.clone())).try_collect()?; //todo multiple errors
-                let res = Type::Tuple(elems).into_id();
-                let target = self.convert_unknown_to_intermediate(ty);
+                let res = Type::Tuple(elems).into_id_with_location(loc_p);
+                let target = self.convert_unknown_to_intermediate(ty, loc_b);
                 let rel = self.unify_types(res, target)?;
                 Ok(res)
             }
@@ -546,13 +534,16 @@ impl InferContext {
                         })
                     })
                     .try_collect()?; //todo multiple errors
-                let res = Type::Record(res).into_id();
-                let target = self.convert_unknown_to_intermediate(ty);
+                let res = Type::Record(res).into_id_with_location(loc_p);
+                let target = self.convert_unknown_to_intermediate(ty, loc_b);
                 let rel = self.unify_types(res, target)?;
                 Ok(res)
             }
             Pattern::Error => Err(vec![Error::PatternMismatch(
-                (Type::Failure.into_id(), loc_b.clone()),
+                (
+                    Type::Failure.into_id_with_location(loc_p.clone()),
+                    loc_b.clone(),
+                ),
                 (pat, loc_p.clone()),
             )]),
         }?;
@@ -590,16 +581,18 @@ impl InferContext {
             //use cached result
             return Ok(*r);
         }
-        let loc = Location::new(e.to_span(), self.file_path); //todo file
+        let loc = e.to_location();
         let res: Result<TypeNodeId, Vec<Error>> = match &e.to_expr() {
             Expr::Literal(l) => Self::infer_type_literal(l, loc).map_err(|e| vec![e]),
-            Expr::Tuple(e) => Ok(Type::Tuple(self.infer_vec(e.as_slice())?).into_id()),
+            Expr::Tuple(e) => {
+                Ok(Type::Tuple(self.infer_vec(e.as_slice())?).into_id_with_location(loc))
+            }
             Expr::ArrayLiteral(e) => {
                 let elem_types = self.infer_vec(e.as_slice())?;
                 let first = elem_types
                     .first()
                     .copied()
-                    .unwrap_or(Type::Unknown.into_id());
+                    .unwrap_or(Type::Unknown.into_id_with_location(loc.clone()));
                 //todo:collect multiple errors
                 let elem_t = elem_types
                     .iter()
@@ -609,9 +602,9 @@ impl InferContext {
             }
             Expr::ArrayAccess(e, idx) => {
                 let arr_t = self.infer_type_unwrapping(*e);
-                let loc_e = Location::new(e.to_span(), loc.path);
+                let loc_e = e.to_location();
                 let idx_t = self.infer_type_unwrapping(*idx);
-                let loc_i = Location::new(idx.to_span(), loc.path);
+                let loc_i = idx.to_location();
 
                 let elem_t = self.gen_intermediate_type_with_location(loc_e.clone());
 
@@ -680,7 +673,7 @@ impl InferContext {
                             }
                         })
                         .collect();
-                    Ok(Type::Record(kts).into_id())
+                    Ok(Type::Record(kts).into_id_with_location(loc))
                 }
             }
             Expr::FieldAccess(expr, field) => {
@@ -723,16 +716,13 @@ impl InferContext {
             }
             Expr::Feed(id, body) => {
                 //todo: add span to Feed expr for keeping the location of `self`.
-                let feedv = self.gen_intermediate_type();
+                let feedv = self.gen_intermediate_type_with_location(loc);
 
                 self.env.add_bind(&[(*id, feedv)]);
                 let bty = self.infer_type_unwrapping(*body);
                 let _rel = self.unify_types(bty, feedv)?;
                 if bty.to_type().contains_function() {
-                    Err(vec![Error::NonPrimitiveInFeed(Location::new(
-                        body.to_span().clone(),
-                        loc.path,
-                    ))])
+                    Err(vec![Error::NonPrimitiveInFeed(body.to_location())])
                 } else {
                     Ok(bty)
                 }
@@ -749,7 +739,7 @@ impl InferContext {
                 let pvec = p
                     .iter()
                     .map(|id| {
-                        let ity = self.convert_unknown_to_intermediate(id.ty);
+                        let ity = self.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
                         self.env.add_bind(&[(id.id, ity)]);
                         RecordTypeField {
                             key: id.id,
@@ -759,9 +749,9 @@ impl InferContext {
                     })
                     .collect::<Vec<_>>();
                 let ptype = if pvec.is_empty() {
-                    Type::Primitive(PType::Unit).into_id()
+                    Type::Primitive(PType::Unit).into_id_with_location(loc.clone())
                 } else {
-                    Type::Record(pvec).into_id()
+                    Type::Record(pvec).into_id_with_location(loc.clone())
                 };
                 let bty = if let Some(r) = rtype {
                     let bty = self.infer_type_unwrapping(*body);
@@ -779,24 +769,24 @@ impl InferContext {
             }
             Expr::Let(tpat, body, then) => {
                 let bodyt = self.infer_type_levelup(*body);
-                let loc_p = Location::new(tpat.to_span(), self.file_path);
-                let loc_b = Location::new(body.to_span(), self.file_path);
+                let loc_p = tpat.to_loc();
+                let loc_b = body.to_location();
                 let pat_t = self.bind_pattern((tpat.clone(), loc_p), (bodyt, loc_b));
                 let _pat_t = self.unwrap_result(pat_t);
                 match then {
                     Some(e) => self.infer_type(*e),
-                    None => Ok(Type::Primitive(PType::Unit).into_id()),
+                    None => Ok(Type::Primitive(PType::Unit).into_id_with_location(loc)),
                 }
             }
             Expr::LetRec(id, body, then) => {
-                let idt = self.convert_unknown_to_intermediate(id.ty);
+                let idt = self.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
                 self.env.add_bind(&[(id.id, idt)]);
                 //polymorphic inference is not allowed in recursive function.
                 let bodyt = self.infer_type_levelup(*body);
                 let _res = self.unify_types(idt, bodyt);
                 match then {
                     Some(e) => self.infer_type(*e),
-                    None => Ok(Type::Primitive(PType::Unit).into_id()),
+                    None => Ok(Type::Primitive(PType::Unit).into_id_with_location(loc)),
                 }
             }
             Expr::Assign(assignee, expr) => {
@@ -822,10 +812,10 @@ impl InferContext {
                 Ok(self.instantiate(res))
             }
             Expr::Apply(fun, callee) => {
-                let loc_f = Location::new(fun.to_span(), self.file_path);
+                let loc_f = fun.to_location();
                 let fnl = self.infer_type_unwrapping(*fun);
                 let callee_t = match callee.len() {
-                    0 => Type::Primitive(PType::Unit).into_id(),
+                    0 => Type::Primitive(PType::Unit).into_id_with_location(loc.clone()),
                     1 => self.infer_type_unwrapping(callee[0]),
                     _ => {
                         let at_vec = self.infer_vec(callee.as_slice())?;
@@ -834,7 +824,7 @@ impl InferContext {
                         Type::Tuple(at_vec).into_id_with_location(loc)
                     }
                 };
-                let res_t = self.gen_intermediate_type();
+                let res_t = self.gen_intermediate_type_with_location(loc);
                 let fntype = Type::Function {
                     arg: callee_t,
                     ret: res_t,
@@ -851,7 +841,7 @@ impl InferContext {
             }
             Expr::If(cond, then, opt_else) => {
                 let condt = self.infer_type_unwrapping(*cond);
-                let cond_loc = Location::new(cond.to_span(), loc.path);
+                let cond_loc = cond.to_location();
                 let bt = self.unify_types(
                     Type::Primitive(PType::Numeric).into_id_with_location(cond_loc),
                     condt,
@@ -864,12 +854,15 @@ impl InferContext {
                 let rel = self.unify_types(thent, elset)?;
                 Ok(thent)
             }
-            Expr::Block(expr) => expr.map_or(Ok(Type::Primitive(PType::Unit).into_id()), |e| {
-                self.env.extend(); //block creates local scope.
-                let res = self.infer_type(e);
-                self.env.to_outer();
-                res
-            }),
+            Expr::Block(expr) => expr.map_or(
+                Ok(Type::Primitive(PType::Unit).into_id_with_location(loc)),
+                |e| {
+                    self.env.extend(); //block creates local scope.
+                    let res = self.infer_type(e);
+                    self.env.to_outer();
+                    res
+                },
+            ),
             Expr::Escape(e) => {
                 let loc_e = Location::new(e.to_span(), self.file_path);
                 let res = self.infer_type_unwrapping(*e);
@@ -908,7 +901,9 @@ pub fn infer_root(
     file_path: Symbol,
 ) -> InferContext {
     let mut ctx = InferContext::new(builtin_types, file_path);
-    let _t = ctx.infer_type(e).unwrap_or(Type::Failure.into_id());
+    let _t = ctx
+        .infer_type(e)
+        .unwrap_or(Type::Failure.into_id_with_location(e.to_location()));
     ctx.substitute_all_intermediates();
     ctx
 }
