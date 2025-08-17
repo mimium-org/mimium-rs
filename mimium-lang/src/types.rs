@@ -21,10 +21,25 @@ pub enum PType {
 pub struct IntermediateId(pub u64);
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct TypeBound {
+    pub lower: TypeNodeId,
+    pub upper: TypeNodeId,
+}
+impl Default for TypeBound {
+    fn default() -> Self {
+        Self {
+            lower: Type::Failure.into_id(),
+            upper: Type::Any.into_id(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct TypeVar {
     pub parent: Option<TypeNodeId>,
     pub var: IntermediateId,
     pub level: u64,
+    pub bound: TypeBound,
 }
 impl TypeVar {
     pub fn new(var: IntermediateId, level: u64) -> Self {
@@ -32,6 +47,7 @@ impl TypeVar {
             parent: None,
             var,
             level,
+            bound: TypeBound::default(),
         }
     }
 }
@@ -147,6 +163,8 @@ pub enum Type {
     Code(TypeNodeId),
     Intermediate(Rc<RefCell<TypeVar>>),
     TypeScheme(TypeSchemeId),
+    /// Any type is the top level, it can be unified with anything.
+    Any,
     /// Failure type: it is bottom type that can be unified to any type and return bottom type.
     Failure,
     Unknown,
@@ -192,11 +210,7 @@ impl Type {
         }
     }
     pub fn can_be_unpacked(&self) -> bool {
-        match self {
-            Type::Tuple(_ts) => true,
-            Type::Record(_ts) => true,
-            _ => false,
-        }
+        matches!(self, Type::Tuple(_) | Type::Record(_))
     }
     pub fn get_iochannel_count(&self) -> Option<u32> {
         match self {
@@ -206,6 +220,15 @@ impl Type {
                     .all(|t| t.to_type() == Type::Primitive(PType::Numeric))
                 {
                     Some(ts.len() as _)
+                } else {
+                    None
+                }
+            }
+            Type::Record(kvs) => {
+                if kvs.iter().all(|RecordTypeField { ty, .. }| {
+                    ty.to_type() == Type::Primitive(PType::Numeric)
+                }) {
+                    Some(kvs.len() as _)
                 } else {
                     None
                 }
@@ -337,11 +360,13 @@ impl fmt::Display for TypeVar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "?{}[{}]({})",
+            "?{}[{}]{}",
             self.var.0,
             self.level,
-            self.parent
-                .map_or_else(|| "".to_string(), |t| t.to_type().to_string())
+            self.parent.map_or_else(
+                || "".to_string(),
+                |t| format!(":{}", t.to_type())
+            )
         )
     }
 }
@@ -378,6 +403,7 @@ impl fmt::Display for Type {
             Type::TypeScheme(id) => {
                 write!(f, "g({})", id.0)
             }
+            Type::Any => write!(f, "any"),
             Type::Failure => write!(f, "!"),
             Type::Unknown => write!(f, "unknown"),
         }

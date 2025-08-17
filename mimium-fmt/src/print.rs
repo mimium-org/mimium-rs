@@ -85,6 +85,7 @@ mod types {
             Type::Intermediate(_) => unreachable!(),
             Type::Ref(_) => unreachable!(),
             Type::Failure => unreachable!(),
+            Type::Any => allocator.text("any"),
         }
     }
 }

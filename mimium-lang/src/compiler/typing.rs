@@ -433,7 +433,7 @@ impl InferContext {
                 let TypeVar { parent, .. } = &cell.borrow() as &TypeVar;
                 match parent {
                     Some(p) => Self::substitute_type(*p),
-                    None => t,
+                    None => Type::Unknown.into_id(),
                 }
             }
             _ => t.apply_fn(Self::substitute_type),
