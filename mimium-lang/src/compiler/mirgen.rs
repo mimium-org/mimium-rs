@@ -533,7 +533,7 @@ impl Context {
             .typeenv
             .infer_type(e)
             .expect("type inference failed, should be an error at type checker stage");
-
+        let ty = InferContext::substitute_type(ty);
         match &e.to_expr() {
             Expr::Literal(lit) => {
                 let v = self.eval_literal(lit, &span);
@@ -849,6 +849,8 @@ impl Context {
                     .typeenv
                     .infer_type(e)
                     .expect("type inference failed, should be an error at type checker stage");
+                let t = InferContext::substitute_type(t);
+
                 let v = if is_global {
                     Arc::new(Value::Function(nextfunid))
                 } else {

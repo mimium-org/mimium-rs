@@ -144,7 +144,12 @@ pub trait GeneralInterpreter {
                 let args = a
                     .clone()
                     .into_iter()
-                    .map(|arg| (self.eval(ctx, arg), Type::Unknown.into_id()))
+                    .map(|arg| {
+                        (
+                            self.eval(ctx, arg),
+                            Type::Unknown.into_id_with_location(arg.to_location()),
+                        )
+                    })
                     .collect::<Vec<_>>();
                 if let Some(ext_fn) = fv.clone().get_as_external_fn() {
                     ext_fn.borrow()(args.as_slice())
@@ -396,7 +401,7 @@ impl GeneralInterpreter for StageInterpreter {
                 Expr::Feed(_, _) => {
                     panic!("Feed expression cannot be evaluated in macro expansion")
                 }
-                Expr::BinOp(_,_, _) => {
+                Expr::BinOp(_, _, _) => {
                     panic!("BinOp expression should be removed in the previous stage")
                 }
                 Expr::UniOp(_, _) => {
