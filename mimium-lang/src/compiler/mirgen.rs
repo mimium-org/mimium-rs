@@ -537,9 +537,7 @@ impl Context {
         match &e.to_expr() {
             Expr::Literal(lit) => {
                 let v = self.eval_literal(lit, &span);
-                let t = InferContext::infer_type_literal(lit)
-                    .expect("should be an error at type checker stage");
-                (v, t)
+                (v, ty)
             }
             Expr::Var(name) => (self.eval_rvar(*name, ty, &span), ty),
             Expr::Block(b) => {
@@ -675,7 +673,7 @@ impl Context {
                                     )
                                 }
                             }
-                            _ => vec![self.eval_expr(args[0])],
+                            _ => vec![(arg_val, ty)],
                         }
                     } else {
                         self.eval_args(args)

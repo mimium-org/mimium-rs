@@ -229,6 +229,16 @@ impl TypeNodeId {
             None => dummy_span!(),
         })
     }
+    pub fn to_loc(&self) -> Location {
+        let dummy_path = "".to_symbol();
+        with_session_globals(|session_globals| match session_globals.get_span(*self) {
+            Some(loc) => loc.clone(),
+            None => Location {
+                span: dummy_span!(),
+                path: dummy_path,
+            },
+        })
+    }
     // Flatten a composite type into a list of types so that the offset of the
     // element can be calculated easily. For example:
     //

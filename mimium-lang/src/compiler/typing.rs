@@ -418,7 +418,7 @@ impl InferContext {
         t2: TypeNodeId,
     ) -> Result<(), Vec<Error>> {
         match (rel1, rel2) {
-            (Ok(Relation::Subtype), Ok(Relation::Subtype)) => Ok(()),
+            (Ok(Relation::Identical), Ok(Relation::Identical)) => Ok(()),
             (Ok(_), Ok(_)) => Err(vec![Error::TypeMismatch {
                 left: (t1, Location::new(t1.to_span(), self.file_path)),
                 right: (t2, Location::new(t2.to_span(), self.file_path)),
@@ -433,7 +433,7 @@ impl InferContext {
                 let TypeVar { parent, .. } = &cell.borrow() as &TypeVar;
                 match parent {
                     Some(p) => Self::substitute_type(*p),
-                    None => Type::Unknown.into_id(),
+                    None => Type::Unknown.into_id_with_location(t.to_loc()),
                 }
             }
             _ => t.apply_fn(Self::substitute_type),
@@ -545,7 +545,7 @@ impl InferContext {
             |v| Ok(*v),
         )
     }
-    pub(crate) fn infer_type_literal(e: &Literal) -> Result<TypeNodeId, Error> {
+    pub(crate) fn infer_type_literal(e: &Literal, loc: Location) -> Result<TypeNodeId, Error> {
         let pt = match e {
             Literal::Float(_) | Literal::Now | Literal::SampleRate => PType::Numeric,
             Literal::Int(_s) => PType::Int,
@@ -553,7 +553,7 @@ impl InferContext {
             Literal::SelfLit => panic!("\"self\" should not be shown at type inference stage"),
             Literal::PlaceHolder => panic!("\"_\" should not be shown at type inference stage"),
         };
-        Ok(Type::Primitive(pt).into_id())
+        Ok(Type::Primitive(pt).into_id_with_location(loc))
     }
     fn infer_vec(&mut self, e: &[ExprNodeId]) -> Result<Vec<TypeNodeId>, Vec<Error>> {
         e.iter().map(|e| self.infer_type(*e)).try_collect()
@@ -571,7 +571,7 @@ impl InferContext {
         }
         let loc = Location::new(e.to_span(), self.file_path); //todo file
         let res: Result<TypeNodeId, Vec<Error>> = match &e.to_expr() {
-            Expr::Literal(l) => Self::infer_type_literal(l).map_err(|e| vec![e]),
+            Expr::Literal(l) => Self::infer_type_literal(l, loc).map_err(|e| vec![e]),
             Expr::Tuple(e) => Ok(Type::Tuple(self.infer_vec(e.as_slice())?).into_id()),
             Expr::ArrayLiteral(e) => {
                 let elem_types = self.infer_vec(e.as_slice())?;
@@ -588,12 +588,12 @@ impl InferContext {
             }
             Expr::ArrayAccess(e, idx) => {
                 let arr_t = self.infer_type_unwrapping(*e);
-                let idx_t = self.infer_type_unwrapping(*idx);
-
                 let loc_e = Location::new(e.to_span(), loc.path);
+                let idx_t = self.infer_type_unwrapping(*idx);
+                let loc_i = Location::new(idx.to_span(), loc.path);
+                
                 let elem_t = self.gen_intermediate_type_with_location(loc_e.clone());
 
-                let loc_i = Location::new(idx.to_span(), loc.path);
                 let rel1 = self.unify_types(
                     idx_t,
                     Type::Primitive(PType::Numeric).into_id_with_location(loc_i),
@@ -727,15 +727,15 @@ impl InferContext {
                 }
                 let pvec = p
                     .iter()
-                        .map(|id| {
-                            let ity = self.convert_unknown_to_intermediate(id.ty);
-                            self.env.add_bind(&[(id.id, ity)]);
-                            RecordTypeField {
-                                key: id.id,
-                                ty: ity,
-                                has_default: false,
-                            }
-                        })
+                    .map(|id| {
+                        let ity = self.convert_unknown_to_intermediate(id.ty);
+                        self.env.add_bind(&[(id.id, ity)]);
+                        RecordTypeField {
+                            key: id.id,
+                            ty: ity,
+                            has_default: false,
+                        }
+                    })
                     .collect::<Vec<_>>();
                 let ptype = if pvec.is_empty() {
                     Type::Primitive(PType::Unit).into_id()

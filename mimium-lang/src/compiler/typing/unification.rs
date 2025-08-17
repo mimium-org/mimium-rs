@@ -5,6 +5,7 @@ use super::*;
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub(super) enum Relation {
     Subtype,
+    Identical,
     Supertype,
 }
 #[derive(PartialEq, Eq)]
@@ -54,18 +55,20 @@ fn occur_check(id1: IntermediateId, t2: TypeNodeId) -> bool {
     }
 }
 
-fn covariant(rel: Relation) -> Relation {
-    match rel {
-        Relation::Subtype => Relation::Subtype,
-        Relation::Supertype => Relation::Supertype,
-    }
-}
-fn contravariant(rel: Relation) -> Relation {
-    match rel {
-        Relation::Subtype => Relation::Supertype,
-        Relation::Supertype => Relation::Subtype,
-    }
-}
+// fn covariant(rel: Relation) -> Relation {
+//     match rel {
+//         Relation::Subtype => Relation::Subtype,
+//         Relation::Identical => Relation::Subtype,
+//         Relation::Supertype => Relation::Supertype,
+//     }
+// }
+// fn contravariant(rel: Relation) -> Relation {
+//     match rel {
+//         Relation::Subtype => Relation::Supertype,
+//         Relation::Supertype => Relation::Subtype,
+//         Relation::Identical => Relation::Sub,
+//     }
+// }
 
 //todo
 fn unify_vec(a1: &[TypeNodeId], a2: &[TypeNodeId]) -> Result<Relation, Vec<Error>> {
@@ -168,13 +171,11 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
     let t1r = t1.get_root();
     let t2r = t2.get_root();
     let res = match &(t1r.to_type(), t2r.to_type()) {
-        (t, Type::Tuple(v)) | (Type::Tuple(v), t) if v.len() == 1 => {
-            unify_types_args(t.clone().into_id(), *v.first().unwrap())?
-        }
-        (t, Type::Record(v)) | (Type::Record(v), t) if v.len() == 1 => {
-            unify_types_args(t.clone().into_id(), v.first().unwrap().ty)?
-        }
-        (Type::Intermediate(i1), Type::Intermediate(i2)) if i1 == i2 => Relation::Subtype,
+        (_t, Type::Tuple(v)) if v.len() == 1 => unify_types_args(t1, *v.first().unwrap())?,
+        (Type::Tuple(v), _t) if v.len() == 1 => unify_types_args(*v.first().unwrap(), t2)?,
+        (_t, Type::Record(v)) if v.len() == 1 => unify_types_args(t1, v.first().unwrap().ty)?,
+        (Type::Record(v), _t) if v.len() == 1 => unify_types_args(v.first().unwrap().ty, t2)?,
+        (Type::Intermediate(i1), Type::Intermediate(i2)) if i1 == i2 => Relation::Identical,
         (Type::Intermediate(i1), Type::Intermediate(i2)) => {
             let tv1 = &mut i1.borrow_mut() as &mut TypeVar;
             if occur_check(tv1.var, t2) {
@@ -202,27 +203,28 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
                     tv2.parent = Some(p1);
                 }
             };
-            Relation::Subtype
+            Relation::Identical
         }
         (Type::Intermediate(i1), _) => {
             let tv1 = &mut i1.borrow_mut() as &mut TypeVar;
             tv1.parent = Some(t2r);
             tv1.bound.upper = t2r;
 
-            Relation::Subtype
+            Relation::Identical
         }
         (_, Type::Intermediate(i2)) => {
             let tv2 = &mut i2.borrow_mut() as &mut TypeVar;
             tv2.parent = Some(t1r);
             tv2.bound.upper = t1r;
-            Relation::Subtype
+            Relation::Identical
         }
         (Type::Record(kvs), Type::Tuple(_)) => {
             let recordvec = kvs
                 .iter()
                 .map(|RecordTypeField { ty, .. }| *ty)
                 .collect::<Vec<_>>();
-            let new_tup = Type::Tuple(recordvec).into_id();
+            let loc_record = t1.to_loc();
+            let new_tup = Type::Tuple(recordvec).into_id_with_location(loc_record);
             unify_types_args(new_tup, t2)?
         }
         (Type::Tuple(_), Type::Record(_)) => unify_types_args(t2, t1)?,
@@ -237,11 +239,10 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
     let loc1 = t1.to_span(); //todo file
     let loc2 = t1.to_span();
 
-    log::trace!("unify {} and {}", t1.to_type(), t2.to_type());
     let t1r = t1.get_root();
     let t2r = t2.get_root();
     let res = match &(t1r.to_type(), t2r.to_type()) {
-        (Type::Intermediate(i1), Type::Intermediate(i2)) if i1 == i2 => Relation::Subtype,
+        (Type::Intermediate(i1), Type::Intermediate(i2)) if i1 == i2 => Relation::Identical,
         (Type::Intermediate(i1), Type::Intermediate(i2)) => {
             let tv1 = &mut i1.borrow_mut() as &mut TypeVar;
             if occur_check(tv1.var, t2) {
@@ -269,30 +270,35 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                     tv2.parent = Some(p1);
                 }
             };
-            Relation::Subtype
+            Relation::Identical
         }
         (Type::Intermediate(i1), _) => {
             let tv1 = &mut i1.borrow_mut() as &mut TypeVar;
             tv1.parent = Some(t2r);
             tv1.bound.lower = t2r;
 
-            Relation::Subtype
+            Relation::Identical
         }
         (_, Type::Intermediate(i2)) => {
             let tv2 = &mut i2.borrow_mut() as &mut TypeVar;
             tv2.parent = Some(t1r);
             tv2.bound.lower = t1r;
-            Relation::Subtype
+            Relation::Identical
         }
         (Type::Array(a1), Type::Array(a2)) => {
             //theoriticaly, the array type can be covariant but it makes implementation complex and might be not intuitive for beginners.
-            let _rel = unify_types(*a1, *a2)?;
-            Relation::Subtype
+            let res = unify_types(*a1, *a2)?;
+            match res {
+                Relation::Identical => Relation::Identical,
+                _ => {
+                    return Err(vec![Error::TypeMismatch {
+                        left: *a1,
+                        right: *a2,
+                    }]);
+                }
+            }
         }
-        (Type::Ref(x1), Type::Ref(x2)) => {
-            let _ = unify_types(*x1, *x2)?;
-            Relation::Subtype
-        }
+        (Type::Ref(x1), Type::Ref(x2)) => unify_types(*x1, *x2)?,
         (Type::Tuple(a1), Type::Tuple(a2)) => {
             // if a1 have nth elements, a2 must have at least n, or more elements.
             // but for simplicity, currently the tuple length must be identical.
@@ -300,7 +306,8 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             match a1.len().cmp(&a2.len()) {
                 Ordering::Equal => {
                     let _ = unify_vec(a1, a2)?;
-                    Relation::Subtype
+                    //todo covariance
+                    Relation::Identical
                 }
                 // Ordering::Less => {
                 //     let _ = unify_vec(a1, &a2[0..a1.len()])?;
@@ -373,7 +380,7 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             let contains_b = searchresults.any(|r| r.is_ok_and(|r| r == SearchRes::B));
 
             if searchresults.all(|r| r == Ok(SearchRes::Both)) {
-                Relation::Subtype
+                Relation::Identical
             } else if !contains_err && contains_a && !contains_b {
                 //a has more fields than b, that means A is
                 Relation::Supertype
@@ -410,6 +417,12 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             let arg_res = unify_types_args(*arg1, *arg2);
             let ret_res = unify_types(*ret1, *ret2);
             match (arg_res, ret_res) {
+                (Ok(Relation::Subtype), Ok(_)) | (Ok(_), Ok(Relation::Supertype)) => {
+                    return Err(vec![Error::TypeMismatch {
+                        left: t1,
+                        right: t2,
+                    }]);
+                }
                 (Ok(_), Err(errs)) | (Err(errs), Ok(_)) => {
                     return Err(errs);
                 }
@@ -417,29 +430,30 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                     e1.append(&mut e2);
                     return Err(e1);
                 }
-                _ => Relation::Subtype,
+                _ => Relation::Identical,
             }
         }
-        (Type::Primitive(p1), Type::Primitive(p2)) if p1 == p2 => Relation::Subtype,
+        (Type::Primitive(p1), Type::Primitive(p2)) if p1 == p2 => Relation::Identical,
         (Type::Primitive(PType::Unit), Type::Tuple(v))
         | (Type::Tuple(v), Type::Primitive(PType::Unit))
             if v.is_empty() =>
         {
-            Relation::Subtype
+            Relation::Identical
         }
-        (t, Type::Tuple(v)) | (Type::Tuple(v), t) if v.len() == 1 => {
-            unify_types(t.clone().into_id(), *v.first().unwrap())?
-        }
+        (_t, Type::Tuple(v)) if v.len() == 1 => unify_types(t1, *v.first().unwrap())?,
+        (Type::Tuple(v), _t) if v.len() == 1 => unify_types(*v.first().unwrap(), t2)?,
         (Type::Primitive(PType::Unit), Type::Record(v))
         | (Type::Record(v), Type::Primitive(PType::Unit))
             if v.is_empty() =>
         {
-            Relation::Subtype
+            Relation::Identical
         }
-        (t, Type::Record(v)) | (Type::Record(v), t) if v.len() == 1 => {
-            unify_types(t.clone().into_id(), v.first().unwrap().ty)?
-        }
-        (Type::Failure, _t) | (_t, Type::Failure) => Relation::Subtype,
+        (_t, Type::Record(v)) if v.len() == 1 => unify_types(t1, v.first().unwrap().ty)?,
+        (Type::Record(v), _t) if v.len() == 1 => unify_types(v.first().unwrap().ty, t2)?,
+
+        (Type::Failure, _t) | (_t, Type::Any) => Relation::Subtype,
+        (Type::Any, _t) | (_t, Type::Failure) => Relation::Supertype,
+
         (Type::Code(p1), Type::Code(p2)) => unify_types(*p1, *p2)?,
         (_p1, _p2) => {
             return Err(vec![Error::TypeMismatch {
@@ -448,5 +462,7 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             }]);
         }
     };
+    log::trace!("unified {} and {}:{:?}", t1.to_type(), t2.to_type(), res);
+
     Ok(res)
 }
