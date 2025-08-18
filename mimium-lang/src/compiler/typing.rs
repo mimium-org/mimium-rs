@@ -3,7 +3,7 @@ use crate::compiler::intrinsics;
 use crate::interner::{ExprKey, ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
 use crate::types::{
-    IntermediateId, LabeledParams, PType, RecordTypeField, Type, TypeSchemeId, TypeVar,
+    IntermediateId, PType, RecordTypeField, Type, TypeSchemeId, TypeVar,
 };
 use crate::utils::metadata::Location;
 use crate::utils::{environment::Environment, error::ReportableError};
@@ -47,11 +47,6 @@ pub enum Error {
         field: Symbol,
         loc: Location,
         et: TypeNodeId,
-    },
-    FieldNotExistInParams {
-        field: Symbol,
-        loc: Location,
-        params: LabeledParams,
     },
     DuplicateKeyInRecord {
         key: Vec<Symbol>,
@@ -111,9 +106,7 @@ impl ReportableError for Error {
             Error::IncompatibleKeyInRecord { .. } => {
                 format!("Record type has incompatible keys.",)
             }
-            Error::FieldNotExistInParams { .. } => {
-                format!("Field contains non-existing keys in the parameter list")
-            }
+
             Error::NonSupertypeArgument { .. } => {
                 format!("Arguments for functions are less than required.")
             }
@@ -239,25 +232,7 @@ impl ReportableError for Error {
                     ),
                 ]
             }
-            Error::FieldNotExistInParams { field, loc, params } => vec![(
-                loc.clone(),
-                format!(
-                    "Field \"{}\" does not exist in the parameter list{}",
-                    field,
-                    params
-                        .get_as_slice()
-                        .iter()
-                        .map(|p| {
-                            format!(
-                                " \"{}\":{}",
-                                p.label.map_or_else(|| "_".to_string(), |s| s.to_string()),
-                                p.ty.to_type().to_string_for_error()
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            )],
+
             Error::NonSupertypeArgument {
                 location,
                 expected,

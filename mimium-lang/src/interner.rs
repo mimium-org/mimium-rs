@@ -15,7 +15,7 @@ use slotmap::SlotMap;
 use string_interner::{StringInterner, backend::StringBackend};
 
 use crate::{
-    ast::{Expr, RecordField},
+    ast::Expr,
     dummy_span,
     types::{RecordTypeField, Type},
     utils::metadata::{Location, Span},
