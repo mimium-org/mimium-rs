@@ -82,6 +82,7 @@ macro_rules! let_ {
             $crate::pattern::TypedPattern {
                 pat: $crate::pattern::Pattern::Single($crate::ast::builder::str_to_symbol($id)),
                 ty: $crate::types::Type::Unknown.into_id(),
+                default_value: None,
             },
             $body,
             Some($then),

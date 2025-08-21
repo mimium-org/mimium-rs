@@ -315,14 +315,14 @@ where
     });
     with_type_annotation(pat, ctx.clone())
         .map_with(move |(pat, ty), e| match ty {
-            Some(ty) => TypedPattern { pat, ty },
-            None => TypedPattern {
+            Some(ty) => TypedPattern::new(pat, ty),
+            None => TypedPattern::new(
                 pat,
-                ty: Type::Unknown.into_id_with_location(Location {
+                Type::Unknown.into_id_with_location(Location {
                     span: get_span(e.span()),
                     path: ctx.file_path,
                 }),
-            },
+            ),
         })
         .boxed()
 }
@@ -964,10 +964,10 @@ pub(crate) fn add_global_context(ast: ExprNodeId, file_path: Symbol) -> ExprNode
         path: file_path,
     };
     let res = Expr::Let(
-        TypedPattern {
-            pat: Pattern::Single(GLOBAL_LABEL.to_symbol()),
-            ty: Type::Unknown.into_id_with_location(loc.clone()),
-        },
+        TypedPattern::new(
+            Pattern::Single(GLOBAL_LABEL.to_symbol()),
+            Type::Unknown.into_id_with_location(loc.clone()),
+        ),
         Expr::Lambda(vec![], None, ast).into_id(loc.clone()),
         None,
     );

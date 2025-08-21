@@ -97,8 +97,12 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
     let t1r = t1.get_root();
     let t2r = t2.get_root();
     let res = match &(t1r.to_type(), t2r.to_type()) {
+        (Type::Record(_), Type::Record(_)) | (Type::Tuple(_), Type::Tuple(_)) => {
+            unify_types(t1, t2)?
+        }
         (_t, Type::Tuple(v)) if v.len() == 1 => unify_types_args(t1, *v.first().unwrap())?,
         (Type::Tuple(v), _t) if v.len() == 1 => unify_types_args(*v.first().unwrap(), t2)?,
+
         (_t, Type::Record(v)) if v.len() == 1 => unify_types_args(t1, v.first().unwrap().ty)?,
         (Type::Record(v), _t) if v.len() == 1 => unify_types_args(v.first().unwrap().ty, t2)?,
         (Type::Intermediate(i1), Type::Intermediate(i2)) if i1 == i2 => Relation::Identical,
@@ -268,18 +272,31 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             // it will not matter because the code rarely contains huge entries of record
 
             //list up all keys. expect that the records are sorted by the alphabetical order.
-            let extract_key_and_sort = |iter: std::slice::Iter<'_, RecordTypeField>| {
-                iter.map(|RecordTypeField { key, .. }| *key)
-                    .sorted_by(|keya, keyb| keya.as_str().cmp(keyb.as_str()))
-            };
-            let keys_a = extract_key_and_sort(a1.iter());
-            let keys_b = extract_key_and_sort(a2.iter());
-            let allkeys = keys_a.clone().chain(keys_b.clone()).unique();
-            let sparse_fields1 = allkeys
+
+            let keys_a = a1.iter().sorted_by(move |a, b| {
+                let keya = a.key;
+                let keyb = b.key;
+                keya.as_str().cmp(keyb.as_str())
+            });
+            let keys_b = a2.iter().sorted_by(move |a, b| {
+                let keya = a.key;
+                let keyb = b.key;
+                keya.as_str().cmp(keyb.as_str())
+            });
+            let allkeys = keys_a
                 .clone()
-                .map(|skey: Symbol| a1.iter().find(|RecordTypeField { key, .. }| skey == *key));
-            let sparse_fields2 = allkeys
-                .map(|skey: Symbol| a2.iter().find(|RecordTypeField { key, .. }| skey == *key));
+                .chain(keys_b.clone())
+                .unique_by(|RecordTypeField { key, .. }| key.as_str());
+            let sparse_fields1 = allkeys.clone().map(|parent| {
+                a1.iter()
+                    .find(|RecordTypeField { key, .. }| parent.key == *key)
+                    .or(parent.has_default.then_some(parent))
+            });
+            let sparse_fields2 = allkeys.map(|parent| {
+                a2.iter()
+                    .find(|RecordTypeField { key, .. }| parent.key == *key)
+                    .or(parent.has_default.then_some(parent))
+            });
             #[derive(PartialEq, Eq, Debug)]
             enum SearchRes {
                 Both,

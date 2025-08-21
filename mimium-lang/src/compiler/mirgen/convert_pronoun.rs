@@ -474,6 +474,7 @@ mod test {
             TypedPattern {
                 pat: Pattern::Single("lowpass".to_symbol()),
                 ty: unknownty,
+                default_value: None,
             },
             Expr::Lambda(
                 vec![TypedId::new("input".to_symbol(), unknownty)],
@@ -490,6 +491,7 @@ mod test {
             TypedPattern {
                 pat: Pattern::Single("lowpass".to_symbol()),
                 ty: unknownty,
+                default_value: None,
             },
             Expr::Lambda(
                 vec![TypedId::new("input".to_symbol(), unknownty)],

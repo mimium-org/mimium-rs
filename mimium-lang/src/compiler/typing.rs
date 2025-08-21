@@ -2,9 +2,7 @@ use crate::ast::{Expr, Literal, RecordField};
 use crate::compiler::intrinsics;
 use crate::interner::{ExprKey, ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
-use crate::types::{
-    IntermediateId, PType, RecordTypeField, Type, TypeSchemeId, TypeVar,
-};
+use crate::types::{IntermediateId, PType, RecordTypeField, Type, TypeSchemeId, TypeVar};
 use crate::utils::metadata::Location;
 use crate::utils::{environment::Environment, error::ReportableError};
 use crate::{function, integer, numeric, unit};
@@ -476,12 +474,12 @@ impl InferContext {
         pat: (TypedPattern, Location),
         body: (TypeNodeId, Location),
     ) -> Result<TypeNodeId, Vec<Error>> {
-        let (TypedPattern { pat, ty }, loc_p) = pat;
+        let (TypedPattern { pat, ty, .. }, loc_p) = pat;
         let (body_t, loc_b) = body.clone();
         let mut bind_item = |pat| {
             let newloc = ty.to_loc();
             let ity = self.gen_intermediate_type_with_location(newloc.clone());
-            let p = TypedPattern { pat, ty: ity };
+            let p = TypedPattern::new(pat, ity);
             self.bind_pattern((p, newloc.clone()), (ity, newloc))
         };
         let pat_t = match pat {

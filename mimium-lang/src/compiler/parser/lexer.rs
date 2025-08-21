@@ -179,9 +179,6 @@ where
 }
 #[cfg(test)]
 mod test {
-
-    use chumsky::text::whitespace;
-
     use super::*;
     #[test]
     fn test_str() {

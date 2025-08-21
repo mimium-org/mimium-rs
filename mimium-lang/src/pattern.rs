@@ -105,6 +105,16 @@ impl MiniPrint for TypedId {
 pub struct TypedPattern {
     pub pat: Pattern,
     pub ty: TypeNodeId,
+    pub default_value: Option<ExprNodeId>,
+}
+impl TypedPattern {
+    pub fn new(pat: Pattern, ty: TypeNodeId) -> Self {
+        TypedPattern {
+            pat,
+            ty,
+            default_value: None,
+        }
+    }
 }
 
 impl TypedPattern {
@@ -137,8 +147,7 @@ impl From<TypedId> for TypedPattern {
         TypedPattern {
             pat: Pattern::Single(value.id),
             ty: value.ty,
-            // Default values are handled separately in the type system
-            // and not represented in TypedPattern
+            default_value: value.default_value, // Default value is optional
         }
     }
 }
@@ -147,7 +156,11 @@ impl TryFrom<TypedPattern> for TypedId {
 
     fn try_from(value: TypedPattern) -> Result<Self, Self::Error> {
         match value.pat {
-            Pattern::Single(id) => Ok(TypedId::new(id, value.ty)),
+            Pattern::Single(id) => Ok(TypedId {
+                id,
+                ty: value.ty,
+                default_value: value.default_value,
+            }),
             _ => Err(ConversionError),
         }
     }

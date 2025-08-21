@@ -3,7 +3,6 @@ use itertools::Itertools;
 use super::*;
 use crate::pattern::TypedId;
 use crate::utils;
-use crate::utils::miniprint::MiniPrint;
 
 macro_rules! test_string {
     ($src:literal, $ans:expr) => {
@@ -72,6 +71,7 @@ fn test_let() {
         TypedPattern {
             pat: Pattern::Single("goge".to_symbol()),
             ty: Type::Unknown.into_id_with_location(loc(4..8)),
+            default_value: None,
         },
         Expr::Literal(Literal::Float("36".to_symbol())).into_id(loc(11..13)),
         Some(Expr::Var("goge".to_symbol()).into_id(loc(15..19))),
@@ -88,6 +88,7 @@ fn test_lettuple() {
                 Pattern::Single("b".to_symbol()),
             ]),
             ty: Type::Unknown.into_id_with_location(loc(4..9)),
+            default_value: None,
         },
         Expr::Tuple(vec![
             Expr::Literal(Literal::Float("36".to_symbol())).into_id(loc(13..15)),
@@ -137,6 +138,7 @@ fn test_block() {
             TypedPattern {
                 pat: Pattern::Single("hoge".to_symbol()),
                 ty: Type::Unknown.into_id_with_location(loc(5..9)),
+                default_value: None,
             },
             Expr::Literal(Literal::Float("100".to_symbol())).into_id(loc(12..15)),
             Some(Expr::Var("hoge".to_symbol()).into_id(loc(16..20))),
@@ -565,6 +567,7 @@ fn test_stmt_without_return() {
                 TypedPattern {
                     pat: Pattern::Single("v".to_symbol()),
                     ty: Type::Unknown.into_id_with_location(loc(24..25)),
+                    default_value: None,
                 },
                 Expr::BinOp(
                     Expr::Var("input".to_symbol()).into_id(loc(28..33)),
