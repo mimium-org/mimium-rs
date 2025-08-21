@@ -531,6 +531,13 @@ fn parameter_pack_record_fail2() {
 }
 
 #[test]
+fn record_imcomplete() {
+    let res = run_file_test_mono("record_imcomplete.mmm", 1).unwrap();
+    let ans = vec![701.0]; // 2*(5-7)
+    assert_eq!(res, ans);
+}
+
+#[test]
 fn multistage() {
     let res = run_file_test_mono("multistage.mmm", 1).unwrap();
     let ans = vec![32.0];

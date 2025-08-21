@@ -1,5 +1,5 @@
 fn foo(x = 100,y = 200){
-  x+y
+  x+y+1
 }
 
 fn bar(x = 100,y){
@@ -7,5 +7,5 @@ fn bar(x = 100,y){
 }
 
 fn dsp(){
-    foo({..}) + bar({y=300, ..}) //should be 700
+    foo({}) + bar({y=300}) //should be 701
 }
