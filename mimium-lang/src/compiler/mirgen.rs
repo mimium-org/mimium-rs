@@ -739,14 +739,15 @@ impl Context {
                                                                 (field_val, kv.ty)
                                                             },
                                                 Some((SearchRes::Default, kv)) => {
-                                                    let fid = if let Value::Function(fid) = f.as_ref() {
-                                                        FunctionId(*fid as u64)
+                                                  if let Value::Function(fid) = f.as_ref() {
+                                                     let fid=      FunctionId(*fid as u64);
+                                                        log::trace!("searching default argument for {} in function {}", kv.key, self.program.functions[fid.0 as usize].label.as_str());
+                                                        let default_val = self.get_default_arg_call(kv.key, fid).expect(format!("msg: default argument {} not found", kv.key).as_str());
+                                                        (default_val, kv.ty)
                                                     } else {
-                                                        panic!("default argument cannot be supported with closure currently")
-                                                    };
-                                                    log::trace!("searching default argument for {} in function {}", kv.key, self.program.functions[fid.0 as usize].label.as_str());
-                                                    let default_val = self.get_default_arg_call(kv.key, fid).expect(format!("msg: default argument {} not found", kv.key).as_str());
-                                                    (default_val, kv.ty)
+                                                        log::error!("default argument cannot be supported with closure currently");
+                                                        (Arc::new(Value::None), Type::Failure.into_id())
+                                                    }
                                                 }
                                                 None=>{
                                                     panic!("parameter pack failed, possible type inference bug")
