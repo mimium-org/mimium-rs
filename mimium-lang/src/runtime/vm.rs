@@ -558,20 +558,21 @@ impl Machine {
         self.ext_cls_table.push((name, fun));
         let vm_clsid = self.ext_cls_table.len() - 1;
         self.fn_map.insert(prog_funid, ExtFnIdx::Cls(vm_clsid));
-        let (bytecodes, nargs, nret) = if let Type::Function(args, ret, _) = ty.to_type() {
+        let (bytecodes, nargs, nret) = if let Type::Function { arg, ret } = ty.to_type() {
             let mut wrap_bytecode = Vec::<Instruction>::new();
             // todo: decouple bytecode generator dependency
-            let asizes = args.ty_iter().map(ByteCodeGenerator::word_size_for_type);
-            let nargs = asizes.clone().sum();
+            let asize = ByteCodeGenerator::word_size_for_type(arg);
             // if there are 2 arguments of float for instance, base pointer should be 2
-            let base = nargs;
+            let nargs = match arg.to_type() {
+                Type::Tuple(args) => args.len(),
+                Type::Record(fields) => fields.len(),
+                _ => unreachable!("single argument should be 1 element record"),
+            } as u8;
+            let base = nargs as u8;
             let nret = ByteCodeGenerator::word_size_for_type(ret);
-            wrap_bytecode.push(Instruction::MoveConst(base as _, 0));
-            let _ = asizes.fold(0u8, |acc, size| {
-                //copy arguments for ext closure call
-                wrap_bytecode.push(Instruction::MoveRange(base + acc + 1, acc, size as _));
-                acc + size
-            });
+            wrap_bytecode.push(Instruction::MoveConst(base, 0));
+            wrap_bytecode.push(Instruction::MoveRange(base + 1, 0, asize));
+
             wrap_bytecode.extend_from_slice(&[
                 Instruction::CallExtFun(base, nargs, nret as _),
                 Instruction::Return(base, nret as _),

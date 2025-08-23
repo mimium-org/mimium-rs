@@ -53,7 +53,8 @@ pub enum Expr {
     Proj(ExprNodeId, i64),
     ArrayAccess(ExprNodeId, ExprNodeId),
     ArrayLiteral(Vec<ExprNodeId>),   // Array literal [e1, e2, ..., en]
-    RecordLiteral(Vec<RecordField>), // Record literal {field1: expr1, field2: expr2, ...}
+    RecordLiteral(Vec<RecordField>), // Complete record literal {field1 = expr1, field2 = expr2, ...}
+    ImcompleteRecord(Vec<RecordField>), // Incomplete record literal with default values {field1 = expr1, ..}
     FieldAccess(ExprNodeId, Symbol), // Record field access: record.field
     Apply(ExprNodeId, Vec<ExprNodeId>),
 
@@ -166,7 +167,15 @@ impl MiniPrint for Expr {
                     .map(|f| f.simple_print())
                     .collect::<Vec<String>>()
                     .join(", ");
-                format!("(record {{{}}}", fields_str)
+                format!("(record {{{}}})", fields_str)
+            }
+            Expr::ImcompleteRecord(fields) => {
+                let fields_str = fields
+                    .iter()
+                    .map(|f| f.simple_print())
+                    .collect::<Vec<String>>()
+                    .join(", ");
+                format!("(incomplete-record {{{}, ..}})", fields_str)
             }
             Expr::FieldAccess(record, field) => {
                 format!("(field-access {} {})", record.simple_print(), field)

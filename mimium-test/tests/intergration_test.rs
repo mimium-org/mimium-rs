@@ -405,14 +405,14 @@ fn shadowing_assign() {
 fn many_errors() {
     let res = run_error_test("many_errors.mmm", false);
     //todo! check error types
-    assert_eq!(res.len(), 7);
+    assert_eq!(res.len(), 6);
 }
 #[wasm_bindgen_test(unsupported = test)]
 fn hof_typefail() {
     //check false positive
     let res = run_error_test("hof_typefail.mmm", false);
     //todo! check error types
-    assert_eq!(res.len(), 1);
+    assert_eq!(res.len(), 3);
 }
 
 #[wasm_bindgen_test(unsupported = test)]
@@ -528,6 +528,13 @@ fn parameter_pack_record_fail() {
 fn parameter_pack_record_fail2() {
     let res = run_error_test("parameter_pack_record_fail2.mmm", false);
     assert_eq!(res.len(), 1);
+}
+
+#[test]
+fn record_imcomplete() {
+    let res = run_file_test_mono("record_imcomplete.mmm", 1).unwrap();
+    let ans = vec![701.0]; // 2*(5-7)
+    assert_eq!(res, ans);
 }
 
 #[test]

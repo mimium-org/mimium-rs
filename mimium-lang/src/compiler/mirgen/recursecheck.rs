@@ -38,12 +38,14 @@ fn try_find_recurse(e_s: ExprNodeId, name: Symbol) -> bool {
         Expr::ArrayAccess(e, i) => try_find_recurse(e, name) || try_find_recurse(i, name),
         Expr::ArrayLiteral(items) => items.iter().any(|e| try_find_recurse(*e, name)),
         Expr::RecordLiteral(fields) => fields.iter().any(|f| try_find_recurse(f.expr, name)),
+        Expr::ImcompleteRecord(record_fields) => {
+            record_fields.iter().any(|f| try_find_recurse(f.expr, name))
+        }
         Expr::FieldAccess(record, _field) => try_find_recurse(record, name),
         Expr::BinOp(_, _, _) => unreachable!(),
         Expr::UniOp(_, _) => unreachable!(),
         Expr::MacroExpand(_, _) => unreachable!(),
         Expr::Paren(_) => unreachable!(),
-
         Expr::Literal(_) | Expr::Error => false,
     }
 }
@@ -86,6 +88,15 @@ pub fn convert_recurse(e_s: ExprNodeId, file_path: Symbol) -> ExprNodeId {
         Expr::ArrayLiteral(items) => Expr::ArrayLiteral(convert_vec(items)),
         Expr::RecordLiteral(fields) => Expr::RecordLiteral(
             fields
+                .iter()
+                .map(|f| RecordField {
+                    name: f.name,
+                    expr: convert(f.expr),
+                })
+                .collect(),
+        ),
+        Expr::ImcompleteRecord(record_fields) => Expr::ImcompleteRecord(
+            record_fields
                 .iter()
                 .map(|f| RecordField {
                     name: f.name,

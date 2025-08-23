@@ -32,7 +32,7 @@ where
 mod types {
     use mimium_lang::{
         interner::TypeNodeId,
-        types::{LabeledParam, PType},
+        types::{PType, RecordTypeField},
     };
 
     use super::*;
@@ -61,9 +61,9 @@ mod types {
             Type::Record(items) => {
                 let docs = items
                     .into_iter()
-                    .map(|(name, ty)| {
+                    .map(|RecordTypeField { key, ty, .. }| {
                         allocator
-                            .text(name)
+                            .text(key)
                             .append(allocator.text(": "))
                             .append(types::pretty(ty, allocator))
                     })
@@ -72,15 +72,10 @@ mod types {
                     .intersperse(docs, breakable_comma(allocator))
                     .braces()
             }
-            Type::Function(params, ret, _state) => {
-                let param_docs = params
-                    .get_as_slice()
-                    .iter()
-                    .map(|LabeledParam { label: _, ty }| types::pretty(*ty, allocator))
-                    .collect::<Vec<_>>();
+            Type::Function { arg, ret } => {
+                let param_docs = types::pretty(arg, allocator);
                 let ret_doc = types::pretty(ret, allocator);
-                allocator
-                    .intersperse(param_docs, breakable_comma(allocator))
+                param_docs
                     .parens()
                     .append(allocator.text(" -> "))
                     .append(ret_doc)
@@ -90,6 +85,7 @@ mod types {
             Type::Intermediate(_) => unreachable!(),
             Type::Ref(_) => unreachable!(),
             Type::Failure => unreachable!(),
+            Type::Any => allocator.text("any"),
         }
     }
 }
@@ -212,6 +208,26 @@ mod expr {
                     .group()
                     .braces()
             }
+            Expr::ImcompleteRecord(fields) => {
+                let docs = fields
+                    .into_iter()
+                    .map(|f| {
+                        allocator
+                            .text(f.name)
+                            .append(allocator.text(" = "))
+                            .append(pretty(f.expr, allocator))
+                            .group()
+                    })
+                    .collect::<Vec<_>>();
+                allocator
+                    .intersperse(docs, breakable_comma(allocator))
+                    .append(allocator.text(",")) //trailing comma
+                    .append(allocator.softline())
+                    .append(allocator.text(".."))
+                    .group()
+                    .braces()
+            }
+
             Expr::FieldAccess(expr_node_id, symbol) => {
                 let expr_doc = pretty(expr_node_id, allocator);
                 expr_doc
@@ -358,7 +374,6 @@ mod expr {
                     .append(expr_doc)
             }
             Expr::Paren(expr_node_id) => pretty(expr_node_id, allocator).parens().group(),
-
             Expr::MacroExpand(callee, args_e) => {
                 let expr_doc = pretty(callee, allocator);
                 let args = args_e
@@ -432,7 +447,7 @@ pub mod program {
                 return_type,
                 body,
             } => {
-                let args = args.iter().map(|a| {
+                let args = args.0.iter().map(|a| {
                     let name = allocator.text(a.id);
                     let t = match a.ty.to_type() {
                         Type::Unknown => allocator.nil(),

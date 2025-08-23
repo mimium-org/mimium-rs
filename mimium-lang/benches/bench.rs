@@ -8,17 +8,19 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use mimium_lang::compiler::{self, Config};
-    use mimium_lang::interner::ToSymbol;
-    use mimium_lang::runtime::vm::builtin::get_builtin_fn_types;
-    use mimium_lang::runtime::vm::Machine;
+
+    use mimium_lang::{Config, ExecContext, interner::ToSymbol};
     use test::Bencher;
     fn bench_runtime(b: &mut Bencher, content: &str, times: usize) {
-        let compiler = compiler::Context::new(get_builtin_fn_types(), None, Config::default());
-        let program = compiler.emit_bytecode(content).expect("ok");
-        let idx = program.get_fun_index(&"dsp".to_symbol()).expect("ok");
-        let mut machine = Machine::new(program, [].into_iter(), [].into_iter());
-        machine.execute_main();
+        let mut ctx = ExecContext::new([].into_iter(), None, Config::default());
+        ctx.prepare_compiler();
+        ctx.prepare_machine(content).expect("compile error");
+        ctx.run_main();
+        let mut machine = ctx.take_vm().expect("vm not prepared");
+        let idx = machine
+            .prog
+            .get_fun_index(&"dsp".to_symbol())
+            .expect("function not found");
         b.iter(move || {
             for _i in 0..times {
                 let _ = machine.execute_idx(idx);
@@ -181,7 +183,7 @@ fn dsp(){{
         }
     }
     mod parse {
-        use mimium_lang::compiler::{self, Config};
+        use mimium_lang::{Config, ExecContext};
         use test::Bencher;
 
         fn gen_fn(fn_name: &str, n: usize) -> String {
@@ -230,7 +232,9 @@ fn dsp() {{
 
         fn bench_many_symbols(b: &mut Bencher, n: usize) {
             let content = make_many_symbols_src(n);
-            let compiler = compiler::Context::new([], None, Config::default());
+            let mut ctx = ExecContext::new([].into_iter(), None, Config::default());
+            ctx.prepare_compiler();
+            let compiler = ctx.get_compiler_mut().expect("compiler not prepared");
             b.iter(move || {
                 let _mir = compiler.emit_mir(&content);
             });

@@ -3,7 +3,6 @@ use itertools::Itertools;
 use super::*;
 use crate::pattern::TypedId;
 use crate::utils;
-use crate::utils::miniprint::MiniPrint;
 
 macro_rules! test_string {
     ($src:literal, $ans:expr) => {
@@ -11,9 +10,9 @@ macro_rules! test_string {
         if errs.is_empty() {
             assert!(
                 ast.to_expr() == $ans.to_expr(),
-                "res:{:?}\nans:{:?}",
-                ast.simple_print(),
-                $ans.simple_print()
+                "res:{:#?}\nans:{:#?}",
+                ast,
+                $ans
             );
         } else {
             utils::error::report(&$src, "".to_symbol(), &errs);
@@ -72,6 +71,7 @@ fn test_let() {
         TypedPattern {
             pat: Pattern::Single("goge".to_symbol()),
             ty: Type::Unknown.into_id_with_location(loc(4..8)),
+            default_value: None,
         },
         Expr::Literal(Literal::Float("36".to_symbol())).into_id(loc(11..13)),
         Some(Expr::Var("goge".to_symbol()).into_id(loc(15..19))),
@@ -88,6 +88,7 @@ fn test_lettuple() {
                 Pattern::Single("b".to_symbol()),
             ]),
             ty: Type::Unknown.into_id_with_location(loc(4..9)),
+            default_value: None,
         },
         Expr::Tuple(vec![
             Expr::Literal(Literal::Float("36".to_symbol())).into_id(loc(13..15)),
@@ -137,6 +138,7 @@ fn test_block() {
             TypedPattern {
                 pat: Pattern::Single("hoge".to_symbol()),
                 ty: Type::Unknown.into_id_with_location(loc(5..9)),
+                default_value: None,
             },
             Expr::Literal(Literal::Float("100".to_symbol())).into_id(loc(12..15)),
             Some(Expr::Var("hoge".to_symbol()).into_id(loc(16..20))),
@@ -255,33 +257,38 @@ fn test_macroexpand() {
 fn test_fndef() {
     let ans = Expr::LetRec(
         TypedId {
-            ty: Type::Function(
-                LabeledParams::new(vec![
-                    LabeledParam::new(
+            ty: Type::Function {
+                arg: Type::Record(vec![
+                    RecordTypeField::new(
                         "input".to_symbol(),
                         Type::Unknown.into_id_with_location(loc(8..13)),
+                        false,
                     ),
-                    LabeledParam::new(
+                    RecordTypeField::new(
                         "gue".to_symbol(),
                         Type::Unknown.into_id_with_location(loc(14..17)),
+                        false,
                     ),
-                ]),
-                Type::Unknown.into_id_with_location(loc(0..28)),
-                None,
-            )
+                ])
+                .into_id_with_location(loc(7..18)),
+                ret: Type::Unknown.into_id_with_location(loc(0..28)),
+            }
             .into_id_with_location(loc(0..28)),
 
             id: "hoge".to_symbol(),
+            default_value: None,
         },
         Expr::Lambda(
             vec![
                 TypedId {
                     id: "input".to_symbol(),
                     ty: Type::Unknown.into_id_with_location(loc(8..13)),
+                    default_value: None,
                 },
                 TypedId {
                     id: "gue".to_symbol(),
                     ty: Type::Unknown.into_id_with_location(loc(14..17)),
+                    default_value: None,
                 },
             ],
             None,
@@ -298,31 +305,36 @@ fn global_fnmultiple() {
     let ans = Expr::LetRec(
         TypedId {
             id: "hoge".to_symbol(),
-            ty: Type::Function(
-                LabeledParams::new(vec![
-                    LabeledParam::new(
+            ty: Type::Function {
+                arg: Type::Record(vec![
+                    RecordTypeField::new(
                         "input".to_symbol(),
                         Type::Unknown.into_id_with_location(loc(8..13)),
+                        false,
                     ),
-                    LabeledParam::new(
+                    RecordTypeField::new(
                         "gue".to_symbol(),
                         Type::Unknown.into_id_with_location(loc(14..17)),
+                        false,
                     ),
-                ]),
-                Type::Unknown.into_id_with_location(loc(0..28)),
-                None,
-            )
+                ])
+                .into_id_with_location(loc(7..18)),
+                ret: Type::Unknown.into_id_with_location(loc(0..28)),
+            }
             .into_id_with_location(loc(0..28)),
+            default_value: None,
         },
         Expr::Lambda(
             vec![
                 TypedId {
                     id: "input".to_symbol(),
                     ty: Type::Unknown.into_id_with_location(loc(8..13)),
+                    default_value: None,
                 },
                 TypedId {
                     id: "gue".to_symbol(),
                     ty: Type::Unknown.into_id_with_location(loc(14..17)),
+                    default_value: None,
                 },
             ],
             None,
@@ -333,31 +345,36 @@ fn global_fnmultiple() {
             Expr::LetRec(
                 TypedId {
                     id: "hoge".to_symbol(),
-                    ty: Type::Function(
-                        LabeledParams::new(vec![
-                            LabeledParam::new(
+                    ty: Type::Function {
+                        arg: Type::Record(vec![
+                            RecordTypeField::new(
                                 "input".to_symbol(),
                                 Type::Unknown.into_id_with_location(loc(37..42)),
+                                false,
                             ),
-                            LabeledParam::new(
+                            RecordTypeField::new(
                                 "gue".to_symbol(),
                                 Type::Unknown.into_id_with_location(loc(43..46)),
+                                false,
                             ),
-                        ]),
-                        Type::Unknown.into_id_with_location(loc(29..57)),
-                        None,
-                    )
+                        ])
+                        .into_id_with_location(loc(36..47)),
+                        ret: Type::Unknown.into_id_with_location(loc(29..57)),
+                    }
                     .into_id_with_location(loc(29..57)),
+                    default_value: None,
                 },
                 Expr::Lambda(
                     vec![
                         TypedId {
                             id: "input".to_symbol(),
                             ty: Type::Unknown.into_id_with_location(loc(37..42)),
+                            default_value: None,
                         },
                         TypedId {
                             id: "gue".to_symbol(),
                             ty: Type::Unknown.into_id_with_location(loc(43..46)),
+                            default_value: None,
                         },
                     ],
                     None,
@@ -375,6 +392,7 @@ fn global_fnmultiple() {
         ans
     );
 }
+
 #[test]
 fn test_tuple() {
     let tuple_items = vec![
@@ -511,31 +529,45 @@ fn test_field_access() {
     .into_id(loc(0..11));
     test_expr_string("x.0.field1.1.0.field2", ans);
 }
+
+#[test]
+fn test_imcomplete_record() {
+    let ans = Expr::ImcompleteRecord(vec![RecordField {
+        name: "x".to_symbol(),
+        expr: Expr::Literal(Literal::Float("200".to_symbol())).into_id(loc(3..4)),
+    }])
+    .into_id(loc(0..7));
+    test_expr_string("{x = 200, ..}", ans);
+}
 #[test]
 fn test_stmt_without_return() {
     let ans = Expr::LetRec(
         TypedId {
             id: "test".to_symbol(),
-            ty: Type::Function(
-                LabeledParams::new(vec![LabeledParam::new(
+            ty: Type::Function {
+                arg: Type::Record(vec![RecordTypeField::new(
                     "input".to_symbol(),
                     Type::Unknown.into_id_with_location(loc(8..13)),
-                )]),
-                Type::Unknown.into_id_with_location(loc(0..56)),
-                None,
-            )
+                    false,
+                )])
+                .into_id_with_location(loc(7..14)),
+                ret: Type::Unknown.into_id_with_location(loc(0..56)),
+            }
             .into_id_with_location(loc(0..56)),
+            default_value: None,
         },
         Expr::Lambda(
             vec![TypedId {
                 id: "input".to_symbol(),
                 ty: Type::Unknown.into_id_with_location(loc(8..13)),
+                default_value: None,
             }],
             None,
             Expr::Let(
                 TypedPattern {
                     pat: Pattern::Single("v".to_symbol()),
                     ty: Type::Unknown.into_id_with_location(loc(24..25)),
+                    default_value: None,
                 },
                 Expr::BinOp(
                     Expr::Var("input".to_symbol()).into_id(loc(28..33)),

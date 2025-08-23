@@ -2,7 +2,7 @@ use crate::ast::operators::Op;
 use crate::ast::*;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
-use crate::types::{LabeledParam, LabeledParams, PType, Type};
+use crate::types::{PType, RecordTypeField, Type};
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::*;
 use std::path::PathBuf;
@@ -118,11 +118,12 @@ where
         let record = ident_parser()
             .then_ignore(just(Token::Colon))
             .then(ty.clone())
+            .map(|(key, ty)| RecordTypeField::new(key, ty, false))
             .separated_by(breakable_comma())
             .allow_trailing()
             .collect::<Vec<_>>()
             .delimited_by(just(Token::BlockBegin), just(Token::BlockEnd))
-            .map_with(move |fields: Vec<(Symbol, TypeNodeId)>, e| {
+            .map_with(move |fields, e| {
                 Type::Record(fields).into_id_with_location(Location {
                     span: get_span(e.span()),
                     path,
@@ -154,14 +155,14 @@ where
             .clone()
             .separated_by(just(Token::Comma))
             .collect::<Vec<_>>()
+            .map_with(move |arg, e| (arg, e.span()))
             .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
             .then(just(Token::Arrow).ignore_then(ty.clone()))
-            .map_with(move |(a, body), e| {
-                Type::Function(
-                    LabeledParams::new(a.into_iter().map(LabeledParam::from).collect()),
-                    body,
-                    None,
-                )
+            .map_with(move |((body, bspan), ret), e| {
+                Type::Function {
+                    arg: Type::Tuple(body).into_id_with_location(ctx.gen_loc(bspan)),
+                    ret,
+                }
                 .into_id_with_location(ctx.gen_loc(e.span()))
             })
             .boxed()
@@ -232,16 +233,43 @@ where
 {
     with_type_annotation(ident_parser(), ctx.clone())
         .map_with(move |(sym, t), e| match t {
-            Some(ty) => TypedId { id: sym, ty },
+            Some(ty) => TypedId {
+                id: sym,
+                ty,
+                default_value: None,
+            },
             None => TypedId {
                 id: sym,
                 ty: Type::Unknown.into_id_with_location(Location {
                     span: get_span(e.span()),
                     path: ctx.file_path,
                 }),
+                default_value: None,
             },
         })
         .labelled("lvar_typed")
+}
+
+// Parameter parser with support for default values
+fn lvar_parser_typed_with_default<'src, I>(
+    ctx: ParseContext,
+    expr: impl Parser<'src, I, ExprNodeId, ParseError<'src>> + Clone,
+) -> impl Parser<'src, I, TypedPattern, ParseError<'src>> + Clone
+where
+    I: ValueInput<'src, Token = Token, Span = SimpleSpan>,
+{
+    lvar_parser_typed(ctx.clone())
+        .then(
+            // Parse optional default value: = expr
+            just(Token::Assign).ignore_then(expr).or_not(),
+        )
+        .map(|(param, default_value)| TypedId {
+            id: param.id,
+            ty: param.ty,
+            default_value,
+        })
+        .map(TypedPattern::from)
+        .labelled("lvar_typed_with_default")
 }
 fn pattern_parser<'src, I>(
     ctx: ParseContext,
@@ -287,14 +315,14 @@ where
     });
     with_type_annotation(pat, ctx.clone())
         .map_with(move |(pat, ty), e| match ty {
-            Some(ty) => TypedPattern { pat, ty },
-            None => TypedPattern {
+            Some(ty) => TypedPattern::new(pat, ty),
+            None => TypedPattern::new(
                 pat,
-                ty: Type::Unknown.into_id_with_location(Location {
+                Type::Unknown.into_id_with_location(Location {
                     span: get_span(e.span()),
                     path: ctx.file_path,
                 }),
-            },
+            ),
         })
         .boxed()
 }
@@ -516,18 +544,24 @@ where
         .labelled("array_literal");
     let record_literal = record_fields(expr.clone())
         .separated_by(breakable_comma())
-        .at_least(1)
         .allow_trailing()
         .collect::<Vec<_>>()
+        .then(just(Token::DoubleDot).or_not())
         .delimited_by(breakable_blockbegin(), breakable_blockend())
-        .map_with(move |fields, e| {
+        .map_with(move |(fields, is_imcomplete), e| {
             //fields are implicitly sorted by name.
             let mut fields = fields;
             fields.sort_by(|a, b| a.name.cmp(&b.name));
-            Expr::RecordLiteral(fields).into_id(Location {
+            let loc = Location {
                 span: get_span(e.span()),
                 path: ctx.file_path,
-            })
+            };
+            if is_imcomplete.is_some() {
+                log::trace!("is imcomplete record literal");
+                Expr::ImcompleteRecord(fields).into_id(loc)
+            } else {
+                Expr::RecordLiteral(fields).into_id(loc)
+            }
         })
         .labelled("record_literal");
     let parenexpr = expr
@@ -655,6 +689,7 @@ where
         .map_with(|s, e| (Statement::Single(s), get_span(e.span())))
         .labelled("single");
     choice((let_, letrec, assign, single))
+        .boxed()
         .map(move |(t, span)| {
             (
                 t,
@@ -664,7 +699,6 @@ where
                 },
             )
         })
-        .boxed()
 }
 fn statements_parser<'src, I>(
     expr: impl Parser<'src, I, ExprNodeId, ParseError<'src>> + Clone + 'src,
@@ -773,12 +807,23 @@ where
     I: ValueInput<'src, Token = Token, Span = SimpleSpan>,
 {
     let exprgroup = exprgroup_parser(ctx.clone());
-    let lvar = lvar_parser_typed(ctx.clone());
+    let lvar =
+        lvar_parser_typed_with_default(ctx.clone(), exprgroup.clone()).try_map(|ty, span| {
+            TypedId::try_from(ty).map_err(|err| Rich::custom(span, err.to_string()))
+        });
+
     let fnparams = lvar
         .clone()
         .separated_by(breakable_comma())
         .collect()
         .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
+        .map_with(move |params, e| {
+            let loc = Location {
+                span: get_span(e.span()),
+                path: ctx.file_path,
+            };
+            (params, loc)
+        })
         .labelled("fnparams");
 
     let function_s = just(Token::Function)
@@ -817,7 +862,6 @@ where
                 span: get_span(e.span()),
                 path: ctx.file_path,
             };
-
             (
                 ProgramStatement::FnDefinition {
                     name,
@@ -920,10 +964,10 @@ pub(crate) fn add_global_context(ast: ExprNodeId, file_path: Symbol) -> ExprNode
         path: file_path,
     };
     let res = Expr::Let(
-        TypedPattern {
-            pat: Pattern::Single(GLOBAL_LABEL.to_symbol()),
-            ty: Type::Unknown.into_id_with_location(loc.clone()),
-        },
+        TypedPattern::new(
+            Pattern::Single(GLOBAL_LABEL.to_symbol()),
+            Type::Unknown.into_id_with_location(loc.clone()),
+        ),
         Expr::Lambda(vec![], None, ast).into_id(loc.clone()),
         None,
     );

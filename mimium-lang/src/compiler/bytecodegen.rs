@@ -5,7 +5,7 @@ use crate::interner::{Symbol, TypeNodeId};
 use crate::mir::{self, Mir, StateSize};
 use crate::runtime::vm::bytecode::{ConstPos, GlobalPos, Reg};
 use crate::runtime::vm::{self, StateOffset};
-use crate::types::{PType, Type, TypeSize};
+use crate::types::{PType, RecordTypeField, Type, TypeSize};
 use crate::utils::half_float::HFloat;
 use vm::bytecode::Instruction as VmInstruction;
 
@@ -45,7 +45,7 @@ impl VRegister {
         let res = self.0.get(v).map(|r| r.0);
         match (res, v.as_ref()) {
             //argument is registered in absolute position
-            (Some(_), mir::Value::Argument(_, _)) | (Some(_), mir::Value::Global(_)) => res,
+            (Some(_), mir::Value::Argument(_)) | (Some(_), mir::Value::Global(_)) => res,
             (Some(_), _) => {
                 self.0.remove(v);
                 res
@@ -142,9 +142,9 @@ impl ByteCodeGenerator {
             Type::Tuple(types) => types.iter().map(|t| Self::word_size_for_type(*t)).sum(),
             Type::Record(types) => types
                 .iter()
-                .map(|(_s, t)| Self::word_size_for_type(*t))
+                .map(|RecordTypeField { ty, .. }| Self::word_size_for_type(*ty))
                 .sum(),
-            Type::Function(_, _, _) => 1,
+            Type::Function { arg: _, ret: _ } => 1,
             Type::Ref(_) => 1,
             Type::Code(_) => todo!(),
             _ => {
@@ -770,9 +770,10 @@ impl ByteCodeGenerator {
             ..Default::default()
         };
         self.vregister.0.push(VRegister::default());
-        for (a, t) in mirfunc.args.iter().zip(mirfunc.argtypes.iter()) {
-            let size = Self::word_size_for_type(*t);
-            self.vregister.push_stack(a, size as _);
+        for (i, a) in mirfunc.args.iter().enumerate() {
+            let size = Self::word_size_for_type(a.1);
+            self.vregister
+                .push_stack(&Arc::new(mir::Value::Argument(i)), size as _);
         }
 
         // succeeding block will be compiled recursively
@@ -819,22 +820,26 @@ fn remove_redundunt_mov(program: vm::Program) -> vm::Program {
 
         for (i, pair) in f.bytecodes.windows(2).enumerate() {
             match pair {
-                &[VmInstruction::Move(dst, src), VmInstruction::Move(dst2, src2)]
-                    if dst == src2 && src == dst2 =>
+                &[
+                    VmInstruction::Move(dst, src),
+                    VmInstruction::Move(dst2, src2),
+                ] if dst == src2 && src == dst2 =>
                 //case of swapping
                 {
                     remove_idx.insert(i);
                     remove_idx.insert(i + 1);
                 }
-                &[VmInstruction::Move(dst, src), VmInstruction::Move(dst2, src2)]
-                    if dst == src2 =>
-                {
+                &[
+                    VmInstruction::Move(dst, src),
+                    VmInstruction::Move(dst2, src2),
+                ] if dst == src2 => {
                     reduce_idx.insert(i, VmInstruction::Move(dst2, src));
                     remove_idx.insert(i + 1);
                 }
-                &[VmInstruction::MoveConst(dst, src), VmInstruction::Move(dst2, src2)]
-                    if dst == src2 =>
-                {
+                &[
+                    VmInstruction::MoveConst(dst, src),
+                    VmInstruction::Move(dst2, src2),
+                ] if dst == src2 => {
                     removeconst_idx.insert(i, VmInstruction::MoveConst(dst2, src));
                     remove_idx.insert(i + 1);
                 }
@@ -886,12 +891,9 @@ mod test {
         //   hoge+1
         //}
         let mut src = mir::Mir::default();
-        let arg = Arc::new(mir::Value::Argument(
-            0,
-            Arc::new(mir::Argument("hoge".to_symbol(), numeric!())),
-        ));
-        let mut func =
-            mir::Function::new(0, "dsp".to_symbol(), &[arg.clone()], &[numeric!()], None);
+        let arg = mir::Argument("hoge".to_symbol(), numeric!());
+        let argv = Arc::new(mir::Value::Argument(0));
+        let mut func = mir::Function::new(0, "dsp".to_symbol(), &[arg.clone()], None);
         func.return_type.get_or_init(|| numeric!());
         let mut block = mir::Block::default();
         let resint = Arc::new(mir::Value::Register(1));
@@ -899,7 +901,7 @@ mod test {
         let res = Arc::new(mir::Value::Register(2));
         block
             .0
-            .push((res.clone(), mir::Instruction::AddF(arg, resint)));
+            .push((res.clone(), mir::Instruction::AddF(argv, resint)));
         block.0.push((
             Arc::new(mir::Value::None),
             mir::Instruction::Return(res.clone(), numeric!()),

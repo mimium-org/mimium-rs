@@ -174,6 +174,14 @@ impl Context {
 
 #[cfg(test)]
 mod test {
+    use crate::{
+        function,
+        interner::ToSymbol,
+        numeric,
+        plugin::EvalStage,
+        types::{PType, Type},
+    };
+
     use super::*;
     fn get_source() -> &'static str {
         r#"
@@ -186,11 +194,21 @@ fn dsp(input){
 }
 "#
     }
+    fn test_context() -> Context {
+        let addfn = ExtFunTypeInfo::new(
+            "add".to_symbol(),
+            function!(vec![numeric!(), numeric!()], numeric!()),
+            EvalStage::Persistent,
+        );
+        let extfns = [addfn];
+        Context::new(extfns, [], None, Config::default())
+    }
     #[test]
     fn mir_channelcount() {
         let src = &get_source();
-        let ctx = Context::new([], [], None, Config::default());
+        let ctx = test_context();
         let mir = ctx.emit_mir(src).unwrap();
+        log::trace!("Mir: {mir}");
         let iochannels = mir.get_dsp_iochannels().unwrap();
         assert_eq!(iochannels.input, 1);
         assert_eq!(iochannels.output, 2);
@@ -198,7 +216,7 @@ fn dsp(input){
     #[test]
     fn bytecode_channelcount() {
         let src = &get_source();
-        let ctx = Context::new([], [], None, Config::default());
+        let ctx = test_context();
         let prog = ctx.emit_bytecode(src).unwrap();
         let iochannels = prog.iochannels.unwrap();
         assert_eq!(iochannels.input, 1);

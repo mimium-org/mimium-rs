@@ -29,6 +29,8 @@ pub enum Token {
     Comma,
     /// Dot operator, used for field access, which may be concatenated with left associativity
     Dot, // .
+    /// Double dot, used for omitting default values in record literals and function calls
+    DoubleDot, // ..
     Colon,
     SemiColon,
 
@@ -81,6 +83,7 @@ impl fmt::Display for Token {
             Token::SampleRate => write!(f, "samplerate"),
             Token::Comma => write!(f, ","),
             Token::Dot => write!(f, "."),
+            Token::DoubleDot => write!(f, ".."),
             Token::Colon => write!(f, ":"),
             Token::SemiColon => write!(f, ";"),
             Token::Let => write!(f, "let"),

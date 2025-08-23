@@ -61,9 +61,11 @@ macro_rules! lambda {
         Expr::Lambda(
             $args
                 .iter()
-                .map(|a: &&'static str| $crate::pattern::TypedId {
-                    id: $crate::ast::builder::str_to_symbol(a),
-                    ty: $crate::types::Type::Unknown.into_id(),
+                .map(|a: &&'static str| {
+                    $crate::pattern::TypedId::new(
+                        $crate::ast::builder::str_to_symbol(a),
+                        $crate::types::Type::Unknown.into_id(),
+                    )
                 })
                 .collect::<Vec<_>>(),
             None,
@@ -80,6 +82,7 @@ macro_rules! let_ {
             $crate::pattern::TypedPattern {
                 pat: $crate::pattern::Pattern::Single($crate::ast::builder::str_to_symbol($id)),
                 ty: $crate::types::Type::Unknown.into_id(),
+                default_value: None,
             },
             $body,
             Some($then),
@@ -103,10 +106,10 @@ macro_rules! let_ {
 macro_rules! letrec {
     ($id:literal,$ty:expr,$body:expr,$then:expr) => {
         Expr::LetRec(
-            TypedId {
-                id: $crate::ast::builder::str_to_symbol($id),
-                ty: $ty.unwrap_or($crate::types::Type::Unknown.into_id()),
-            },
+            TypedId::new(
+                $crate::ast::builder::str_to_symbol($id),
+                $ty.unwrap_or($crate::types::Type::Unknown.into_id()),
+            ),
             $body,
             $then,
         )

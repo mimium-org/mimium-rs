@@ -13,16 +13,15 @@ use mimium_audiodriver::backends::csv::csv_driver;
 use mimium_audiodriver::backends::local_buffer::LocalBufferDriver;
 use mimium_audiodriver::driver::{Driver, SampleRate};
 use mimium_audiodriver::load_default_runtime;
+use mimium_lang::ExecContext;
 use mimium_lang::compiler::bytecodegen::SelfEvalMode;
 use mimium_lang::compiler::emit_ast;
-use mimium_lang::interner::{ExprNodeId, Symbol, ToSymbol};
+use mimium_lang::interner::{Symbol, ToSymbol};
 use mimium_lang::plugin::Plugin;
 use mimium_lang::utils::error::ReportableError;
 use mimium_lang::utils::miniprint::MiniPrint;
 use mimium_lang::utils::{error::report, fileloader};
-use mimium_lang::ExecContext;
-use mimium_lang::{compiler::mirgen::convert_pronoun};
-use mimium_lang::{log, Config};
+use mimium_lang::{Config, log};
 use mimium_symphonia::{self, SamplerPlugin};
 #[derive(clap::Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -197,26 +196,10 @@ fn get_default_context(path: Option<Symbol>, with_gui: bool, config: Config) -> 
     ctx
 }
 
-/// Parse `src` into an AST and run pronoun conversion.
-fn emit_ast_local(src: &str, filepath: &Path) -> Result<ExprNodeId, Vec<Box<dyn ReportableError>>> {
-    let path = filepath.to_str().unwrap().to_symbol();
-    let ast1 = emit_ast(src, Some(path))?;
-
-    let (ast, errs) = convert_pronoun::convert_pronoun(ast1, path);
-    if errs.is_empty() {
-        Ok(ast)
-    } else {
-        Err(errs
-            .into_iter()
-            .map(|e| -> Box<dyn ReportableError> { Box::new(e) })
-            .collect())
-    }
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     if cfg!(debug_assertions) | cfg!(test) {
         colog::default_builder()
-            .filter_level(log::LevelFilter::Debug)
+            .filter_level(log::LevelFilter::Trace)
             .init();
     } else {
         colog::default_builder().init();
@@ -259,8 +242,9 @@ fn run_file(
 
     match options.mode {
         RunMode::EmitAst => {
-            let ast = emit_ast_local(content, fullpath)?;
-            Ok(println!("{}", ast.pretty_print()))
+            let ast = emit_ast(content, Some(path_sym))?;
+            println!("{}", ast.pretty_print());
+            Ok(())
         }
         RunMode::EmitMir => {
             ctx.prepare_compiler();

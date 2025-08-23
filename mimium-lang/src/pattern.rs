@@ -1,7 +1,7 @@
-use crate::interner::{Symbol, TypeNodeId};
+use crate::interner::{ExprNodeId, Symbol, TypeNodeId};
 //todo! need to replace with interned string.
 use crate::types::Type;
-use crate::utils::metadata::Span;
+use crate::utils::metadata::{Location, Span};
 use crate::utils::miniprint::MiniPrint;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -49,16 +49,29 @@ pub struct TypedId {
     // TypeNodeId is always issued even if the expression doesn't have the type
     // specification at all. This can be used for querying for the span.
     pub ty: TypeNodeId,
+    // Optional default value for function parameters
+    pub default_value: Option<ExprNodeId>,
 }
-impl TypedId{
-    pub fn new(id:Symbol) -> Self {
+
+impl TypedId {
+    // Constructor that initializes a TypedId with default values
+    pub fn new(id: Symbol, ty: TypeNodeId) -> Self {
         TypedId {
             id,
-            ty: Type::Unknown.into_id(),
+            ty,
+            default_value: None,
         }
     }
-}
-impl TypedId {
+
+    // Constructor that includes a default value
+    pub fn with_default(id: Symbol, ty: TypeNodeId, default_value: ExprNodeId) -> Self {
+        TypedId {
+            id,
+            ty,
+            default_value: Some(default_value),
+        }
+    }
+
     pub fn to_span(&self) -> Span {
         self.ty.to_span()
     }
@@ -92,11 +105,24 @@ impl MiniPrint for TypedId {
 pub struct TypedPattern {
     pub pat: Pattern,
     pub ty: TypeNodeId,
+    pub default_value: Option<ExprNodeId>,
+}
+impl TypedPattern {
+    pub fn new(pat: Pattern, ty: TypeNodeId) -> Self {
+        TypedPattern {
+            pat,
+            ty,
+            default_value: None,
+        }
+    }
 }
 
 impl TypedPattern {
     pub fn to_span(&self) -> Span {
         self.ty.to_span()
+    }
+    pub fn to_loc(&self) -> Location {
+        self.ty.to_loc()
     }
 
     pub fn is_unknown(&self) -> bool {
@@ -121,6 +147,7 @@ impl From<TypedId> for TypedPattern {
         TypedPattern {
             pat: Pattern::Single(value.id),
             ty: value.ty,
+            default_value: value.default_value, // Default value is optional
         }
     }
 }
@@ -129,7 +156,11 @@ impl TryFrom<TypedPattern> for TypedId {
 
     fn try_from(value: TypedPattern) -> Result<Self, Self::Error> {
         match value.pat {
-            Pattern::Single(id) => Ok(TypedId { id, ty: value.ty }),
+            Pattern::Single(id) => Ok(TypedId {
+                id,
+                ty: value.ty,
+                default_value: value.default_value,
+            }),
             _ => Err(ConversionError),
         }
     }

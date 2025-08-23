@@ -221,7 +221,7 @@ where
         Expr::Then(cond, body) => {
             let (cond, err) = conversion(cond);
             let (body, err2) = opt_conversion(body);
-            let found_any = cond.found_any | body.clone().map_or(false, |b| b.found_any);
+            let found_any = cond.found_any | body.clone().is_some_and(|b| b.found_any);
             let expr = Expr::Then(cond.expr, body.map(|b| b.expr)).into_id(loc);
             let errs = [err, err2].concat();
             (ConvertResult { expr, found_any }, errs)
@@ -357,7 +357,7 @@ fn convert_placeholder(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
                         let loc = Location::new(e_id.to_span().clone(), file_path);
                         let id = format!("__lambda_arg_{i}").to_symbol();
                         let ty = Type::Unknown.into_id_with_location(loc.clone());
-                        let newid = TypedId { id, ty };
+                        let newid = TypedId::new(id, ty);
                         let e = Expr::Var(id).into_id(loc);
                         (Some(newid), e)
                     } else {
@@ -451,6 +451,7 @@ pub fn convert_pronoun(expr: ExprNodeId, file_path: Symbol) -> (ExprNodeId, Vec<
     let expr = convert_macroexpand(expr, file_path);
     let (res, errs) = convert_self(expr, FeedId::Global, file_path);
     (res.expr, errs)
+    // (expr, vec![])
 }
 
 #[cfg(test)]
@@ -473,12 +474,10 @@ mod test {
             TypedPattern {
                 pat: Pattern::Single("lowpass".to_symbol()),
                 ty: unknownty,
+                default_value: None,
             },
             Expr::Lambda(
-                vec![TypedId {
-                    id: "input".to_symbol(),
-                    ty: unknownty,
-                }],
+                vec![TypedId::new("input".to_symbol(), unknownty)],
                 None,
                 Expr::Literal(Literal::SelfLit).into_id(loc.clone()),
             )
@@ -492,12 +491,10 @@ mod test {
             TypedPattern {
                 pat: Pattern::Single("lowpass".to_symbol()),
                 ty: unknownty,
+                default_value: None,
             },
             Expr::Lambda(
-                vec![TypedId {
-                    id: "input".to_symbol(),
-                    ty: unknownty,
-                }],
+                vec![TypedId::new("input".to_symbol(), unknownty)],
                 None,
                 Expr::Feed(
                     "feed_id0".to_symbol(),

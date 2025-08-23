@@ -29,7 +29,7 @@ impl std::fmt::Display for Mir {
             let af = fun
                 .args
                 .iter()
-                .zip(fun.argtypes.clone())
+                .zip(fun.get_argtypes())
                 .map(|(a, t)| format!("{}:{}", *a, t.to_type()))
                 .collect::<Vec<_>>()
                 .join(",");
@@ -65,7 +65,7 @@ impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Global(gv) => write!(f, "global({})", *gv),
-            Value::Argument(_, v) => write!(f, "{}", v.0),
+            Value::Argument(i) => write!(f, "arg({})", i),
             Value::Register(r) => write!(f, "reg({r})"),
             Value::Function(id) => write!(f, "function {id}"),
             Value::ExtFunction(label, t) => {

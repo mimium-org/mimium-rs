@@ -90,15 +90,23 @@ where
             "|>" => Token::Op(Op::Pipe),
             _ => Token::Op(Op::Unknown(s)),
         });
-    let separator = one_of(",.:;`$").map(|c| match c {
-        ',' => Token::Comma,
-        '.' => Token::Dot,
-        ':' => Token::Colon,
-        ';' => Token::SemiColon,
-        '`' => Token::BackQuote,
-        '$' => Token::Dollar,
-        _ => Token::Ident(c.to_string().to_symbol()),
-    });
+
+    // Handle '..' as DoubleDot token, and '.' as Dot token
+    let double_dot = just("..").map(|_| Token::DoubleDot);
+    let single_dot = just('.').map(|_| Token::Dot);
+
+    let separator = choice((
+        double_dot,
+        single_dot,
+        one_of(",.:;`$").map(|c| match c {
+            ',' => Token::Comma,
+            ':' => Token::Colon,
+            ';' => Token::SemiColon,
+            '`' => Token::BackQuote,
+            '$' => Token::Dollar,
+            _ => Token::Ident(c.to_string().to_symbol()),
+        }),
+    ));
     // A parser for identifiers and keywords
     let ident = text::ident()
         .to_slice()
@@ -171,9 +179,6 @@ where
 }
 #[cfg(test)]
 mod test {
-
-    use chumsky::text::whitespace;
-
     use super::*;
     #[test]
     fn test_str() {

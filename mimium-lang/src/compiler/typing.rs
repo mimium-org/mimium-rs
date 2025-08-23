@@ -2,15 +2,18 @@ use crate::ast::{Expr, Literal, RecordField};
 use crate::compiler::intrinsics;
 use crate::interner::{ExprKey, ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
-use crate::types::{LabeledParam, LabeledParams, PType, Type, TypeVar};
+use crate::types::{IntermediateId, PType, RecordTypeField, Type, TypeSchemeId, TypeVar};
 use crate::utils::metadata::Location;
 use crate::utils::{environment::Environment, error::ReportableError};
 use crate::{function, integer, numeric, unit};
-use itertools::{EitherOrBoth, Itertools};
+use itertools::Itertools;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::rc::Rc;
+
+mod unification;
+use unification::{Error as UnificationError, Relation, unify_types};
 
 #[derive(Clone, Debug)]
 pub enum Error {
@@ -25,6 +28,11 @@ pub enum Error {
     PatternMismatch((TypeNodeId, Location), (Pattern, Location)),
     NonFunctionForLetRec(TypeNodeId, Location),
     NonFunctionForApply(TypeNodeId, Location),
+    NonSupertypeArgument {
+        location: Location,
+        expected: TypeNodeId,
+        found: TypeNodeId,
+    },
     CircularType(Location, Location),
     IndexOutOfRange {
         len: u16,
@@ -38,22 +46,15 @@ pub enum Error {
         loc: Location,
         et: TypeNodeId,
     },
-    FieldNotExistInParams {
-        field: Symbol,
-        loc: Location,
-        params: LabeledParams,
-    },
     DuplicateKeyInRecord {
         key: Vec<Symbol>,
         loc: Location,
     },
     DuplicateKeyInParams(Vec<(Symbol, Location)>),
-
-    /// This is temporary error which is used when the type of 2 records contain different keys.
-    /// If structural subtyping is implemented, this error should be removed.
+    // The error of records, which contains both subtypes and supertypes.
     IncompatibleKeyInRecord {
-        key: Vec<Symbol>,
-        loc: Location,
+        left: (Vec<(Symbol, TypeNodeId)>, Location),
+        right: (Vec<(Symbol, TypeNodeId)>, Location),
     },
     VariableNotFound(Symbol, Location),
     NonPrimitiveInFeed(Location),
@@ -83,7 +84,7 @@ impl ReportableError for Error {
                 format!("Index access for non-tuple variable.")
             }
             Error::VariableNotFound(symbol, _) => {
-                format!("Variable {} not found in this scope", symbol)
+                format!("Variable {symbol} not found in this scope")
             }
             Error::NonPrimitiveInFeed(_) => {
                 format!("Function that uses `self` cannot return function type.")
@@ -103,8 +104,9 @@ impl ReportableError for Error {
             Error::IncompatibleKeyInRecord { .. } => {
                 format!("Record type has incompatible keys.",)
             }
-            Error::FieldNotExistInParams { .. } => {
-                format!("Field contains non-existing keys in the parameter list")
+
+            Error::NonSupertypeArgument { .. } => {
+                format!("Arguments for functions are less than required.")
             }
         }
     }
@@ -194,48 +196,66 @@ impl ReportableError for Error {
                     et.to_type().to_string_for_error()
                 ),
             )],
-            Error::IncompatibleKeyInRecord { key, loc } => {
+            Error::IncompatibleKeyInRecord {
+                left: (left, lloc),
+                right: (right, rloc),
+            } => {
+                vec![
+                    (
+                        lloc.clone(),
+                        format!(
+                            "the record here contains{}",
+                            left.iter()
+                                .map(|(key, ty)| format!(
+                                    " \"{key}\":{}",
+                                    ty.to_type().to_string_for_error()
+                                ))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    ),
+                    (
+                        rloc.clone(),
+                        format!(
+                            "but the record here contains{}",
+                            right
+                                .iter()
+                                .map(|(key, ty)| format!(
+                                    " \"{key}\":{}",
+                                    ty.to_type().to_string_for_error()
+                                ))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    ),
+                ]
+            }
+
+            Error::NonSupertypeArgument {
+                location,
+                expected,
+                found,
+            } => {
                 vec![(
-                    loc.clone(),
+                    location.clone(),
                     format!(
-                        "Incompatible key \"{}\" found in record type",
-                        key.iter()
-                            .map(|s| s.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ")
+                        "Type {} is not a supertype of the expected type {}",
+                        found.to_type().to_string_for_error(),
+                        expected.to_type().to_string_for_error()
                     ),
                 )]
             }
-            Error::FieldNotExistInParams { field, loc, params } => vec![(
-                loc.clone(),
-                format!(
-                    "Field \"{}\" does not exist in the parameter list{}",
-                    field,
-                    params
-                        .get_as_slice()
-                        .iter()
-                        .map(|p| {
-                            format!(
-                                " \"{}\":{}",
-                                p.label.map_or_else(|| "_".to_string(), |s| s.to_string()),
-                                p.ty.to_type().to_string_for_error()
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            )],
         }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct InferContext {
-    interm_idx: u64,
-    typescheme_idx: u64,
+    interm_idx: IntermediateId,
+    typescheme_idx: TypeSchemeId,
     level: u64,
-    instantiated_map: BTreeMap<u64, TypeNodeId>, //from type scheme to typevar
-    generalize_map: BTreeMap<u64, u64>,
+    instantiated_map: BTreeMap<TypeSchemeId, TypeNodeId>, //from type scheme to typevar
+    generalize_map: BTreeMap<IntermediateId, TypeSchemeId>,
     result_memo: BTreeMap<ExprKey, TypeNodeId>,
     file_path: Symbol,
     pub env: Environment<TypeNodeId>,
@@ -317,24 +337,15 @@ impl InferContext {
             }
         }
     }
-    fn gen_intermediate_type(&mut self) -> TypeNodeId {
-        let res = Type::Intermediate(Rc::new(RefCell::new(TypeVar::new(
-            self.interm_idx,
-            self.level,
-        ))))
-        .into_id();
-        self.interm_idx += 1;
-        res
-    }
-    fn get_typescheme(&mut self, tvid: u64) -> TypeNodeId {
+    fn get_typescheme(&mut self, tvid: IntermediateId, loc: Location) -> TypeNodeId {
         self.generalize_map.get(&tvid).cloned().map_or_else(
-            || self.gen_typescheme(),
+            || self.gen_typescheme(loc),
             |id| Type::TypeScheme(id).into_id(),
         )
     }
-    fn gen_typescheme(&mut self) -> TypeNodeId {
-        let res = Type::TypeScheme(self.typescheme_idx).into_id();
-        self.typescheme_idx += 1;
+    fn gen_typescheme(&mut self, loc: Location) -> TypeNodeId {
+        let res = Type::TypeScheme(self.typescheme_idx).into_id_with_location(loc);
+        self.typescheme_idx.0 += 1;
         res
     }
 
@@ -344,49 +355,70 @@ impl InferContext {
             self.level,
         ))))
         .into_id_with_location(loc);
-        self.interm_idx += 1;
+        self.interm_idx.0 += 1;
         res
     }
-    fn convert_unknown_to_intermediate(&mut self, t: TypeNodeId) -> TypeNodeId {
+    fn convert_unknown_to_intermediate(&mut self, t: TypeNodeId, loc: Location) -> TypeNodeId {
         match t.to_type() {
-            Type::Unknown => self.gen_intermediate_type(),
-            _ => t.apply_fn(|t| self.convert_unknown_to_intermediate(t)),
+            Type::Unknown => self.gen_intermediate_type_with_location(loc.clone()),
+            _ => t.apply_fn(|t| self.convert_unknown_to_intermediate(t, loc.clone())),
         }
     }
-    // return true when the circular loop of intermediate variable exists.
-    fn occur_check(id1: u64, t2: TypeNodeId) -> bool {
-        let cls = |t2dash: TypeNodeId| -> bool { Self::occur_check(id1, t2dash) };
-
-        let vec_cls = |t: &[_]| -> bool { t.iter().any(|a| cls(*a)) };
-
-        match &t2.to_type() {
-            Type::Intermediate(cell) => cell
-                .try_borrow()
-                .map(|tv2| match tv2.parent {
-                    Some(tid2) => id1 == tv2.var || Self::occur_check(id1, tid2),
-                    None => id1 == tv2.var,
-                })
-                .unwrap_or(true),
-            Type::Array(a) => cls(*a),
-            Type::Tuple(t) => vec_cls(t),
-            Type::Function(p, r, s) => {
-                let vec = p.ty_iter().collect::<Vec<_>>();
-                vec_cls(vec.as_slice())
-                    && cls(*r)
-                    && cls(s.map(|x| x).unwrap_or_else(|| Type::Unknown.into_id()))
+    fn convert_unify_error(&self, e: UnificationError) -> Error {
+        let gen_loc = |span| Location::new(span, self.file_path);
+        match e {
+            UnificationError::TypeMismatch { left, right } => Error::TypeMismatch {
+                left: (left, gen_loc(left.to_span())),
+                right: (right, gen_loc(right.to_span())),
+            },
+            UnificationError::LengthMismatch {
+                left: (left, lspan),
+                right: (right, rspan),
+            } => Error::LengthMismatch {
+                left: (left.len(), gen_loc(lspan)),
+                right: (right.len(), gen_loc(rspan)),
+            },
+            UnificationError::CircularType { left, right } => {
+                Error::CircularType(gen_loc(left), gen_loc(right))
             }
-            Type::Record(s) => vec_cls(s.iter().map(|(_k, v)| *v).collect::<Vec<_>>().as_slice()),
-            _ => false,
+            UnificationError::ImcompatibleRecords {
+                left: (left, lspan),
+                right: (right, rspan),
+            } => Error::IncompatibleKeyInRecord {
+                left: (left, gen_loc(lspan)),
+                right: (right, gen_loc(rspan)),
+            },
         }
     }
-
+    fn unify_types(&self, t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Error>> {
+        unify_types(t1, t2)
+            .map_err(|e| e.into_iter().map(|e| self.convert_unify_error(e)).collect())
+    }
+    // helper function
+    fn merge_rel_result(
+        &self,
+        rel1: Result<Relation, Vec<Error>>,
+        rel2: Result<Relation, Vec<Error>>,
+        t1: TypeNodeId,
+        t2: TypeNodeId,
+    ) -> Result<(), Vec<Error>> {
+        match (rel1, rel2) {
+            (Ok(Relation::Identical), Ok(Relation::Identical)) => Ok(()),
+            (Ok(_), Ok(_)) => Err(vec![Error::TypeMismatch {
+                left: (t1, Location::new(t1.to_span(), self.file_path)),
+                right: (t2, Location::new(t2.to_span(), self.file_path)),
+            }]),
+            (Err(e1), Err(e2)) => Err(e1.into_iter().chain(e2).collect()),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        }
+    }
     pub fn substitute_type(t: TypeNodeId) -> TypeNodeId {
         match t.to_type() {
             Type::Intermediate(cell) => {
                 let TypeVar { parent, .. } = &cell.borrow() as &TypeVar;
                 match parent {
                     Some(p) => Self::substitute_type(*p),
-                    None => t,
+                    None => Type::Unknown.into_id_with_location(t.to_loc()),
                 }
             }
             _ => t.apply_fn(Self::substitute_type),
@@ -404,162 +436,13 @@ impl InferContext {
             let _old = self.result_memo.insert(*e, *t);
         })
     }
-    fn unify_vec(
-        a1: &[TypeNodeId],
-        loc1: Location,
-        a2: &[TypeNodeId],
-        loc2: Location,
-    ) -> (Vec<TypeNodeId>, Vec<Error>) {
-        let (res, errs): (Vec<_>, Vec<_>) = a1
-            .iter()
-            .zip_longest(a2)
-            .map(|pair| match pair {
-                EitherOrBoth::Both(a1, a2) => {
-                    Self::unify_types((*a1, loc1.clone()), (*a2, loc2.clone()))
-                }
-                EitherOrBoth::Left(t) | EitherOrBoth::Right(t) => Ok(*t),
-            })
-            .partition_result();
-        let mut errs: Vec<_> = errs.into_iter().flatten().collect();
-        if a1.len() != a2.len() {
-            errs.push(Error::LengthMismatch {
-                left: (a1.len(), loc1.clone()),
-                right: (a2.len(), loc2.clone()),
-            });
-        }
-        (res, errs)
-    }
-    // if used in let expression, tl1 means lefthand value
-    fn unify_types(
-        tl1: (TypeNodeId, Location),
-        tl2: (TypeNodeId, Location),
-    ) -> Result<TypeNodeId, Vec<Error>> {
-        let (t1, loc1) = tl1; //todo file
-        let (t2, loc2) = tl2;
 
-        log::trace!("unify {} and {}", t1.to_type(), t2.to_type());
-        let t1r = t1.get_root();
-        let t2r = t2.get_root();
-        match &(t1r.to_type(), t2r.to_type()) {
-            (Type::Intermediate(i1), Type::Intermediate(i2)) if i1 == i2 => Ok(t1),
-
-            (Type::Intermediate(i1), Type::Intermediate(i2)) => {
-                let tv1 = &mut i1.borrow_mut() as &mut TypeVar;
-                if Self::occur_check(tv1.var, t2) {
-                    return Err(vec![Error::CircularType(loc1, loc2)]);
-                }
-                let tv2 = &mut i2.borrow_mut() as &mut TypeVar;
-                if tv2.level > tv1.level {
-                    tv2.level = tv1.level
-                }
-                match (tv1.parent, tv2.parent) {
-                    (None, None) => {
-                        if tv1.var > tv2.var {
-                            tv2.parent = Some(t1r);
-                            Ok(t1r)
-                        } else {
-                            tv1.parent = Some(t2r);
-                            Ok(t2r)
-                        }
-                    }
-                    (_, Some(p2)) => {
-                        tv1.parent = Some(p2);
-                        Ok(p2)
-                    }
-                    (Some(p1), _) => {
-                        tv2.parent = Some(p1);
-                        Ok(p1)
-                    }
-                }
-            }
-            (Type::Intermediate(i1), _) => {
-                let tv1 = &mut i1.borrow_mut() as &mut TypeVar;
-                tv1.parent = Some(t2r);
-                Ok(t2r)
-            }
-            (_, Type::Intermediate(i2)) => {
-                let tv2 = &mut i2.borrow_mut() as &mut TypeVar;
-                tv2.parent = Some(t1r);
-                Ok(t1r)
-            }
-            (Type::Array(a1), Type::Array(a2)) => {
-                Ok(Type::Array(Self::unify_types((*a1, loc1), (*a2, loc2))?).into_id())
-            }
-            (Type::Ref(x1), Type::Ref(x2)) => {
-                Ok(Type::Ref(Self::unify_types((*x1, loc1), (*x2, loc2))?).into_id())
-            }
-            (Type::Tuple(a1), Type::Tuple(a2)) => {
-                let (vec, err) = Self::unify_vec(a1, loc1, a2, loc2);
-                if err.is_empty() {
-                    Ok(Type::Tuple(vec).into_id())
-                } else {
-                    Err(err) //todo:return both partial result and err
-                }
-            }
-            (Type::Record(a1), Type::Record(a2)) => {
-                {
-                    let m1 = HashSet::<Symbol>::from_iter(a1.iter().map(|(k, _)| *k));
-                    let m2 = HashSet::<Symbol>::from_iter(a2.iter().map(|(k, _)| *k));
-                    if m1 != m2 {
-                        let key_diffs = m1.difference(&m2).cloned().collect();
-                        return Err(vec![Error::IncompatibleKeyInRecord {
-                            key: key_diffs,
-                            loc: loc1.clone(),
-                        }]);
-                    }
-                }
-                let get_key_val = |v: &Vec<(Symbol, TypeNodeId)>| {
-                    let mut v_c = v.clone();
-                    v_c.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
-                    let (ks, ts): (Vec<_>, Vec<_>) = v_c.into_iter().unzip();
-                    (ks, ts)
-                };
-                let (ks1, ts1) = get_key_val(a1);
-                let (ks2, ts2) = get_key_val(a2);
-                debug_assert_eq!(ks1, ks2);
-                let (vec, err) = Self::unify_vec(&ts1, loc1, &ts2, loc2);
-                let rvec = ks1.into_iter().zip(vec).collect::<Vec<_>>();
-                if err.is_empty() {
-                    Ok(Type::Record(rvec).into_id())
-                } else {
-                    Err(err)
-                }
-            }
-            (Type::Function(p1, r1, _s1), Type::Function(p2, r2, _s2)) => {
-                let (param, errs) = Self::unify_named_params(p1, &loc1, p2, &loc2);
-                let ret = Self::unify_types((*r1, loc1), (*r2, loc2));
-                match (ret, errs) {
-                    (Ok(ret), errs) if errs.is_empty() => {
-                        Ok(Type::Function(param, ret, None).into_id())
-                    }
-                    (Ok(_ret), errs) => Err(errs),
-                    (Err(mut e), mut errs) => {
-                        errs.append(&mut e);
-                        Err(errs)
-                    }
-                }
-            }
-            (Type::Primitive(p1), Type::Primitive(p2)) if p1 == p2 => {
-                Ok(Type::Primitive(p1.clone()).into_id())
-            }
-            (Type::Failure, t) => Ok(t.clone().into_id_with_location(loc1.clone())),
-            (t, Type::Failure) => Ok(t.clone().into_id_with_location(loc2.clone())),
-            (Type::Code(p1), Type::Code(p2)) => {
-                let ret = Self::unify_types((*p1, loc1.clone()), (*p2, loc2))?;
-                Ok(Type::Code(ret).into_id_with_location(loc1))
-            }
-            (_p1, _p2) => Err(vec![Error::TypeMismatch {
-                left: (t1, loc1),
-                right: (t2, loc2),
-            }]),
-        }
-    }
     fn generalize(&mut self, t: TypeNodeId) -> TypeNodeId {
         match t.to_type() {
             Type::Intermediate(tvar) => {
                 let &TypeVar { level, var, .. } = &tvar.borrow() as _;
                 if level > self.level {
-                    self.get_typescheme(var)
+                    self.get_typescheme(var, t.to_loc())
                 } else {
                     t
                 }
@@ -573,7 +456,7 @@ impl InferContext {
                 if let Some(tvar) = self.instantiated_map.get(&id) {
                     *tvar
                 } else {
-                    let res = self.gen_intermediate_type();
+                    let res = self.gen_intermediate_type_with_location(t.to_loc());
                     self.instantiated_map.insert(id, res);
                     res
                 }
@@ -591,50 +474,54 @@ impl InferContext {
         pat: (TypedPattern, Location),
         body: (TypeNodeId, Location),
     ) -> Result<TypeNodeId, Vec<Error>> {
-        let (TypedPattern { pat, ty }, loc_p) = pat;
+        let (TypedPattern { pat, ty, .. }, loc_p) = pat;
         let (body_t, loc_b) = body.clone();
         let mut bind_item = |pat| {
-            let newloc = Location::new(
-                ty.to_span(), // todo: add span to untyped pattern
-                loc_p.path,
-            );
+            let newloc = ty.to_loc();
             let ity = self.gen_intermediate_type_with_location(newloc.clone());
-            let p = TypedPattern { pat, ty: ity };
+            let p = TypedPattern::new(pat, ity);
             self.bind_pattern((p, newloc.clone()), (ity, newloc))
         };
         let pat_t = match pat {
             Pattern::Single(id) => {
-                let pat_t = self.convert_unknown_to_intermediate(ty);
+                let pat_t = self.convert_unknown_to_intermediate(ty, loc_p);
                 log::trace!("bind {} : {}", id, pat_t.to_type().to_string());
                 self.env.add_bind(&[(id, pat_t)]);
                 Ok::<TypeNodeId, Vec<Error>>(pat_t)
             }
             Pattern::Tuple(pats) => {
-                let res = pats.iter().map(|p| bind_item(p.clone())).try_collect()?; //todo multiple errors
-                let res = Self::unify_types(
-                    (Type::Tuple(res).into_id(), loc_p.clone()),
-                    (self.convert_unknown_to_intermediate(ty), loc_p.clone()),
-                )?;
+                let elems = pats.iter().map(|p| bind_item(p.clone())).try_collect()?; //todo multiple errors
+                let res = Type::Tuple(elems).into_id_with_location(loc_p);
+                let target = self.convert_unknown_to_intermediate(ty, loc_b);
+                let rel = self.unify_types(res, target)?;
                 Ok(res)
             }
             Pattern::Record(items) => {
                 let res = items
                     .iter()
-                    .map(|(k, v)| bind_item(v.clone()).map(|t| (*k, t)))
+                    .map(|(key, v)| {
+                        bind_item(v.clone()).map(|ty| RecordTypeField {
+                            key: *key,
+                            ty,
+                            has_default: false,
+                        })
+                    })
                     .try_collect()?; //todo multiple errors
-                let res = Self::unify_types(
-                    (Type::Record(res).into_id(), loc_p.clone()),
-                    (self.convert_unknown_to_intermediate(ty), loc_p.clone()),
-                )?;
+                let res = Type::Record(res).into_id_with_location(loc_p);
+                let target = self.convert_unknown_to_intermediate(ty, loc_b);
+                let rel = self.unify_types(res, target)?;
                 Ok(res)
             }
             Pattern::Error => Err(vec![Error::PatternMismatch(
-                (Type::Failure.into_id(), loc_b.clone()),
+                (
+                    Type::Failure.into_id_with_location(loc_p.clone()),
+                    loc_b.clone(),
+                ),
                 (pat, loc_p.clone()),
             )]),
         }?;
-        let t2 = Self::unify_types((pat_t, loc_p.clone()), (body_t, loc_b.clone()))?;
-        Ok(self.generalize(t2))
+        let rel = self.unify_types(pat_t, body_t)?;
+        Ok(self.generalize(pat_t))
     }
 
     pub fn lookup(&self, name: Symbol, loc: Location) -> Result<TypeNodeId, Error> {
@@ -643,7 +530,7 @@ impl InferContext {
             |v| Ok(*v),
         )
     }
-    pub(crate) fn infer_type_literal(e: &Literal) -> Result<TypeNodeId, Error> {
+    pub(crate) fn infer_type_literal(e: &Literal, loc: Location) -> Result<TypeNodeId, Error> {
         let pt = match e {
             Literal::Float(_) | Literal::Now | Literal::SampleRate => PType::Numeric,
             Literal::Int(_s) => PType::Int,
@@ -651,66 +538,62 @@ impl InferContext {
             Literal::SelfLit => panic!("\"self\" should not be shown at type inference stage"),
             Literal::PlaceHolder => panic!("\"_\" should not be shown at type inference stage"),
         };
-        Ok(Type::Primitive(pt).into_id())
+        Ok(Type::Primitive(pt).into_id_with_location(loc))
     }
     fn infer_vec(&mut self, e: &[ExprNodeId]) -> Result<Vec<TypeNodeId>, Vec<Error>> {
         e.iter().map(|e| self.infer_type(*e)).try_collect()
     }
     fn infer_type_levelup(&mut self, e: ExprNodeId) -> TypeNodeId {
         self.level += 1;
-        let res = self.infer_type(e);
-        let r = self.unwrap_result(res);
+        let res = self.infer_type_unwrapping(e);
         self.level -= 1;
-        r
+        res
     }
     pub fn infer_type(&mut self, e: ExprNodeId) -> Result<TypeNodeId, Vec<Error>> {
         if let Some(r) = self.result_memo.get(&e.0) {
             //use cached result
             return Ok(*r);
         }
-        let loc = Location::new(e.to_span(), self.file_path); //todo file
+        let loc = e.to_location();
         let res: Result<TypeNodeId, Vec<Error>> = match &e.to_expr() {
-            Expr::Literal(l) => Self::infer_type_literal(l).map_err(|e| vec![e]),
-            Expr::Tuple(e) => Ok(Type::Tuple(self.infer_vec(e.as_slice())?).into_id()),
+            Expr::Literal(l) => Self::infer_type_literal(l, loc).map_err(|e| vec![e]),
+            Expr::Tuple(e) => {
+                Ok(Type::Tuple(self.infer_vec(e.as_slice())?).into_id_with_location(loc))
+            }
             Expr::ArrayLiteral(e) => {
                 let elem_types = self.infer_vec(e.as_slice())?;
                 let first = elem_types
                     .first()
                     .copied()
-                    .unwrap_or(Type::Unknown.into_id());
-                let arr_t = elem_types.iter().try_fold(first, |acc, t| {
-                    Self::unify_types((acc, loc.clone()), (*t, loc.clone()))
-                })?;
-                Ok(Type::Array(arr_t).into_id())
+                    .unwrap_or(Type::Unknown.into_id_with_location(loc.clone()));
+                //todo:collect multiple errors
+                let elem_t = elem_types
+                    .iter()
+                    .try_fold(first, |acc, t| self.unify_types(acc, *t).map(|rel| *t))?;
+
+                Ok(Type::Array(elem_t).into_id_with_location(loc.clone()))
             }
             Expr::ArrayAccess(e, idx) => {
-                let arr = self.infer_type(*e);
-                let idx_i = self.infer_type(*idx);
-                let loc_e = Location::new(e.to_span(), loc.path);
-                let ntype = Type::Primitive(PType::Numeric);
-                match (arr, idx_i) {
-                    (Ok(arr_t), Ok(idx_t)) => {
-                        let elem_t = self.gen_intermediate_type_with_location(loc_e.clone());
-                        let _ = Self::unify_types(
-                            (idx_t, loc.clone()),
-                            (ntype.into_id(), loc.clone()),
-                        )?;
-                        let _ = Self::unify_types(
-                            (
-                                Type::Array(elem_t).into_id_with_location(loc_e.clone()),
-                                loc_e.clone(),
-                            ),
-                            (arr_t, loc_e.clone()),
-                        );
-                        Ok(elem_t)
-                    }
-                    (Err(e1), Err(e2)) => Err(e1.into_iter().chain(e2).collect()),
-                    (Err(e), _) => Err(e),
-                    (_, Err(e)) => Err(e),
-                }
+                let arr_t = self.infer_type_unwrapping(*e);
+                let loc_e = e.to_location();
+                let idx_t = self.infer_type_unwrapping(*idx);
+                let loc_i = idx.to_location();
+
+                let elem_t = self.gen_intermediate_type_with_location(loc_e.clone());
+
+                let rel1 = self.unify_types(
+                    idx_t,
+                    Type::Primitive(PType::Numeric).into_id_with_location(loc_i),
+                );
+                let rel2 = self.unify_types(
+                    Type::Array(elem_t).into_id_with_location(loc_e.clone()),
+                    arr_t,
+                );
+                let _ = self.merge_rel_result(rel1, rel2, arr_t, idx_t)?;
+                Ok(elem_t)
             }
             Expr::Proj(e, idx) => {
-                let tup = self.infer_type(*e)?;
+                let tup = self.infer_type_unwrapping(*e);
                 // we directly inspect if the intermediate type is a tuple or not.
                 // this is because we can not infer the number of fields in the tuple from the fields access expression.
                 // This rule will be loosened when structural subtyping is implemented.
@@ -755,21 +638,35 @@ impl InferContext {
                     let kts: Vec<_> = kvs
                         .iter()
                         .map(|RecordField { name, expr }| {
-                            let t = self.infer_type(*expr);
-                            t.map(|t| (*name, t))
+                            let ty = self.infer_type_unwrapping(*expr);
+                            RecordTypeField {
+                                key: *name,
+                                ty,
+                                has_default: true,
+                            }
                         })
-                        .try_collect()?;
-                    Ok(Type::Record(kts).into_id())
+                        .collect();
+                    Ok(Type::Record(kts).into_id_with_location(loc))
                 }
             }
             Expr::FieldAccess(expr, field) => {
-                let et = self.infer_type(*expr)?;
+                let et = self.infer_type_unwrapping(*expr);
                 log::trace!("field access {} : {}", field, et.to_type());
-                let fields_to_ans = |fields: &[(Symbol, TypeNodeId)]| {
+                let fields_to_ans = |fields: &[RecordTypeField]| {
                     fields
                         .iter()
-                        .find_map(|(name, t)| if *name == *field { Some(*t) } else { None })
-                        .ok_or_else(|| vec![Error::VariableNotFound(*field, loc.clone())])
+                        .find_map(
+                            |RecordTypeField { key, ty, .. }| {
+                                if *key == *field { Some(*ty) } else { None }
+                            },
+                        )
+                        .ok_or_else(|| {
+                            vec![Error::FieldNotExist {
+                                field: *field,
+                                loc: loc.clone(),
+                                et,
+                            }]
+                        })
                 };
                 // we directly inspect if the intermediate type is a record or not.
                 // this is because we can not infer the number of fields in the record from the fields access expression.
@@ -792,21 +689,15 @@ impl InferContext {
             }
             Expr::Feed(id, body) => {
                 //todo: add span to Feed expr for keeping the location of `self`.
-                let feedv = self.gen_intermediate_type();
-                let loc_b = Location::new(body.to_span(), loc.path);
+                let feedv = self.gen_intermediate_type_with_location(loc);
 
                 self.env.add_bind(&[(*id, feedv)]);
-                let bty = self.infer_type(*body)?;
-                let res = Self::unify_types((bty, loc.clone()), (feedv, loc_b));
-                match res {
-                    Ok(res) if res.to_type().contains_function() => {
-                        Err(vec![Error::NonPrimitiveInFeed(Location::new(
-                            body.to_span().clone(),
-                            loc.path,
-                        ))])
-                    }
-                    Ok(r) => Ok(r),
-                    Err(e) => Err(e),
+                let bty = self.infer_type_unwrapping(*body);
+                let _rel = self.unify_types(bty, feedv)?;
+                if bty.to_type().contains_function() {
+                    Err(vec![Error::NonPrimitiveInFeed(body.to_location())])
+                } else {
+                    Ok(bty)
                 }
             }
             Expr::Lambda(p, rtype, body) => {
@@ -818,53 +709,57 @@ impl InferContext {
                 if dup.clone().count() > 0 {
                     return Err(vec![Error::DuplicateKeyInParams(dup.collect())]);
                 }
-
-                let ptypes = LabeledParams::new(
-                    p.iter()
-                        .map(|id| {
-                            let pt = if !id.is_unknown() {
-                                id.ty
-                            } else {
-                                self.gen_intermediate_type()
-                            };
-                            self.env.add_bind(&[(id.id, pt)]);
-                            LabeledParam::new(id.id, pt)
-                        })
-                        .collect(),
-                );
-                let bty = if let Some(r) = rtype {
-                    let loc_r = Location::new(r.to_span(), self.file_path);
-                    let bty = self.infer_type(*body)?;
-                    let loc_b = Location::new(body.to_span(), self.file_path);
-                    Self::unify_types((*r, loc_r), (bty, loc_b))?
+                let pvec = p
+                    .iter()
+                    .map(|id| {
+                        let ity = self.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
+                        self.env.add_bind(&[(id.id, ity)]);
+                        RecordTypeField {
+                            key: id.id,
+                            ty: ity,
+                            has_default: false,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let ptype = if pvec.is_empty() {
+                    Type::Primitive(PType::Unit).into_id_with_location(loc.clone())
                 } else {
-                    self.infer_type(*body)?
+                    Type::Record(pvec).into_id_with_location(loc.clone())
+                };
+                let bty = if let Some(r) = rtype {
+                    let bty = self.infer_type_unwrapping(*body);
+                    let _rel = self.unify_types(*r, bty)?;
+                    bty
+                } else {
+                    self.infer_type_unwrapping(*body)
                 };
                 self.env.to_outer();
-                Ok(Type::Function(ptypes, bty, None).into_id())
+                Ok(Type::Function {
+                    arg: ptype,
+                    ret: bty,
+                }
+                .into_id_with_location(e.to_location()))
             }
             Expr::Let(tpat, body, then) => {
                 let bodyt = self.infer_type_levelup(*body);
-                let loc_p = Location::new(tpat.to_span(), self.file_path);
-                let loc_b = Location::new(body.to_span(), self.file_path);
+                let loc_p = tpat.to_loc();
+                let loc_b = body.to_location();
                 let pat_t = self.bind_pattern((tpat.clone(), loc_p), (bodyt, loc_b));
                 let _pat_t = self.unwrap_result(pat_t);
                 match then {
                     Some(e) => self.infer_type(*e),
-                    None => Ok(Type::Primitive(PType::Unit).into_id()),
+                    None => Ok(Type::Primitive(PType::Unit).into_id_with_location(loc)),
                 }
             }
             Expr::LetRec(id, body, then) => {
-                let loc_id = Location::new(id.to_span(), self.file_path);
-                let idt = self.convert_unknown_to_intermediate(id.ty);
+                let idt = self.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
                 self.env.add_bind(&[(id.id, idt)]);
                 //polymorphic inference is not allowed in recursive function.
                 let bodyt = self.infer_type_levelup(*body);
-                let loc_b = Location::new(body.to_span(), self.file_path);
-                let _res = Self::unify_types((idt, loc_id), (bodyt, loc_b));
+                let _res = self.unify_types(idt, bodyt);
                 match then {
                     Some(e) => self.infer_type(*e),
-                    None => Ok(Type::Primitive(PType::Unit).into_id()),
+                    None => Ok(Type::Primitive(PType::Unit).into_id_with_location(loc)),
                 }
             }
             Expr::Assign(assignee, expr) => {
@@ -875,12 +770,9 @@ impl InferContext {
                     }
                     _ => unreachable!(),
                 };
-                let loc_a = Location::new(assignee.to_span(), self.file_path);
-                let loc_e = Location::new(expr.to_span(), self.file_path);
                 let assignee_t = self.unwrap_result(self.lookup(name, loc).map_err(|e| vec![e]));
-                let t = self.infer_type(*expr);
-                let e_t = self.unwrap_result(t);
-                Self::unify_types((assignee_t, loc_a), (e_t, loc_e))?;
+                let e_t = self.infer_type_unwrapping(*expr);
+                let rel = self.unify_types(assignee_t, e_t)?;
                 Ok(unit!())
             }
             Expr::Then(e, then) => {
@@ -893,78 +785,70 @@ impl InferContext {
                 Ok(self.instantiate(res))
             }
             Expr::Apply(fun, callee) => {
-                let fnl = self.infer_type(*fun);
-                let fnl = self.unwrap_result(fnl);
-                let loc_f = Location::new(fun.to_span(), self.file_path);
-                let callee_t = if callee.len() == 1 {
-                    let callee_t = self.infer_type(callee[0])?;
-                    match callee_t.to_type() {
-                        //parameter-pack handling
-                        Type::Tuple(t) => t.into_iter().map(LabeledParam::from).collect(),
-                        Type::Record(kvs) => kvs
-                            .into_iter()
-                            .map(|(k, t)| LabeledParam::new(k, t))
-                            .collect(),
-                        _ => vec![LabeledParam::from(callee_t)],
+                let loc_f = fun.to_location();
+                let fnl = self.infer_type_unwrapping(*fun);
+                let callee_t = match callee.len() {
+                    0 => Type::Primitive(PType::Unit).into_id_with_location(loc.clone()),
+                    1 => self.infer_type_unwrapping(callee[0]),
+                    _ => {
+                        let at_vec = self.infer_vec(callee.as_slice())?;
+                        let span = callee[0].to_span().start..callee.last().unwrap().to_span().end;
+                        let loc = Location::new(span, self.file_path);
+                        Type::Tuple(at_vec).into_id_with_location(loc)
                     }
-                } else {
-                    self.infer_vec(callee.as_slice())?
-                        .into_iter()
-                        .map(LabeledParam::from)
-                        .collect::<Vec<_>>()
                 };
-                let res_t = self.gen_intermediate_type();
-                let fntype = Type::Function(LabeledParams::new(callee_t), res_t, None).into_id();
-                let restype = Self::unify_types((fnl, loc_f.clone()), (fntype, loc_f));
-                match restype {
-                    Ok(t) => match t.to_type() {
-                        Type::Function(_, r, _) => Ok(r),
-                        _ => unreachable!("non functional code in apply"),
-                    },
-                    Err(ref _e) => restype,
+                let res_t = self.gen_intermediate_type_with_location(loc);
+                let fntype = Type::Function {
+                    arg: callee_t,
+                    ret: res_t,
+                }
+                .into_id_with_location(loc_f.clone());
+                match self.unify_types(fnl, fntype)? {
+                    Relation::Subtype => Err(vec![Error::NonSupertypeArgument {
+                        location: loc_f.clone(),
+                        expected: fnl,
+                        found: fntype,
+                    }]),
+                    _ => Ok(res_t),
                 }
             }
             Expr::If(cond, then, opt_else) => {
-                let condt = self.infer_type(*cond)?;
-                let cond_loc = Location::new(cond.to_span(), loc.path);
-                let _bt = Self::unify_types(
-                    (Type::Primitive(PType::Numeric).into_id(), cond_loc.clone()),
-                    (condt, cond_loc),
-                ); //todo:boolean type
-                let thent = self.infer_type(*then);
-                let thent = self.unwrap_result(thent);
-                let then_loc = Location::new(then.to_span(), self.file_path);
-                let elset = opt_else.map_or(Ok(Type::Primitive(PType::Unit).into_id()), |e| {
-                    self.infer_type(e)
+                let condt = self.infer_type_unwrapping(*cond);
+                let cond_loc = cond.to_location();
+                let bt = self.unify_types(
+                    Type::Primitive(PType::Numeric).into_id_with_location(cond_loc),
+                    condt,
+                )?; //todo:boolean type
+                //todo: introduce row polymophism so that not narrowing the type of `then` and `else` too much.
+                let thent = self.infer_type_unwrapping(*then);
+                let elset = opt_else.map_or(Type::Primitive(PType::Unit).into_id(), |e| {
+                    self.infer_type_unwrapping(e)
                 });
-                let elset = self.unwrap_result(elset);
-                let else_loc =
-                    Location::new(opt_else.map_or(loc.span, |e| e.to_span()), self.file_path);
-                log::trace!("then: {}, else: {}", thent.to_type(), elset.to_type());
-                Self::unify_types((thent, then_loc), (elset, else_loc))
+                let rel = self.unify_types(thent, elset)?;
+                Ok(thent)
             }
-            Expr::Block(expr) => expr.map_or(Ok(Type::Primitive(PType::Unit).into_id()), |e| {
-                self.env.extend(); //block creates local scope.
-                let res = self.infer_type(e);
-                self.env.to_outer();
-                res
-            }),
+            Expr::Block(expr) => expr.map_or(
+                Ok(Type::Primitive(PType::Unit).into_id_with_location(loc)),
+                |e| {
+                    self.env.extend(); //block creates local scope.
+                    let res = self.infer_type(e);
+                    self.env.to_outer();
+                    res
+                },
+            ),
             Expr::Escape(e) => {
                 let loc_e = Location::new(e.to_span(), self.file_path);
-                let res = self.infer_type(*e)?;
+                let res = self.infer_type_unwrapping(*e);
                 let intermediate = self.gen_intermediate_type_with_location(loc_e.clone());
-                let _res_unused = Self::unify_types(
-                    (res, loc_e.clone()),
-                    (
-                        Type::Code(intermediate).into_id_with_location(loc_e.clone()),
-                        loc_e,
-                    ),
+                let rel = self.unify_types(
+                    res,
+                    Type::Code(intermediate).into_id_with_location(loc_e.clone()),
                 )?;
                 Ok(intermediate)
             }
             Expr::Bracket(e) => {
                 let loc_e = Location::new(e.to_span(), self.file_path);
-                let res = self.infer_type(*e)?;
+                let res = self.infer_type_unwrapping(*e);
                 Ok(Type::Code(res).into_id_with_location(loc_e))
             }
             _ => Ok(Type::Failure.into_id_with_location(loc)),
@@ -973,75 +857,13 @@ impl InferContext {
             self.result_memo.insert(e.0, *ty);
         })
     }
-    // Helper function to unify function parameters with names
-    fn unify_named_params(
-        ps1: &LabeledParams, //function
-        loc1: &Location,
-        ps2: &LabeledParams, //arguments
-        loc2: &Location,
-    ) -> (LabeledParams, Vec<Error>) {
-        let len1 = ps1.get_as_slice().len();
-        let len2 = ps2.get_as_slice().len();
-        let has_label_1 = ps1.has_label();
-        let has_label_2 = ps2.has_label();
-        if len1 != len2 {
-            let err = Error::LengthMismatch {
-                left: (len1, loc1.clone()),
-                right: (len2, loc2.clone()),
-            };
-            return (LabeledParams::new(vec![]), vec![err]);
-        }
-        if has_label_1 && has_label_2 {
-            //labels may be in different order
-            let unified_types = ps2.get_as_slice().iter().map(|p2| {
-                ps1.get_as_slice()
-                    .iter()
-                    .find(|p1| p1.label == p2.label)
-                    .map_or(
-                        Err(vec![Error::FieldNotExistInParams {
-                            field: p2.label.unwrap(),
-                            loc: loc1.clone(),
-                            params: ps1.clone(),
-                        }]),
-                        |p1| Self::unify_types((p1.ty, loc1.clone()), (p2.ty, loc2.clone())),
-                    )
-            });
-            if unified_types.clone().any(|x| x.is_err()) {
-                let errs = unified_types.filter_map(|x| x.err()).flatten().collect();
-                return (LabeledParams::new(vec![]), errs);
+    fn infer_type_unwrapping(&mut self, e: ExprNodeId) -> TypeNodeId {
+        match self.infer_type(e) {
+            Ok(t) => t,
+            Err(err) => {
+                self.errors.extend(err);
+                Type::Failure.into_id_with_location(Location::new(e.to_span(), self.file_path))
             }
-            let res = unified_types
-                .map(|x| x.unwrap())
-                .zip(ps2.get_as_slice().iter().map(|p| p.label))
-                .map(|(ty, label)| LabeledParam { label, ty })
-                .collect::<Vec<_>>();
-            return (LabeledParams::new(res), vec![]);
-        }
-        let label_vec = if has_label_1 && !has_label_2 {
-            ps1.get_as_slice().iter().map(|p| p.label).collect()
-        } else if !has_label_1 && has_label_2 {
-            ps2.get_as_slice().iter().map(|p| p.label).collect()
-        } else {
-            vec![None; len1]
-        };
-        let ts = ps1
-            .ty_iter()
-            .zip(ps2.ty_iter())
-            .map(|(t1, t2)| Self::unify_types((t1, loc1.clone()), (t2, loc2.clone())))
-            .collect::<Vec<_>>();
-        if ts.clone().into_iter().any(|x| x.is_err()) {
-            let errs = ts.into_iter().filter_map(|x| x.err()).flatten().collect();
-            (LabeledParams::new(vec![]), errs)
-        } else {
-            let res = ts
-                .into_iter()
-                .zip(label_vec)
-                .map(|(ty, label)| LabeledParam {
-                    label,
-                    ty: ty.unwrap(),
-                })
-                .collect::<Vec<_>>();
-            (LabeledParams::new(res), vec![])
         }
     }
 }
@@ -1052,7 +874,9 @@ pub fn infer_root(
     file_path: Symbol,
 ) -> InferContext {
     let mut ctx = InferContext::new(builtin_types, file_path);
-    let _t = ctx.infer_type(e).unwrap_or(Type::Failure.into_id());
+    let _t = ctx
+        .infer_type(e)
+        .unwrap_or(Type::Failure.into_id_with_location(e.to_location()));
     ctx.substitute_all_intermediates();
     ctx
 }
