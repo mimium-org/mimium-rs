@@ -1,9 +1,6 @@
 use std::{
     ops::RangeInclusive,
-    sync::{
-        Arc,
-        atomic::{AtomicPtr, Ordering},
-    },
+    sync::{Arc, atomic::Ordering},
 };
 
 use crate::plot_ui::{self, PlotUi};
@@ -14,7 +11,7 @@ use egui::Color32;
 use egui_plot::{CoordinatesFormatter, Corner, Legend, Plot};
 use ringbuf::HeapCons;
 
-pub(crate) struct FloatParameter {
+pub struct FloatParameter {
     value: AtomicF64,
     name: String,
     range: RangeInclusive<f64>,
@@ -115,6 +112,9 @@ impl eframe::App for PlotApp {
             ui.ctx().request_repaint();
         });
         egui::TopBottomPanel::bottom("parameters").show(ctx, |ui| {
+            if !self.sliders.is_empty() {
+                ui.label("Parameters");
+            }
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for p in &self.sliders {
                     let mut v = p.get();
