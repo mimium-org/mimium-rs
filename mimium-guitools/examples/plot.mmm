@@ -18,7 +18,8 @@ let probel = make_probe("left")
 let prober = make_probe("right")
 
 fn dsp(){
-    let l = probel(amosc(fmosc(440,0.02) , 0.2))
-    let r = prober(amosc(fmosc(220,0.03) , 0.3))
+    let gain = ${Slider("gain",1.0,0.0,1.0)}
+    let l = probel(amosc(fmosc(440,0.02) , 0.2)*gain)
+    let r = prober(amosc(fmosc(220,0.03) , 0.3)*gain)
     (l,r)
 }
