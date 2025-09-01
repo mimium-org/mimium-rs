@@ -73,6 +73,7 @@ pub type MacroFunType = Rc<RefCell<dyn Fn(&[(Value, TypeNodeId)]) -> Value>>;
 pub trait MacroFunction {
     //name is still needed for linking program
     fn get_name(&self) -> Symbol;
+    fn get_type(&self) -> TypeNodeId;
     /// Main macro function. If you need to receive 2 or more arguments, you need to pass struct or tuple as the argument instead.
     fn get_fn(&self) -> MacroFunType;
 }
@@ -108,7 +109,9 @@ impl MacroFunction for MacroInfo {
     fn get_name(&self) -> Symbol {
         self.name
     }
-
+    fn get_type(&self) -> TypeNodeId {
+        self.ty
+    }
     fn get_fn(&self) -> MacroFunType {
         self.fun.clone()
     }
@@ -217,6 +220,9 @@ impl MachineFunction for CommonFunction {
 impl MacroFunction for CommonFunction {
     fn get_name(&self) -> Symbol {
         self.name
+    }
+    fn get_type(&self) -> TypeNodeId {
+        self.ty
     }
     fn get_fn(&self) -> MacroFunType {
         Rc::new(RefCell::new(self.macro_fun))

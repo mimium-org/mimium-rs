@@ -28,17 +28,17 @@ impl FloatParameter {
         }
     }
     pub fn get(&self) -> f64 {
-        self.value.load(Ordering::SeqCst)
+        self.value.load(Ordering::Relaxed)
     }
     pub fn set(&self, v: f64) {
-        self.value.store(v, Ordering::SeqCst)
+        self.value.store(v, Ordering::Relaxed)
     }
 }
 
 #[derive(Default)]
 pub struct PlotApp {
     plot: Vec<plot_ui::PlotUi>,
-    pub sliders: Vec<Arc<FloatParameter>>,
+    pub(crate) sliders: Vec<Arc<FloatParameter>>,
     hue: f32,
     autoscale: bool,
 }
@@ -63,10 +63,17 @@ impl PlotApp {
             Color32::from_rgba_premultiplied(r, g, b, 200),
         ))
     }
-    pub fn add_slider(&mut self, name: &str, init: f64, min: f64, max: f64) -> usize {
+    pub fn add_slider(
+        &mut self,
+        name: &str,
+        init: f64,
+        min: f64,
+        max: f64,
+    ) -> (Arc<FloatParameter>, usize) {
         let param = FloatParameter::new(name.to_string(), init, min, max);
-        self.sliders.push(Arc::new(param));
-        self.sliders.len() - 1
+        let p = Arc::new(param);
+        self.sliders.push(p.clone());
+        (p, self.sliders.len() - 1)
     }
     pub fn is_empty(&self) -> bool {
         self.plot.is_empty()

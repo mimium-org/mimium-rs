@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use mimium_lang::{
     ast::{Expr, Literal},
@@ -18,17 +18,21 @@ use ringbuf::{
     HeapRb,
     traits::{Producer, Split},
 };
+
+use crate::plot_window::FloatParameter;
 pub(crate) mod plot_ui;
 pub mod plot_window;
 
 pub struct GuiToolPlugin {
     window: Option<PlotApp>,
+    slider_instances: Vec<Arc<FloatParameter>>,
 }
 
 impl Default for GuiToolPlugin {
     fn default() -> Self {
         Self {
             window: Some(PlotApp::default()),
+            slider_instances: Vec::new(),
         }
     }
 }
@@ -60,8 +64,8 @@ impl GuiToolPlugin {
                 return Value::Number(0.0);
             }
         };
-        let idx = window.add_slider(name.as_str(), init, min, max);
-
+        let (p, idx) = window.add_slider(name.as_str(), init, min, max);
+        self.slider_instances.push(p);
         Value::Code(
             Expr::Apply(
                 Expr::Var(Self::GET_SLIDER.to_symbol()).into_id_without_span(),
@@ -74,18 +78,18 @@ impl GuiToolPlugin {
         )
     }
     pub fn get_slider(&mut self, vm: &mut Machine) -> ReturnCode {
-        if let Some(window) = self.window.as_mut() {
-            let slider_idx = Machine::get_as::<f64>(vm.get_stack(0)) as usize;
-            match window.sliders.get(slider_idx) {
-                Some(s) => {
-                    vm.set_stack(0, Machine::to_value(s.get()));
-                }
-                None => {
-                    log::error!("invalid slider index");
-                    return 0;
-                }
-            };
-        }
+        let slider_idx = Machine::get_as::<f64>(vm.get_stack(0)) as usize;
+
+        match self.slider_instances.get(slider_idx) {
+            Some(s) => {
+                vm.set_stack(0, Machine::to_value(s.get()));
+            }
+            None => {
+                log::error!("invalid slider index");
+                return 0;
+            }
+        };
+
         1
     }
     /// This method is exposed as "make_probe(label:String)->(float)->float".
@@ -157,7 +161,7 @@ impl SystemPlugin for GuiToolPlugin {
             "Slider",
             sliderf,
             function!(
-                vec![string_t!(), numeric!(), numeric!()],
+                vec![string_t!(), numeric!(), numeric!(), numeric!()],
                 Type::Code(Type::Primitive(PType::Numeric).into_id()).into_id()
             ),
         );
