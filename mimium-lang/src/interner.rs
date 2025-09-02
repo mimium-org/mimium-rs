@@ -68,6 +68,13 @@ impl SessionGlobals {
     pub fn get_expr(&self, expr_id: ExprNodeId) -> Expr {
         unsafe { self.expr_storage.get_unchecked(expr_id.0) }.clone()
     }
+    pub fn get_expr_mut(&mut self, expr_id: ExprNodeId) -> &mut Expr {
+        unsafe {
+            std::mem::transmute::<&mut Expr, &mut Expr>(
+                self.expr_storage.get_unchecked_mut(expr_id.0),
+            )
+        }
+    }
 
     pub fn get_type(&self, type_id: TypeNodeId) -> Type {
         unsafe { self.type_storage.get_unchecked(type_id.0) }.clone()
@@ -199,6 +206,11 @@ impl Hash for TypeNodeId {
 impl ExprNodeId {
     pub fn to_expr(&self) -> Expr {
         with_session_globals(|session_globals| session_globals.get_expr(*self))
+    }
+    pub fn to_expr_mut(&mut self) -> &mut Expr {
+        with_session_globals(|session_globals| unsafe {
+            std::mem::transmute::<&mut Expr, &mut Expr>(session_globals.get_expr_mut(*self))
+        })
     }
 
     pub fn to_span(&self) -> Span {
