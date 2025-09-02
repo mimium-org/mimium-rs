@@ -141,9 +141,9 @@ mod test {
                 ["count"],
                 ifexpr!(
                     var!("test"),
-                    app!(var!("testfn"), vec![number!("10.0")]),
+                    app!(var!("testfn"), vec![number!(10.0)]),
                     //this letrec should be converted to plain let
-                    letrec!("lettest", None, number!("12.0"), Some(number!("2.0")))
+                    letrec!("lettest", None, number!(12.0), Some(number!(2.0)))
                 )
             ),
             None
@@ -156,9 +156,9 @@ mod test {
                 ["count"],
                 ifexpr!(
                     var!("test"),
-                    app!(var!("testfn"), vec![number!("10.0")]),
+                    app!(var!("testfn"), vec![number!(10.0)]),
                     // this
-                    let_!("lettest", number!("12.0"), number!("2.0"))
+                    let_!("lettest", number!(12.0), number!(2.0))
                 )
             ),
             None

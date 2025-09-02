@@ -267,7 +267,7 @@ impl TryInto<ExprNodeId> for Value {
     fn try_into(self) -> Result<ExprNodeId, Self::Error> {
         match self {
             Value::Number(e) => {
-                Ok(Expr::Literal(Literal::Float(e.to_string().to_symbol())).into_id_without_span())
+                Ok(Expr::Literal(Literal::Float(e)).into_id_without_span())
             }
             Value::String(s) => Ok(Expr::Literal(Literal::String(s)).into_id_without_span()),
             Value::Array(elements) => {

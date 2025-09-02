@@ -409,7 +409,7 @@ fn convert_operators(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
                 path: loc.path,
             };
             let fname = Expr::Var(op_var).into_id(oploc);
-            let zero = Expr::Literal(Literal::Float("0.0".to_symbol())).into_id(loc.clone());
+            let zero = Expr::Literal(Literal::Float(0.0)).into_id(loc.clone());
             Expr::Apply(fname, vec![zero, e]).into_id(loc)
         }
         Expr::UniOp((op, opspan), expr) => {

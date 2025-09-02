@@ -18,7 +18,7 @@ mod lift_f {
         let v = &args[0].0;
         match v {
             Value::Number(lhs) => Value::Code(
-                Expr::Literal(Literal::Float(lhs.to_string().to_symbol())).into_id_without_span(),
+                Expr::Literal(Literal::Float(*lhs)).into_id_without_span(),
             ),
             _ => panic!("Invalid argument types for function lift_f"),
         }

@@ -11,11 +11,11 @@ use crate::utils::miniprint::MiniPrint;
 use std::fmt::{self};
 pub type Time = i64;
 
-#[derive(Clone, Debug, PartialEq, Hash)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Literal {
     String(Symbol),
     Int(i64),
-    Float(Symbol),
+    Float(f64),
     SelfLit,
     Now,
     SampleRate,
