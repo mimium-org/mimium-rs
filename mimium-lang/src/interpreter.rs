@@ -267,7 +267,7 @@ impl TryInto<ExprNodeId> for Value {
     fn try_into(self) -> Result<ExprNodeId, Self::Error> {
         match self {
             Value::Number(e) => {
-                Ok(Expr::Literal(Literal::Float(e)).into_id_without_span())
+                Ok(Expr::Literal(Literal::Float(RefCell::new(e))).into_id_without_span())
             }
             Value::String(s) => Ok(Expr::Literal(Literal::String(s)).into_id_without_span()),
             Value::Array(elements) => {
@@ -385,7 +385,7 @@ impl GeneralInterpreter for StageInterpreter {
                     }
                 }
                 Expr::Block(e) => e.map_or(Value::Unit, |eid| self.eval_in_new_env(&[], ctx, eid)),
-                Expr::Literal(Literal::Float(f)) => Value::Number(f.to_string().parse().unwrap()),
+                Expr::Literal(Literal::Float(f)) => Value::Number(f.borrow().clone()),
                 Expr::Literal(Literal::Int(i)) => Value::Number(i as f64),
                 Expr::Literal(Literal::String(s)) => Value::String(s),
                 Expr::Literal(Literal::SelfLit) => {

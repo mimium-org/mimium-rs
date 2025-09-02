@@ -8,6 +8,7 @@ use crate::interner::{ExprNodeId, Symbol, TypeNodeId, with_session_globals};
 use crate::pattern::{TypedId, TypedPattern};
 use crate::utils::metadata::{Location, Span};
 use crate::utils::miniprint::MiniPrint;
+use std::cell::RefCell;
 use std::fmt::{self};
 pub type Time = i64;
 
@@ -15,7 +16,7 @@ pub type Time = i64;
 pub enum Literal {
     String(Symbol),
     Int(i64),
-    Float(f64),
+    Float(RefCell<f64>),
     SelfLit,
     Now,
     SampleRate,
@@ -55,7 +56,7 @@ pub enum Expr {
     ArrayLiteral(Vec<ExprNodeId>),   // Array literal [e1, e2, ..., en]
     RecordLiteral(Vec<RecordField>), // Complete record literal {field1 = expr1, field2 = expr2, ...}
     ImcompleteRecord(Vec<RecordField>), // Incomplete record literal with default values {field1 = expr1, ..}
-    FieldAccess(ExprNodeId, Symbol), // Record field access: record.field
+    FieldAccess(ExprNodeId, Symbol),    // Record field access: record.field
     Apply(ExprNodeId, Vec<ExprNodeId>),
 
     MacroExpand(ExprNodeId, Vec<ExprNodeId>), // syntax sugar: hoge!(a,b) => ${hoge(a,b)}
@@ -80,7 +81,7 @@ pub enum Expr {
 impl fmt::Display for Literal {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Literal::Float(n) => write!(f, "(float {})", n),
+            Literal::Float(n) => write!(f, "(float {})", n.borrow()),
             Literal::Int(n) => write!(f, "(int {})", n),
             Literal::String(s) => write!(f, "\"{}\"", s),
             Literal::Now => write!(f, "now"),

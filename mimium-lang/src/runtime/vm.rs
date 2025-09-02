@@ -381,6 +381,11 @@ impl Machine {
     pub fn clear_stack(&mut self) {
         self.stack.fill(0);
     }
+    pub fn clear_states(&mut self) {
+        self.global_states = Default::default();
+        self.states_stack = Default::default();
+        self.delaysizes_pos_stack = vec![0];
+    }
     pub fn get_stack(&self, offset: i64) -> RawVal {
         // unsafe {
         //     *self

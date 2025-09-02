@@ -5,6 +5,7 @@ use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::types::{PType, RecordTypeField, Type};
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::*;
+use std::cell::RefCell;
 use std::path::PathBuf;
 
 use chumsky::input::{Stream, ValueInput};
@@ -186,8 +187,8 @@ where
     select! {
         //Currently Integer literals are treated as float until the integer type is introduced in type system.
         // Token::Int(x) => Literal::Int(x),
-        Token::Int(x)=>Literal::Float(x as _),
-        Token::Float(x) =>Literal::Float(x.parse::<f64>().unwrap()),
+        Token::Int(x)=>Literal::Float(RefCell::new(x as f64)),
+        Token::Float(x) =>Literal::Float(RefCell::new(x.parse::<f64>().unwrap())),
         Token::Str(s) => Literal::String(s.to_symbol()),
         Token::SelfLit => Literal::SelfLit,
         Token::Now => Literal::Now,

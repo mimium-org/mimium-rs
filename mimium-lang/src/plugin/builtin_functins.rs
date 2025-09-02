@@ -3,6 +3,8 @@ use crate::{
     plugin::{CommonFunction, InstantPlugin, MacroInfo, Plugin},
 };
 mod lift_f {
+    use std::cell::RefCell;
+
     use super::*;
     use crate::ast::{Expr, Literal};
     use crate::code;
@@ -18,7 +20,7 @@ mod lift_f {
         let v = &args[0].0;
         match v {
             Value::Number(lhs) => Value::Code(
-                Expr::Literal(Literal::Float(*lhs)).into_id_without_span(),
+                Expr::Literal(Literal::Float(RefCell::new(*lhs))).into_id_without_span(),
             ),
             _ => panic!("Invalid argument types for function lift_f"),
         }
