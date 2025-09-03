@@ -70,7 +70,7 @@ impl GuiToolPlugin {
             Expr::Apply(
                 Expr::Var(Self::GET_SLIDER.to_symbol()).into_id_without_span(),
                 vec![
-                    Expr::Literal(Literal::Float(idx.to_string().to_symbol()))
+                    Expr::Literal(Literal::Float(RefCell::new(idx as f64)))
                         .into_id_without_span(),
                 ],
             )

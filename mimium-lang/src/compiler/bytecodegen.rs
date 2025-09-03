@@ -551,7 +551,6 @@ impl ByteCodeGenerator {
                 let d = self.vregister.push_stack(&dst, size as _);
                 Some(VmInstruction::GetState(d, size))
             }
-
             mir::Instruction::JmpIf(cond, tbb, ebb, pbb) => {
                 let c = self.find(&cond);
 
@@ -691,7 +690,6 @@ impl ByteCodeGenerator {
             mir::Instruction::ModF(v1, v2) => self.emit_binop2(VmInstruction::ModF, dst, v1, v2),
             mir::Instruction::PowF(v1, v2) => self.emit_binop2(VmInstruction::PowF, dst, v1, v2),
             mir::Instruction::LogF(v1) => self.emit_binop1(VmInstruction::LogF, dst, v1),
-
             mir::Instruction::SinF(v1) => self.emit_binop1(VmInstruction::SinF, dst, v1),
             mir::Instruction::CosF(v1) => self.emit_binop1(VmInstruction::CosF, dst, v1),
             mir::Instruction::AbsF(v1) => self.emit_binop1(VmInstruction::AbsF, dst, v1),
@@ -709,7 +707,6 @@ impl ByteCodeGenerator {
             mir::Instruction::Ne(v1, v2) => self.emit_binop2(VmInstruction::Ne, dst, v1, v2),
             mir::Instruction::And(v1, v2) => self.emit_binop2(VmInstruction::And, dst, v1, v2),
             mir::Instruction::Or(v1, v2) => self.emit_binop2(VmInstruction::Or, dst, v1, v2),
-
             mir::Instruction::Array(values, ty) => {
                 let elem_ty_size = Self::word_size_for_type(ty);
                 let size = values.len();
@@ -731,7 +728,6 @@ impl ByteCodeGenerator {
                 self.varray.push(dst);
                 None // Instructions already added to bytecodes_dst
             }
-
             mir::Instruction::GetArrayElem(array, index, elem_ty) => {
                 let array_reg = self.find(&array);
                 let index_reg = self.find(&index);
@@ -740,13 +736,16 @@ impl ByteCodeGenerator {
                 bytecodes_dst.push(VmInstruction::GetArrayElem(dst_reg, array_reg, index_reg));
                 None
             }
-
             mir::Instruction::SetArrayElem(_array, _index, _value, _elem_ty) => {
                 todo!("SetArrayElem is not used in the current implementation");
             }
-
+            mir::Instruction::Error => {
+                log::error!("Error instruction encountered in bytecode generation");
+                None
+            }
             _ => {
-                unimplemented!()
+                log::error!("unhandled instruction: {:?}", mirinst);
+                None
             }
         }
     }

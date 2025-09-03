@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{fmt::Write, ops::Range};
 
 use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
 
@@ -56,8 +56,12 @@ impl ariadne::Cache<usize> for FileCache {
         Some(Box::new(id.to_string()))
     }
 }
-
-pub fn report(src: &str, path: Symbol, errs: &[Box<dyn ReportableError + '_>]) {
+pub fn report_to<W: std::io::Write>(
+    src: &str,
+    path: Symbol,
+    errs: &[Box<dyn ReportableError + '_>],
+    mut writer: W,
+) {
     let mut colors = ColorGenerator::new();
     for e in errs {
         // let a_span = (src.source(), span);color
@@ -76,8 +80,11 @@ pub fn report(src: &str, path: Symbol, errs: &[Box<dyn ReportableError + '_>]) {
         let cache = FileCache {
             src: ariadne::Source::from(src.to_symbol()),
         };
-        builder.eprint(cache).unwrap();
+        builder.write(cache, &mut writer).unwrap();
     }
+}
+pub fn report(src: &str, path: Symbol, errs: &[Box<dyn ReportableError + '_>]) {
+    report_to(src, path, errs, std::io::stderr());
 }
 
 pub fn dump_to_string(errs: &[Box<dyn ReportableError>]) -> String {

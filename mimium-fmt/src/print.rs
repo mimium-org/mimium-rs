@@ -152,7 +152,7 @@ mod expr {
         match expr.to_expr() {
             Expr::Literal(Literal::String(s)) => allocator.text(s).double_quotes(),
             Expr::Literal(Literal::Int(i)) => allocator.text(i.to_string()),
-            Expr::Literal(Literal::Float(s)) => allocator.text(s),
+            Expr::Literal(Literal::Float(s)) => allocator.text(s.borrow().to_string()),
             Expr::Literal(Literal::SelfLit) => allocator.text("self"),
             Expr::Literal(Literal::Now) => allocator.text("now"),
             Expr::Literal(Literal::SampleRate) => allocator.text("samplerate"),
