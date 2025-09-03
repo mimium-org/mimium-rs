@@ -17,7 +17,10 @@ macro_rules! dummy_span {
 #[macro_export]
 macro_rules! number {
     ($n:literal) => {
-        Expr::Literal(Literal::Float(std::cell::RefCell::new($n.into()))).into_id_without_span()
+        Expr::Literal(Literal::Float(std::sync::Arc::new(
+            std::cell::RefCell::new($n.into()),
+        )))
+        .into_id_without_span()
     };
 }
 

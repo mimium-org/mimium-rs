@@ -2,6 +2,7 @@ use std::cell::RefCell;
 /// A tree walk interpreter of mimium, primarily used for macro expansion.
 /// This macro system is based on the multi-stage programming paradigm, like MetaML, MetaOCaml, Scala3, where expressions can be evaluated at multiple stages.
 use std::rc::Rc;
+use std::sync::Arc;
 
 use itertools::Itertools;
 
@@ -267,7 +268,7 @@ impl TryInto<ExprNodeId> for Value {
     fn try_into(self) -> Result<ExprNodeId, Self::Error> {
         match self {
             Value::Number(e) => {
-                Ok(Expr::Literal(Literal::Float(RefCell::new(e))).into_id_without_span())
+                Ok(Expr::Literal(Literal::Float(Arc::new(RefCell::new(e)))).into_id_without_span())
             }
             Value::String(s) => Ok(Expr::Literal(Literal::String(s)).into_id_without_span()),
             Value::Array(elements) => {

@@ -8,15 +8,16 @@ use crate::interner::{ExprNodeId, Symbol, TypeNodeId, with_session_globals};
 use crate::pattern::{TypedId, TypedPattern};
 use crate::utils::metadata::{Location, Span};
 use crate::utils::miniprint::MiniPrint;
-use std::cell::RefCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::fmt::{self};
+use std::sync::Arc;
 pub type Time = i64;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Literal {
     String(Symbol),
     Int(i64),
-    Float(RefCell<f64>),
+    Float(Arc<RefCell<f64>>),
     SelfLit,
     Now,
     SampleRate,

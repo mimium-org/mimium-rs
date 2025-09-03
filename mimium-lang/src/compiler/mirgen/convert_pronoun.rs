@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::sync::Arc;
 
 use crate::ast::operators::Op;
 use crate::ast::{Expr, Literal, RecordField};
@@ -411,7 +412,7 @@ fn convert_operators(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
                 path: loc.path,
             };
             let fname = Expr::Var(op_var).into_id(oploc);
-            let zero = Expr::Literal(Literal::Float(RefCell::new(0.0))).into_id(loc.clone());
+            let zero = Expr::Literal(Literal::Float(Arc::new(RefCell::new(0.0)))).into_id(loc.clone());
             Expr::Apply(fname, vec![zero, e]).into_id(loc)
         }
         Expr::UniOp((op, opspan), expr) => {

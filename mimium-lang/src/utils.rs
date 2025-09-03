@@ -4,6 +4,7 @@ pub mod fileloader;
 pub mod metadata;
 pub mod miniprint;
 pub mod half_float;
+pub mod atomic;
 
 #[macro_export]
 macro_rules! format_vec {

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use itertools::Itertools;
 
 use super::*;
@@ -73,7 +75,7 @@ fn test_let() {
             ty: Type::Unknown.into_id_with_location(loc(4..8)),
             default_value: None,
         },
-        Expr::Literal(Literal::Float(RefCell::new(36.0))).into_id(loc(11..13)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(36.0)))).into_id(loc(11..13)),
         Some(Expr::Var("goge".to_symbol()).into_id(loc(15..19))),
     )
     .into_id(loc(0..19));
@@ -91,8 +93,8 @@ fn test_lettuple() {
             default_value: None,
         },
         Expr::Tuple(vec![
-            Expr::Literal(Literal::Float(RefCell::new(36.0))).into_id(loc(13..15)),
-            Expr::Literal(Literal::Float(RefCell::new(89.0))).into_id(loc(16..18)),
+            Expr::Literal(Literal::Float(Arc::new(RefCell::new(36.0)))).into_id(loc(13..15)),
+            Expr::Literal(Literal::Float(Arc::new(RefCell::new(89.0)))).into_id(loc(16..18)),
         ])
         .into_id(loc(12..19)),
         Some(Expr::Var("hoge".to_symbol()).into_id(loc(21..25))),
@@ -103,7 +105,7 @@ fn test_lettuple() {
 #[test]
 fn test_if() {
     let ans = Expr::If(
-        Expr::Literal(Literal::Float(RefCell::new(100.))).into_id(loc(4..7)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(100.)))).into_id(loc(4..7)),
         Expr::Var("hoge".to_symbol()).into_id(loc(9..13)),
         Some(Expr::Var("fuga".to_symbol()).into_id(loc(19..23))),
     )
@@ -113,7 +115,7 @@ fn test_if() {
 #[test]
 fn test_if_noelse() {
     let ans = Expr::If(
-        Expr::Literal(Literal::Float(RefCell::new(100.))).into_id(loc(4..7)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(100.)))).into_id(loc(4..7)),
         Expr::Var("hoge".to_symbol()).into_id(loc(9..13)),
         None,
     )
@@ -123,7 +125,7 @@ fn test_if_noelse() {
 
 #[test]
 fn test_int() {
-    let ans = Expr::Literal(Literal::Float(RefCell::new(3466.))).into_id(loc(0..4));
+    let ans = Expr::Literal(Literal::Float(Arc::new(RefCell::new(3466.)))).into_id(loc(0..4));
     test_string!("3466", ans);
 }
 #[test]
@@ -140,7 +142,7 @@ fn test_block() {
                 ty: Type::Unknown.into_id_with_location(loc(5..9)),
                 default_value: None,
             },
-            Expr::Literal(Literal::Float(RefCell::new(100.))).into_id(loc(12..15)),
+            Expr::Literal(Literal::Float(Arc::new(RefCell::new(100.)))).into_id(loc(12..15)),
             Some(Expr::Var("hoge".to_symbol()).into_id(loc(16..20))),
         )
         .into_id(loc(1..20)),
@@ -155,9 +157,9 @@ hoge}",
 #[test]
 fn test_add() {
     let ans = Expr::BinOp(
-        Expr::Literal(Literal::Float(RefCell::new(3466.0))).into_id(loc(0..6)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(3466.0)))).into_id(loc(0..6)),
         (Op::Sum, 6..7),
-        Expr::Literal(Literal::Float(RefCell::new(2000.0))).into_id(loc(7..13)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(2000.0)))).into_id(loc(7..13)),
     )
     .into_id(loc(0..13));
     test_string!("3466.0+2000.0", ans);
@@ -167,15 +169,15 @@ fn test_at() {
     let ans1 = Expr::BinOp(
         Expr::Var("foo".to_symbol()).into_id(loc(0..3)),
         (Op::At, 3..4),
-        Expr::Literal(Literal::Float(RefCell::new(1.0))).into_id(loc(4..7)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(1.0)))).into_id(loc(4..7)),
     )
     .into_id(loc(0..7));
     test_string!("foo@1.0", ans1);
 
     let time = Expr::BinOp(
-        Expr::Literal(Literal::Float(RefCell::new(1.0))).into_id(loc(4..7)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(1.0)))).into_id(loc(4..7)),
         (Op::Exponent, 7..8),
-        Expr::Literal(Literal::Float(RefCell::new(2.0))).into_id(loc(8..11)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(2.0)))).into_id(loc(8..11)),
     )
     .into_id(loc(4..11));
     let ans2 = Expr::BinOp(
@@ -222,7 +224,7 @@ fn test_assign2() {
             Expr::Var("fuga".to_symbol()).into_id(loc(7..11)),
         )
         .into_id(loc(0..11)),
-        Some(Expr::Literal(Literal::Float(RefCell::new(100.0))).into_id(loc(13..18))),
+        Some(Expr::Literal(Literal::Float(Arc::new(RefCell::new(100.0)))).into_id(loc(13..18))),
     )
     .into_id(loc(0..18));
     test_string!("hoge = fuga\n 100.0", ans);
@@ -396,8 +398,8 @@ fn global_fnmultiple() {
 #[test]
 fn test_tuple() {
     let tuple_items = vec![
-        Expr::Literal(Literal::Float(RefCell::new(1.0))).into_id(loc(1..4)),
-        Expr::Literal(Literal::Float(RefCell::new(2.0))).into_id(loc(6..9)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(1.0)))).into_id(loc(1..4)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(2.0)))).into_id(loc(6..9)),
     ];
 
     let ans = Expr::Tuple(tuple_items.clone()).into_id(loc(0..10));
@@ -420,9 +422,9 @@ fn test_tuple() {
 fn test_array_literal() {
     // Basic array with multiple elements
     let array_items = vec![
-        Expr::Literal(Literal::Float(RefCell::new(1.0))).into_id(loc(1..4)),
-        Expr::Literal(Literal::Float(RefCell::new(2.0))).into_id(loc(6..9)),
-        Expr::Literal(Literal::Float(RefCell::new(3.0))).into_id(loc(11..14)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(1.0)))).into_id(loc(1..4)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(2.0)))).into_id(loc(6..9)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(3.0)))).into_id(loc(11..14)),
     ];
     let ans = Expr::ArrayLiteral(array_items).into_id(loc(0..15));
     test_string!("[1.0, 2.0, 3.0]", ans);
@@ -433,15 +435,15 @@ fn test_array_literal() {
 
     // Array with single element
     let ans = Expr::ArrayLiteral(vec![
-        Expr::Literal(Literal::Float(RefCell::new(42.0))).into_id(loc(1..5)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(42.0)))).into_id(loc(1..5)),
     ])
     .into_id(loc(0..6));
     test_string!("[42.0]", ans);
 
     // Array with trailing comma
     let array_items = vec![
-        Expr::Literal(Literal::Float(RefCell::new(10.0))).into_id(loc(1..5)),
-        Expr::Literal(Literal::Float(RefCell::new(20.0))).into_id(loc(7..11)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(10.0)))).into_id(loc(1..5)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(20.0)))).into_id(loc(7..11)),
     ];
     let ans = Expr::ArrayLiteral(array_items).into_id(loc(0..13));
     test_string!("[10.0, 20.0,]", ans);
@@ -452,7 +454,7 @@ fn test_array_access() {
     // Basic array access with integer index
     let ans = Expr::ArrayAccess(
         Expr::Var("arr".to_symbol()).into_id(loc(0..3)),
-        Expr::Literal(Literal::Float(RefCell::new(0.))).into_id(loc(4..5)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(0.)))).into_id(loc(4..5)),
     )
     .into_id(loc(0..6));
     test_string!("arr[0]", ans);
@@ -460,16 +462,16 @@ fn test_array_access() {
     // Array access with float index for interpolation
     let ans = Expr::ArrayAccess(
         Expr::Var("arr".to_symbol()).into_id(loc(0..3)),
-        Expr::Literal(Literal::Float(RefCell::new(0.5))).into_id(loc(4..7)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(0.5)))).into_id(loc(4..7)),
     )
     .into_id(loc(0..8));
     test_string!("arr[0.5]", ans);
 
     // Array access with expression index
     let index_expr = Expr::BinOp(
-        Expr::Literal(Literal::Float(RefCell::new(1.))).into_id(loc(4..5)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(1.)))).into_id(loc(4..5)),
         (Op::Sum, 5..6),
-        Expr::Literal(Literal::Float(RefCell::new(2.))).into_id(loc(6..7)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(2.)))).into_id(loc(6..7)),
     )
     .into_id(loc(4..7));
 
@@ -480,7 +482,7 @@ fn test_array_access() {
     // Nested array access
     let inner_access = Expr::ArrayAccess(
         Expr::Var("inner".to_symbol()).into_id(loc(6..11)),
-        Expr::Literal(Literal::Float(RefCell::new(0.))).into_id(loc(12..13)),
+        Expr::Literal(Literal::Float(Arc::new(RefCell::new(0.)))).into_id(loc(12..13)),
     )
     .into_id(loc(6..14));
 
@@ -499,11 +501,11 @@ fn test_record_literal() {
     let ans = Expr::RecordLiteral(vec![
         RecordField {
             name: x_s,
-            expr: Expr::Literal(Literal::Float(RefCell::new(0.0))).into_id(loc(3..4)),
+            expr: Expr::Literal(Literal::Float(Arc::new(RefCell::new(0.0)))).into_id(loc(3..4)),
         },
         RecordField {
             name: y_s,
-            expr: Expr::Literal(Literal::Float(RefCell::new(2.0))).into_id(loc(7..8)),
+            expr: Expr::Literal(Literal::Float(Arc::new(RefCell::new(2.0)))).into_id(loc(7..8)),
         },
     ]);
     test_expr_string("{x = 0.0, y = 2.0}", ans.into_id(loc(0..9)));
@@ -534,7 +536,7 @@ fn test_field_access() {
 fn test_imcomplete_record() {
     let ans = Expr::ImcompleteRecord(vec![RecordField {
         name: "x".to_symbol(),
-        expr: Expr::Literal(Literal::Float(RefCell::new(200.))).into_id(loc(3..4)),
+        expr: Expr::Literal(Literal::Float(Arc::new(RefCell::new(200.)))).into_id(loc(3..4)),
     }])
     .into_id(loc(0..7));
     test_expr_string("{x = 200, ..}", ans);
@@ -572,7 +574,7 @@ fn test_stmt_without_return() {
                 Expr::BinOp(
                     Expr::Var("input".to_symbol()).into_id(loc(28..33)),
                     (Op::Sum, 33..34),
-                    Expr::Literal(Literal::Float(RefCell::new(1.))).into_id(loc(34..35)),
+                    Expr::Literal(Literal::Float(Arc::new(RefCell::new(1.)))).into_id(loc(34..35)),
                 )
                 .into_id(loc(28..35)),
                 Some(
@@ -638,7 +640,7 @@ fn test_err_builtin_redefine() {
 fn test_bracket_escape() {
     let src = r"$`300";
     let ans = Expr::Escape(
-        Expr::Bracket(Expr::Literal(Literal::Float(RefCell::new(300.))).into_id(loc(2..3)))
+        Expr::Bracket(Expr::Literal(Literal::Float(Arc::new(RefCell::new(300.)))).into_id(loc(2..3)))
             .into_id(loc(1..3)),
     )
     .into_id(loc(0..3));

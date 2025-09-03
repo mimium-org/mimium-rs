@@ -1603,6 +1603,7 @@ name = "mimium-lang"
 version = "2.3.1"
 dependencies = [
  "ariadne",
+ "atomic_float",
  "chumsky",
  "colog",
  "half",
