@@ -70,7 +70,7 @@ impl GuiToolPlugin {
             Expr::Apply(
                 Expr::Var(Self::GET_SLIDER.to_symbol()).into_id_without_span(),
                 vec![
-                    Expr::Literal(Literal::Float(RefCell::new(idx as f64)))
+                    Expr::Literal(Literal::Float(Arc::new(RefCell::new(idx as f64))))
                         .into_id_without_span(),
                 ],
             )
@@ -80,13 +80,14 @@ impl GuiToolPlugin {
     pub fn get_slider(&mut self, vm: &mut Machine) -> ReturnCode {
         let slider_idx = Machine::get_as::<f64>(vm.get_stack(0)) as usize;
 
+        //you can't refer to self.window.sliders directly
         match self.slider_instances.get(slider_idx) {
             Some(s) => {
                 vm.set_stack(0, Machine::to_value(s.get()));
             }
             None => {
                 log::error!("invalid slider index");
-                return 0;
+                return 1;
             }
         };
 
