@@ -1,0 +1,7 @@
+fn counter(){
+    self + 1
+}
+fn dsp(input){
+    let res = input + counter()
+    (0,res)
+}

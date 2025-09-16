@@ -135,9 +135,334 @@ impl ASTConverter {
     fn convert_source_file(&self, node: Node) -> Result<ExprNodeId, Box<dyn ReportableError>> {
         assert_eq!(node.kind(), "source_file");
         
-        // For now, create a simple placeholder
+        let mut statements = Vec::new();
+        let mut cursor = node.walk();
+        
+        // Parse all top-level items
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "item" => {
+                    // Look inside the item for actual content
+                    let mut item_cursor = child.walk();
+                    for item_child in child.children(&mut item_cursor) {
+                        match item_child.kind() {
+                            "function_definition" => {
+                                let fn_expr = self.convert_function_definition(item_child)?;
+                                statements.push(fn_expr);
+                            }
+                            _ if item_child.is_named() => {
+                                // Try to parse other named nodes as expressions
+                                if let Ok(expr) = self.convert_any_expression(item_child) {
+                                    statements.push(expr);
+                                }
+                            }
+                            _ => continue,
+                        }
+                    }
+                }
+                "function_definition" => {
+                    let fn_expr = self.convert_function_definition(child)?;
+                    statements.push(fn_expr);
+                }
+                "ERROR" => {
+                    // Skip error nodes but continue parsing
+                    continue;
+                }
+                _ if child.is_named() => {
+                    // Try to parse other named nodes as expressions
+                    if let Ok(expr) = self.convert_any_expression(child) {
+                        statements.push(expr);
+                    }
+                }
+                _ => {
+                    // Skip unnamed nodes like whitespace
+                    continue;
+                }
+            }
+        }
+        
         let loc = self.node_location(node);
-        Ok(Expr::Literal(Literal::PlaceHolder).into_id(loc))
+        
+        // Convert multiple statements into a sequence
+        if statements.is_empty() {
+            Ok(Expr::Literal(Literal::PlaceHolder).into_id(loc))
+        } else if statements.len() == 1 {
+            Ok(statements[0])
+        } else {
+            // Chain statements with Then expressions
+            let mut result = statements.pop().unwrap();
+            for stmt in statements.into_iter().rev() {
+                result = Expr::Then(stmt, Some(result)).into_id(loc.clone());
+            }
+            Ok(result)
+        }
+    }
+
+    fn convert_function_definition(&self, node: Node) -> Result<ExprNodeId, Box<dyn ReportableError>> {
+        let mut cursor = node.walk();
+        let mut name: Option<Symbol> = None;
+        let mut params = Vec::new();
+        let mut body: Option<ExprNodeId> = None;
+
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "identifier" if name.is_none() => {
+                    name = Some(self.node_text(child).to_symbol());
+                }
+                "parameter_list" => {
+                    params = self.convert_parameter_list(child)?;
+                }
+                "block" | "block_expression" => {
+                    body = Some(self.convert_block(child)?);
+                }
+                _ => {}
+            }
+        }
+
+        let name = name.ok_or_else(|| self.error("Function without name", self.node_location(node)))?;
+        let body = body.ok_or_else(|| self.error("Function without body", self.node_location(node)))?;
+        let loc = self.node_location(node);
+
+        // Create a lambda expression
+        let lambda = Expr::Lambda(params, None, body).into_id(loc.clone());
+        
+        // Create a let binding for the function
+        let pattern = crate::pattern::TypedPattern::new(
+            crate::pattern::Pattern::Single(name), 
+            crate::types::Type::Unknown.into_id_with_location(loc.clone())
+        );
+        Ok(Expr::Let(pattern, lambda, None).into_id(loc))
+    }
+
+    fn convert_parameter_list(&self, node: Node) -> Result<Vec<crate::pattern::TypedId>, Box<dyn ReportableError>> {
+        let mut params = Vec::new();
+        let mut cursor = node.walk();
+
+        for child in node.children(&mut cursor) {
+            if child.kind() == "identifier" {
+                let param_name = self.node_text(child).to_symbol();
+                params.push(crate::pattern::TypedId::new(
+                    param_name,
+                    crate::types::Type::Unknown.into_id_with_location(self.node_location(child))
+                ));
+            }
+        }
+
+        Ok(params)
+    }
+
+    fn convert_block(&self, node: Node) -> Result<ExprNodeId, Box<dyn ReportableError>> {
+        let mut cursor = node.walk();
+        let mut statements = Vec::new();
+
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "expression_statement" => {
+                    if let Ok(expr) = self.convert_expression_statement(child) {
+                        statements.push(expr);
+                    }
+                }
+                "let_statement" => {
+                    if let Ok(expr) = self.convert_let_statement(child) {
+                        statements.push(expr);
+                    }
+                }
+                "binary_expression" | "call_expression" | "identifier" | "literal" => {
+                    if let Ok(expr) = self.convert_any_expression(child) {
+                        statements.push(expr);
+                    }
+                }
+                _ if child.is_named() => {
+                    // Try to parse other named nodes
+                    if let Ok(expr) = self.convert_any_expression(child) {
+                        statements.push(expr);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let loc = self.node_location(node);
+        
+        if statements.is_empty() {
+            Ok(Expr::Literal(Literal::PlaceHolder).into_id(loc))
+        } else if statements.len() == 1 {
+            Ok(statements[0])
+        } else {
+            // Chain statements
+            let mut result = statements.pop().unwrap();
+            for stmt in statements.into_iter().rev() {
+                result = Expr::Then(stmt, Some(result)).into_id(loc.clone());
+            }
+            Ok(result)
+        }
+    }
+
+    fn convert_expression_statement(&self, node: Node) -> Result<ExprNodeId, Box<dyn ReportableError>> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.is_named() {
+                return self.convert_any_expression(child);
+            }
+        }
+        Err(self.error("Empty expression statement", self.node_location(node)))
+    }
+
+    fn convert_let_statement(&self, node: Node) -> Result<ExprNodeId, Box<dyn ReportableError>> {
+        let mut cursor = node.walk();
+        let mut pattern: Option<Symbol> = None;
+        let mut expr: Option<ExprNodeId> = None;
+
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "identifier" if pattern.is_none() => {
+                    pattern = Some(self.node_text(child).to_symbol());
+                }
+                _ if child.is_named() && expr.is_none() => {
+                    expr = Some(self.convert_any_expression(child)?);
+                }
+                _ => {}
+            }
+        }
+
+        let pattern = pattern.ok_or_else(|| self.error("Let statement without pattern", self.node_location(node)))?;
+        let expr = expr.ok_or_else(|| self.error("Let statement without expression", self.node_location(node)))?;
+        let loc = self.node_location(node);
+
+        let typed_pattern = crate::pattern::TypedPattern::new(
+            crate::pattern::Pattern::Single(pattern), 
+            crate::types::Type::Unknown.into_id_with_location(loc.clone())
+        );
+        Ok(Expr::Let(typed_pattern, expr, None).into_id(loc))
+    }
+
+    fn convert_any_expression(&self, node: Node) -> Result<ExprNodeId, Box<dyn ReportableError>> {
+        match node.kind() {
+            "binary_expression" => self.convert_binary_expression(node),
+            "call_expression" => self.convert_call_expression(node),
+            "identifier" => {
+                let name = self.node_text(node).to_symbol();
+                let loc = self.node_location(node);
+                Ok(Expr::Var(name).into_id(loc))
+            }
+            "number" => {
+                let text = self.node_text(node);
+                let loc = self.node_location(node);
+                if text.contains('.') {
+                    Ok(Expr::Literal(Literal::Float(text.to_symbol())).into_id(loc))
+                } else {
+                    let value: i64 = text.parse().unwrap_or(0);
+                    Ok(Expr::Literal(Literal::Int(value)).into_id(loc))
+                }
+            }
+            "tuple_expression" => self.convert_tuple_expression(node),
+            "self" => {
+                let loc = self.node_location(node);
+                Ok(Expr::Literal(Literal::SelfLit).into_id(loc))
+            }
+            _ => {
+                // For unknown nodes, try to find the first expression child
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.is_named() {
+                        if let Ok(expr) = self.convert_any_expression(child) {
+                            return Ok(expr);
+                        }
+                    }
+                }
+                Err(self.error(&format!("Unsupported expression type: {}", node.kind()), self.node_location(node)))
+            }
+        }
+    }
+
+    fn convert_binary_expression(&self, node: Node) -> Result<ExprNodeId, Box<dyn ReportableError>> {
+        let mut cursor = node.walk();
+        let mut left: Option<ExprNodeId> = None;
+        let mut operator: Option<String> = None;
+        let mut right: Option<ExprNodeId> = None;
+
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "+" | "-" | "*" | "/" | "%" | "<" | ">" | "<=" | ">=" | "==" | "!=" | "&&" | "||" => {
+                    operator = Some(child.kind().to_string());
+                }
+                _ if child.is_named() => {
+                    if left.is_none() {
+                        left = Some(self.convert_any_expression(child)?);
+                    } else if right.is_none() {
+                        right = Some(self.convert_any_expression(child)?);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let left = left.ok_or_else(|| self.error("Binary expression without left operand", self.node_location(node)))?;
+        let right = right.ok_or_else(|| self.error("Binary expression without right operand", self.node_location(node)))?;
+        let op = operator.ok_or_else(|| self.error("Binary expression without operator", self.node_location(node)))?;
+        let loc = self.node_location(node);
+
+        let op_enum = match op.as_str() {
+            "+" => Op::Sum,
+            "-" => Op::Minus,
+            "*" => Op::Product,
+            "/" => Op::Divide,
+            "%" => Op::Modulo,
+            "<" => Op::LessThan,
+            ">" => Op::GreaterThan,
+            "<=" => Op::LessEqual,
+            ">=" => Op::GreaterEqual,
+            "==" => Op::Equal,
+            "!=" => Op::NotEqual,
+            "&&" => Op::And,
+            "||" => Op::Or,
+            _ => return Err(self.error("Unknown operator", loc)),
+        };
+
+        let span = loc.span.clone();
+        Ok(Expr::BinOp(left, (op_enum, span), right).into_id(loc))
+    }
+
+    fn convert_call_expression(&self, node: Node) -> Result<ExprNodeId, Box<dyn ReportableError>> {
+        let mut cursor = node.walk();
+        let mut function: Option<ExprNodeId> = None;
+        let mut args = Vec::new();
+
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "argument_list" => {
+                    let mut arg_cursor = child.walk();
+                    for arg_child in child.children(&mut arg_cursor) {
+                        if arg_child.is_named() && arg_child.kind() != "," {
+                            args.push(self.convert_any_expression(arg_child)?);
+                        }
+                    }
+                }
+                _ if child.is_named() && function.is_none() => {
+                    function = Some(self.convert_any_expression(child)?);
+                }
+                _ => {}
+            }
+        }
+
+        let function = function.ok_or_else(|| self.error("Call expression without function", self.node_location(node)))?;
+        let loc = self.node_location(node);
+
+        Ok(Expr::Apply(function, args).into_id(loc))
+    }
+
+    fn convert_tuple_expression(&self, node: Node) -> Result<ExprNodeId, Box<dyn ReportableError>> {
+        let mut cursor = node.walk();
+        let mut elements = Vec::new();
+
+        for child in node.children(&mut cursor) {
+            if child.is_named() && child.kind() != "," {
+                elements.push(self.convert_any_expression(child)?);
+            }
+        }
+
+        let loc = self.node_location(node);
+        Ok(Expr::Tuple(elements).into_id(loc))
     }
 
     fn node_text(&self, node: Node) -> &str {
@@ -180,5 +505,58 @@ mod tests {
         
         // For now, just verify we get a valid expression ID
         assert!(expr.to_expr() != Expr::Error);
+    }
+
+    #[test]
+    fn test_debug_parsing() {
+        let source = r#"
+fn counter(){
+    self + 1
+}
+fn dsp(input){
+    let res = input + counter()
+    (0,res)
+}
+"#;
+        
+        // Parse the source and see what we get
+        let (ast, errors) = ASTConverter::parse_to_expr_treesitter(source, None);
+        
+        println!("Errors: {:?}", errors);
+        println!("AST: {:?}", ast.to_expr());
+        
+        // Let's also test the tree-sitter parser directly
+        let mut parser = TreeSitterParser::new().unwrap();
+        let tree = parser.parse(source, None).unwrap().unwrap();
+        let root = tree.root_node();
+        
+        println!("Tree-sitter root kind: {}", root.kind());
+        println!("Tree-sitter root has {} children", root.child_count());
+        
+        let mut cursor = root.walk();
+        for (i, child) in root.children(&mut cursor).enumerate() {
+            println!("Child {}: kind='{}', text='{:?}'", i, child.kind(), child.utf8_text(source.as_bytes()));
+            
+            if child.kind() == "item" {
+                let mut item_cursor = child.walk();
+                for (j, item_child) in child.children(&mut item_cursor).enumerate() {
+                    println!("  Item child {}: kind='{}', text='{:?}'", j, item_child.kind(), item_child.utf8_text(source.as_bytes()));
+                    
+                    if item_child.kind() == "function_definition" {
+                        let mut fn_cursor = item_child.walk();
+                        for (k, fn_child) in item_child.children(&mut fn_cursor).enumerate() {
+                            println!("    Fn child {}: kind='{}', text='{:?}'", k, fn_child.kind(), fn_child.utf8_text(source.as_bytes()));
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Should not have errors for basic parsing
+        if !errors.is_empty() {
+            for error in &errors {
+                println!("Error: {:?}", error);
+            }
+        }
     }
 }
