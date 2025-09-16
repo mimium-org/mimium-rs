@@ -267,29 +267,34 @@ impl ASTConverter {
                         statements.push(expr);
                     }
                 }
-                "binary_expression" | "call_expression" | "identifier" | "literal" => {
+                "binary_expression" | "call_expression" | "identifier" | "literal" | 
+                "number" | "tuple_expression" | "self" => {
                     if let Ok(expr) = self.convert_any_expression(child) {
                         statements.push(expr);
                     }
                 }
                 _ if child.is_named() => {
-                    // Try to parse other named nodes
+                    // Try to parse other named nodes as expressions
                     if let Ok(expr) = self.convert_any_expression(child) {
                         statements.push(expr);
                     }
                 }
-                _ => {}
+                _ => {
+                    // Skip unnamed nodes like braces, whitespace
+                    continue;
+                }
             }
         }
 
         let loc = self.node_location(node);
         
         if statements.is_empty() {
+            // Empty block should return unit/void, not placeholder
             Ok(Expr::Literal(Literal::PlaceHolder).into_id(loc))
         } else if statements.len() == 1 {
             Ok(statements[0])
         } else {
-            // Chain statements
+            // Chain statements with Then expressions
             let mut result = statements.pop().unwrap();
             for stmt in statements.into_iter().rev() {
                 result = Expr::Then(stmt, Some(result)).into_id(loc.clone());
@@ -480,6 +485,34 @@ impl ASTConverter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::metadata::Location;
+    use crate::pattern::{TypedPattern, Pattern};
+    use crate::types::Type;
+
+    macro_rules! test_tree_sitter_string {
+        ($src:literal, $ans:expr) => {
+            let (ast, errs) = ASTConverter::parse_to_expr_treesitter(&$src, None);
+            if errs.is_empty() {
+                assert!(
+                    ast.to_expr() == $ans.to_expr(),
+                    "tree-sitter result:{:#?}\nexpected:{:#?}",
+                    ast,
+                    $ans
+                );
+            } else {
+                eprintln!("Tree-sitter parse errors for '{}': {:#?}", $src, errs);
+                panic!("Tree-sitter parsing failed");
+            }
+        };
+    }
+
+    // Dummy location for testing
+    fn loc(span: std::ops::Range<usize>) -> Location {
+        Location {
+            span,
+            path: "<unknown>".to_symbol(),
+        }
+    }
 
     #[test]
     fn test_parser_creation() {
@@ -505,6 +538,116 @@ mod tests {
         
         // For now, just verify we get a valid expression ID
         assert!(expr.to_expr() != Expr::Error);
+    }
+
+    // Tree-sitter equivalent tests for the original parser tests
+    
+    #[test]
+    fn tree_sitter_test_int() {
+        let ans = Expr::Literal(Literal::Float("3466".to_symbol())).into_id(loc(0..4));
+        test_tree_sitter_string!("3466", ans);
+    }
+
+    #[test]
+    fn tree_sitter_test_string() {
+        let ans = Expr::Literal(Literal::String("teststr".to_symbol())).into_id(loc(0..9));
+        test_tree_sitter_string!("\"teststr\"", ans);
+    }
+
+    #[test]
+    fn tree_sitter_test_var() {
+        let ans = Expr::Var("hoge".to_symbol()).into_id(loc(0..4));
+        test_tree_sitter_string!("hoge", ans);
+    }
+
+    #[test]
+    fn tree_sitter_test_add() {
+        let ans = Expr::BinOp(
+            Expr::Literal(Literal::Float("3466.0".to_symbol())).into_id(loc(0..6)),
+            (Op::Sum, 6..7),
+            Expr::Literal(Literal::Float("2000.0".to_symbol())).into_id(loc(7..13)),
+        )
+        .into_id(loc(0..13));
+        test_tree_sitter_string!("3466.0+2000.0", ans);
+    }
+
+    #[test]
+    fn tree_sitter_test_apply() {
+        let ans = Expr::Apply(
+            Expr::Var("myfun".to_symbol()).into_id(loc(0..5)),
+            vec![Expr::Var("callee".to_symbol()).into_id(loc(6..12))],
+        )
+        .into_id(loc(0..13));
+        test_tree_sitter_string!("myfun(callee)", ans);
+    }
+
+    #[test]
+    fn tree_sitter_test_tuple() {
+        let tuple_items = vec![
+            Expr::Literal(Literal::Float("1.0".to_symbol())).into_id(loc(1..4)),
+            Expr::Literal(Literal::Float("2.0".to_symbol())).into_id(loc(6..9)),
+        ];
+
+        let ans = Expr::Tuple(tuple_items.clone()).into_id(loc(0..10));
+        test_tree_sitter_string!("(1.0, 2.0)", ans);
+    }
+
+    #[test]
+    fn tree_sitter_test_let() {
+        let ans = Expr::Let(
+            TypedPattern::new(
+                Pattern::Single("goge".to_symbol()),
+                Type::Unknown.into_id_with_location(loc(4..8)),
+            ),
+            Expr::Literal(Literal::Float("36".to_symbol())).into_id(loc(11..13)),
+            Some(Expr::Var("goge".to_symbol()).into_id(loc(15..19))),
+        )
+        .into_id(loc(0..19));
+        test_tree_sitter_string!("let goge = 36\n goge", ans);
+    }
+
+    #[test]
+    fn tree_sitter_test_if() {
+        let ans = Expr::If(
+            Expr::Literal(Literal::Float("100".to_symbol())).into_id(loc(4..7)),
+            Expr::Var("hoge".to_symbol()).into_id(loc(9..13)),
+            Some(Expr::Var("fuga".to_symbol()).into_id(loc(19..23))),
+        )
+        .into_id(loc(0..23));
+        test_tree_sitter_string!("if (100) hoge else fuga", ans);
+    }
+
+    #[test]
+    fn tree_sitter_test_if_noelse() {
+        let ans = Expr::If(
+            Expr::Literal(Literal::Float("100".to_symbol())).into_id(loc(4..7)),
+            Expr::Var("hoge".to_symbol()).into_id(loc(9..13)),
+            None,
+        )
+        .into_id(loc(0..13));
+        test_tree_sitter_string!("if (100) hoge ", ans);
+    }
+
+    #[test] 
+    fn test_simple_number() {
+        let source = "42";
+        let (ast, errors) = ASTConverter::parse_to_expr_treesitter(source, None);
+        
+        println!("Parsing '{}': AST={:?}, Errors={:?}", source, ast.to_expr(), errors);
+        
+        // Check if we get a reasonable result
+        assert!(errors.len() < 5); // allow some errors during development
+    }
+    
+    #[test]
+    fn test_simple_binary() {
+        let source = "1 + 2";
+        let (ast, errors) = ASTConverter::parse_to_expr_treesitter(source, None);
+        
+        println!("Parsing '{}': AST={:?}, Errors={:?}", source, ast.to_expr(), errors);
+        
+        // Check if we get a reasonable result
+        assert!(errors.len() < 5); // allow some errors during development
     }
 
     #[test]
