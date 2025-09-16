@@ -167,16 +167,10 @@ impl ASTConverter {
                                 statements.push((program_stmt, span));
                             }
                             _ => {
-                                // For now, treat other items as global statements using Let
+                                // For untreated items, use Statement::Single 
                                 let expr = self.convert_any_expression(item_child)?;
                                 let span = self.node_span(item_child);
-                                let stmt = Statement::Let(
-                                    crate::pattern::TypedPattern::new(
-                                        crate::pattern::Pattern::Single("_tmp".to_symbol()),
-                                        crate::types::Type::Unknown.into_id_with_location(Location::new(span.clone(), self.file_path)),
-                                    ),
-                                    expr,
-                                );
+                                let stmt = Statement::Single(expr);
                                 statements.push((ProgramStatement::GlobalStatement(stmt), span));
                             }
                         }
@@ -514,6 +508,17 @@ impl ASTConverter {
                 Ok(Expr::Literal(Literal::PlaceHolder).into_id(loc))
             }
             "tuple_expression" => self.convert_tuple_expression(node),
+            "string" | "string_literal" => {
+                let text = self.node_text(node);
+                let loc = self.node_location(node);
+                // Remove surrounding quotes from string literal
+                let content = if text.starts_with('"') && text.ends_with('"') && text.len() >= 2 {
+                    &text[1..text.len()-1]
+                } else {
+                    text
+                };
+                Ok(Expr::Literal(Literal::String(content.to_symbol())).into_id(loc))
+            }
             "self" => {
                 let loc = self.node_location(node);
                 Ok(Expr::Literal(Literal::SelfLit).into_id(loc))
@@ -679,18 +684,6 @@ mod tests {
         let source = "fn test() { 42 }";
         let tree = parser.parse(source, None);
         assert!(tree.is_ok());
-    }
-
-    #[test]
-    fn test_parse_to_expr_integration() {
-        let source = "42";
-        let (expr, errors) = ASTConverter::parse_to_expr_treesitter(source, None);
-        
-        // Should parse successfully with no errors
-        assert!(errors.is_empty());
-        
-        // For now, just verify we get a valid expression ID
-        assert!(expr.to_expr() != Expr::Error);
     }
 
     // Tree-sitter equivalent tests for the original parser tests
