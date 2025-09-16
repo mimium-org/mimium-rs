@@ -1,6 +1,6 @@
 use super::intrinsics;
 use super::typing::{InferContext, infer_root};
-use crate::compiler::parser;
+// use crate::compiler::parser; // Old chumsky parser - replaced with tree-sitter
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::plugin::MacroFunction;
@@ -1062,7 +1062,7 @@ pub fn compile(
             expr
         };
         log::trace!("ast after macro expansion: {:?}", expr.to_expr());
-        let expr = parser::add_global_context(expr, file_path.unwrap_or_default());
+        let expr = super::tree_sitter_parser::ASTConverter::add_global_context(expr, file_path.unwrap_or_default());
         let mut ctx = Context::new(infer_ctx, file_path);
         let _res = ctx.eval_expr(expr);
         ctx.program.file_path = file_path;

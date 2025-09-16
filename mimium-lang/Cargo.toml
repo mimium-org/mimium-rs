@@ -11,7 +11,6 @@ readme.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-chumsky = { version = "0.10", default-features = false, features = ["std"] }
 tree-sitter = "0.23"
 ariadne = "0.5"
 log = "0.4.22"

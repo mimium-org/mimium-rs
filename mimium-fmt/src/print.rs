@@ -499,8 +499,8 @@ pub fn pretty_print(
     file_path: &Option<PathBuf>,
     width: usize,
 ) -> Result<String, Vec<Box<dyn ReportableError>>> {
-    use mimium_lang::compiler::parser::parse;
-    let (prog, errs) = parse(src, file_path.clone());
+    use mimium_lang::compiler::tree_sitter_parser::ASTConverter;
+    let (prog, errs) = ASTConverter::parse_treesitter(src, file_path.clone());
     if !errs.is_empty() {
         return Err(errs);
     }

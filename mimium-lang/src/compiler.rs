@@ -1,7 +1,7 @@
 pub mod bytecodegen;
 pub(crate) mod intrinsics;
 pub mod mirgen;
-pub mod parser;
+// pub mod parser; // Old chumsky-based parser - replaced with tree-sitter
 pub mod tree_sitter_parser;
 pub(crate) mod pattern_destructor;
 pub mod typing;
@@ -87,7 +87,7 @@ pub fn emit_ast(
     let path = filepath.map(|sym| PathBuf::from(sym.to_string()));
     let (ast, errs) = tree_sitter_parser::ASTConverter::parse_to_expr_treesitter(src, path);
     if errs.is_empty() {
-        let ast = parser::add_global_context(ast, filepath.unwrap_or_default());
+        let ast = tree_sitter_parser::ASTConverter::add_global_context(ast, filepath.unwrap_or_default());
         let (ast, _errs) =
             mirgen::convert_pronoun::convert_pronoun(ast, filepath.unwrap_or_default());
         Ok(recursecheck::convert_recurse(

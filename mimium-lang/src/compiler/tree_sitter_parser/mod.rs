@@ -113,6 +113,25 @@ impl ASTConverter {
         (crate::ast::program::Program::default(), vec![])
     }
 
+    /// Add global context wrapper - moved from old parser to maintain compatibility
+    pub fn add_global_context(ast: ExprNodeId, file_path: Symbol) -> ExprNodeId {
+        use crate::utils::metadata::GLOBAL_LABEL;
+        let span = ast.to_span();
+        let loc = Location {
+            span: span.clone(),
+            path: file_path,
+        };
+        let res = Expr::Let(
+            crate::pattern::TypedPattern::new(
+                crate::pattern::Pattern::Single(GLOBAL_LABEL.to_symbol()),
+                crate::types::Type::Unknown.into_id_with_location(loc.clone()),
+            ),
+            Expr::Lambda(vec![], None, ast).into_id(loc.clone()),
+            None,
+        );
+        res.into_id(loc)
+    }
+
     fn convert_source_file(&self, node: Node) -> Result<ExprNodeId, Box<dyn ReportableError>> {
         assert_eq!(node.kind(), "source_file");
         
