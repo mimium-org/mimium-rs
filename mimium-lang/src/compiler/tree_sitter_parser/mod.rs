@@ -1,5 +1,8 @@
 use crate::ast::*;
-use crate::interner::{ExprNodeId, Symbol, ToSymbol};
+use crate::ast::program::{Program, ProgramStatement};
+use crate::ast::statement::Statement;
+use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
+use crate::pattern::{TypedId};
 use crate::utils::error::{ReportableError, SimpleError};
 use crate::utils::metadata::*;
 use crate::ast::operators::Op;
@@ -56,11 +59,16 @@ impl ASTConverter {
         self.convert_source_file(root_node)
     }
 
-    /// Parse source using tree-sitter - minimal implementation for testing
-    pub fn parse_to_expr_treesitter(
-        source: &str, 
+    pub fn convert_tree_to_program(&self, tree: &Tree) -> Result<Program, Box<dyn ReportableError>> {
+        let root_node = tree.root_node();
+        self.convert_source_file_to_program(root_node)
+    }
+
+    /// Parse source using tree-sitter to Program structure
+    pub fn parse_treesitter(
+        source: &str,
         file_path: Option<std::path::PathBuf>
-    ) -> (ExprNodeId, Vec<Box<dyn ReportableError>>) {
+    ) -> (Program, Vec<Box<dyn ReportableError>>) {
         let mut parser = match TreeSitterParser::new() {
             Ok(p) => p,
             Err(e) => {
@@ -68,7 +76,7 @@ impl ASTConverter {
                     message: format!("Failed to create parser: {}", e),
                     span: Location::default(),
                 };
-                return (Expr::Error.into_id_without_span(), vec![Box::new(error)]);
+                return (Program::default(), vec![Box::new(error)]);
             }
         };
 
@@ -79,14 +87,14 @@ impl ASTConverter {
                     message: "Failed to parse source".to_string(),
                     span: Location::default(),
                 };
-                return (Expr::Error.into_id_without_span(), vec![Box::new(error)]);
+                return (Program::default(), vec![Box::new(error)]);
             }
             Err(e) => {
                 let error = SimpleError {
                     message: format!("Parse error: {}", e),
                     span: Location::default(),
                 };
-                return (Expr::Error.into_id_without_span(), vec![Box::new(error)]);
+                return (Program::default(), vec![Box::new(error)]);
             }
         };
 
@@ -96,21 +104,28 @@ impl ASTConverter {
         
         let converter = ASTConverter::new(source.to_string(), file_symbol);
         
-        match converter.convert_tree(&tree) {
-            Ok(expr) => (expr, vec![]),
-            Err(e) => (Expr::Error.into_id_without_span(), vec![e]),
+        match converter.convert_tree_to_program(&tree) {
+            Ok(program) => (program, vec![]),
+            Err(e) => (Program::default(), vec![e]),
         }
     }
 
-    /// Parse source using tree-sitter and return Program structure for compatibility
-    pub fn parse_treesitter(
-        source: &str,
+    /// Parse source using tree-sitter - converts to Program then to ExprNodeId using existing infrastructure
+    pub fn parse_to_expr_treesitter(
+        source: &str, 
         file_path: Option<std::path::PathBuf>
-    ) -> (crate::ast::program::Program, Vec<Box<dyn ReportableError>>) {
-        // For now, create an empty program since our tree-sitter parser works at expression level
-        // This is a compatibility wrapper for include resolution
-        // TODO: Implement full program-level parsing if needed
-        (crate::ast::program::Program::default(), vec![])
+    ) -> (ExprNodeId, Vec<Box<dyn ReportableError>>) {
+        let (program, mut errors) = Self::parse_treesitter(source, file_path.clone());
+        
+        let file_symbol = file_path
+            .map(|p| p.to_string_lossy().to_symbol())
+            .unwrap_or_else(|| "<unknown>".to_symbol());
+        
+        // Use existing expr_from_program function
+        let (expr, mut new_errors) = crate::ast::program::expr_from_program(program, file_symbol);
+        
+        errors.append(&mut new_errors);
+        (expr, errors)
     }
 
     /// Add global context wrapper - moved from old parser to maintain compatibility
@@ -130,6 +145,62 @@ impl ASTConverter {
             None,
         );
         res.into_id(loc)
+    }
+
+    fn convert_source_file_to_program(&self, node: Node) -> Result<Program, Box<dyn ReportableError>> {
+        assert_eq!(node.kind(), "source_file");
+        
+        let mut statements = Vec::new();
+        let mut cursor = node.walk();
+        
+        // Parse all top-level items into ProgramStatements
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "item" => {
+                    // Look inside the item for actual content
+                    let mut item_cursor = child.walk();
+                    for item_child in child.children(&mut item_cursor) {
+                        match item_child.kind() {
+                            "function_definition" => {
+                                let program_stmt = self.convert_function_definition_to_program_stmt(item_child)?;
+                                let span = self.node_span(item_child);
+                                statements.push((program_stmt, span));
+                            }
+                            _ => {
+                                // For now, treat other items as global statements using Let
+                                let expr = self.convert_any_expression(item_child)?;
+                                let span = self.node_span(item_child);
+                                let stmt = Statement::Let(
+                                    crate::pattern::TypedPattern::new(
+                                        crate::pattern::Pattern::Single("_tmp".to_symbol()),
+                                        crate::types::Type::Unknown.into_id_with_location(Location::new(span.clone(), self.file_path)),
+                                    ),
+                                    expr,
+                                );
+                                statements.push((ProgramStatement::GlobalStatement(stmt), span));
+                            }
+                        }
+                    }
+                }
+                _ if child.is_named() => {
+                    // Try to parse as expression and add as global statement using Let
+                    if let Ok(expr) = self.convert_any_expression(child) {
+                        let span = self.node_span(child);
+                        let stmt = Statement::Let(
+                            crate::pattern::TypedPattern::new(
+                                crate::pattern::Pattern::Single("_tmp".to_symbol()),
+                                crate::types::Type::Unknown.into_id_with_location(Location::new(span.clone(), self.file_path)),
+                            ),
+                            expr,
+                        );
+                        statements.push((ProgramStatement::GlobalStatement(stmt), span));
+                    }
+                }
+                _ => {} // Skip unnamed nodes
+            }
+        }
+        
+        Ok(Program { statements })
     }
 
     fn convert_source_file(&self, node: Node) -> Result<ExprNodeId, Box<dyn ReportableError>> {
@@ -198,7 +269,80 @@ impl ASTConverter {
         }
     }
 
+    fn node_span(&self, node: Node) -> Span {
+        node.start_byte()..node.end_byte()
+    }
+
+    fn get_identifier_text(&self, node: Node) -> Symbol {
+        self.node_text(node).to_symbol()
+    }
+
+    fn convert_function_definition_to_program_stmt(&self, node: Node) -> Result<ProgramStatement, Box<dyn ReportableError>> {
+        assert_eq!(node.kind(), "function_definition");
+        
+        let mut cursor = node.walk();
+        let mut name_opt = None;
+        let mut params_opt = None;
+        let mut body_opt = None;
+        
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "identifier" => {
+                    name_opt = Some(self.get_identifier_text(child));
+                }
+                "parameter_list" => {
+                    params_opt = Some(self.convert_parameter_list(child)?);
+                }
+                "block_expression" => {
+                    body_opt = Some(self.convert_block(child)?);
+                }
+                _ => {} // Skip other tokens like 'fn', parentheses, etc.
+            }
+        }
+        
+        let name = name_opt.ok_or_else(|| {
+            self.error("Function definition missing name", self.node_location(node))
+        })?;
+        
+        let (params, params_location) = params_opt.map_or_else(|| {
+            (vec![], self.node_location(node))
+        }, |params| (params, self.node_location(node)));
+        
+        let body = body_opt.ok_or_else(|| {
+            self.error("Function definition missing body", self.node_location(node))
+        })?;
+        
+        Ok(ProgramStatement::FnDefinition {
+            name,
+            args: (params, params_location),
+            return_type: None, // TODO: Handle return type annotations
+            body,
+        })
+    }
+
+    fn convert_parameter_list(&self, node: Node) -> Result<Vec<TypedId>, Box<dyn ReportableError>> {
+        let mut params = Vec::new();
+        let mut cursor = node.walk();
+        
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "identifier" => {
+                    let param_name = self.get_identifier_text(child);
+                    let param_loc = self.node_location(child);
+                    // For now, all parameters have unknown type
+                    let param_type = crate::types::Type::Unknown.into_id_with_location(param_loc.clone());
+                    params.push(TypedId::new(param_name, param_type));
+                }
+                _ => {} // Skip commas and other tokens
+            }
+        }
+        
+        Ok(params)
+    }
+
     fn convert_function_definition(&self, node: Node) -> Result<ExprNodeId, Box<dyn ReportableError>> {
+        assert_eq!(node.kind(), "function_definition");
+        
         let mut cursor = node.walk();
         let mut name: Option<Symbol> = None;
         let mut params = Vec::new();
@@ -232,23 +376,6 @@ impl ASTConverter {
             crate::types::Type::Unknown.into_id_with_location(loc.clone())
         );
         Ok(Expr::Let(pattern, lambda, None).into_id(loc))
-    }
-
-    fn convert_parameter_list(&self, node: Node) -> Result<Vec<crate::pattern::TypedId>, Box<dyn ReportableError>> {
-        let mut params = Vec::new();
-        let mut cursor = node.walk();
-
-        for child in node.children(&mut cursor) {
-            if child.kind() == "identifier" {
-                let param_name = self.node_text(child).to_symbol();
-                params.push(crate::pattern::TypedId::new(
-                    param_name,
-                    crate::types::Type::Unknown.into_id_with_location(self.node_location(child))
-                ));
-            }
-        }
-
-        Ok(params)
     }
 
     fn convert_block(&self, node: Node) -> Result<ExprNodeId, Box<dyn ReportableError>> {
@@ -353,12 +480,38 @@ impl ASTConverter {
             "number" => {
                 let text = self.node_text(node);
                 let loc = self.node_location(node);
-                if text.contains('.') {
-                    Ok(Expr::Literal(Literal::Float(text.to_symbol())).into_id(loc))
-                } else {
-                    let value: i64 = text.parse().unwrap_or(0);
-                    Ok(Expr::Literal(Literal::Int(value)).into_id(loc))
+                // Always use Float for numeric literals to match original parser behavior
+                Ok(Expr::Literal(Literal::Float(text.to_symbol())).into_id(loc))
+            }
+            "numeric_literal" => {
+                let text = self.node_text(node);
+                let loc = self.node_location(node);
+                // Always use Float for numeric literals to match original parser behavior  
+                Ok(Expr::Literal(Literal::Float(text.to_symbol())).into_id(loc))
+            }
+            "expression" => {
+                // Handle generic "expression" nodes by recursing into their children
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.is_named() {
+                        return self.convert_any_expression(child);
+                    }
                 }
+                // If no named child found, return placeholder
+                let loc = self.node_location(node);
+                Ok(Expr::Literal(Literal::PlaceHolder).into_id(loc))
+            }
+            "primary_expression" => {
+                // Handle primary_expression nodes by recursing into their children
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.is_named() {
+                        return self.convert_any_expression(child);
+                    }
+                }
+                // If no named child found, return placeholder
+                let loc = self.node_location(node);
+                Ok(Expr::Literal(Literal::PlaceHolder).into_id(loc))
             }
             "tuple_expression" => self.convert_tuple_expression(node),
             "self" => {
