@@ -2,7 +2,8 @@ use crate::ast::*;
 use crate::ast::program::{Program, ProgramStatement};
 use crate::ast::statement::Statement;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
-use crate::pattern::{TypedId};
+use crate::types::Type;
+use crate::pattern::{TypedId, TypedPattern, Pattern};
 use crate::utils::error::{ReportableError, SimpleError};
 use crate::utils::metadata::*;
 use crate::ast::operators::Op;
@@ -166,27 +167,58 @@ impl ASTConverter {
                                 let span = self.node_span(item_child);
                                 statements.push((program_stmt, span));
                             }
-                            _ => {
-                                // For untreated items, use Statement::Single 
-                                let expr = self.convert_any_expression(item_child)?;
-                                let span = self.node_span(item_child);
-                                let stmt = Statement::Single(expr);
-                                statements.push((ProgramStatement::GlobalStatement(stmt), span));
+                            "include_statement" => {
+                                if let Ok((import_stmt, span)) = self.convert_include_statement(item_child) {
+                                    statements.push((import_stmt, span));
+                                }
                             }
+                            "let_statement" => {
+                                if let Ok((let_stmt, span)) = self.convert_let_statement_to_program(item_child) {
+                                    statements.push((let_stmt, span));
+                                }
+                            }
+                            _ if item_child.is_named() => {
+                                // For untreated items, use Statement::Single 
+                                if let Ok(expr) = self.convert_any_expression(item_child) {
+                                    let span = self.node_span(item_child);
+                                    let stmt = Statement::Single(expr);
+                                    statements.push((ProgramStatement::GlobalStatement(stmt), span));
+                                }
+                            }
+                            _ => continue,
                         }
                     }
                 }
+                "function_definition" => {
+                    let program_stmt = self.convert_function_definition_to_program_stmt(child)?;
+                    let span = self.node_span(child);
+                    statements.push((program_stmt, span));
+                }
+                "include_statement" => {
+                    if let Ok((import_stmt, span)) = self.convert_include_statement(child) {
+                        statements.push((import_stmt, span));
+                    }
+                }
+                "let_statement" => {
+                    if let Ok((let_stmt, span)) = self.convert_let_statement_to_program(child) {
+                        statements.push((let_stmt, span));
+                    }
+                }
+                "comment" => {
+                    if let Ok((comment_stmt, span)) = self.convert_comment(child) {
+                        statements.push((comment_stmt, span));
+                    }
+                }
+                "ERROR" => {
+                    // Return Statement::Error for error nodes
+                    let span = self.node_span(child);
+                    statements.push((ProgramStatement::Error, span));
+                }
                 _ if child.is_named() => {
-                    // Try to parse as expression and add as global statement using Let
+                    // For untreated items, use Statement::Single
                     if let Ok(expr) = self.convert_any_expression(child) {
                         let span = self.node_span(child);
-                        let stmt = Statement::Let(
-                            crate::pattern::TypedPattern::new(
-                                crate::pattern::Pattern::Single("_tmp".to_symbol()),
-                                crate::types::Type::Unknown.into_id_with_location(Location::new(span.clone(), self.file_path)),
-                            ),
-                            expr,
-                        );
+                        let stmt = Statement::Single(expr);
                         statements.push((ProgramStatement::GlobalStatement(stmt), span));
                     }
                 }
@@ -636,6 +668,116 @@ impl ASTConverter {
         Location {
             span: node.start_byte()..node.end_byte(),
             path: self.file_path,
+        }
+    }
+
+    fn convert_include_statement(&self, node: Node) -> Result<(ProgramStatement, Span), Box<dyn ReportableError>> {
+        assert_eq!(node.kind(), "include_statement");
+        let mut cursor = node.walk();
+        
+        for child in node.children(&mut cursor) {
+            if child.kind() == "string_literal" {
+                let text = self.node_text(child);
+                let filename = text.trim_matches('"');
+                let span = self.node_span(node);
+                return Ok((ProgramStatement::Import(filename.to_symbol()), span));
+            }
+        }
+        
+        Err(self.error("Include statement without filename", self.node_location(node)))
+    }
+
+    fn convert_let_statement_to_program(&self, node: Node) -> Result<(ProgramStatement, Span), Box<dyn ReportableError>> {
+        assert_eq!(node.kind(), "let_statement");
+        let mut cursor = node.walk();
+        let mut is_rec = false;
+        let mut pattern: Option<TypedPattern> = None;
+        let mut body: Option<ExprNodeId> = None;
+        
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "letrec" => is_rec = true,
+                "let" => is_rec = false,
+                "pattern" => {
+                    // For now, assume simple identifier patterns
+                    pattern = Some(self.convert_pattern(child)?);
+                }
+                "identifier" => {
+                    if pattern.is_none() {
+                        // Simple identifier pattern
+                        let name = self.node_text(child).to_symbol();
+                        pattern = Some(TypedPattern {
+                            pat: Pattern::Single(name),
+                            ty: Type::Unknown.into_id(),
+                            default_value: None,
+                        });
+                    }
+                }
+                _ if child.is_named() && body.is_none() => {
+                    // Try to parse as expression
+                    if let Ok(expr) = self.convert_any_expression(child) {
+                        body = Some(expr);
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        let pattern = pattern.ok_or_else(|| self.error("Let statement without pattern", self.node_location(node)))?;
+        let body = body.ok_or_else(|| self.error("Let statement without body", self.node_location(node)))?;
+        let span = self.node_span(node);
+        
+        let statement = if is_rec {
+            // For let rec, convert pattern to TypedId
+            match pattern.pat {
+                Pattern::Single(name) => Statement::LetRec(TypedId::new(name, pattern.ty), body),
+                _ => return Err(self.error("LetRec requires simple identifier", self.node_location(node))),
+            }
+        } else {
+            Statement::Let(pattern, body)
+        };
+        
+        Ok((ProgramStatement::GlobalStatement(statement), span))
+    }
+
+    fn convert_pattern(&self, node: Node) -> Result<TypedPattern, Box<dyn ReportableError>> {
+        // For now, just handle simple identifier patterns
+        if node.kind() == "pattern" {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    let name = self.node_text(child).to_symbol();
+                    return Ok(TypedPattern {
+                        pat: Pattern::Single(name),
+                        ty: Type::Unknown.into_id(),
+                        default_value: None,
+                    });
+                }
+            }
+        }
+        
+        if node.kind() == "identifier" {
+            let name = self.node_text(node).to_symbol();
+            return Ok(TypedPattern {
+                pat: Pattern::Single(name),
+                ty: Type::Unknown.into_id(),
+                default_value: None,
+            });
+        }
+        
+        Err(self.error("Unsupported pattern type", self.node_location(node)))
+    }
+
+    fn convert_comment(&self, node: Node) -> Result<(ProgramStatement, Span), Box<dyn ReportableError>> {
+        assert_eq!(node.kind(), "comment");
+        let text = self.node_text(node);
+        let span = self.node_span(node);
+        
+        // Check if it's a doc comment (starts with ///)
+        if text.starts_with("///") {
+            Ok((ProgramStatement::DocComment(text.to_symbol()), span))
+        } else {
+            Ok((ProgramStatement::Comment(text.to_symbol()), span))
         }
     }
 }
