@@ -1602,6 +1602,7 @@ name = "mimium-lang"
 version = "2.3.1"
 dependencies = [
  "ariadne",
+ "cc",
  "chumsky",
  "colog",
  "half",
@@ -1612,6 +1613,7 @@ dependencies = [
  "mimalloc",
  "slotmap",
  "string-interner",
+ "tree-sitter",
  "wasm-bindgen",
  "wasm-bindgen-test",
 ]
@@ -2725,6 +2727,24 @@ name = "tracing-core"
 version = "0.1.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e672c95779cf947c5311f83787af4fa8fffd12fb27e4993211a84bdfd9610f9c"
+
+[[package]]
+name = "tree-sitter"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0203df02a3b6dd63575cc1d6e609edc2181c9a11867a271b25cfd2abff3ec5ca"
+dependencies = [
+ "cc",
+ "regex",
+ "regex-syntax 0.8.5",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-language"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4013970217383f67b18aef68f6fb2e8d409bc5755227092d32efb0422ba24b8"
 
 [[package]]
 name = "ttf-parser"

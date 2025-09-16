@@ -2,6 +2,7 @@ pub mod bytecodegen;
 pub(crate) mod intrinsics;
 pub mod mirgen;
 pub mod parser;
+pub mod tree_sitter_parser;
 pub(crate) mod pattern_destructor;
 pub mod typing;
 use crate::plugin::{ExtFunTypeInfo, MacroFunction};

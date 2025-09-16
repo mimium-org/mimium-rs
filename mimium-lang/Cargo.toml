@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 chumsky = { version = "0.10", default-features = false, features = ["std"] }
+tree-sitter = "0.23"
 ariadne = "0.5"
 log = "0.4.22"
 string-interner = "0.17.0"
@@ -27,6 +28,9 @@ mimalloc = { version = "0.1.43" }
 
 [dev-dependencies]
 wasm-bindgen-test = { workspace = true }
+
+[build-dependencies]
+cc = "1.0"
 
 [lints.clippy]
 useless_format = "allow"
