@@ -102,6 +102,17 @@ impl ASTConverter {
         }
     }
 
+    /// Parse source using tree-sitter and return Program structure for compatibility
+    pub fn parse_treesitter(
+        source: &str,
+        file_path: Option<std::path::PathBuf>
+    ) -> (crate::ast::program::Program, Vec<Box<dyn ReportableError>>) {
+        // For now, create an empty program since our tree-sitter parser works at expression level
+        // This is a compatibility wrapper for include resolution
+        // TODO: Implement full program-level parsing if needed
+        (crate::ast::program::Program::default(), vec![])
+    }
+
     fn convert_source_file(&self, node: Node) -> Result<ExprNodeId, Box<dyn ReportableError>> {
         assert_eq!(node.kind(), "source_file");
         

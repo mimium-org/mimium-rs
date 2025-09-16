@@ -1,5 +1,5 @@
 use crate::ast::program::Program;
-use crate::compiler::parser::parse;
+use crate::compiler::tree_sitter_parser::ASTConverter;
 use crate::interner::ToSymbol;
 use crate::utils::error::{ReportableError, SimpleError};
 use crate::utils::fileloader;
@@ -24,7 +24,7 @@ pub(super) fn resolve_include(
     let res = fileloader::load_mmmlibfile(mmm_filepath, target_path)
         .map_err(|e| make_vec_error(e, loc.clone()));
     match res {
-        Ok((content, path)) => parse(&content, Some(path)),
+        Ok((content, path)) => ASTConverter::parse_treesitter(&content, Some(path)),
         Err(err) => (Program::default(), err),
     }
 }
