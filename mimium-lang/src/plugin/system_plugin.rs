@@ -52,7 +52,7 @@ impl SysPluginSignature {
     }
     pub fn new_macro<F, T>(name: &'static str, fun: F, ty: TypeNodeId) -> Self
     where
-        F: Fn(&mut T, &mut Machine) -> ReturnCode + 'static,
+        F: Fn(&mut T, &[(Value, TypeNodeId)]) -> Value + 'static,
         T: SystemPlugin,
     {
         Self {

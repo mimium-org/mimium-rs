@@ -23,7 +23,7 @@ use utils::error::ReportableError;
 #[cfg(not(target_arch = "wasm32"))]
 use mimalloc::MiMalloc;
 
-use crate::plugin::MachineFunction;
+use crate::plugin::{MachineFunction, MacroFunction};
 #[cfg(not(target_arch = "wasm32"))]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -108,8 +108,23 @@ impl ExecContext {
             )
             .collect()
     }
+    fn get_macro_types(&self) -> Vec<Box<dyn MacroFunction>> {
+        plugin::get_macro_functions(&self.plugins)
+            .chain(self.sys_plugins.iter().flat_map(|p| {
+                p.macroinfos
+                    .iter()
+                    .map(|i| Box::new(i.clone()) as Box<dyn MacroFunction>)
+            }))
+            .collect()
+    }
     pub fn prepare_compiler(&mut self) {
-        let macroinfos = plugin::get_macro_functions(&self.plugins);
+        let macroinfos = plugin::get_macro_functions(&self.plugins).chain(
+            self.sys_plugins.iter().flat_map(|p| {
+                p.macroinfos
+                    .iter()
+                    .map(|i| Box::new(i.clone()) as Box<dyn MacroFunction>)
+            }),
+        );
         self.compiler = Some(compiler::Context::new(
             self.get_extfun_types(),
             macroinfos,

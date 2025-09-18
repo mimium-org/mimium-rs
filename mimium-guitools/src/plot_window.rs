@@ -1,13 +1,41 @@
+use std::{
+    ops::RangeInclusive,
+    sync::{Arc, atomic::Ordering},
+};
+
 use crate::plot_ui::{self, PlotUi};
 use eframe;
 
+use atomic_float::AtomicF64;
 use egui::Color32;
 use egui_plot::{CoordinatesFormatter, Corner, Legend, Plot};
 use ringbuf::HeapCons;
 
+pub struct FloatParameter {
+    value: AtomicF64,
+    name: String,
+    range: RangeInclusive<f64>,
+}
+impl FloatParameter {
+    fn new(name: String, init: f64, min: f64, max: f64) -> Self {
+        Self {
+            value: AtomicF64::new(init),
+            name,
+            range: min..=max,
+        }
+    }
+    pub fn get(&self) -> f64 {
+        self.value.load(Ordering::Relaxed)
+    }
+    pub fn set(&self, v: f64) {
+        self.value.store(v, Ordering::Relaxed)
+    }
+}
+
 #[derive(Default)]
 pub struct PlotApp {
     plot: Vec<plot_ui::PlotUi>,
+    pub(crate) sliders: Vec<Arc<FloatParameter>>,
     hue: f32,
     autoscale: bool,
 }
@@ -17,6 +45,7 @@ impl PlotApp {
         let plot = vec![PlotUi::new_test("test")];
         Self {
             plot,
+            sliders: Vec::new(),
             hue: 0.0,
             autoscale: false,
         }
@@ -30,6 +59,18 @@ impl PlotApp {
             buf,
             Color32::from_rgba_premultiplied(r, g, b, 200),
         ))
+    }
+    pub fn add_slider(
+        &mut self,
+        name: &str,
+        init: f64,
+        min: f64,
+        max: f64,
+    ) -> (Arc<FloatParameter>, usize) {
+        let param = FloatParameter::new(name.to_string(), init, min, max);
+        let p = Arc::new(param);
+        self.sliders.push(p.clone());
+        (p, self.sliders.len() - 1)
     }
     pub fn is_empty(&self) -> bool {
         self.plot.is_empty()
@@ -69,6 +110,26 @@ impl eframe::App for PlotApp {
             });
 
             ui.ctx().request_repaint();
+        });
+        egui::TopBottomPanel::bottom("parameters").show(ctx, |ui| {
+            if !self.sliders.is_empty() {
+                ui.label("Parameters");
+            }
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for p in &self.sliders {
+                    let mut v = p.get();
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut v, p.range.clone())
+                                .text(&p.name)
+                                .clamping(egui::SliderClamping::Always),
+                        )
+                        .changed()
+                    {
+                        p.set(v);
+                    }
+                }
+            });
         });
     }
 }

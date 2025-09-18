@@ -135,6 +135,7 @@ impl Context {
             .clone()
             .into_iter()
             .map(|ExtFunTypeInfo { name, ty, .. }| (name, ty))
+            .chain(self.macros.iter().map(|m| (m.get_name(), m.get_type())))
             .collect()
     }
 
