@@ -14,16 +14,12 @@ pub(super) struct Ringbuffer<'a> {
 impl<'a> Ringbuffer<'a> {
     pub fn new(head: *mut u64, size_in_samples: u64) -> Self {
         let (read_idx, write_idx, data) = unsafe {
-            let read_idx =  head.as_mut().unwrap_unchecked();
+            let read_idx = head.as_mut().unwrap_unchecked();
             let write_ptr = head.offset(1);
             let write_idx = write_ptr.as_mut().unwrap_unchecked();
             let data_head = head.offset(2);
             let data = slice_from_raw_parts_mut(data_head, size_in_samples as usize);
-            (
-                read_idx,
-                write_idx,
-                data.as_mut().unwrap(),
-            )
+            (read_idx, write_idx, data.as_mut().unwrap())
         };
 
         Self {

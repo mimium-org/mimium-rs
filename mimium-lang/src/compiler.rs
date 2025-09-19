@@ -32,7 +32,7 @@ impl EvalStage {
     pub fn is_available_in_vm(&self) -> bool {
         matches!(self, EvalStage::Persistent | EvalStage::Stage(1))
     }
-    
+
     /// Format the stage for error messages
     pub fn format_for_error(&self) -> String {
         match self {

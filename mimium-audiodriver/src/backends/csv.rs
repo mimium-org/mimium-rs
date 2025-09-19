@@ -4,7 +4,7 @@ use std::{
     path::Path,
 };
 
-use mimium_lang::{compiler::IoChannelInfo, plugin::ExtClsInfo, runtime::vm, ExecContext};
+use mimium_lang::{ExecContext, compiler::IoChannelInfo, plugin::ExtClsInfo, runtime::vm};
 
 use crate::driver::Driver;
 

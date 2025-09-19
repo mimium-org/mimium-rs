@@ -226,7 +226,11 @@ impl From<&Box<dyn MacroFunction>> for Value {
     }
 }
 impl ValueTrait for Value {
-    fn make_closure(e: ExprNodeId, names: Vec<Symbol>, env: Environment<(Self, EvalStage)>) -> Self {
+    fn make_closure(
+        e: ExprNodeId,
+        names: Vec<Symbol>,
+        env: Environment<(Self, EvalStage)>,
+    ) -> Self {
         // Create a closure value with the given expression, names, and environment
         Value::Closure(e, names, env)
     }
@@ -551,7 +555,10 @@ pub fn create_default_interpreter(
             .collect::<Vec<_>>()
             .as_slice(),
     );
-    let ctx = Context { stage: EvalStage::Stage(0), env };
+    let ctx = Context {
+        stage: EvalStage::Stage(0),
+        env,
+    };
     (StageInterpreter::default(), ctx)
 }
 

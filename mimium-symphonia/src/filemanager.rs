@@ -11,7 +11,7 @@ pub trait FileManager {
     fn open_file_stream(&self, path: impl ToString) -> Result<Self::Stream, Self::Error>;
     fn read_to_string(&self, path: impl ToString, str: &mut String) -> Result<(), Self::Error>;
     fn save_file<C: AsRef<[u8]>>(&self, path: impl ToString, content: C)
-        -> Result<(), Self::Error>;
+    -> Result<(), Self::Error>;
 }
 
 #[cfg(not(target_arch = "wasm32"))]

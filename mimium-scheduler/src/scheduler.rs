@@ -1,6 +1,6 @@
 use std::{cmp::Reverse, collections::BinaryHeap};
 
-use mimium_lang::runtime::{vm::ClosureIdx, Time};
+use mimium_lang::runtime::{Time, vm::ClosureIdx};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Scheduled task to be executed at a specific time.

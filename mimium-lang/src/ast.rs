@@ -55,7 +55,7 @@ pub enum Expr {
     ArrayLiteral(Vec<ExprNodeId>),   // Array literal [e1, e2, ..., en]
     RecordLiteral(Vec<RecordField>), // Complete record literal {field1 = expr1, field2 = expr2, ...}
     ImcompleteRecord(Vec<RecordField>), // Incomplete record literal with default values {field1 = expr1, ..}
-    FieldAccess(ExprNodeId, Symbol), // Record field access: record.field
+    FieldAccess(ExprNodeId, Symbol),    // Record field access: record.field
     Apply(ExprNodeId, Vec<ExprNodeId>),
 
     MacroExpand(ExprNodeId, Vec<ExprNodeId>), // syntax sugar: hoge!(a,b) => ${hoge(a,b)}

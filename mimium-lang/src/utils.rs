@@ -1,9 +1,9 @@
 pub mod environment;
 pub mod error;
 pub mod fileloader;
+pub mod half_float;
 pub mod metadata;
 pub mod miniprint;
-pub mod half_float;
 
 #[macro_export]
 macro_rules! format_vec {

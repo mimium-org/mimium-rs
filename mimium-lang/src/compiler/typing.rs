@@ -1,5 +1,5 @@
 use crate::ast::{Expr, Literal, RecordField};
-use crate::compiler::{intrinsics, EvalStage};
+use crate::compiler::{EvalStage, intrinsics};
 use crate::interner::{ExprKey, ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
 use crate::types::{IntermediateId, PType, RecordTypeField, Type, TypeSchemeId, TypeVar};
@@ -574,19 +574,20 @@ impl InferContext {
         match self.env.lookup_cls(&name) {
             LookupRes::Local((ty, bound_stage)) if self.stage == *bound_stage => Ok(*ty),
             LookupRes::UpValue(_, (ty, bound_stage)) if self.stage == *bound_stage => Ok(*ty),
-            LookupRes::Global((ty, bound_stage)) 
-                if self.stage == *bound_stage || *bound_stage == EvalStage::Persistent => Ok(*ty),
+            LookupRes::Global((ty, bound_stage))
+                if self.stage == *bound_stage || *bound_stage == EvalStage::Persistent =>
+            {
+                Ok(*ty)
+            }
             LookupRes::None => Err(Error::VariableNotFound(name, loc)),
             LookupRes::Local((_, bound_stage))
             | LookupRes::UpValue(_, (_, bound_stage))
-            | LookupRes::Global((_, bound_stage)) => {
-                Err(Error::StageMismatch {
-                    variable: name,
-                    expected_stage: self.stage,
-                    found_stage: *bound_stage,
-                    location: loc,
-                })
-            }
+            | LookupRes::Global((_, bound_stage)) => Err(Error::StageMismatch {
+                variable: name,
+                expected_stage: self.stage,
+                found_stage: *bound_stage,
+                location: loc,
+            }),
         }
     }
     pub(crate) fn infer_type_literal(e: &Literal, loc: Location) -> Result<TypeNodeId, Error> {
@@ -969,23 +970,37 @@ mod tests {
     fn test_stage_mismatch_detection() {
         let mut ctx = create_test_context();
         let loc = create_test_location();
-        
+
         // Define a variable 'x' at stage 0
         let var_name = "x".to_symbol();
-        let var_type = Type::Primitive(crate::types::PType::Numeric).into_id_with_location(loc.clone());
-        ctx.env.add_bind(&[(var_name, (var_type, EvalStage::Stage(0)))]);
-        
+        let var_type =
+            Type::Primitive(crate::types::PType::Numeric).into_id_with_location(loc.clone());
+        ctx.env
+            .add_bind(&[(var_name, (var_type, EvalStage::Stage(0)))]);
+
         // Try to look it up from stage 0 - should succeed
         ctx.stage = EvalStage::Stage(0);
         let result = ctx.lookup(var_name, loc.clone());
-        assert!(result.is_ok(), "Looking up variable from same stage should succeed");
-        
+        assert!(
+            result.is_ok(),
+            "Looking up variable from same stage should succeed"
+        );
+
         // Try to look it up from stage 1 - should fail with stage mismatch
         ctx.stage = EvalStage::Stage(1);
         let result = ctx.lookup(var_name, loc.clone());
-        assert!(result.is_err(), "Looking up variable from different stage should fail");
-        
-        if let Err(Error::StageMismatch { variable, expected_stage, found_stage, .. }) = result {
+        assert!(
+            result.is_err(),
+            "Looking up variable from different stage should fail"
+        );
+
+        if let Err(Error::StageMismatch {
+            variable,
+            expected_stage,
+            found_stage,
+            ..
+        }) = result
+        {
             assert_eq!(variable, var_name);
             assert_eq!(expected_stage, EvalStage::Stage(1));
             assert_eq!(found_stage, EvalStage::Stage(0));
@@ -998,17 +1013,23 @@ mod tests {
     fn test_persistent_stage_access() {
         let mut ctx = create_test_context();
         let loc = create_test_location();
-        
+
         // Define a variable at Persistent stage
         let var_name = "persistent_var".to_symbol();
-        let var_type = Type::Primitive(crate::types::PType::Numeric).into_id_with_location(loc.clone());
-        ctx.env.add_bind(&[(var_name, (var_type, EvalStage::Persistent))]);
-        
+        let var_type =
+            Type::Primitive(crate::types::PType::Numeric).into_id_with_location(loc.clone());
+        ctx.env
+            .add_bind(&[(var_name, (var_type, EvalStage::Persistent))]);
+
         // Try to access from different stages - should all succeed
         for stage in [0, 1, 2] {
             ctx.stage = EvalStage::Stage(stage);
             let result = ctx.lookup(var_name, loc.clone());
-            assert!(result.is_ok(), "Persistent stage variables should be accessible from stage {}", stage);
+            assert!(
+                result.is_ok(),
+                "Persistent stage variables should be accessible from stage {}",
+                stage
+            );
         }
     }
 
@@ -1016,27 +1037,38 @@ mod tests {
     fn test_same_stage_access() {
         let mut ctx = create_test_context();
         let loc = create_test_location();
-        
+
         // Define variables at different stages
         for stage in [0, 1, 2] {
             let var_name = format!("var_stage_{}", stage).to_symbol();
-            let var_type = Type::Primitive(crate::types::PType::Numeric).into_id_with_location(loc.clone());
-            ctx.env.add_bind(&[(var_name, (var_type, EvalStage::Stage(stage)))]);
+            let var_type =
+                Type::Primitive(crate::types::PType::Numeric).into_id_with_location(loc.clone());
+            ctx.env
+                .add_bind(&[(var_name, (var_type, EvalStage::Stage(stage)))]);
         }
-        
+
         // Each variable should only be accessible from its own stage
         for stage in [0, 1, 2] {
             ctx.stage = EvalStage::Stage(stage);
             let var_name = format!("var_stage_{}", stage).to_symbol();
             let result = ctx.lookup(var_name, loc.clone());
-            assert!(result.is_ok(), "Variable should be accessible from its own stage {}", stage);
-            
+            assert!(
+                result.is_ok(),
+                "Variable should be accessible from its own stage {}",
+                stage
+            );
+
             // Should not be accessible from other stages
             for other_stage in [0, 1, 2] {
                 if other_stage != stage {
                     ctx.stage = EvalStage::Stage(other_stage);
                     let result = ctx.lookup(var_name, loc.clone());
-                    assert!(result.is_err(), "Variable from stage {} should not be accessible from stage {}", stage, other_stage);
+                    assert!(
+                        result.is_err(),
+                        "Variable from stage {} should not be accessible from stage {}",
+                        stage,
+                        other_stage
+                    );
                 }
             }
         }
@@ -1045,53 +1077,73 @@ mod tests {
     #[test]
     fn test_stage_transitions_bracket_escape() {
         let mut ctx = create_test_context();
-        
+
         // Test that stage transitions work correctly
         assert_eq!(ctx.stage, EvalStage::Stage(0), "Initial stage should be 0");
-        
+
         // Simulate bracket behavior - stage increment
         ctx.stage = ctx.stage.increment();
-        assert_eq!(ctx.stage, EvalStage::Stage(1), "Stage should increment to 1 in bracket");
-        
+        assert_eq!(
+            ctx.stage,
+            EvalStage::Stage(1),
+            "Stage should increment to 1 in bracket"
+        );
+
         // Simulate escape behavior - stage decrement
         ctx.stage = ctx.stage.decrement();
-        assert_eq!(ctx.stage, EvalStage::Stage(0), "Stage should decrement back to 0 after escape");
+        assert_eq!(
+            ctx.stage,
+            EvalStage::Stage(0),
+            "Stage should decrement back to 0 after escape"
+        );
     }
 
     #[test]
     fn test_multi_stage_environment() {
         let mut ctx = create_test_context();
         let loc = create_test_location();
-        
+
         // Create nested scope with different stages
         ctx.env.extend(); // Create new scope
-        
+
         // Add variable at stage 0
         let var_stage0 = "x".to_symbol();
-        let var_type = Type::Primitive(crate::types::PType::Numeric).into_id_with_location(loc.clone());
+        let var_type =
+            Type::Primitive(crate::types::PType::Numeric).into_id_with_location(loc.clone());
         ctx.stage = EvalStage::Stage(0);
-        ctx.env.add_bind(&[(var_stage0, (var_type, EvalStage::Stage(0)))]);
-        
+        ctx.env
+            .add_bind(&[(var_stage0, (var_type, EvalStage::Stage(0)))]);
+
         ctx.env.extend(); // Create another scope
-        
+
         // Add variable with same name at stage 1
         let var_stage1 = "x".to_symbol(); // Same name, different stage
         ctx.stage = EvalStage::Stage(1);
-        ctx.env.add_bind(&[(var_stage1, (var_type, EvalStage::Stage(1)))]);
-        
+        ctx.env
+            .add_bind(&[(var_stage1, (var_type, EvalStage::Stage(1)))]);
+
         // Test lookups from different stages
         ctx.stage = EvalStage::Stage(0);
         let result = ctx.lookup(var_stage0, loc.clone());
-        assert!(result.is_err(), "Stage 0 variable should not be accessible from nested stage 0 context due to shadowing");
-        
+        assert!(
+            result.is_err(),
+            "Stage 0 variable should not be accessible from nested stage 0 context due to shadowing"
+        );
+
         ctx.stage = EvalStage::Stage(1);
         let result = ctx.lookup(var_stage1, loc.clone());
-        assert!(result.is_ok(), "Stage 1 variable should be accessible from stage 1");
-        
+        assert!(
+            result.is_ok(),
+            "Stage 1 variable should be accessible from stage 1"
+        );
+
         ctx.stage = EvalStage::Stage(0);
         let result = ctx.lookup(var_stage1, loc.clone());
-        assert!(result.is_err(), "Stage 1 variable should not be accessible from stage 0");
-        
+        assert!(
+            result.is_err(),
+            "Stage 1 variable should not be accessible from stage 0"
+        );
+
         // Clean up scopes
         ctx.env.to_outer();
         ctx.env.to_outer();

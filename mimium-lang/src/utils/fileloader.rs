@@ -172,6 +172,6 @@ fn dsp(){
         let (_, file) = setup_file();
         let err = load_mmmlibfile(&file, &file).expect_err("should be an error");
 
-        assert!(matches!(err,Error::SelfReference(_)));
+        assert!(matches!(err, Error::SelfReference(_)));
     }
 }

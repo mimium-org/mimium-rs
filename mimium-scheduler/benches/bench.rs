@@ -2,16 +2,14 @@
 #![feature(test)]
 extern crate test;
 
-fn main(){
-    
-}
+fn main() {}
 #[cfg(test)]
-mod tests{
-    use test::Bencher;
+mod tests {
     use mimium_test::run_source_with_scheduler;
+    use test::Bencher;
     #[bench]
-    fn scheduler_counter(b:&mut Bencher){
-       let src = r"fn makecounter(){
+    fn scheduler_counter(b: &mut Bencher) {
+        let src = r"fn makecounter(){
     let x = 0.0
     letrec gen = | |{
         x = x+1.0
@@ -24,9 +22,9 @@ mod tests{
 let x_getter = makecounter();
 fn dsp(){
     x_getter()
-}"; 
-        b.iter(move ||{
-            let _res = run_source_with_scheduler(src,10);
+}";
+        b.iter(move || {
+            let _res = run_source_with_scheduler(src, 10);
         })
     }
 }
