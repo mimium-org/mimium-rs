@@ -2,8 +2,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use mimium_lang::interner::ToSymbol;
+use mimium_lang::compiler::EvalStage;
 use mimium_lang::plugin::{
-    EvalStage, ExtClsInfo, ExtFunInfo, ExtFunType, ExtFunTypeInfo, MachineFunction, Plugin,
+    ExtClsInfo, ExtFunTypeInfo, MachineFunction, Plugin,
 };
 use mimium_lang::runtime::vm::{self, Machine, ReturnCode};
 use mimium_lang::types::{PType, Type};
