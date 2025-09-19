@@ -1,0 +1,11 @@
+let Project = |name:string,code|{
+    code
+}
+`{
+    let phasor = |freq|{(self+freq/44100)% 1.0}
+ let dsp = Project!("Test",`| |{ 
+      let res = phasor(440)
+      let test = Slider!("gain",1.0,0.0,0.0)
+       res
+ })
+}

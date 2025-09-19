@@ -6,6 +6,7 @@ pub mod statement;
 use crate::ast::operators::Op;
 use crate::interner::{ExprNodeId, Symbol, TypeNodeId, with_session_globals};
 use crate::pattern::{TypedId, TypedPattern};
+use crate::utils::atomic::{self, SimpleAtomic};
 use crate::utils::metadata::{Location, Span};
 use crate::utils::miniprint::MiniPrint;
 use std::cell::{RefCell, UnsafeCell};
@@ -17,7 +18,7 @@ pub type Time = i64;
 pub enum Literal {
     String(Symbol),
     Int(i64),
-    Float(Arc<RefCell<f64>>),
+    Float(Arc<atomic::F64>),
     SelfLit,
     Now,
     SampleRate,
@@ -82,7 +83,7 @@ pub enum Expr {
 impl fmt::Display for Literal {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Literal::Float(n) => write!(f, "(float {})", n.borrow()),
+            Literal::Float(n) => write!(f, "(float {})", n.load()),
             Literal::Int(n) => write!(f, "(int {})", n),
             Literal::String(s) => write!(f, "\"{}\"", s),
             Literal::Now => write!(f, "now"),

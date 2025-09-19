@@ -11,6 +11,7 @@ mod lift_f {
     use crate::code;
     use crate::interner::TypeNodeId;
     use crate::interpreter::Value;
+    use crate::utils::atomic;
     use crate::{
         function, numeric,
         types::{PType, Type},
@@ -21,7 +22,8 @@ mod lift_f {
         let v = &args[0].0;
         match v {
             Value::Number(lhs) => Value::Code(
-                Expr::Literal(Literal::Float(Arc::new(RefCell::new(*lhs)))).into_id_without_span(),
+                Expr::Literal(Literal::Float(Arc::new(atomic::F64::new(*lhs))))
+                    .into_id_without_span(),
             ),
             _ => panic!("Invalid argument types for function lift_f"),
         }

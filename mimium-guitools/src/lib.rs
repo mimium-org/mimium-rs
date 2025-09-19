@@ -11,7 +11,7 @@ use mimium_lang::{
     },
     runtime::vm::{Machine, ReturnCode},
     string_t,
-    types::{PType, Type},
+    types::{PType, Type}, utils::atomic,
 };
 use plot_window::PlotApp;
 use ringbuf::{
@@ -70,7 +70,7 @@ impl GuiToolPlugin {
             Expr::Apply(
                 Expr::Var(Self::GET_SLIDER.to_symbol()).into_id_without_span(),
                 vec![
-                    Expr::Literal(Literal::Float(Arc::new(RefCell::new(idx as f64))))
+                    Expr::Literal(Literal::Float(Arc::new(atomic::F64::new(idx as f64))))
                         .into_id_without_span(),
                 ],
             )

@@ -6,6 +6,7 @@ use crate::ast::{Expr, Literal, RecordField};
 use crate::interner::{ExprNodeId, Symbol, ToSymbol};
 use crate::pattern::TypedId;
 use crate::types::Type;
+use crate::utils::atomic;
 use crate::utils::error::SimpleError;
 use crate::utils::metadata::Location;
 use crate::utils::miniprint::MiniPrint;
@@ -412,7 +413,7 @@ fn convert_operators(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
                 path: loc.path,
             };
             let fname = Expr::Var(op_var).into_id(oploc);
-            let zero = Expr::Literal(Literal::Float(Arc::new(RefCell::new(0.0)))).into_id(loc.clone());
+            let zero = Expr::Literal(Literal::Float(Arc::new(atomic::F64::new(0.0)))).into_id(loc.clone());
             Expr::Apply(fname, vec![zero, e]).into_id(loc)
         }
         Expr::UniOp((op, opspan), expr) => {

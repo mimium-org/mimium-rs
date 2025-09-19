@@ -140,7 +140,7 @@ mod typedpattern {
 }
 
 mod expr {
-    use mimium_lang::ast::operators::Op;
+    use mimium_lang::{ast::operators::Op, utils::atomic::SimpleAtomic};
 
     use super::*;
     pub(super) fn pretty<'a, D, A>(expr: ExprNodeId, allocator: &'a D) -> DocBuilder<'a, D, A>
@@ -152,7 +152,7 @@ mod expr {
         match expr.to_expr() {
             Expr::Literal(Literal::String(s)) => allocator.text(s).double_quotes(),
             Expr::Literal(Literal::Int(i)) => allocator.text(i.to_string()),
-            Expr::Literal(Literal::Float(s)) => allocator.text(s.borrow().to_string()),
+            Expr::Literal(Literal::Float(s)) => allocator.text(s.load().to_string()),
             Expr::Literal(Literal::SelfLit) => allocator.text("self"),
             Expr::Literal(Literal::Now) => allocator.text("now"),
             Expr::Literal(Literal::SampleRate) => allocator.text("samplerate"),
@@ -504,9 +504,12 @@ pub fn pretty_print(
     if !errs.is_empty() {
         return Err(errs);
     }
+    Ok(format_ast(prog, width).unwrap_or_default())
+}
+pub fn format_ast(prog: Program, width: usize) -> Option<String> {
     let allocator = Arena::new();
     let doc = program::pretty::<_, ()>(prog, &allocator);
     let mut w = Vec::new();
     doc.render(width, &mut w).unwrap();
-    Ok(String::from_utf8(w).unwrap())
+    String::from_utf8(w).ok()
 }

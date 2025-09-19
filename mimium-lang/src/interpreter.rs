@@ -11,6 +11,7 @@ use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
 use crate::plugin::{MacroFunType, MacroFunction, MacroInfo};
 use crate::types::Type;
+use crate::utils::atomic::{self, SimpleAtomic};
 use crate::utils::environment::{Environment, LookupRes};
 
 const PERSISTENT_STAGE: i64 = i64::MIN;
@@ -268,7 +269,7 @@ impl TryInto<ExprNodeId> for Value {
     fn try_into(self) -> Result<ExprNodeId, Self::Error> {
         match self {
             Value::Number(e) => {
-                Ok(Expr::Literal(Literal::Float(Arc::new(RefCell::new(e)))).into_id_without_span())
+                Ok(Expr::Literal(Literal::Float(Arc::new(atomic::F64::new(e)))).into_id_without_span())
             }
             Value::String(s) => Ok(Expr::Literal(Literal::String(s)).into_id_without_span()),
             Value::Array(elements) => {
@@ -386,7 +387,7 @@ impl GeneralInterpreter for StageInterpreter {
                     }
                 }
                 Expr::Block(e) => e.map_or(Value::Unit, |eid| self.eval_in_new_env(&[], ctx, eid)),
-                Expr::Literal(Literal::Float(f)) => Value::Number(f.borrow().clone()),
+                Expr::Literal(Literal::Float(f)) => Value::Number(f.load()),
                 Expr::Literal(Literal::Int(i)) => Value::Number(i as f64),
                 Expr::Literal(Literal::String(s)) => Value::String(s),
                 Expr::Literal(Literal::SelfLit) => {
