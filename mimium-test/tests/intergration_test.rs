@@ -453,6 +453,17 @@ fn block_local_scope_fail() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn fail_invalid_stage() {
+    let res = run_error_test("fail_invalid_stage.mmm", false);
+    assert_eq!(res.len(), 1);
+    assert!(
+        res[0]
+            .get_message()
+            .contains("Variable x is defined in stage 0 but accessed from stage 1")
+    )
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn test_phase_reset() {
     let res = run_file_test_stereo("test_phase_reset.mmm", 10).unwrap();
     let ans = vec![
