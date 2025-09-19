@@ -12,6 +12,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::rc::Rc;
 
+// Stage type matching interpreter.rs
+const PERSISTENT_STAGE: i64 = i64::MIN;
+type Stage = i64;
+
 mod unification;
 use unification::{Error as UnificationError, Relation, unify_types};
 
@@ -57,6 +61,12 @@ pub enum Error {
         right: (Vec<(Symbol, TypeNodeId)>, Location),
     },
     VariableNotFound(Symbol, Location),
+    StageMismatch {
+        variable: Symbol,
+        expected_stage: Stage,
+        found_stage: Stage,
+        location: Location,
+    },
     NonPrimitiveInFeed(Location),
 }
 impl fmt::Display for Error {
@@ -85,6 +95,16 @@ impl ReportableError for Error {
             }
             Error::VariableNotFound(symbol, _) => {
                 format!("Variable {symbol} not found in this scope")
+            }
+            Error::StageMismatch {
+                variable,
+                expected_stage,
+                found_stage,
+                ..
+            } => {
+                format!(
+                    "Variable {variable} is defined in stage {found_stage} but accessed from stage {expected_stage}"
+                )
             }
             Error::NonPrimitiveInFeed(_) => {
                 format!("Function that uses `self` cannot return function type.")
@@ -154,6 +174,19 @@ impl ReportableError for Error {
             }
             Error::VariableNotFound(symbol, loc) => {
                 vec![(loc.clone(), format!("{symbol} is not defined"))]
+            }
+            Error::StageMismatch {
+                variable,
+                expected_stage,
+                found_stage,
+                location,
+            } => {
+                vec![(
+                    location.clone(),
+                    format!(
+                        "Variable {variable} defined in stage {found_stage} cannot be accessed from stage {expected_stage}"
+                    ),
+                )]
             }
             Error::NonPrimitiveInFeed(loc) => {
                 vec![(loc.clone(), format!("This cannot be function type."))]
@@ -254,11 +287,12 @@ pub struct InferContext {
     interm_idx: IntermediateId,
     typescheme_idx: TypeSchemeId,
     level: u64,
+    stage: Stage,
     instantiated_map: BTreeMap<TypeSchemeId, TypeNodeId>, //from type scheme to typevar
     generalize_map: BTreeMap<IntermediateId, TypeSchemeId>,
     result_memo: BTreeMap<ExprKey, TypeNodeId>,
     file_path: Symbol,
-    pub env: Environment<TypeNodeId>,
+    pub env: Environment<(TypeNodeId, Stage)>,
     pub errors: Vec<Error>,
 }
 impl InferContext {
@@ -267,16 +301,27 @@ impl InferContext {
             interm_idx: Default::default(),
             typescheme_idx: Default::default(),
             level: Default::default(),
+            stage: 0, // Start at stage 0
             instantiated_map: Default::default(),
             generalize_map: Default::default(),
             result_memo: Default::default(),
             file_path,
-            env: Environment::<TypeNodeId>::default(),
+            env: Environment::<(TypeNodeId, Stage)>::default(),
             errors: Default::default(),
         };
         res.env.extend();
-        res.env.add_bind(&Self::intrinsic_types());
-        res.env.add_bind(builtins);
+        // Intrinsic types are persistent (available at all stages)
+        let intrinsics = Self::intrinsic_types()
+            .into_iter()
+            .map(|(name, ty)| (name, (ty, PERSISTENT_STAGE)))
+            .collect::<Vec<_>>();
+        res.env.add_bind(&intrinsics);
+        // Builtins are also persistent
+        let builtins = builtins
+            .iter()
+            .map(|(name, ty)| (*name, (*ty, PERSISTENT_STAGE)))
+            .collect::<Vec<_>>();
+        res.env.add_bind(&builtins);
         res
     }
 }
@@ -486,7 +531,7 @@ impl InferContext {
             Pattern::Single(id) => {
                 let pat_t = self.convert_unknown_to_intermediate(ty, loc_p);
                 log::trace!("bind {} : {}", id, pat_t.to_type().to_string());
-                self.env.add_bind(&[(id, pat_t)]);
+                self.env.add_bind(&[(id, (pat_t, self.stage))]);
                 Ok::<TypeNodeId, Vec<Error>>(pat_t)
             }
             Pattern::Tuple(pats) => {
@@ -525,10 +570,24 @@ impl InferContext {
     }
 
     pub fn lookup(&self, name: Symbol, loc: Location) -> Result<TypeNodeId, Error> {
-        self.env.lookup(&name).map_or_else(
-            || Err(Error::VariableNotFound(name, loc)), //todo:Span
-            |v| Ok(*v),
-        )
+        use crate::utils::environment::LookupRes;
+        match self.env.lookup_cls(&name) {
+            LookupRes::Local((ty, bound_stage)) if self.stage == *bound_stage => Ok(*ty),
+            LookupRes::UpValue(_, (ty, bound_stage)) if self.stage == *bound_stage => Ok(*ty),
+            LookupRes::Global((ty, bound_stage)) 
+                if self.stage == *bound_stage || *bound_stage == PERSISTENT_STAGE => Ok(*ty),
+            LookupRes::None => Err(Error::VariableNotFound(name, loc)),
+            LookupRes::Local((_, bound_stage))
+            | LookupRes::UpValue(_, (_, bound_stage))
+            | LookupRes::Global((_, bound_stage)) => {
+                Err(Error::StageMismatch {
+                    variable: name,
+                    expected_stage: self.stage,
+                    found_stage: *bound_stage,
+                    location: loc,
+                })
+            }
+        }
     }
     pub(crate) fn infer_type_literal(e: &Literal, loc: Location) -> Result<TypeNodeId, Error> {
         let pt = match e {
@@ -691,7 +750,7 @@ impl InferContext {
                 //todo: add span to Feed expr for keeping the location of `self`.
                 let feedv = self.gen_intermediate_type_with_location(loc);
 
-                self.env.add_bind(&[(*id, feedv)]);
+                self.env.add_bind(&[(*id, (feedv, self.stage))]);
                 let bty = self.infer_type_unwrapping(*body);
                 let _rel = self.unify_types(bty, feedv)?;
                 if bty.to_type().contains_function() {
@@ -713,7 +772,7 @@ impl InferContext {
                     .iter()
                     .map(|id| {
                         let ity = self.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
-                        self.env.add_bind(&[(id.id, ity)]);
+                        self.env.add_bind(&[(id.id, (ity, self.stage))]);
                         RecordTypeField {
                             key: id.id,
                             ty: ity,
@@ -753,7 +812,7 @@ impl InferContext {
             }
             Expr::LetRec(id, body, then) => {
                 let idt = self.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
-                self.env.add_bind(&[(id.id, idt)]);
+                self.env.add_bind(&[(id.id, (idt, self.stage))]);
                 //polymorphic inference is not allowed in recursive function.
                 let bodyt = self.infer_type_levelup(*body);
                 let _res = self.unify_types(idt, bodyt);
@@ -838,7 +897,12 @@ impl InferContext {
             ),
             Expr::Escape(e) => {
                 let loc_e = Location::new(e.to_span(), self.file_path);
+                // Decrease stage for escape expression
+                self.stage -= 1;
+                log::trace!("Unstaging escape expression, stage => {}", self.stage);
                 let res = self.infer_type_unwrapping(*e);
+                // Increase stage back
+                self.stage += 1;
                 let intermediate = self.gen_intermediate_type_with_location(loc_e.clone());
                 let rel = self.unify_types(
                     res,
@@ -848,7 +912,12 @@ impl InferContext {
             }
             Expr::Bracket(e) => {
                 let loc_e = Location::new(e.to_span(), self.file_path);
+                // Increase stage for bracket expression
+                self.stage += 1;
+                log::trace!("Staging bracket expression, stage => {}", self.stage);
                 let res = self.infer_type_unwrapping(*e);
+                // Decrease stage back
+                self.stage -= 1;
                 Ok(Type::Code(res).into_id_with_location(loc_e))
             }
             _ => Ok(Type::Failure.into_id_with_location(loc)),
