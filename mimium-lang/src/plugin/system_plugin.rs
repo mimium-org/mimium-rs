@@ -6,9 +6,10 @@
 
 use super::ExtClsInfo;
 use crate::{
+    compiler::EvalStage,
     interner::{ToSymbol, TypeNodeId},
     interpreter::Value,
-    plugin::{EvalStage, MacroInfo},
+    plugin::MacroInfo,
     runtime::{
         Time,
         vm::{Machine, ReturnCode},
