@@ -40,6 +40,22 @@ impl EvalStage {
             EvalStage::Stage(n) => n.to_string(),
         }
     }
+
+    /// Increment the current stage for bracket expressions
+    pub fn increment(self) -> EvalStage {
+        match self {
+            EvalStage::Persistent => EvalStage::Persistent, // Persistent stays persistent
+            EvalStage::Stage(n) => EvalStage::Stage(n + 1),
+        }
+    }
+
+    /// Decrement the current stage for escape expressions
+    pub fn decrement(self) -> EvalStage {
+        match self {
+            EvalStage::Persistent => EvalStage::Persistent, // Persistent stays persistent
+            EvalStage::Stage(n) => EvalStage::Stage(n.saturating_sub(1)),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

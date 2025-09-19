@@ -184,21 +184,6 @@ trait MultiStageInterpreter {
     type Value: Clone + ValueTrait + std::fmt::Debug + TryInto<ExprNodeId, Error = ValueToExprError>;
 }
 
-/// Helper functions for stage transitions
-fn increment_stage(stage: EvalStage) -> EvalStage {
-    match stage {
-        EvalStage::Persistent => EvalStage::Persistent, // Persistent stays persistent
-        EvalStage::Stage(n) => EvalStage::Stage(n + 1),
-    }
-}
-
-fn decrement_stage(stage: EvalStage) -> EvalStage {
-    match stage {
-        EvalStage::Persistent => EvalStage::Persistent, // Persistent stays persistent
-        EvalStage::Stage(n) => EvalStage::Stage(n.saturating_sub(1)),
-    }
-}
-
 #[derive(Clone)]
 pub struct ExtFunction {
     name: Symbol,
@@ -464,18 +449,18 @@ impl StageInterpreter {
     fn rebuild(&mut self, ctx: &mut Context<Value>, e: ExprNodeId) -> ExprNodeId {
         match e.to_expr() {
             Expr::Bracket(inner) => {
-                ctx.stage = increment_stage(ctx.stage);
+                ctx.stage = ctx.stage.increment();
                 log::trace!("staging bracket expression, stage => {:?}", ctx.stage);
                 let res = self.rebuild(ctx, inner);
-                ctx.stage = decrement_stage(ctx.stage);
+                ctx.stage = ctx.stage.decrement();
                 res
             }
             Expr::Escape(inner) => {
-                ctx.stage = decrement_stage(ctx.stage);
+                ctx.stage = ctx.stage.decrement();
                 log::trace!("Unstaging escape expression, stage => {:?}", ctx.stage);
 
                 let v = self.eval(ctx, inner);
-                ctx.stage = increment_stage(ctx.stage);
+                ctx.stage = ctx.stage.increment();
                 v.try_into()
                     .expect("Failed to convert escape expression to ExprNodeId")
             }

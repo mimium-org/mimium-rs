@@ -326,22 +326,6 @@ impl InferContext {
     }
 }
 impl InferContext {
-    /// Increment the current stage for bracket expressions
-    fn increment_stage(&mut self) {
-        self.stage = match self.stage {
-            EvalStage::Persistent => EvalStage::Persistent, // Persistent stays persistent
-            EvalStage::Stage(n) => EvalStage::Stage(n + 1),
-        };
-    }
-
-    /// Decrement the current stage for escape expressions
-    fn decrement_stage(&mut self) {
-        self.stage = match self.stage {
-            EvalStage::Persistent => EvalStage::Persistent, // Persistent stays persistent
-            EvalStage::Stage(n) => EvalStage::Stage(n.saturating_sub(1)),
-        };
-    }
-
     fn intrinsic_types() -> Vec<(Symbol, TypeNodeId)> {
         let binop_ty = function!(vec![numeric!(), numeric!()], numeric!());
         let binop_names = [
@@ -914,11 +898,11 @@ impl InferContext {
             Expr::Escape(e) => {
                 let loc_e = Location::new(e.to_span(), self.file_path);
                 // Decrease stage for escape expression
-                self.decrement_stage();
+                self.stage = self.stage.decrement();
                 log::trace!("Unstaging escape expression, stage => {:?}", self.stage);
                 let res = self.infer_type_unwrapping(*e);
                 // Increase stage back
-                self.increment_stage();
+                self.stage = self.stage.increment();
                 let intermediate = self.gen_intermediate_type_with_location(loc_e.clone());
                 let rel = self.unify_types(
                     res,
@@ -929,11 +913,11 @@ impl InferContext {
             Expr::Bracket(e) => {
                 let loc_e = Location::new(e.to_span(), self.file_path);
                 // Increase stage for bracket expression
-                self.increment_stage();
+                self.stage = self.stage.increment();
                 log::trace!("Staging bracket expression, stage => {:?}", self.stage);
                 let res = self.infer_type_unwrapping(*e);
                 // Decrease stage back
-                self.decrement_stage();
+                self.stage = self.stage.decrement();
                 Ok(Type::Code(res).into_id_with_location(loc_e))
             }
             _ => Ok(Type::Failure.into_id_with_location(loc)),
@@ -1066,11 +1050,11 @@ mod tests {
         assert_eq!(ctx.stage, EvalStage::Stage(0), "Initial stage should be 0");
         
         // Simulate bracket behavior - stage increment
-        ctx.increment_stage();
+        ctx.stage = ctx.stage.increment();
         assert_eq!(ctx.stage, EvalStage::Stage(1), "Stage should increment to 1 in bracket");
         
         // Simulate escape behavior - stage decrement
-        ctx.decrement_stage();
+        ctx.stage = ctx.stage.decrement();
         assert_eq!(ctx.stage, EvalStage::Stage(0), "Stage should decrement back to 0 after escape");
     }
 
