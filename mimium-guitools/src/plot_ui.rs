@@ -1,6 +1,6 @@
 use egui::Color32;
 use egui_plot::{Line, LineStyle, PlotPoints};
-use ringbuf::{traits::Consumer, HeapCons, HeapRb};
+use ringbuf::{HeapCons, HeapRb, traits::Consumer};
 pub(crate) struct PlotUi {
     label: String,
     color: Color32,

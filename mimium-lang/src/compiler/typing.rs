@@ -1,5 +1,5 @@
 use crate::ast::{Expr, Literal, RecordField};
-use crate::compiler::intrinsics;
+use crate::compiler::{EvalStage, intrinsics};
 use crate::interner::{ExprKey, ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
 use crate::types::{IntermediateId, PType, RecordTypeField, Type, TypeSchemeId, TypeVar};
@@ -57,6 +57,12 @@ pub enum Error {
         right: (Vec<(Symbol, TypeNodeId)>, Location),
     },
     VariableNotFound(Symbol, Location),
+    StageMismatch {
+        variable: Symbol,
+        expected_stage: EvalStage,
+        found_stage: EvalStage,
+        location: Location,
+    },
     NonPrimitiveInFeed(Location),
 }
 impl fmt::Display for Error {
@@ -85,6 +91,18 @@ impl ReportableError for Error {
             }
             Error::VariableNotFound(symbol, _) => {
                 format!("Variable {symbol} not found in this scope")
+            }
+            Error::StageMismatch {
+                variable,
+                expected_stage,
+                found_stage,
+                ..
+            } => {
+                format!(
+                    "Variable {variable} is defined in stage {} but accessed from stage {}",
+                    found_stage.format_for_error(),
+                    expected_stage.format_for_error()
+                )
             }
             Error::NonPrimitiveInFeed(_) => {
                 format!("Function that uses `self` cannot return function type.")
@@ -154,6 +172,21 @@ impl ReportableError for Error {
             }
             Error::VariableNotFound(symbol, loc) => {
                 vec![(loc.clone(), format!("{symbol} is not defined"))]
+            }
+            Error::StageMismatch {
+                variable,
+                expected_stage,
+                found_stage,
+                location,
+            } => {
+                vec![(
+                    location.clone(),
+                    format!(
+                        "Variable {variable} defined in stage {} cannot be accessed from stage {}",
+                        found_stage.format_for_error(),
+                        expected_stage.format_for_error()
+                    ),
+                )]
             }
             Error::NonPrimitiveInFeed(loc) => {
                 vec![(loc.clone(), format!("This cannot be function type."))]
@@ -254,11 +287,12 @@ pub struct InferContext {
     interm_idx: IntermediateId,
     typescheme_idx: TypeSchemeId,
     level: u64,
+    stage: EvalStage,
     instantiated_map: BTreeMap<TypeSchemeId, TypeNodeId>, //from type scheme to typevar
     generalize_map: BTreeMap<IntermediateId, TypeSchemeId>,
     result_memo: BTreeMap<ExprKey, TypeNodeId>,
     file_path: Symbol,
-    pub env: Environment<TypeNodeId>,
+    pub env: Environment<(TypeNodeId, EvalStage)>,
     pub errors: Vec<Error>,
 }
 impl InferContext {
@@ -267,16 +301,27 @@ impl InferContext {
             interm_idx: Default::default(),
             typescheme_idx: Default::default(),
             level: Default::default(),
+            stage: EvalStage::Stage(0), // Start at stage 0
             instantiated_map: Default::default(),
             generalize_map: Default::default(),
             result_memo: Default::default(),
             file_path,
-            env: Environment::<TypeNodeId>::default(),
+            env: Environment::<(TypeNodeId, EvalStage)>::default(),
             errors: Default::default(),
         };
         res.env.extend();
-        res.env.add_bind(&Self::intrinsic_types());
-        res.env.add_bind(builtins);
+        // Intrinsic types are persistent (available at all stages)
+        let intrinsics = Self::intrinsic_types()
+            .into_iter()
+            .map(|(name, ty)| (name, (ty, EvalStage::Persistent)))
+            .collect::<Vec<_>>();
+        res.env.add_bind(&intrinsics);
+        // Builtins are also persistent
+        let builtins = builtins
+            .iter()
+            .map(|(name, ty)| (*name, (*ty, EvalStage::Persistent)))
+            .collect::<Vec<_>>();
+        res.env.add_bind(&builtins);
         res
     }
 }
@@ -486,7 +531,7 @@ impl InferContext {
             Pattern::Single(id) => {
                 let pat_t = self.convert_unknown_to_intermediate(ty, loc_p);
                 log::trace!("bind {} : {}", id, pat_t.to_type().to_string());
-                self.env.add_bind(&[(id, pat_t)]);
+                self.env.add_bind(&[(id, (pat_t, self.stage))]);
                 Ok::<TypeNodeId, Vec<Error>>(pat_t)
             }
             Pattern::Tuple(pats) => {
@@ -525,10 +570,25 @@ impl InferContext {
     }
 
     pub fn lookup(&self, name: Symbol, loc: Location) -> Result<TypeNodeId, Error> {
-        self.env.lookup(&name).map_or_else(
-            || Err(Error::VariableNotFound(name, loc)), //todo:Span
-            |v| Ok(*v),
-        )
+        use crate::utils::environment::LookupRes;
+        match self.env.lookup_cls(&name) {
+            LookupRes::Local((ty, bound_stage)) if self.stage == *bound_stage => Ok(*ty),
+            LookupRes::UpValue(_, (ty, bound_stage)) if self.stage == *bound_stage => Ok(*ty),
+            LookupRes::Global((ty, bound_stage))
+                if self.stage == *bound_stage || *bound_stage == EvalStage::Persistent =>
+            {
+                Ok(*ty)
+            }
+            LookupRes::None => Err(Error::VariableNotFound(name, loc)),
+            LookupRes::Local((_, bound_stage))
+            | LookupRes::UpValue(_, (_, bound_stage))
+            | LookupRes::Global((_, bound_stage)) => Err(Error::StageMismatch {
+                variable: name,
+                expected_stage: self.stage,
+                found_stage: *bound_stage,
+                location: loc,
+            }),
+        }
     }
     pub(crate) fn infer_type_literal(e: &Literal, loc: Location) -> Result<TypeNodeId, Error> {
         let pt = match e {
@@ -691,7 +751,7 @@ impl InferContext {
                 //todo: add span to Feed expr for keeping the location of `self`.
                 let feedv = self.gen_intermediate_type_with_location(loc);
 
-                self.env.add_bind(&[(*id, feedv)]);
+                self.env.add_bind(&[(*id, (feedv, self.stage))]);
                 let bty = self.infer_type_unwrapping(*body);
                 let _rel = self.unify_types(bty, feedv)?;
                 if bty.to_type().contains_function() {
@@ -713,7 +773,7 @@ impl InferContext {
                     .iter()
                     .map(|id| {
                         let ity = self.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
-                        self.env.add_bind(&[(id.id, ity)]);
+                        self.env.add_bind(&[(id.id, (ity, self.stage))]);
                         RecordTypeField {
                             key: id.id,
                             ty: ity,
@@ -753,7 +813,7 @@ impl InferContext {
             }
             Expr::LetRec(id, body, then) => {
                 let idt = self.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
-                self.env.add_bind(&[(id.id, idt)]);
+                self.env.add_bind(&[(id.id, (idt, self.stage))]);
                 //polymorphic inference is not allowed in recursive function.
                 let bodyt = self.infer_type_levelup(*body);
                 let _res = self.unify_types(idt, bodyt);
@@ -838,7 +898,12 @@ impl InferContext {
             ),
             Expr::Escape(e) => {
                 let loc_e = Location::new(e.to_span(), self.file_path);
+                // Decrease stage for escape expression
+                self.stage = self.stage.decrement();
+                log::trace!("Unstaging escape expression, stage => {:?}", self.stage);
                 let res = self.infer_type_unwrapping(*e);
+                // Increase stage back
+                self.stage = self.stage.increment();
                 let intermediate = self.gen_intermediate_type_with_location(loc_e.clone());
                 let rel = self.unify_types(
                     res,
@@ -848,7 +913,12 @@ impl InferContext {
             }
             Expr::Bracket(e) => {
                 let loc_e = Location::new(e.to_span(), self.file_path);
+                // Increase stage for bracket expression
+                self.stage = self.stage.increment();
+                log::trace!("Staging bracket expression, stage => {:?}", self.stage);
                 let res = self.infer_type_unwrapping(*e);
+                // Decrease stage back
+                self.stage = self.stage.decrement();
                 Ok(Type::Code(res).into_id_with_location(loc_e))
             }
             _ => Ok(Type::Failure.into_id_with_location(loc)),
@@ -879,4 +949,203 @@ pub fn infer_root(
         .unwrap_or(Type::Failure.into_id_with_location(e.to_location()));
     ctx.substitute_all_intermediates();
     ctx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interner::ToSymbol;
+    use crate::types::Type;
+    use crate::utils::metadata::{Location, Span};
+
+    fn create_test_context() -> InferContext {
+        InferContext::new(&[], "test".to_symbol())
+    }
+
+    fn create_test_location() -> Location {
+        Location::new(Span { start: 0, end: 0 }, "test".to_symbol())
+    }
+
+    #[test]
+    fn test_stage_mismatch_detection() {
+        let mut ctx = create_test_context();
+        let loc = create_test_location();
+
+        // Define a variable 'x' at stage 0
+        let var_name = "x".to_symbol();
+        let var_type =
+            Type::Primitive(crate::types::PType::Numeric).into_id_with_location(loc.clone());
+        ctx.env
+            .add_bind(&[(var_name, (var_type, EvalStage::Stage(0)))]);
+
+        // Try to look it up from stage 0 - should succeed
+        ctx.stage = EvalStage::Stage(0);
+        let result = ctx.lookup(var_name, loc.clone());
+        assert!(
+            result.is_ok(),
+            "Looking up variable from same stage should succeed"
+        );
+
+        // Try to look it up from stage 1 - should fail with stage mismatch
+        ctx.stage = EvalStage::Stage(1);
+        let result = ctx.lookup(var_name, loc.clone());
+        assert!(
+            result.is_err(),
+            "Looking up variable from different stage should fail"
+        );
+
+        if let Err(Error::StageMismatch {
+            variable,
+            expected_stage,
+            found_stage,
+            ..
+        }) = result
+        {
+            assert_eq!(variable, var_name);
+            assert_eq!(expected_stage, EvalStage::Stage(1));
+            assert_eq!(found_stage, EvalStage::Stage(0));
+        } else {
+            panic!("Expected StageMismatch error, got: {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_persistent_stage_access() {
+        let mut ctx = create_test_context();
+        let loc = create_test_location();
+
+        // Define a variable at Persistent stage
+        let var_name = "persistent_var".to_symbol();
+        let var_type =
+            Type::Primitive(crate::types::PType::Numeric).into_id_with_location(loc.clone());
+        ctx.env
+            .add_bind(&[(var_name, (var_type, EvalStage::Persistent))]);
+
+        // Try to access from different stages - should all succeed
+        for stage in [0, 1, 2] {
+            ctx.stage = EvalStage::Stage(stage);
+            let result = ctx.lookup(var_name, loc.clone());
+            assert!(
+                result.is_ok(),
+                "Persistent stage variables should be accessible from stage {}",
+                stage
+            );
+        }
+    }
+
+    #[test]
+    fn test_same_stage_access() {
+        let mut ctx = create_test_context();
+        let loc = create_test_location();
+
+        // Define variables at different stages
+        for stage in [0, 1, 2] {
+            let var_name = format!("var_stage_{}", stage).to_symbol();
+            let var_type =
+                Type::Primitive(crate::types::PType::Numeric).into_id_with_location(loc.clone());
+            ctx.env
+                .add_bind(&[(var_name, (var_type, EvalStage::Stage(stage)))]);
+        }
+
+        // Each variable should only be accessible from its own stage
+        for stage in [0, 1, 2] {
+            ctx.stage = EvalStage::Stage(stage);
+            let var_name = format!("var_stage_{}", stage).to_symbol();
+            let result = ctx.lookup(var_name, loc.clone());
+            assert!(
+                result.is_ok(),
+                "Variable should be accessible from its own stage {}",
+                stage
+            );
+
+            // Should not be accessible from other stages
+            for other_stage in [0, 1, 2] {
+                if other_stage != stage {
+                    ctx.stage = EvalStage::Stage(other_stage);
+                    let result = ctx.lookup(var_name, loc.clone());
+                    assert!(
+                        result.is_err(),
+                        "Variable from stage {} should not be accessible from stage {}",
+                        stage,
+                        other_stage
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_stage_transitions_bracket_escape() {
+        let mut ctx = create_test_context();
+
+        // Test that stage transitions work correctly
+        assert_eq!(ctx.stage, EvalStage::Stage(0), "Initial stage should be 0");
+
+        // Simulate bracket behavior - stage increment
+        ctx.stage = ctx.stage.increment();
+        assert_eq!(
+            ctx.stage,
+            EvalStage::Stage(1),
+            "Stage should increment to 1 in bracket"
+        );
+
+        // Simulate escape behavior - stage decrement
+        ctx.stage = ctx.stage.decrement();
+        assert_eq!(
+            ctx.stage,
+            EvalStage::Stage(0),
+            "Stage should decrement back to 0 after escape"
+        );
+    }
+
+    #[test]
+    fn test_multi_stage_environment() {
+        let mut ctx = create_test_context();
+        let loc = create_test_location();
+
+        // Create nested scope with different stages
+        ctx.env.extend(); // Create new scope
+
+        // Add variable at stage 0
+        let var_stage0 = "x".to_symbol();
+        let var_type =
+            Type::Primitive(crate::types::PType::Numeric).into_id_with_location(loc.clone());
+        ctx.stage = EvalStage::Stage(0);
+        ctx.env
+            .add_bind(&[(var_stage0, (var_type, EvalStage::Stage(0)))]);
+
+        ctx.env.extend(); // Create another scope
+
+        // Add variable with same name at stage 1
+        let var_stage1 = "x".to_symbol(); // Same name, different stage
+        ctx.stage = EvalStage::Stage(1);
+        ctx.env
+            .add_bind(&[(var_stage1, (var_type, EvalStage::Stage(1)))]);
+
+        // Test lookups from different stages
+        ctx.stage = EvalStage::Stage(0);
+        let result = ctx.lookup(var_stage0, loc.clone());
+        assert!(
+            result.is_err(),
+            "Stage 0 variable should not be accessible from nested stage 0 context due to shadowing"
+        );
+
+        ctx.stage = EvalStage::Stage(1);
+        let result = ctx.lookup(var_stage1, loc.clone());
+        assert!(
+            result.is_ok(),
+            "Stage 1 variable should be accessible from stage 1"
+        );
+
+        ctx.stage = EvalStage::Stage(0);
+        let result = ctx.lookup(var_stage1, loc.clone());
+        assert!(
+            result.is_err(),
+            "Stage 1 variable should not be accessible from stage 0"
+        );
+
+        // Clean up scopes
+        ctx.env.to_outer();
+        ctx.env.to_outer();
+    }
 }

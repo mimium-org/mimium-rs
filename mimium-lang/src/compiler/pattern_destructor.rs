@@ -50,10 +50,7 @@ impl PatternDestructor {
                 |acc: Option<ExprNodeId>, (i, sub_pat)| {
                     let field_value = Expr::Proj(value, i as i64).into_id(loc.clone());
                     self.destruct_pattern(
-                        &TypedPattern::new(
-                             sub_pat.clone(),
-                            Type::Unknown.into_id(),
-                        ),
+                        &TypedPattern::new(sub_pat.clone(), Type::Unknown.into_id()),
                         field_value,
                         acc,
                         field_value.to_location(),
@@ -94,10 +91,7 @@ impl PatternDestructor {
                             expr.to_location(),
                         );
                         Expr::Let(
-                            TypedPattern::new(
-                                Pattern::Single(new_name),
-                                Type::Unknown.into_id(),
-                            ),
+                            TypedPattern::new(Pattern::Single(new_name), Type::Unknown.into_id()),
                             desugard_v,
                             destructed_pattern_body,
                         )
@@ -200,10 +194,7 @@ mod test {
             Expr::Var("target".to_symbol()).into_id(dummy_loc.clone()),
             Some(
                 Expr::Let(
-                    TypedPattern::new(
-                        Pattern::Single("x".to_symbol()),
-                        Type::Unknown.into_id(),
-                    ),
+                    TypedPattern::new(Pattern::Single("x".to_symbol()), Type::Unknown.into_id()),
                     Expr::Proj(new_rvar, 0).into_id(dummy_loc.clone()),
                     Some(
                         Expr::Let(

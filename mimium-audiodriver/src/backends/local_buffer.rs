@@ -1,10 +1,14 @@
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
 use mimium_lang::{
-    compiler::IoChannelInfo, interner::ToSymbol, plugin::ExtClsInfo, runtime::{vm, Time}, ExecContext
+    ExecContext,
+    compiler::IoChannelInfo,
+    interner::ToSymbol,
+    plugin::ExtClsInfo,
+    runtime::{Time, vm},
 };
 
 use crate::driver::{Driver, RuntimeData, SampleRate};

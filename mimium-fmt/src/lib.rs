@@ -13,5 +13,4 @@ impl Default for GlobalConfig {
 pub static GLOBAL_DATA: LazyLock<Mutex<GlobalConfig>> =
     LazyLock::new(|| Mutex::new(GlobalConfig::default()));
 
-
 pub use print::pretty_print;

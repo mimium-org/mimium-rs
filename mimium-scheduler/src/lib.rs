@@ -3,8 +3,8 @@
 //! This plugin provides a simple synchronous event scheduler which is used by
 //! the runtime to execute scheduled tasks at sample boundaries.
 use mimium_lang::plugin::{SysPluginSignature, SystemPlugin};
-use mimium_lang::runtime::vm::{self, ClosureIdx, Machine, ReturnCode};
 use mimium_lang::runtime::Time;
+use mimium_lang::runtime::vm::{self, ClosureIdx, Machine, ReturnCode};
 use mimium_lang::{
     function, numeric,
     types::{PType, Type},

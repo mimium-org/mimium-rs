@@ -17,23 +17,11 @@ pub use system_plugin::{
 };
 
 use crate::{
+    compiler::EvalStage,
     interner::{Symbol, TypeNodeId},
     interpreter::Value,
     vm::{Machine, ReturnCode},
 };
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EvalStage {
-    Persistent,
-    Stage(u8),
-}
-impl EvalStage {
-    pub fn is_available_in_macro(&self) -> bool {
-        matches!(self, EvalStage::Persistent | EvalStage::Stage(0))
-    }
-    pub fn is_available_in_vm(&self) -> bool {
-        matches!(self, EvalStage::Persistent | EvalStage::Stage(1))
-    }
-}
 trait EvalStageT {
     fn get_stage() -> EvalStage;
 }

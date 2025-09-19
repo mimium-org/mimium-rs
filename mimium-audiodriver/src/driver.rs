@@ -4,15 +4,19 @@
 //! such as cpal or the CSV writer used for testing.
 
 use std::sync::{
-    atomic::{AtomicU32, Ordering},
     Arc,
+    atomic::{AtomicU32, Ordering},
 };
 
 use mimium_lang::{
-    compiler::IoChannelInfo, interner::ToSymbol, plugin::{DynSystemPlugin, ExtClsInfo, InstantPlugin}, runtime::{
-        vm::{self, FuncProto, ReturnCode},
+    ExecContext,
+    compiler::IoChannelInfo,
+    interner::ToSymbol,
+    plugin::{DynSystemPlugin, ExtClsInfo, InstantPlugin},
+    runtime::{
         Time,
-    }, ExecContext
+        vm::{self, FuncProto, ReturnCode},
+    },
 };
 use num_traits::Float;
 
@@ -74,7 +78,7 @@ pub trait Driver {
         InstantPlugin {
             extcls: self.get_runtimefn_infos(),
             macros: vec![],
-            commonfns: vec![]
+            commonfns: vec![],
         }
     }
 }

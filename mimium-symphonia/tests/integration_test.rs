@@ -30,7 +30,7 @@ fn test_readwav_interp() {
         .map(|f| (*f * 1000.0).round() as u32)
         .collect::<Vec<_>>();
     let mut ans = (0u32..100)
-    .map(|x| (x * 10 + 5).min(990))
+        .map(|x| (x * 10 + 5).min(990))
         .collect::<Vec<_>>();
     ans.push(0); //0 should be returned when the index exceeds the boundary
     assert_eq!(res_int, ans);

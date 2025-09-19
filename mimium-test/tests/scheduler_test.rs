@@ -1,5 +1,5 @@
 use mimium_audiodriver::{backends::local_buffer::LocalBufferDriver, driver::Driver};
-use mimium_lang::{plugin::Plugin, ExecContext};
+use mimium_lang::{ExecContext, plugin::Plugin};
 use mimium_test::*;
 use wasm_bindgen_test::*;
 
@@ -42,7 +42,6 @@ fn scheduler_reactive() {
     let ans = vec![0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0];
     assert_eq!(res, ans);
 }
-
 
 fn prep_gc_test_machine(times: usize, src: &str) -> LocalBufferDriver {
     let mut driver = LocalBufferDriver::new(times);

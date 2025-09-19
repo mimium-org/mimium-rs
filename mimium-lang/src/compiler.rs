@@ -6,6 +6,58 @@ pub(crate) mod pattern_destructor;
 pub mod typing;
 use crate::plugin::{ExtFunTypeInfo, MacroFunction};
 
+/// Stage information for multi-stage programming.
+/// Moved from plugin.rs to be shared across compiler modules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvalStage {
+    /// Persistent stage - accessible from all stages (like builtins)
+    Persistent,
+    /// Specific stage number
+    Stage(u8),
+}
+
+impl std::fmt::Display for EvalStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EvalStage::Persistent => write!(f, "persistent"),
+            EvalStage::Stage(n) => write!(f, "{}", n),
+        }
+    }
+}
+
+impl EvalStage {
+    pub fn is_available_in_macro(&self) -> bool {
+        matches!(self, EvalStage::Persistent | EvalStage::Stage(0))
+    }
+    pub fn is_available_in_vm(&self) -> bool {
+        matches!(self, EvalStage::Persistent | EvalStage::Stage(1))
+    }
+
+    /// Format the stage for error messages
+    pub fn format_for_error(&self) -> String {
+        match self {
+            EvalStage::Persistent => "persistent".to_string(),
+            EvalStage::Stage(n) => n.to_string(),
+        }
+    }
+
+    /// Increment the current stage for bracket expressions
+    pub fn increment(self) -> EvalStage {
+        match self {
+            EvalStage::Persistent => EvalStage::Persistent, // Persistent stays persistent
+            EvalStage::Stage(n) => EvalStage::Stage(n + 1),
+        }
+    }
+
+    /// Decrement the current stage for escape expressions
+    pub fn decrement(self) -> EvalStage {
+        match self {
+            EvalStage::Persistent => EvalStage::Persistent, // Persistent stays persistent
+            EvalStage::Stage(n) => EvalStage::Stage(n.saturating_sub(1)),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ErrorKind {
     TypeMismatch(Type, Type),
@@ -179,7 +231,6 @@ mod test {
         function,
         interner::ToSymbol,
         numeric,
-        plugin::EvalStage,
         types::{PType, Type},
     };
 

@@ -6,17 +6,16 @@ use std::rc::Rc;
 use itertools::Itertools;
 
 use crate::ast::{Expr, Literal, RecordField};
+use crate::compiler::EvalStage;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
 use crate::plugin::{MacroFunType, MacroFunction, MacroInfo};
 use crate::types::Type;
 use crate::utils::environment::{Environment, LookupRes};
 
-const PERSISTENT_STAGE: i64 = i64::MIN;
-type Stage = i64;
-type ClosureContent<T> = (Environment<(T, Stage)>, Vec<Symbol>, ExprNodeId);
+type ClosureContent<T> = (Environment<(T, EvalStage)>, Vec<Symbol>, ExprNodeId);
 pub trait ValueTrait {
-    fn make_closure(e: ExprNodeId, names: Vec<Symbol>, env: Environment<(Self, Stage)>) -> Self
+    fn make_closure(e: ExprNodeId, names: Vec<Symbol>, env: Environment<(Self, EvalStage)>) -> Self
     where
         Self: std::marker::Sized;
     fn get_as_closure(self) -> Option<ClosureContent<Self>>
@@ -34,8 +33,8 @@ pub struct Context<V>
 where
     V: Clone + ValueTrait + std::fmt::Debug,
 {
-    pub stage: Stage,
-    pub env: Environment<(V, Stage)>,
+    pub stage: EvalStage,
+    pub env: Environment<(V, EvalStage)>,
 }
 
 ///Trait for defining general reduction rules of Lambda calculus, independent of the primitive types, even if it is untyped.
@@ -91,7 +90,7 @@ pub trait GeneralInterpreter {
                     val.clone()
                 }
                 LookupRes::Global((val, bounded_stage))
-                    if ctx.stage == *bounded_stage || *bounded_stage == PERSISTENT_STAGE =>
+                    if ctx.stage == *bounded_stage || *bounded_stage == EvalStage::Persistent =>
                 {
                     val.clone()
                 }
@@ -100,8 +99,8 @@ pub trait GeneralInterpreter {
                 | LookupRes::UpValue(_, (_, bounded_stage))
                 | LookupRes::Global((_, bounded_stage)) => {
                     panic!(
-                        "Variable {name} found, but stage mismatch: expected {}, found {}",
-                        *bounded_stage, ctx.stage
+                        "Variable {name} found, but stage mismatch: expected {:?}, found {:?}",
+                        ctx.stage, bounded_stage
                     )
                 }
             },
@@ -213,7 +212,7 @@ pub enum Value {
     Array(Vec<Value>),
     Record(Vec<(Symbol, Value)>),
     Tuple(Vec<Value>),
-    Closure(ExprNodeId, Vec<Symbol>, Environment<(Value, Stage)>),
+    Closure(ExprNodeId, Vec<Symbol>, Environment<(Value, EvalStage)>),
     Fixpoint(Symbol, ExprNodeId),
     Code(ExprNodeId),
     ExternalFn(ExtFunction),
@@ -227,12 +226,16 @@ impl From<&Box<dyn MacroFunction>> for Value {
     }
 }
 impl ValueTrait for Value {
-    fn make_closure(e: ExprNodeId, names: Vec<Symbol>, env: Environment<(Self, Stage)>) -> Self {
+    fn make_closure(
+        e: ExprNodeId,
+        names: Vec<Symbol>,
+        env: Environment<(Self, EvalStage)>,
+    ) -> Self {
         // Create a closure value with the given expression, names, and environment
         Value::Closure(e, names, env)
     }
 
-    fn get_as_closure(self) -> Option<(Environment<(Self, Stage)>, Vec<Symbol>, ExprNodeId)> {
+    fn get_as_closure(self) -> Option<(Environment<(Self, EvalStage)>, Vec<Symbol>, ExprNodeId)> {
         match self {
             Value::Closure(e, names, env) => Some((env, names, e)),
             _ => None,
@@ -320,7 +323,7 @@ impl GeneralInterpreter for StageInterpreter {
 
     fn interpret_expr(&mut self, ctx: &mut Context<Value>, expr: ExprNodeId) -> Self::Value {
         // Implement the logic for interpreting expressions here
-        if ctx.stage > 0 {
+        if ctx.stage != EvalStage::Stage(0) {
             Value::Code(self.rebuild(ctx, expr))
         } else {
             match expr.to_expr() {
@@ -428,11 +431,11 @@ impl GeneralInterpreter for StageInterpreter {
                     panic!("escape expression cannot be evaluated in stage 0")
                 }
                 Expr::Bracket(e) => {
-                    ctx.stage = 1; // Increase the stage for bracket
-                    log::trace!("Bracketting expression, stage => {}", ctx.stage);
+                    ctx.stage = EvalStage::Stage(1); // Increase the stage for bracket
+                    log::trace!("Bracketting expression, stage => {:?}", ctx.stage);
 
                     let res = Value::Code(self.rebuild(ctx, e));
-                    ctx.stage = 0; // Decrease the stage back
+                    ctx.stage = EvalStage::Stage(0); // Decrease the stage back
                     res
                 }
                 // apply, lambda, let, letrec, escape, bracket, etc. will be handled by the interpreter trait
@@ -450,18 +453,18 @@ impl StageInterpreter {
     fn rebuild(&mut self, ctx: &mut Context<Value>, e: ExprNodeId) -> ExprNodeId {
         match e.to_expr() {
             Expr::Bracket(inner) => {
-                ctx.stage += 1;
-                log::trace!("staging bracket expression, stage => {}", ctx.stage);
+                ctx.stage = ctx.stage.increment();
+                log::trace!("staging bracket expression, stage => {:?}", ctx.stage);
                 let res = self.rebuild(ctx, inner);
-                ctx.stage -= 1;
+                ctx.stage = ctx.stage.decrement();
                 res
             }
             Expr::Escape(inner) => {
-                ctx.stage -= 1;
-                log::trace!("Unstaging escape expression, stage => {}", ctx.stage);
+                ctx.stage = ctx.stage.decrement();
+                log::trace!("Unstaging escape expression, stage => {:?}", ctx.stage);
 
                 let v = self.eval(ctx, inner);
-                ctx.stage += 1;
+                ctx.stage = ctx.stage.increment();
                 v.try_into()
                     .expect("Failed to convert escape expression to ExprNodeId")
             }
@@ -547,12 +550,15 @@ pub fn create_default_interpreter(
         extern_macros
             .iter()
             .map(|m| {
-                (m.get_name(), (Value::from(m), 0)) // Stage is set to persistent for external functions
+                (m.get_name(), (Value::from(m), EvalStage::Persistent)) // Stage is set to persistent for external functions
             })
             .collect::<Vec<_>>()
             .as_slice(),
     );
-    let ctx = Context { stage: 0, env };
+    let ctx = Context {
+        stage: EvalStage::Stage(0),
+        env,
+    };
     (StageInterpreter::default(), ctx)
 }
 

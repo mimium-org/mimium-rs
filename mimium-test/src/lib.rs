@@ -2,15 +2,15 @@ use std::{collections::HashMap, path::PathBuf};
 
 use mimium_audiodriver::{backends::local_buffer::LocalBufferDriver, driver::Driver};
 use mimium_lang::{
+    Config, ExecContext,
     interner::{Symbol, ToSymbol},
     plugin::Plugin,
     runtime::{self, vm},
     utils::{
-        error::{report, ReportableError},
+        error::{ReportableError, report},
         fileloader,
         metadata::Location,
     },
-    Config, ExecContext,
 };
 
 pub fn run_bytecode_test(

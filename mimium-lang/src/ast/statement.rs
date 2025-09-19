@@ -2,9 +2,8 @@ use crate::{
     ast::Expr,
     interner::ExprNodeId,
     pattern::{TypedId, TypedPattern},
-    utils::metadata::{Location, Span}
+    utils::metadata::{Location, Span},
 };
-
 
 // an intermediate representation used in parser.
 // Note that this struct do not distinct between a global statement(allows `fn(){}`) and a local statement.

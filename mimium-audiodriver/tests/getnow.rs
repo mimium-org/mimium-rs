@@ -3,6 +3,7 @@ use mimium_audiodriver::{
     driver::{Driver, SampleRate},
 };
 use mimium_lang::{
+    Config, ExecContext,
     compiler::IoChannelInfo,
     function,
     interner::ToSymbol as _,
@@ -10,7 +11,6 @@ use mimium_lang::{
     plugin::Plugin,
     runtime::vm::{FuncProto, Instruction, Program},
     types::{PType, Type},
-    Config, ExecContext,
 };
 
 #[test]

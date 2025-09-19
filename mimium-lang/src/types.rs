@@ -297,10 +297,8 @@ impl fmt::Display for TypeVar {
             "?{}[{}]{}",
             self.var.0,
             self.level,
-            self.parent.map_or_else(
-                || "".to_string(),
-                |t| format!(":{}", t.to_type())
-            )
+            self.parent
+                .map_or_else(|| "".to_string(), |t| format!(":{}", t.to_type()))
         )
     }
 }
