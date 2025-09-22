@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use chumsky::input::{Stream, ValueInput};
 use chumsky::{Parser, prelude::*};
 mod token;
-use token::Token;
+pub use token::Token;
 mod error;
 mod lexer;
 use crate::ast::program::{Program, ProgramStatement, expr_from_program};
