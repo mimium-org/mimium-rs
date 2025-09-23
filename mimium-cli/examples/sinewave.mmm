@@ -1,5 +1,0 @@
-include("osc.mmm")
-fn dsp(){
-  let r = sinwave(440.0,0.0)*0.2
-  (r,r)
-}
