@@ -1,4 +1,3 @@
-use mimium_lang::{interner::Symbol, Config, ExecContext};
+use mimium_lang::{Config, ExecContext, interner::Symbol};
 
 pub mod semantic_token;
-
