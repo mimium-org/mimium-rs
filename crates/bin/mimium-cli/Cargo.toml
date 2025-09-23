@@ -7,6 +7,9 @@ repository.workspace = true
 authors.workspace = true
 description = "mimium(minimal-musical-medium) an infrastructural programming language for sound and music. mimium-cli is a simple frontend interface for using mimium"
 
+[lib]
+name = "mimium_cli"
+path = "src/lib.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 # [lib]
 

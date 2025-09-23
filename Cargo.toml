@@ -1,16 +1,18 @@
 [workspace]
 
 members = [
-    "mimium-lang",
-    "mimium-audiodriver",
-    "mimium-cli",
-    "mimium-test",
-    "mimium-scheduler",
-    "mimium-symphonia",
-    "mimium-midi",
-    "mimium-guitools",
-    "mimium-web",
-    "mimium-fmt",
+    "crates/lib/mimium-lang",
+    "crates/lib/mimium-web",
+    "crates/lib/mimium-test",
+    "crates/lib/plugins/mimium-audiodriver",
+    "crates/lib/plugins/mimium-scheduler",
+    "crates/lib/plugins/mimium-symphonia",
+    "crates/lib/plugins/mimium-midi",
+    "crates/lib/plugins/mimium-guitools",
+    "crates/bin/mimium-cli",
+    "crates/bin/mimium-fmt",
+    "crates/bin/mimium-language-server",
+    "crates/bin/mimium-bintools",
 ]
 
 resolver = "2"
@@ -24,14 +26,18 @@ readme = "Readme.md"
 authors = ["Tomoya Matsuura <me@matsuuratomoya.com>"]
 
 [workspace.dependencies]
-mimium-lang = { path = "mimium-lang", version = "2.3.1" }
-mimium-audiodriver = { path = "mimium-audiodriver", version = "2.3.1" }
-mimium-midi = { path = "mimium-midi", version = "2.3.1" }
-mimium-symphonia = { path = "mimium-symphonia", version = "2.3.1" }
-mimium-scheduler = { path = "mimium-scheduler", version = "2.3.1" }
-mimium-guitools = { path = "mimium-guitools", version = "2.3.1" }
-mimium-web = { path = "mimium-web", version = "2.3.1" }
-mimium-test = { path = "mimium-test" }
+mimium-lang = { path = "crates/lib/mimium-lang", version = "2.3.1" }
+mimium-test = { path = "crates/lib/mimium-test" }
+mimium-web = { path = "crates/lib/mimium-web", version = "2.3.1" }
+mimium-audiodriver = { path = "crates/lib/plugins/mimium-audiodriver", version = "2.3.1" }
+mimium-midi = { path = "crates/lib/plugins/mimium-midi", version = "2.3.1" }
+mimium-symphonia = { path = "crates/lib/plugins/mimium-symphonia", version = "2.3.1" }
+mimium-scheduler = { path = "crates/lib/plugins/mimium-scheduler", version = "2.3.1" }
+mimium-guitools = { path = "crates/lib/plugins/mimium-guitools", version = "2.3.1" }
+mimium-cli = { path = "crates/bin/mimium-cli", version = "2.3.1" }
+mimium-fmt = { path = "crates/bin/mimium-fmt", version = "2.3.1" }
+mimium-language-server = { path = "crates/bin/mimium-language-server", version = "2.3.1" }
+
 itertools = "0.13.0"
 wasm-bindgen = "0.2.93"
 wasm-bindgen-test = "0.3"

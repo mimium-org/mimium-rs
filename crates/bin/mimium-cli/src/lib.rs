@@ -1,28 +1,19 @@
-//! Command line interface for the mimium language.
-//!
-//! This binary compiles and executes mimium programs using various audio
-//! backends.  It can also emit intermediate representations such as the AST or
-//! MIR for debugging purposes.
+use std::{
+    io::stdin,
+    path::{Path, PathBuf},
+};
 
-use std::io::stdin;
-use std::path::{Path, PathBuf};
-
-// pub mod wcalculus;
 use clap::{Parser, ValueEnum};
-use mimium_audiodriver::backends::csv::csv_driver;
-use mimium_audiodriver::backends::local_buffer::LocalBufferDriver;
-use mimium_audiodriver::driver::{Driver, SampleRate};
-use mimium_audiodriver::load_default_runtime;
-use mimium_lang::ExecContext;
-use mimium_lang::compiler::bytecodegen::SelfEvalMode;
-use mimium_lang::compiler::emit_ast;
-use mimium_lang::interner::{Symbol, ToSymbol};
-use mimium_lang::plugin::Plugin;
-use mimium_lang::utils::error::ReportableError;
-use mimium_lang::utils::miniprint::MiniPrint;
-use mimium_lang::utils::{error::report, fileloader};
-use mimium_lang::{Config, log};
-use mimium_symphonia::{self, SamplerPlugin};
+use mimium_audiodriver::{
+    backends::{csv::csv_driver, local_buffer::LocalBufferDriver},
+    driver::{Driver, SampleRate},
+    load_default_runtime,
+};
+use mimium_lang::{
+    compiler::{bytecodegen::SelfEvalMode, emit_ast}, interner::{Symbol, ToSymbol}, log, plugin::Plugin, utils::{error::{report, ReportableError}, fileloader, miniprint::MiniPrint}, Config, ExecContext
+};
+use mimium_symphonia::SamplerPlugin;
+
 #[derive(clap::Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
@@ -90,7 +81,7 @@ pub struct Mode {
     pub emit_bytecode: bool,
 }
 
-enum RunMode {
+pub enum RunMode {
     EmitAst,
     EmitMir,
     EmitByteCode,
@@ -102,7 +93,7 @@ enum RunMode {
 }
 
 /// Execution options derived from CLI arguments.
-struct RunOptions {
+pub struct RunOptions {
     mode: RunMode,
     with_gui: bool,
     config: Config,
@@ -110,7 +101,7 @@ struct RunOptions {
 
 impl RunOptions {
     /// Convert parsed command line arguments into [`RunOptions`].
-    fn from_args(args: &Args) -> Self {
+    pub fn from_args(args: &Args) -> Self {
         let config = args.clone().to_execctx_config();
         if args.mode.emit_ast {
             return Self {
@@ -178,7 +169,7 @@ impl RunOptions {
 }
 
 /// Construct an [`ExecContext`] with the default set of plugins.
-fn get_default_context(path: Option<Symbol>, with_gui: bool, config: Config) -> ExecContext {
+pub fn get_default_context(path: Option<Symbol>, with_gui: bool, config: Config) -> ExecContext {
     let plugins: Vec<Box<dyn Plugin>> = vec![Box::new(SamplerPlugin)];
     let mut ctx = ExecContext::new(plugins.into_iter(), path, config);
     ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
@@ -196,42 +187,8 @@ fn get_default_context(path: Option<Symbol>, with_gui: bool, config: Config) -> 
     ctx
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    if cfg!(debug_assertions) | cfg!(test) {
-        colog::default_builder()
-            .filter_level(log::LevelFilter::Trace)
-            .init();
-    } else {
-        colog::default_builder().init();
-    }
-
-    let args = Args::parse();
-    match &args.file {
-        Some(file) => {
-            let fullpath = fileloader::get_canonical_path(".", file)?;
-            let content = fileloader::load(fullpath.to_str().unwrap())?;
-            let options = RunOptions::from_args(&args);
-            match run_file(options, &content, &fullpath) {
-                Ok(_) => {}
-                Err(e) => {
-                    // Note: I was hoping to implement std::error::Error for a
-                    // struct around ReportableError and directly return it,
-                    // however, std::error::Error cannot be so color-rich as
-                    // ariadne because it just uses std::fmt::Display.
-                    report(&content, fullpath.to_string_lossy().to_symbol(), &e);
-                    return Err(format!("Failed to process {file}").into());
-                }
-            }
-        }
-        None => {
-            // repl::run_repl();
-        }
-    }
-    Ok(())
-}
-
 /// Compile and run a single source file according to the provided options.
-fn run_file(
+pub fn run_file(
     options: RunOptions,
     content: &str,
     fullpath: &Path,
@@ -279,4 +236,39 @@ fn run_file(
             Ok(())
         }
     }
+}
+
+
+pub fn lib_main() -> Result<(), Box<dyn std::error::Error>> {
+    if cfg!(debug_assertions) | cfg!(test) {
+        colog::default_builder()
+            .filter_level(log::LevelFilter::Trace)
+            .init();
+    } else {
+        colog::default_builder().init();
+    }
+
+    let args = Args::parse();
+    match &args.file {
+        Some(file) => {
+            let fullpath = fileloader::get_canonical_path(".", file)?;
+            let content = fileloader::load(fullpath.to_str().unwrap())?;
+            let options = RunOptions::from_args(&args);
+            match run_file(options, &content, &fullpath) {
+                Ok(_) => {}
+                Err(e) => {
+                    // Note: I was hoping to implement std::error::Error for a
+                    // struct around ReportableError and directly return it,
+                    // however, std::error::Error cannot be so color-rich as
+                    // ariadne because it just uses std::fmt::Display.
+                    report(&content, fullpath.to_string_lossy().to_symbol(), &e);
+                    return Err(format!("Failed to process {file}").into());
+                }
+            }
+        }
+        None => {
+            // repl::run_repl();
+        }
+    }
+    Ok(())
 }

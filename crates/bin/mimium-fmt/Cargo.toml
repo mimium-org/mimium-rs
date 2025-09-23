@@ -9,5 +9,5 @@ description = "Pretty printing module for mimium"
 
 [dependencies]
 pretty = "0.12.0"
-mimium-lang = { path = "../mimium-lang" }
+mimium-lang = { workspace = true }
 clap = { version = "4.4.2", features = ["derive"] }

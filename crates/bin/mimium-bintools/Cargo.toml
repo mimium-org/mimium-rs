@@ -1,0 +1,25 @@
+[package]
+name = "mimium-bintools"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+description = "binary executable packages of mimium languages."
+
+[dependencies]
+mimium-cli = { workspace = true }
+mimium-fmt = { workspace = true }
+mimium-language-server = { workspace = true }
+tokio = { version = "1.17.0", features = ["full"] }
+
+[[bin]]
+name = "mimium-cli"
+path = "src/cli/bin/main.rs"
+[[bin]]
+name = "mimium-fmt"
+path = "src/fmt/bin/main.rs"
+[[bin]]
+name = "mimium-language-server"
+path = "src/language-server/bin/main.rs"

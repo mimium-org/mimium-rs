@@ -1,0 +1,5 @@
+include("osc.mmm")
+fn dsp(){
+  let te st = sinwave(440.0,1.0) *0.2 
+  (r,r,r)
+} 
