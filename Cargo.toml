@@ -11,6 +11,7 @@ members = [
     "mimium-guitools",
     "mimium-web",
     "mimium-fmt",
+    "mimium-language-server"
 ]
 
 resolver = "2"
@@ -25,6 +26,7 @@ authors = ["Tomoya Matsuura <me@matsuuratomoya.com>"]
 
 [workspace.dependencies]
 mimium-lang = { path = "mimium-lang", version = "2.3.1" }
+mimium-cli = { path = "mimium-cli", version = "2.3.1" }
 mimium-audiodriver = { path = "mimium-audiodriver", version = "2.3.1" }
 mimium-midi = { path = "mimium-midi", version = "2.3.1" }
 mimium-symphonia = { path = "mimium-symphonia", version = "2.3.1" }
