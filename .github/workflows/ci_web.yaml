@@ -38,7 +38,7 @@ jobs:
         run: which wasm-pack || cargo install wasm-pack
       - name: "mimium-test for web"
         run: wasm-pack test --node
-        working-directory: mimium-test
+        working-directory: crates/lib/mimium-test
       - name: "mimium-lang test for web"
         run: wasm-pack test --node
-        working-directory: mimium-lang
+        working-directory: crates/lib/mimium-lang
