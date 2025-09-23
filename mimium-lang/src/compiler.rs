@@ -182,7 +182,7 @@ impl Context {
             config,
         }
     }
-    fn get_ext_typeinfos(&self) -> Vec<(Symbol, TypeNodeId)> {
+    pub fn get_ext_typeinfos(&self) -> Vec<(Symbol, TypeNodeId)> {
         self.ext_fns
             .clone()
             .into_iter()
