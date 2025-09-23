@@ -1,0 +1,23 @@
+`{
+let pi = 3.14159265359
+let sr = 48000.0
+let phasor= |freq|{
+  (self + freq/sr)%1.0
+}
+let osc = |freq|{
+  sin(phasor(freq)*pi*2.0)
+}
+let fmosc = |freq,rate|{
+  osc(freq + osc(rate)*4000.0)
+}
+let amosc = |input,rate|{
+   input * (osc(rate)+1.0/ 2)
+}
+let probel = make_probe("left")
+let prober = make_probe("right")
+let dsp = | |{
+    let l = probel(amosc(fmosc(440,0.02) , 0.2)* Slider!("gain",0.5,0.0,1.0))
+    let r = prober(amosc(fmosc(220,0.03) , 0.3)* Slider!("gain2",0.5,0.0,1.0))
+    (l,r)
+}
+}

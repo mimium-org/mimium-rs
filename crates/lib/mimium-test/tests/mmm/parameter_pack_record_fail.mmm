@@ -1,0 +1,8 @@
+fn add3(a:float,b:float,c:float){
+  a+b+c
+}
+
+fn dsp(){
+//lacking fields, additional parameters might be acceptable with structural subtyping
+  {a=1,b=5} |> add3
+}

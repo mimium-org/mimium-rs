@@ -1,0 +1,19 @@
+[package]
+name = "mimium-language-server"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Language server of mimium for IDE support"
+
+[dependencies]
+serde_json = "1.0.78"
+tokio = { version = "1.17.0", features = ["full"] }
+tower-lsp = { version = "0.20.0", features = ["proposed"] }
+serde = { version = "1.0", features = ["derive"] }
+env_logger = "0.11.5"
+ropey = "1.5.0"
+mimium-lang = { workspace = true }
+mimium-cli = { workspace = true }
+dashmap = "6.1.0"
+log = "0.4.28"

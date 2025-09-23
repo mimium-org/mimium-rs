@@ -5,8 +5,11 @@
 
 - [x] Array Type
 - [ ] Record Type(https://github.com/mimium-org/mimium-rs/issues/99)
+ - [x] Parser and Type Inference
+ - [x] Parameter Pack
+ - [ ] Default Parameter System
 - [ ] More stable support for web platform
-- [ ] Multi-stage computation (Hygienic Macro)
+- [x] Multi-stage computation (Hygienic Macro)
 - [ ] Generics
 - [ ] Module System
 - [ ] Package Manager

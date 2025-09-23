@@ -1,0 +1,4 @@
+let x = 42
+`{
+let dsp = | | x + 1 // x should be embedded through splicing
+}

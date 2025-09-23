@@ -1,48 +1,104 @@
-# Active Context: mimium-rs
+# Active Context for mimium-rs
 
-## Current Work Focus
+## Current Focus
 
-The current focus is on implementing a Language Server Protocol (LSP) server for the mimium programming language. This will provide IDE features such as syntax error reporting, code completion, and hover information to improve the developer experience.
+We are implementing default values for record fields and function parameters in the mimium language. This follows the previous implementations of record types and parameter packs.
 
-## Recent Changes
+The implementation is based on the proposal in [issue #99](https://github.com/mimium-org/mimium-rs/issues/99).
 
-1. **Created mimium-lsp Crate**: Added a new crate to the workspace for the LSP implementation
-2. **Basic LSP Server Structure**: Implemented the core server structure using the tower-lsp crate
-3. **Document Management**: Added functionality to track open documents and their content
-4. **Diagnostics Capability**: Implemented syntax error reporting using the existing parser
-5. **Hover Capability**: Added placeholder implementation for hover information
-6. **Completion Capability**: Added basic code completion for keywords and functions
+## Implementation Components
 
-## Next Steps
+1. **Parser Enhancement**: 
+   - Introduce the `..` syntax to indicate omission of default values
+     - Add a new token for `..` in the lexer
+     - Update grammar rules to recognize this token in appropriate contexts
+   - Extend record type annotations to support default values
+     - Modify field declaration syntax to allow `fieldName: Type = defaultValue` format
+     - Ensure AST nodes can represent default values for fields
+   - Update function definition parsing to allow default parameter values
+     - Similar syntax: `fn myFunc(param1: Type = defaultValue, param2: Type)`
+     - Handle parameter lists with mixed default and non-default parameters
+   - Update record construction syntax to allow field omission with `..`
+     - Example: `{field1 = value1, ..}` where missing fields use defaults
 
-1. **Improve Diagnostics**: Enhance error reporting with better location information
-2. **Implement Hover**: Complete the hover functionality to show type information
-3. **Enhance Completion**: Add context-aware completion suggestions
-4. **Add Go to Definition**: Implement navigation to symbol definitions
-5. **Add Find References**: Implement finding all references to a symbol
-6. **Add Document Symbols**: Implement listing all symbols in a document
-7. **Integration Testing**: Test the LSP server with various editors
+2. **Type System Extension**:
+   - Introduce "Incomplete Record" type for records with omitted fields using `..`
+     - Create a new type constructor to represent records with potential omissions
+     - Track which fields have defaults and their associated types and values
+   - Define type inference rules for incomplete records
+     - When `..` is used in a record literal, infer an incomplete record type
+     - When an incomplete record is used in place of a complete record, check compatibility
+     - Rules for merging incomplete records with other records
+   - Ensure compatibility with existing record type system
+     - Maintain subtyping relationships with regular records
+     - Define clear rules for structural compatibility between complete and incomplete records
+   - Add mechanisms to track default values in the type context
+     - Extend type environment to store default value information
+     - Ensure proper scoping of default values
 
-## Active Decisions and Considerations
+3. **Code Generation**:
+   - Implement desugaring or MIR generation to automatically create functions that supply default values
+     - For records with defaults, generate helper functions that apply defaults for omitted fields
+     - For functions with default parameters, generate wrapper functions that fill in defaults
+     - Optimize to avoid unnecessary function generation when possible
+   - Handle the application of default values at the appropriate compilation stage
+     - Determine whether to resolve defaults at compile-time or runtime
+     - For compile-time constants, inline default values
+     - For runtime values, generate appropriate code to check for omission and apply defaults
+   - Consider lazy evaluation of defaults
+     - Only compute default values when needed
+     - Avoid side effects from default value computations
 
-1. **LSP Implementation Approach**: Using tower-lsp for the LSP server implementation due to its robust support for the LSP protocol and integration with Tokio for async operations.
-2. **Document Management**: Using DashMap for concurrent document storage to handle multiple documents efficiently.
-3. **Error Reporting**: Leveraging the existing error reporting system in mimium-lang to provide detailed diagnostics.
-4. **Modular Design**: Organizing capabilities in separate modules for better maintainability and extensibility.
-5. **Performance Considerations**: Balancing responsiveness with accuracy for real-time feedback.
+## Current Implementation Approach
 
-## Important Patterns and Preferences
+We're currently leaning toward a hybrid approach:
 
-1. **Async/Await**: Using Tokio's async/await for non-blocking operations in the LSP server.
-2. **Error Handling**: Using anyhow for error handling in the LSP server.
-3. **Concurrency**: Using DashMap for concurrent access to documents.
-4. **Code Organization**: Separating capabilities into modules for better maintainability.
-5. **Documentation**: Providing comprehensive documentation for the LSP server.
+1. **For record defaults**:
+   - Handle at compile-time through desugaring for simple cases
+   - Generate record construction helpers that apply defaults
 
-## Learnings and Project Insights
+2. **For function parameter defaults**:
+   - Generate wrapper functions that provide default values
+   - Use these wrappers transparently when functions are called with missing arguments
 
-1. **Language Server Protocol**: The LSP provides a standardized way for editors to communicate with language servers, enabling rich IDE features.
-2. **Tower-LSP**: The tower-lsp crate provides a high-level abstraction for implementing LSP servers in Rust.
-3. **Mimium Language Structure**: The mimium language has a well-defined structure that can be leveraged for IDE features.
-4. **Error Reporting**: The existing error reporting system in mimium-lang can be adapted for LSP diagnostics.
-5. **Type Information**: The type inference system can be used to provide hover information.
+3. **Type checking strategy**:
+   - Perform type checking before applying defaults
+   - Ensure default values match their declared types
+   - Verify completeness of records after potential default application
+
+## Current Challenges
+
+- Ensuring type safety with default values
+  - Making sure default expressions have the correct types
+  - Handling potential type errors in default expressions
+- Determining the appropriate point in the compilation pipeline to resolve defaults
+  - Balance between compile-time resolution and runtime flexibility
+  - Optimization opportunities for known defaults
+- Maintaining backwards compatibility with existing record and function implementations
+  - Ensuring old code continues to work without modifications
+  - Minimizing runtime overhead for code not using default values
+- Handling complex default values
+  - Defaults that depend on other parameters
+  - Defaults that contain expressions needing evaluation
+
+## Recent Insights
+
+- Default values need careful handling in the type system to ensure type safety
+- The `..` syntax provides a clean way for users to omit fields while still indicating intent
+- Compile-time resolution of defaults is preferable when possible for performance reasons
+- We need to carefully consider how default values interact with other language features:
+  - How they work with pattern matching
+  - Their interaction with type inference
+  - Their behavior in the context of higher-order functions
+
+## Current Development Sequence
+
+1. First implement the parser changes to support the `..` syntax and default value declarations
+2. Next, extend the type system to handle incomplete records and default values
+3. Finally, implement the code generation strategy for applying defaults
+
+## Collaboration Notes
+
+- Need to coordinate with the team to ensure consistency with the existing record implementation
+- Should review how other languages (OCaml, Rust, TypeScript) handle default values for inspiration
+- Planning to implement basic cases first, then address more complex scenarios
