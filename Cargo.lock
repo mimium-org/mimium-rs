@@ -1756,6 +1756,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mimium-bintools"
+version = "2.3.1"
+dependencies = [
+ "mimium-cli",
+ "mimium-fmt",
+ "mimium-language-server",
+ "tokio",
+]
+
+[[package]]
 name = "mimium-cli"
 version = "2.3.1"
 dependencies = [

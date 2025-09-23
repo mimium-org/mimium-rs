@@ -3,19 +3,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use clap::ValueEnum;
+use clap::{Parser, ValueEnum};
 use mimium_audiodriver::{
     backends::{csv::csv_driver, local_buffer::LocalBufferDriver},
     driver::{Driver, SampleRate},
     load_default_runtime,
 };
 use mimium_lang::{
-    Config, ExecContext,
-    compiler::{bytecodegen::SelfEvalMode, emit_ast},
-    interner::{Symbol, ToSymbol},
-    log,
-    plugin::Plugin,
-    utils::{error::ReportableError, miniprint::MiniPrint},
+    compiler::{bytecodegen::SelfEvalMode, emit_ast}, interner::{Symbol, ToSymbol}, log, plugin::Plugin, utils::{error::{report, ReportableError}, fileloader, miniprint::MiniPrint}, Config, ExecContext
 };
 use mimium_symphonia::SamplerPlugin;
 
@@ -241,4 +236,39 @@ pub fn run_file(
             Ok(())
         }
     }
+}
+
+
+pub fn lib_main() -> Result<(), Box<dyn std::error::Error>> {
+    if cfg!(debug_assertions) | cfg!(test) {
+        colog::default_builder()
+            .filter_level(log::LevelFilter::Trace)
+            .init();
+    } else {
+        colog::default_builder().init();
+    }
+
+    let args = Args::parse();
+    match &args.file {
+        Some(file) => {
+            let fullpath = fileloader::get_canonical_path(".", file)?;
+            let content = fileloader::load(fullpath.to_str().unwrap())?;
+            let options = RunOptions::from_args(&args);
+            match run_file(options, &content, &fullpath) {
+                Ok(_) => {}
+                Err(e) => {
+                    // Note: I was hoping to implement std::error::Error for a
+                    // struct around ReportableError and directly return it,
+                    // however, std::error::Error cannot be so color-rich as
+                    // ariadne because it just uses std::fmt::Display.
+                    report(&content, fullpath.to_string_lossy().to_symbol(), &e);
+                    return Err(format!("Failed to process {file}").into());
+                }
+            }
+        }
+        None => {
+            // repl::run_repl();
+        }
+    }
+    Ok(())
 }

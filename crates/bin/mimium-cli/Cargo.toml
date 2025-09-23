@@ -10,11 +10,6 @@ description = "mimium(minimal-musical-medium) an infrastructural programming lan
 [lib]
 name = "mimium_cli"
 path = "src/lib.rs"
-
-[[bin]]
-name = "mimium-cli"
-path = "src/main.rs"
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 # [lib]
 

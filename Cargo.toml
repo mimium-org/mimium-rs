@@ -12,6 +12,7 @@ members = [
     "crates/bin/mimium-cli",
     "crates/bin/mimium-fmt",
     "crates/bin/mimium-language-server",
+    "crates/bin/mimium-bintools",
 ]
 
 resolver = "2"
@@ -34,6 +35,9 @@ mimium-symphonia = { path = "crates/lib/plugins/mimium-symphonia", version = "2.
 mimium-scheduler = { path = "crates/lib/plugins/mimium-scheduler", version = "2.3.1" }
 mimium-guitools = { path = "crates/lib/plugins/mimium-guitools", version = "2.3.1" }
 mimium-cli = { path = "crates/bin/mimium-cli", version = "2.3.1" }
+mimium-fmt = { path = "crates/bin/mimium-fmt", version = "2.3.1" }
+mimium-language-server = { path = "crates/bin/mimium-language-server", version = "2.3.1" }
+
 itertools = "0.13.0"
 wasm-bindgen = "0.2.93"
 wasm-bindgen-test = "0.3"
