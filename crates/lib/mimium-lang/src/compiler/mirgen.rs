@@ -443,7 +443,7 @@ impl Context {
             LookupRes::None => {
                 let ty = self.typeenv.lookup(name, loc).expect(
                     format!(
-                        "variable {name} not found. it should be detected at type checking stage"
+                        "variable \"{name}\" not found. it should be detected at type checking stage"
                     )
                     .as_str(),
                 );

@@ -90,7 +90,7 @@ impl ReportableError for Error {
                 format!("Index access for non-tuple variable.")
             }
             Error::VariableNotFound(symbol, _) => {
-                format!("Variable {symbol} not found in this scope")
+                format!("Variable \"{symbol}\" not found in this scope")
             }
             Error::StageMismatch {
                 variable,
@@ -117,7 +117,7 @@ impl ReportableError for Error {
                 format!("Field access for non-record variable.")
             }
             Error::FieldNotExist { field, .. } => {
-                format!("Field `{field}` does not exist in the record type")
+                format!("Field \"{field}\" does not exist in the record type")
             }
             Error::IncompatibleKeyInRecord { .. } => {
                 format!("Record type has incompatible keys.",)
@@ -182,7 +182,7 @@ impl ReportableError for Error {
                 vec![(
                     location.clone(),
                     format!(
-                        "Variable {variable} defined in stage {} cannot be accessed from stage {}",
+                        "Variable \"{variable}\" defined in stage {} cannot be accessed from stage {}",
                         found_stage.format_for_error(),
                         expected_stage.format_for_error()
                     ),
@@ -195,7 +195,7 @@ impl ReportableError for Error {
                 vec![(
                     loc.clone(),
                     format!(
-                        "Duplicate keys `{}` found in record type",
+                        "Duplicate keys \"{}\" found in record type",
                         key.iter()
                             .map(|s| s.to_string())
                             .collect::<Vec<_>>()
@@ -224,7 +224,7 @@ impl ReportableError for Error {
             Error::FieldNotExist { field, loc, et } => vec![(
                 loc.clone(),
                 format!(
-                    "Field `{}` does not exist in the type {}",
+                    "Field \"{}\" does not exist in the type {}",
                     field,
                     et.to_type().to_string_for_error()
                 ),
@@ -250,7 +250,7 @@ impl ReportableError for Error {
                     (
                         rloc.clone(),
                         format!(
-                            "but the record here contains{}",
+                            "but the record here contains {}",
                             right
                                 .iter()
                                 .map(|(key, ty)| format!(
