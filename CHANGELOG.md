@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## v2.4.2
+
+- Fixed language server crashes
+
 ## v2.4.1
 
 - Added a hygienic macro feature with multi stage computation paradigm(experimental).(#136)
