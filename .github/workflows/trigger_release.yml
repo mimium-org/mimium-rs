@@ -64,8 +64,7 @@ jobs:
         if: ${{ !inputs.skip-wasm-pack-publish }}
         run: |
           which wasm-pack || cargo install wasm-pack
-          wasm-pack build --target web
-          wasm-pack publish --target web
-        working-directory: crate/lib/mimium-web
+          wasm-pack build crates/lib/mimium-web --target web
+          wasm-pack publish crates/lib/mimium-web --target web
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}
