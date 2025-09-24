@@ -190,7 +190,6 @@ impl Context {
             .chain(self.macros.iter().map(|m| (m.get_name(), m.get_type())))
             .collect()
     }
-
     pub fn emit_mir(&self, src: &str) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
         let path = self.file_path.map(|sym| PathBuf::from(sym.to_string()));
         let (ast, mut parse_errs) = parser::parse_to_expr(src, path);
