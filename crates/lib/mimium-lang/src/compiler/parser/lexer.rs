@@ -98,12 +98,13 @@ where
     let separator = choice((
         double_dot,
         single_dot,
-        one_of(",.:;`$").map(|c| match c {
+        one_of(",.:;`$#").map(|c| match c {
             ',' => Token::Comma,
             ':' => Token::Colon,
             ';' => Token::SemiColon,
             '`' => Token::BackQuote,
             '$' => Token::Dollar,
+            '#' => Token::Sharp,
             _ => Token::Ident(c.to_string().to_symbol()),
         }),
     ));
@@ -128,6 +129,8 @@ where
             "string" => Token::StringType,
             "struct" => Token::StructType,
             "include" => Token::Include,
+            "stage" => Token::StageKwd,
+            "main" => Token::Main,
             "_" => Token::PlaceHolder,
             _ => Token::Ident(ident.to_symbol()),
         });
