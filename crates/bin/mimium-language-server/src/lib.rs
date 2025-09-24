@@ -200,44 +200,43 @@ fn diagnostic_from_error(
     rope: &Rope,
 ) -> Option<Diagnostic> {
     let severity = DiagnosticSeverity::ERROR;
+    let main_message = error.get_message();
+    let labels = error.get_labels();
+    let (mainloc, _mainmsg) = labels.first()?;
 
-    if let Some(((mainloc, mainmsg), rest)) = error.get_labels().split_first() {
-        let span = &mainloc.span;
-        let start_position = offset_to_position(span.start, rope)?;
-        let end_position = offset_to_position(span.end, rope)?;
-        let related_informations = rest
-            .iter()
-            .filter_map(|(loc, msg)| {
-                let span = &loc.span;
-                let start_position = offset_to_position(span.start, rope)?;
-                let end_position = offset_to_position(span.end, rope)?;
-                let uri = if loc.path.to_string() != "" {
-                    Url::from_file_path(std::path::PathBuf::from(loc.path.to_string()))
-                        .unwrap_or(url.clone())
-                } else {
-                    url.clone()
-                };
-                Some(DiagnosticRelatedInformation {
-                    location: Location {
-                        uri,
-                        range: Range::new(start_position, end_position),
-                    },
-                    message: msg.clone(),
-                })
+    let span = &mainloc.span;
+    let start_position = offset_to_position(span.start, rope)?;
+    let end_position = offset_to_position(span.end, rope)?;
+    let related_informations = labels
+        .iter()
+        .filter_map(|(loc, msg)| {
+            let span = &loc.span;
+            let start_position = offset_to_position(span.start, rope)?;
+            let end_position = offset_to_position(span.end, rope)?;
+            let uri = if loc.path.to_string() != "" {
+                Url::from_file_path(std::path::PathBuf::from(loc.path.to_string()))
+                    .unwrap_or(url.clone())
+            } else {
+                url.clone()
+            };
+            Some(DiagnosticRelatedInformation {
+                location: Location {
+                    uri,
+                    range: Range::new(start_position, end_position),
+                },
+                message: msg.clone(),
             })
-            .collect();
-        Some(Diagnostic::new(
-            Range::new(start_position, end_position),
-            Some(severity),
-            None,
-            None,
-            mainmsg.clone(),
-            Some(related_informations),
-            None,
-        ))
-    } else {
-        None
-    }
+        })
+        .collect();
+    Some(Diagnostic::new(
+        Range::new(start_position, end_position),
+        Some(severity),
+        None,
+        None,
+        main_message.clone(),
+        Some(related_informations),
+        None,
+    ))
 }
 impl Backend {
     fn compile(&self, src: &str, url: Url) -> Vec<Diagnostic> {
