@@ -1,8 +1,13 @@
 # CHANGELOG
 
-## v2.4.0
+## v2.4.1
 
-- Added a hygienic macro feature with multi stage computation paradigm.(#136)
+- Added a hygienic macro feature with multi stage computation paradigm(experimental).(#136)
+- Added record type and parameter-packing feature(experimental).(#128,#134,#130)
+- Added basic language server support(#151)
+- Added a simple slider ui(#147)
+
+- (For developers, the directory structure is significantly changes to organize many crates)
 
 ## v2.3.1
 
