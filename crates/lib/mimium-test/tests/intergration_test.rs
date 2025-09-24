@@ -560,3 +560,9 @@ fn multistage_macro() {
     let ans = vec![8.0];
     assert_eq!(res, ans);
 }
+#[test]
+fn multistage_globalsyntax() {
+    let res = run_file_test_mono("multistage_globalsyntax.mmm", 1).unwrap();
+    let ans = vec![8.0];
+    assert_eq!(res, ans);
+}

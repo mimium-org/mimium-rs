@@ -814,8 +814,7 @@ where
     just(Token::Sharp)
         .ignore_then(
             just(Token::StageKwd)
-                .ignore_then(stages)
-                .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd)),
+                .ignore_then(stages.delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))),
         )
         .map_with(move |stage: StageKind, e| {
             (

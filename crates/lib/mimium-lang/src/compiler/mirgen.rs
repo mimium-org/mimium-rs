@@ -1025,7 +1025,7 @@ impl Context {
 fn is_code_contain_macro(typeenv: &mut InferContext, top_ast: ExprNodeId) -> bool {
     typeenv
         .infer_type(top_ast)
-        .is_ok_and(|t| matches!(t.to_type(), Type::Code(_)))
+        .is_ok_and(|t| t.to_type().contains_code())
 }
 
 pub fn typecheck(
@@ -1062,13 +1062,11 @@ pub fn compile(
     macro_env: &[Box<dyn MacroFunction>],
     file_path: Option<Symbol>,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
-    let (expr, mut infer_ctx, errors) = typecheck(root_expr_id, builtin_types, file_path);
+    let (expr, infer_ctx, errors) = typecheck(root_expr_id, builtin_types, file_path);
     if errors.is_empty() {
-        let expr = if is_code_contain_macro(&mut infer_ctx, expr) {
-            interpreter::expand_macro(expr, macro_env)
-        } else {
-            expr
-        };
+        let wrapped_code = Expr::Bracket(expr).into_id_without_span();
+        interpreter::expand_macro(wrapped_code, macro_env);
+
         log::trace!("ast after macro expansion: {:?}", expr.to_expr());
         let expr = parser::add_global_context(expr, file_path.unwrap_or_default());
         let mut ctx = Context::new(infer_ctx, file_path);

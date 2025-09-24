@@ -123,7 +123,16 @@ impl Type {
     pub fn is_function(&self) -> bool {
         matches!(self, Type::Function { arg: _, ret: _ })
     }
-
+    pub fn contains_code(&self) -> bool {
+        match self {
+            Type::Code(_) => true,
+            Type::Tuple(t) => t.iter().any(|t| t.to_type().contains_code()),
+            Type::Record(t) => t
+                .iter()
+                .any(|RecordTypeField { ty, .. }| ty.to_type().contains_code()),
+            _ => false,
+        }
+    }
     pub fn is_intermediate(&self) -> Option<Rc<RefCell<TypeVar>>> {
         match self {
             Type::Intermediate(tvar) => Some(tvar.clone()),
