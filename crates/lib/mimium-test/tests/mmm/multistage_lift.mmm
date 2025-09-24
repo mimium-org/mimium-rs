@@ -1,4 +1,3 @@
-#stage(macro)
 fn genpower(n:float){
     letrec aux = |n:float,x| {
         if (n>1){
@@ -9,12 +8,11 @@ fn genpower(n:float){
     }
     `{|x:float| $(aux(n,`x))}
 }
+
+// you can't write like $(genpower(3))(2) because of the precedence of dollar sign.
 let x = 3
-#stage(main)
 let y = 2
-// you can now write main code as if it is in global level
+`{
 
-fn dsp() {
-   genpower!(x)(y)// should be 8
+    let dsp = | | {genpower!(3)($lift_f(2))}// should be 8
 }
-
