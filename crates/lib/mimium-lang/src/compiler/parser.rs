@@ -149,8 +149,16 @@ where
             .boxed()
             .labelled("Array");
 
-        // let _struct_t = todo!();
-        let atom = choice((type_primitive(ctx.clone()), record, tuple, array));
+        let code = just(Token::BackQuote)
+            .ignore_then(ty.clone())
+            .map_with(move |inner_type, e| {
+                Type::Code(inner_type).into_id_with_location(Location {
+                    span: get_span(e.span()),
+                    path,
+                })
+            })
+            .labelled("Code");
+        let atom = choice((type_primitive(ctx.clone()), record, tuple, array, code));
         let func = atom
             .clone()
             .separated_by(just(Token::Comma))

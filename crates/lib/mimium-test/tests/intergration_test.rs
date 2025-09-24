@@ -573,3 +573,9 @@ fn multistage_lift() {
     let ans = vec![8.0];
     assert_eq!(res, ans);
 }
+#[test]
+fn multistage_explicit_type() {
+    let res = run_file_test_mono("multistage_explicit_type.mmm", 1).unwrap();
+    let ans = vec![32.0];
+    assert_eq!(res, ans);
+}
