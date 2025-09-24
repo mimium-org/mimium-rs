@@ -33,13 +33,13 @@
         "name": "Debug executable 'mimium-CLI'",
         "cargo": {
           "cwd": "${workspaceFolder}",
-          "args": ["build", "--bin=mimium-cli", "--package=mimium-cli"],
+          "args": ["build", "--bin=mimium-cli", "--package=mimium-bintools"],
           "filter": {
             "name": "mimium-cli",
             "kind": "bin"
           }
         },
-        "args": ["mimium-cli/examples/sinewave.mmm"],
+        "args": ["./crates/lib/mimium-test/tests/mmm/multistage_globalsyntax.mmm"],
         "cwd": "${workspaceFolder}"
       },
       {
