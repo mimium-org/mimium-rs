@@ -44,59 +44,64 @@ fn stmt_from_expr(expr: ExprNodeId, target: &mut Vec<Statement>) {
 
 // A helper function to convert vector of statements to nested expression
 pub(crate) fn into_then_expr(stmts: &[(Statement, Location)]) -> Option<ExprNodeId> {
-    let get_span = |spana: Span, spanb: Option<ExprNodeId>| match spanb {
-        Some(b) => {
-            let start = spana.start;
-            start..b.to_span().end
-        }
-        None => spana,
-    };
+    // Concat all statements into one nested expression.
+    // We need to check statements from first to last to resolve macro stage, but we need to build expression from last to first.
+    // So we build a closure to build expression from first to last, and then evaluate them in reverse order.
+    type ClsType = Box<dyn FnOnce(Option<ExprNodeId>) -> Option<ExprNodeId>>;
     let mut last_stage = StageKind::Macro;
-    //traverse statements in revese order, and build nested Expression
-    let e_pre = stmts.iter().rev().fold(None, |then, (stmt, loc)| {
-        let span = get_span(loc.span.clone(), then);
-        let new_loc = Location {
-            span,
-            path: loc.path,
+    let mut closures = Vec::<ClsType>::new();
+    for (stmt, loc) in stmts.iter() {
+        let stmt = stmt.clone();
+        let loc = loc.clone();
+        let cls = match stmt {
+            Statement::Let(typed_pattern, expr_node_id) => Box::new(move |then| {
+                Some(Expr::Let(typed_pattern.clone(), expr_node_id, then).into_id(loc.clone()))
+            }) as ClsType,
+            Statement::LetRec(typed_id, expr_node_id) => Box::new(move |then| {
+                Some(Expr::LetRec(typed_id.clone(), expr_node_id, then).into_id(loc.clone()))
+            }) as ClsType,
+            Statement::Assign(expr_node_id, expr_node_id1) => Box::new(move |then| {
+                Some(
+                    Expr::Then(
+                        Expr::Assign(expr_node_id, expr_node_id1).into_id(loc.clone()),
+                        then,
+                    )
+                    .into_id(loc.clone()),
+                )
+            }) as ClsType,
+            Statement::Single(expr_node_id) => {
+                Box::new(move |then: Option<ExprNodeId>| match then {
+                    None => Some(expr_node_id),
+                    Some(t) => Some(Expr::Then(expr_node_id, Some(t)).into_id(loc.clone())),
+                }) as ClsType
+            }
+            Statement::DeclareStage(stage_kind) => {
+                let res = match (&last_stage, stage_kind.clone()) {
+                    (StageKind::Macro, StageKind::Main) => {
+                        Box::new(|then: Option<_>| then.map(|e| Expr::Bracket(e).into_id(loc)))
+                            as ClsType
+                    }
+                    (StageKind::Main, StageKind::Macro) => {
+                        Box::new(|then: Option<_>| then.map(|e| Expr::Escape(e).into_id(loc)))
+                            as ClsType
+                    }
+                    (StageKind::Persistent, _) => {
+                        log::warn!("Persistent stage declaration is not supported yet,ignored");
+                        Box::new(move |then: Option<ExprNodeId>| then) as ClsType
+                    }
+                    (_, _) => Box::new(move |then: Option<ExprNodeId>| then) as ClsType,
+                };
+                last_stage = stage_kind.clone();
+                res
+            }
+            Statement::Error => todo!(),
         };
-        match (then, stmt) {
-            (_, Statement::Let(pat, body)) => {
-                Some(Expr::Let(pat.clone(), *body, then).into_id(new_loc))
-            }
-
-            (_, Statement::LetRec(id, body)) => {
-                Some(Expr::LetRec(id.clone(), *body, then).into_id(new_loc))
-            }
-            (_, Statement::Assign(name, body)) => Some(
-                Expr::Then(Expr::Assign(*name, *body).into_id(loc.clone()), then).into_id(new_loc),
-            ),
-            (None, Statement::Single(e)) => Some(*e),
-            (t, Statement::Single(e)) => Some(Expr::Then(*e, t).into_id(new_loc)),
-            (t, Statement::DeclareStage(stage))
-                if *stage == StageKind::Main && last_stage == StageKind::Macro =>
-            {
-                last_stage = stage.clone();
-                t.map(|e| Expr::Bracket(e).into_id(new_loc))
-            }
-            (t, Statement::DeclareStage(stage))
-                if *stage == StageKind::Macro && last_stage == StageKind::Main =>
-            {
-                last_stage = stage.clone();
-                t.map(|e| Expr::Escape(e).into_id(new_loc))
-            }
-            (t, Statement::DeclareStage(stage)) if *stage == StageKind::Persistent => {
-                log::warn!("Persistent stage declaration is not supported yet,ignored");
-                t
-            }
-            (t, Statement::DeclareStage(stage)) => {
-                last_stage = stage.clone();
-                t
-            }
-            (t, Statement::Error) => {
-                Some(Expr::Then(Expr::Error.into_id(new_loc.clone()), t).into_id(new_loc))
-            }
-        }
-    });
+        closures.push(cls);
+    }
+    let e_pre = closures
+        .into_iter()
+        .rev()
+        .fold(None, move |then, cls: ClsType| cls(then));
     // log::debug!("stmts {:?}, e_pre: {:?}", stmts, e_pre);
     e_pre
 }

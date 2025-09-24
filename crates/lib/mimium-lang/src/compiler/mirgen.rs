@@ -1064,8 +1064,7 @@ pub fn compile(
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
     let (expr, infer_ctx, errors) = typecheck(root_expr_id, builtin_types, file_path);
     if errors.is_empty() {
-        let wrapped_code = Expr::Bracket(expr).into_id_without_span();
-        interpreter::expand_macro(wrapped_code, macro_env);
+        let expr = interpreter::expand_macro(expr, macro_env);
 
         log::trace!("ast after macro expansion: {:?}", expr.to_expr());
         let expr = parser::add_global_context(expr, file_path.unwrap_or_default());
