@@ -5,6 +5,7 @@ use crate::{
     utils::metadata::{Location, Span},
 };
 
+use super::StageKind;
 // an intermediate representation used in parser.
 // Note that this struct do not distinct between a global statement(allows `fn(){}`) and a local statement.
 // The distinction is done in the actual parser logic.
@@ -14,6 +15,7 @@ pub enum Statement {
     LetRec(TypedId, ExprNodeId),
     Assign(ExprNodeId, ExprNodeId),
     Single(ExprNodeId),
+    DeclareStage(StageKind),
     Error,
 }
 
@@ -49,6 +51,8 @@ pub(crate) fn into_then_expr(stmts: &[(Statement, Location)]) -> Option<ExprNode
         }
         None => spana,
     };
+    let mut last_stage = StageKind::Macro;
+    //traverse statements in revese order, and build nested Expression
     let e_pre = stmts.iter().rev().fold(None, |then, (stmt, loc)| {
         let span = get_span(loc.span.clone(), then);
         let new_loc = Location {
@@ -68,6 +72,26 @@ pub(crate) fn into_then_expr(stmts: &[(Statement, Location)]) -> Option<ExprNode
             ),
             (None, Statement::Single(e)) => Some(*e),
             (t, Statement::Single(e)) => Some(Expr::Then(*e, t).into_id(new_loc)),
+            (t, Statement::DeclareStage(stage))
+                if *stage == StageKind::Main && last_stage == StageKind::Macro =>
+            {
+                last_stage = stage.clone();
+                t.map(|e| Expr::Bracket(e).into_id(new_loc))
+            }
+            (t, Statement::DeclareStage(stage))
+                if *stage == StageKind::Macro && last_stage == StageKind::Main =>
+            {
+                last_stage = stage.clone();
+                t.map(|e| Expr::Escape(e).into_id(new_loc))
+            }
+            (t, Statement::DeclareStage(stage)) if *stage == StageKind::Persistent => {
+                log::warn!("Persistent stage declaration is not supported yet,ignored");
+                t
+            }
+            (t, Statement::DeclareStage(stage)) => {
+                last_stage = stage.clone();
+                t
+            }
             (t, Statement::Error) => {
                 Some(Expr::Then(Expr::Error.into_id(new_loc.clone()), t).into_id(new_loc))
             }

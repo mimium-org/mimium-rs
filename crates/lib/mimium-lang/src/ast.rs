@@ -11,6 +11,21 @@ use crate::utils::miniprint::MiniPrint;
 use std::fmt::{self};
 pub type Time = i64;
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum StageKind {
+    Persistent = -1,
+    Macro = 0,
+    Main,
+}
+impl std::fmt::Display for StageKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StageKind::Persistent => write!(f, "persistent"),
+            StageKind::Macro => write!(f, "macro"),
+            StageKind::Main => write!(f, "main"),
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Hash)]
 pub enum Literal {
     String(Symbol),

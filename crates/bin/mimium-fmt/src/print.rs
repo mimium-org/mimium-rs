@@ -426,8 +426,10 @@ mod statement {
                 name_doc.append(allocator.text(" = ")).append(body_doc)
             }
             Statement::Single(expr) => expr::pretty(expr, allocator),
-
             Statement::Error => allocator.text("error"),
+            Statement::DeclareStage(stage_kind) => allocator
+                .text(format!("#stage({stage_kind})"))
+                .append(allocator.softline()),
         }
     }
 }
@@ -489,6 +491,9 @@ pub mod program {
                 allocator.text("///").append(allocator.text(symbol))
             }
             ProgramStatement::Error => allocator.text("error"),
+            ProgramStatement::StageDeclaration { stage } => allocator
+                .text(format!("#stage({stage})"))
+                .append(allocator.softline()),
         });
         allocator.intersperse(stmt_docs, "\n")
     }
