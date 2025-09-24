@@ -1028,21 +1028,16 @@ fn is_code_contain_macro(typeenv: &mut InferContext, top_ast: ExprNodeId) -> boo
         .is_ok_and(|t| matches!(t.to_type(), Type::Code(_)))
 }
 
-/// Generate MIR from AST.
-/// The input ast (`root_expr_id`) should contain global context. (See [[compiler::parser::add_global_context]].)
-/// MIR generator itself does not emit any error, the any compile errors are analyzed before generating MIR, mostly in type checker.
-/// Note that the AST may contain partial error nodes, to do type check and report them as possible.
-pub fn compile(
+pub fn typecheck(
     root_expr_id: ExprNodeId,
     builtin_types: &[(Symbol, TypeNodeId)],
-    macro_env: &[Box<dyn MacroFunction>],
     file_path: Option<Symbol>,
-) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
+) -> (ExprNodeId, InferContext, Vec<Box<dyn ReportableError>>) {
     let (expr, convert_errs) =
         convert_pronoun::convert_pronoun(root_expr_id, file_path.unwrap_or_default());
     let expr = recursecheck::convert_recurse(expr, file_path.unwrap_or_default());
     // let expr = destruct_let_pattern(expr);
-    let mut infer_ctx = infer_root(expr, builtin_types, file_path.unwrap_or_default());
+    let infer_ctx = infer_root(expr, builtin_types, file_path.unwrap_or_default());
     let errors = infer_ctx
         .errors
         .iter()
@@ -1054,7 +1049,20 @@ pub fn compile(
                 .map(|e| -> Box<dyn ReportableError> { Box::new(e) }),
         )
         .collect::<Vec<_>>();
+    (expr, infer_ctx, errors)
+}
 
+/// Generate MIR from AST.
+/// The input ast (`root_expr_id`) should contain global context. (See [[compiler::parser::add_global_context]].)
+/// MIR generator itself does not emit any error, the any compile errors are analyzed before generating MIR, mostly in type checker.
+/// Note that the AST may contain partial error nodes, to do type check and report them as possible.
+pub fn compile(
+    root_expr_id: ExprNodeId,
+    builtin_types: &[(Symbol, TypeNodeId)],
+    macro_env: &[Box<dyn MacroFunction>],
+    file_path: Option<Symbol>,
+) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
+    let (expr, mut infer_ctx, errors) = typecheck(root_expr_id, builtin_types, file_path);
     if errors.is_empty() {
         let expr = if is_code_contain_macro(&mut infer_ctx, expr) {
             interpreter::expand_macro(expr, macro_env)

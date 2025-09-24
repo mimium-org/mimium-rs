@@ -51,7 +51,7 @@ struct Backend {
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        debug!("initialize: {:#?}", params);
+        debug!("initialize: {params:#?}");
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
@@ -181,7 +181,7 @@ impl LanguageServer for Backend {
         if let Some(text) = params.text {
             let item = TextDocumentItem {
                 uri: params.text_document.uri,
-                text: text,
+                text,
                 version: -1,
                 language_id: "mimium".to_string(),
             };
@@ -203,14 +203,14 @@ fn diagnostic_from_error(
 
     if let Some(((mainloc, mainmsg), rest)) = error.get_labels().split_first() {
         let span = &mainloc.span;
-        let start_position = offset_to_position(span.start, &rope)?;
-        let end_position = offset_to_position(span.end, &rope)?;
+        let start_position = offset_to_position(span.start, rope)?;
+        let end_position = offset_to_position(span.end, rope)?;
         let related_informations = rest
             .iter()
             .filter_map(|(loc, msg)| {
                 let span = &loc.span;
-                let start_position = offset_to_position(span.start, &rope)?;
-                let end_position = offset_to_position(span.end, &rope)?;
+                let start_position = offset_to_position(span.start, rope)?;
+                let end_position = offset_to_position(span.end, rope)?;
                 let uri = if loc.path.to_string() != "" {
                     Url::from_file_path(std::path::PathBuf::from(loc.path.to_string()))
                         .unwrap_or(url.clone())
@@ -241,7 +241,7 @@ fn diagnostic_from_error(
 }
 impl Backend {
     fn compile(&self, src: &str, url: Url) -> Vec<Diagnostic> {
-        let rope = ropey::Rope::from_str(&src);
+        let rope = ropey::Rope::from_str(src);
 
         let ParseResult {
             ast,
@@ -251,21 +251,13 @@ impl Backend {
         self.semantic_token_map
             .insert(url.to_string(), semantic_tokens);
         let errs = {
-            let res = mirgen::compile(ast, &self.compiler_ctx.builtin_types, &[], None);
-            if res.is_err() {
-                errors
-                    .into_iter()
-                    .chain(res.err().unwrap().into_iter())
-                    .collect::<Vec<_>>()
-            } else {
-                errors
-            }
+            let (_, _, typeerrs) = mirgen::typecheck(ast, &self.compiler_ctx.builtin_types, None);
+            errors.into_iter().chain(typeerrs).collect::<Vec<_>>()
         };
-        let diagnostics = errs
-            .into_iter()
+
+        errs.into_iter()
             .flat_map(|item| diagnostic_from_error(item, url.clone(), &rope))
-            .collect::<Vec<Diagnostic>>();
-        diagnostics
+            .collect::<Vec<Diagnostic>>()
     }
     async fn on_change(&self, params: TextDocumentItem) {
         debug!("{}", &params.version);
