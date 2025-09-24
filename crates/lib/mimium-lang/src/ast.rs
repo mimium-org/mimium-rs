@@ -92,6 +92,42 @@ pub enum Expr {
     Error,
 }
 
+impl ExprNodeId {
+    pub fn contains_macro(&self) -> bool {
+        match self.to_expr() {
+            Expr::Bracket(_) | Expr::Escape(_) | Expr::MacroExpand(_, _) => true,
+            Expr::Block(e) => e.is_some_and(|e| e.contains_macro()),
+            Expr::Tuple(es) => es.iter().any(|e| e.contains_macro()),
+            Expr::Proj(e, _) => e.contains_macro(),
+            Expr::ArrayAccess(e1, e2) => e1.contains_macro() || e2.contains_macro(),
+            Expr::ArrayLiteral(es) => es.iter().any(|e| e.contains_macro()),
+            Expr::RecordLiteral(fields) => fields.iter().any(|f| f.expr.contains_macro()),
+            Expr::ImcompleteRecord(fields) => fields.iter().any(|f| f.expr.contains_macro()),
+            Expr::FieldAccess(e, _) => e.contains_macro(),
+            Expr::Apply(e, args) => {
+                e.contains_macro() || args.iter().any(|arg| arg.contains_macro())
+            }
+            Expr::BinOp(e1, _, e2) => e1.contains_macro() || e2.contains_macro(),
+            Expr::UniOp(_, e) => e.contains_macro(),
+            Expr::Paren(e) => e.contains_macro(),
+            Expr::Lambda(_, _, body) => body.contains_macro(),
+            Expr::Assign(e1, e2) => e1.contains_macro() || e2.contains_macro(),
+            Expr::Then(e1, e2) => e1.contains_macro() || e2.is_some_and(|e| e.contains_macro()),
+            Expr::Feed(_, body) => body.contains_macro(),
+            Expr::Let(_, e1, e2) => e1.contains_macro() || e2.is_some_and(|e| e.contains_macro()),
+            Expr::LetRec(_, e1, e2) => {
+                e1.contains_macro() || e2.is_some_and(|e| e.contains_macro())
+            }
+            Expr::If(cond, then, orelse) => {
+                cond.contains_macro()
+                    || then.contains_macro()
+                    || orelse.is_some_and(|e| e.contains_macro())
+            }
+            _ => false,
+        }
+    }
+}
+
 impl fmt::Display for Literal {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {

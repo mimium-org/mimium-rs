@@ -48,7 +48,7 @@ pub(crate) fn into_then_expr(stmts: &[(Statement, Location)]) -> Option<ExprNode
     // We need to check statements from first to last to resolve macro stage, but we need to build expression from last to first.
     // So we build a closure to build expression from first to last, and then evaluate them in reverse order.
     type ClsType = Box<dyn FnOnce(Option<ExprNodeId>) -> Option<ExprNodeId>>;
-    let mut last_stage = StageKind::Macro;
+    let mut last_stage = StageKind::Main;
     let mut closures = Vec::<ClsType>::new();
     for (stmt, loc) in stmts.iter() {
         let stmt = stmt.clone();
@@ -94,7 +94,9 @@ pub(crate) fn into_then_expr(stmts: &[(Statement, Location)]) -> Option<ExprNode
                 last_stage = stage_kind.clone();
                 res
             }
-            Statement::Error => todo!(),
+            Statement::Error => Box::new(move |then| {
+                Some(Expr::Then(Expr::Error.into_id(loc.clone()), then).into_id(loc.clone()))
+            }) as ClsType,
         };
         closures.push(cls);
     }

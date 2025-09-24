@@ -143,7 +143,7 @@ fn test_block() {
             Expr::Literal(Literal::Float("100".to_symbol())).into_id(loc(12..15)),
             Some(Expr::Var("hoge".to_symbol()).into_id(loc(16..20))),
         )
-        .into_id(loc(1..20)),
+        .into_id(loc(1..15)),
     ))
     .into_id(loc(0..21));
     test_string!(
@@ -584,10 +584,10 @@ fn test_stmt_without_return() {
                         .into_id(loc(40..48)),
                         Some(Expr::Var("v".to_symbol()).into_id(loc(53..54))),
                     )
-                    .into_id(loc(40..54)),
+                    .into_id(loc(40..48)),
                 ),
             )
-            .into_id(loc(20..54)),
+            .into_id(loc(20..35)),
         )
         .into_id(loc(0..56)),
         None,
