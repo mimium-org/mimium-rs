@@ -448,7 +448,7 @@ fn block_local_scope_fail() {
     assert!(
         res[0]
             .get_message()
-            .contains("Variable local1 not found in this scope")
+            .contains("Variable \"local1\" not found in this scope")
     )
 }
 
