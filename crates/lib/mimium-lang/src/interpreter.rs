@@ -113,6 +113,7 @@ pub trait GeneralInterpreter {
                 body,
             ) => {
                 let v = self.eval(ctx, e);
+                log::trace!("letting {} at stage: {}", name, ctx.stage);
                 let empty = self.get_empty_val();
                 body.map_or(empty, |e| self.eval_in_new_env(&[(name, v)], ctx, e))
             }

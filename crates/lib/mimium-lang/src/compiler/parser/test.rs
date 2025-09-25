@@ -143,7 +143,7 @@ fn test_block() {
             Expr::Literal(Literal::Float("100".to_symbol())).into_id(loc(12..15)),
             Some(Expr::Var("hoge".to_symbol()).into_id(loc(16..20))),
         )
-        .into_id(loc(1..20)),
+        .into_id(loc(1..15)),
     ))
     .into_id(loc(0..21));
     test_string!(
@@ -584,10 +584,10 @@ fn test_stmt_without_return() {
                         .into_id(loc(40..48)),
                         Some(Expr::Var("v".to_symbol()).into_id(loc(53..54))),
                     )
-                    .into_id(loc(40..54)),
+                    .into_id(loc(40..48)),
                 ),
             )
-            .into_id(loc(20..54)),
+            .into_id(loc(20..35)),
         )
         .into_id(loc(0..56)),
         None,
@@ -643,4 +643,32 @@ fn test_bracket_escape() {
     )
     .into_id(loc(0..3));
     test_expr_string(src, ans);
+}
+
+#[test]
+fn codetype() {
+    let ans = Type::Code(
+        Type::Function {
+            arg: Type::Tuple(vec![
+                Type::Primitive(PType::Numeric).into_id_with_location(loc(2..7)),
+            ])
+            .into_id_with_location(loc(2..7)),
+            ret: Type::Code(Type::Primitive(PType::Numeric).into_id_with_location(loc(11..16)))
+                .into_id_with_location(loc(10..16)),
+        }
+        .into_id_with_location(loc(1..16)),
+    )
+    .into_id_with_location(loc(0..16));
+    let src = "`(float)->`float";
+    let (tokens, errs) = lex(src, None);
+    assert!(errs.is_empty());
+    let (ty, errs2) = super::type_parser(ParseContext {
+        file_path: "/".to_symbol(),
+    })
+    .parse(Stream::from_iter(tokens.unwrap()).map((src.len()..src.len()).into(), |(t, s)| (t, s)))
+    .into_output_errors();
+    assert!(errs2.is_empty());
+    assert!(ty.is_some());
+
+    assert_eq!(ty.unwrap(), ans);
 }

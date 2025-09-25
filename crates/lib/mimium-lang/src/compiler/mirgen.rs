@@ -4,6 +4,7 @@ use crate::compiler::parser;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::plugin::MacroFunction;
+use crate::utils::miniprint::MiniPrint;
 use crate::{function, interpreter, numeric, unit};
 pub mod convert_pronoun;
 pub(crate) mod recursecheck;
@@ -1022,10 +1023,11 @@ impl Context {
     }
 }
 
-fn is_code_contain_macro(typeenv: &mut InferContext, top_ast: ExprNodeId) -> bool {
-    typeenv
-        .infer_type(top_ast)
-        .is_ok_and(|t| matches!(t.to_type(), Type::Code(_)))
+fn is_toplevel_macro(typeenv: &mut InferContext, top_ast: ExprNodeId) -> bool {
+    typeenv.infer_type(top_ast).is_ok_and(|t| {
+        log::trace!("toplevel type: {}", t.to_type());
+        matches!(t.to_type(), Type::Code(_))
+    })
 }
 
 pub fn typecheck(
@@ -1062,14 +1064,23 @@ pub fn compile(
     macro_env: &[Box<dyn MacroFunction>],
     file_path: Option<Symbol>,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
-    let (expr, mut infer_ctx, errors) = typecheck(root_expr_id, builtin_types, file_path);
+    let (expr, infer_ctx, errors) = typecheck(root_expr_id, builtin_types, file_path);
     if errors.is_empty() {
-        let expr = if is_code_contain_macro(&mut infer_ctx, expr) {
+        let expr = if expr.contains_macro() {
+            let expr = if is_toplevel_macro(&mut infer_ctx.clone(), expr) {
+                expr
+            } else {
+                // wrap toplevel expression with `{} because global expression is stage 1(main)
+                Expr::Bracket(expr).into_id(expr.to_location())
+            };
             interpreter::expand_macro(expr, macro_env)
         } else {
             expr
         };
-        log::trace!("ast after macro expansion: {:?}", expr.to_expr());
+        log::trace!(
+            "ast after macro expansion: {:?}",
+            expr.to_expr().simple_print()
+        );
         let expr = parser::add_global_context(expr, file_path.unwrap_or_default());
         let mut ctx = Context::new(infer_ctx, file_path);
         let _res = ctx.eval_expr(expr);

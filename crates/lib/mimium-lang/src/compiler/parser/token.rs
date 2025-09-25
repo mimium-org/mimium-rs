@@ -59,6 +59,9 @@ pub enum Token {
     // Type,
     // Alias,
     Include,
+    Sharp,    // "#"
+    StageKwd, // "stage"
+    Main,     // "main"
 
     LineBreak,
 
@@ -107,6 +110,9 @@ impl fmt::Display for Token {
             Token::Comment(_) => write!(f, "comment"),
             Token::BackQuote => write!(f, "`"),
             Token::Dollar => write!(f, "$"),
+            Token::StageKwd => write!(f, "stage"),
+            Token::Main => write!(f, "main"),
+            Token::Sharp => write!(f, "#"),
         }
     }
 }

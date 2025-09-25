@@ -149,8 +149,16 @@ where
             .boxed()
             .labelled("Array");
 
-        // let _struct_t = todo!();
-        let atom = choice((type_primitive(ctx.clone()), record, tuple, array));
+        let code = just(Token::BackQuote)
+            .ignore_then(ty.clone())
+            .map_with(move |inner_type, e| {
+                Type::Code(inner_type).into_id_with_location(Location {
+                    span: get_span(e.span()),
+                    path,
+                })
+            })
+            .labelled("Code");
+        let atom = choice((type_primitive(ctx.clone()), record, tuple, array, code));
         let func = atom
             .clone()
             .separated_by(just(Token::Comma))
@@ -800,6 +808,34 @@ where
     .boxed()
 }
 
+fn top_stage_parser<'src, I>(
+    ctx: ParseContext,
+) -> impl Parser<'src, I, (ProgramStatement, Location), ParseError<'src>> + Clone
+where
+    I: ValueInput<'src, Token = Token, Span = SimpleSpan>,
+{
+    let stages = one_of([Token::Macro, Token::Main]).map(move |token| match token {
+        Token::Macro => StageKind::Macro,
+        Token::Main => StageKind::Main,
+        _ => unreachable!(),
+    });
+    just(Token::Sharp)
+        .ignore_then(
+            just(Token::StageKwd)
+                .ignore_then(stages.delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))),
+        )
+        .map_with(move |stage: StageKind, e| {
+            (
+                ProgramStatement::StageDeclaration { stage },
+                Location {
+                    span: get_span(e.span()),
+                    path: ctx.file_path,
+                },
+            )
+        })
+        .labelled("Stage Declaration")
+}
+
 fn toplevel_parser<'src, I>(
     ctx: ParseContext,
 ) -> impl Parser<'src, I, Program, ParseError<'src>> + Clone
@@ -887,7 +923,8 @@ where
                 Location::new(get_span(e.span()), ctx.file_path),
             )
         });
-    let stmt = choice((function_s, global_stmt, import))
+    let stage = top_stage_parser(ctx.clone());
+    let stmt = choice((function_s, global_stmt, import, stage))
         .recover_with(skip_then_retry_until(
             any().ignored(),
             one_of([Token::LineBreak, Token::SemiColon])

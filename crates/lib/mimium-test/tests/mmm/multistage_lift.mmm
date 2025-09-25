@@ -1,0 +1,18 @@
+fn genpower(n:float){
+    letrec aux = |n:float,x| {
+        if (n>1){
+            `{ $x * $(aux(n-1,x)) }
+        }else{
+            x
+        }
+    }
+    `{|x:float| $(aux(n,`x))}
+}
+
+// you can't write like $(genpower(3))(2) because of the precedence of dollar sign.
+let x = 3
+let y = 2
+`{
+
+    let dsp = | | {genpower!(3)($lift_f(2))}// should be 8
+}

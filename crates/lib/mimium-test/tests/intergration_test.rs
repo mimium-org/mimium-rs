@@ -448,7 +448,7 @@ fn block_local_scope_fail() {
     assert!(
         res[0]
             .get_message()
-            .contains("Variable local1 not found in this scope")
+            .contains("Variable \"local1\" not found in this scope")
     )
 }
 
@@ -558,5 +558,24 @@ fn multistage() {
 fn multistage_macro() {
     let res = run_file_test_mono("multistage_macro.mmm", 1).unwrap();
     let ans = vec![8.0];
+    assert_eq!(res, ans);
+}
+#[test]
+fn multistage_globalsyntax() {
+    let res = run_file_test_mono("multistage_globalsyntax.mmm", 1).unwrap();
+    let ans = vec![8.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn multistage_lift() {
+    let res = run_file_test_mono("multistage_lift.mmm", 1).unwrap();
+    let ans = vec![8.0];
+    assert_eq!(res, ans);
+}
+#[test]
+fn multistage_explicit_type() {
+    let res = run_file_test_mono("multistage_explicit_type.mmm", 1).unwrap();
+    let ans = vec![32.0];
     assert_eq!(res, ans);
 }

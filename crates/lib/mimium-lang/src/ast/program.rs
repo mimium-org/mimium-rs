@@ -8,6 +8,8 @@ use crate::types::{RecordTypeField, Type};
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::{Location, Span};
 
+use super::StageKind;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProgramStatement {
     FnDefinition {
@@ -15,6 +17,9 @@ pub enum ProgramStatement {
         args: (Vec<TypedId>, Location),
         return_type: Option<TypeNodeId>,
         body: ExprNodeId,
+    },
+    StageDeclaration {
+        stage: StageKind,
     },
     GlobalStatement(Statement),
     Import(Symbol),
@@ -74,6 +79,10 @@ fn stmts_from_program(
                 let res = stmts_from_program(imported_program, file_path, errs);
                 Some(res)
             }
+            ProgramStatement::StageDeclaration { stage } => Some(vec![(
+                Statement::DeclareStage(stage),
+                Location::new(span, file_path),
+            )]),
             ProgramStatement::Error => {
                 Some(vec![(Statement::Error, Location::new(span, file_path))])
             }
