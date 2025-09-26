@@ -2,6 +2,7 @@
 
 members = [
     "crates/lib/mimium-lang",
+    "crates/lib/mimium-lang/state-tree",
     "crates/lib/mimium-web",
     "crates/lib/mimium-test",
     "crates/lib/plugins/mimium-audiodriver",
