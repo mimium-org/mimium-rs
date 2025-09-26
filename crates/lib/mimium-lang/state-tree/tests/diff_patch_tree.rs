@@ -49,8 +49,8 @@ fn test_main() {
         .expect("Failed to access archived_new");
 
     let mut patches = Vec::new();
-    let mut path = Vec::new();
-    diff(&archived_old, &archived_new, &mut path, &mut patches);
+    let path = Vec::new();
+    patches.extend(diff(&archived_old, &archived_new, &path));
 
     println!("✅ Detected differences (Patches):");
     for patch in &patches {
