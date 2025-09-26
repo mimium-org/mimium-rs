@@ -8,14 +8,11 @@ use state_tree::{patch::apply, tree::StateTree};
 fn test_main() {
     // --- 1. Create old version of the tree ---
     let old_tree = StateTree::FnCall(vec![
-        StateTree::Mem {
-            data: vec![10, 20].into_boxed_slice(),
-        },
+        StateTree::Feed { data: vec![10, 20] },
         StateTree::FnCall(vec![StateTree::Delay {
-            typesize: 8,
             readidx: 0,
             writeidx: 1,
-            data: vec![100, 200].into_boxed_slice(),
+            data: vec![100, 200],
         }]),
     ]);
 
@@ -25,18 +22,17 @@ fn test_main() {
 
     // --- 3. Create new version of the tree ---
     let new_tree = StateTree::FnCall(vec![
-        StateTree::Mem {
-            data: vec![0, 0].into_boxed_slice(), // Same data size
+        StateTree::Feed {
+            data: vec![0, 0], // Same data size
         },
         StateTree::FnCall(vec![StateTree::Delay {
-            typesize: 8,
             readidx: 1,
             writeidx: 2,
-            data: vec![0, 0, 0].into_boxed_slice(), // Size changed, so replace
+            data: vec![0, 0, 0], // Size changed, so replace
         }]),
         StateTree::Mem {
             // Newly inserted
-            data: vec![0].into_boxed_slice(),
+            data: 0,
         },
     ]);
     let mut new_bytes =
@@ -60,18 +56,15 @@ fn test_main() {
         Patch::Replace {
             path: vec![1, 0],
             new_tree: StateTree::Delay {
-                typesize: 8,
                 readidx: 1,
                 writeidx: 2,
-                data: vec![0, 0, 0].into_boxed_slice(), // Size changed, so replace
+                data: vec![0, 0, 0], // Size changed, so replace
             },
         },
         Patch::Insert {
             parent_path: vec![],
             index: 2,
-            new_tree: StateTree::Mem {
-                data: vec![0].into_boxed_slice(),
-            },
+            new_tree: StateTree::Mem { data: 0 },
         },
     ];
     assert_eq!(patches, patch_answer);
@@ -83,18 +76,17 @@ fn test_main() {
     println!("{:#?}", tree_to_patch);
 
     let ans = StateTree::FnCall(vec![
-        StateTree::Mem {
-            data: vec![10, 20].into_boxed_slice(), // Data content was replaced with old
+        StateTree::Feed {
+            data: vec![10, 20], // Data content was replaced with old
         },
         StateTree::FnCall(vec![StateTree::Delay {
-            typesize: 8,
             readidx: 1,
             writeidx: 2,
-            data: vec![0, 0, 0].into_boxed_slice(),
+            data: vec![0, 0, 0],
         }]),
         StateTree::Mem {
             // Newly inserted
-            data: vec![0].into_boxed_slice(),
+            data: 0,
         },
     ]);
     // --- 6. Check if the patched tree matches the new tree ---

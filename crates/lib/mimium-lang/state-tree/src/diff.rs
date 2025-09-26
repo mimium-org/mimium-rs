@@ -18,8 +18,8 @@ pub fn diff(old: &ArchivedStateTree, new: &ArchivedStateTree, path: &[usize]) ->
             // Do nothing if the nodes are completely identical
             Vec::new()
         }
-        (Mem { data: data1 }, Mem { data: data2 })
-        | (Feed { data: data1 }, Feed { data: data2 })
+
+        (Feed { data: data1 }, Feed { data: data2 })
         | (Delay { data: data1, .. }, Delay { data: data2, .. })
             if data1.len() == data2.len() =>
         {
@@ -239,7 +239,7 @@ fn lcs(old: &[ArchivedStateTree], new: &[ArchivedStateTree]) -> Vec<Vec<usize>> 
 fn are_compatible(old: &ArchivedStateTree, new: &ArchivedStateTree) -> bool {
     use ArchivedStateTree::*;
     match (old, new) {
-        (Mem { data: data1 }, Mem { data: data2 }) => data1.len() == data2.len(),
+        (Mem { .. }, Mem { .. }) => true,
         (Feed { data: data1 }, Feed { data: data2 }) => data1.len() == data2.len(),
         (Delay { .. }, Delay { .. }) => true, // Always consider Delay as compatible (handled by Replace)
         (FnCall(_), FnCall(_)) => true,       // FnCall always has compatibility

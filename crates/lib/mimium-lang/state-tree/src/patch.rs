@@ -30,7 +30,7 @@ pub fn apply(root: &mut StateTree, patches: &[Patch]) -> Result<(), ApplyError> 
     for patch in patches {
         match patch {
             Patch::Replace { path, new_tree } => {
-                let node_to_replace = find_node_mut(root, path)?;
+                let node_to_replace = find_node_mut(root, path.iter())?;
                 *node_to_replace = new_tree.clone();
             }
             Patch::Insert {
@@ -38,7 +38,7 @@ pub fn apply(root: &mut StateTree, patches: &[Patch]) -> Result<(), ApplyError> 
                 index,
                 new_tree,
             } => {
-                let parent_node = find_node_mut(root, parent_path)?;
+                let parent_node = find_node_mut(root, parent_path.iter())?;
                 if let StateTree::FnCall(children) = parent_node {
                     if *index > children.len() {
                         return Err(ApplyError::InvalidIndex);
@@ -49,7 +49,7 @@ pub fn apply(root: &mut StateTree, patches: &[Patch]) -> Result<(), ApplyError> 
                 }
             }
             Patch::Remove { parent_path, index } => {
-                let parent_node = find_node_mut(root, parent_path)?;
+                let parent_node = find_node_mut(root, parent_path.iter())?;
                 if let StateTree::FnCall(children) = parent_node {
                     if *index >= children.len() {
                         return Err(ApplyError::InvalidIndex);
@@ -66,17 +66,18 @@ pub fn apply(root: &mut StateTree, patches: &[Patch]) -> Result<(), ApplyError> 
 
 // Helper to find a mutable reference to a StateTree node
 fn find_node_mut<'a>(
-    root: &'a mut StateTree,
-    path: &Path,
+    tree: &'a mut StateTree,
+    mut path_i: impl Iterator<Item = &'a usize>,
 ) -> Result<&'a mut StateTree, ApplyError> {
-    let mut current = root;
-    for &index in path {
-        if let StateTree::FnCall(children) = current {
-            current = children.get_mut(index).ok_or(ApplyError::PathNotFound)?;
+    if let Some(i) = path_i.next() {
+        if let StateTree::FnCall(children) = tree {
+            let c = children.get_mut(*i).ok_or(ApplyError::PathNotFound)?;
+            find_node_mut(c, path_i)
         } else {
             // Hit a non-FnCall node in the middle of the path
-            return Err(ApplyError::PathNotFound);
+            Err(ApplyError::PathNotFound)
         }
+    } else {
+        Ok(tree)//empty path means the root
     }
-    Ok(current)
 }

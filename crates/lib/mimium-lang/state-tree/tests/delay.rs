@@ -1,16 +1,12 @@
-use rkyv::{
-    DeserializeUnsized, access, access_mut, api::deserialize_using, deserialize, munge::munge,
-    to_bytes, util::AlignedVec,
-};
+use rkyv::{access_mut, to_bytes};
 use state_tree::tree::{ArchivedStateTree, StateTree};
 
 #[test]
 fn archived_delay_update() {
     let tree = StateTree::Delay {
-        typesize: 1,
         readidx: 0,
         writeidx: 0,
-        data: vec![0, 0, 0, 0].into_boxed_slice(),
+        data: vec![0, 0, 0, 0],
     };
     let mut new_bytes =
         to_bytes::<rkyv::rancor::Error>(&tree).expect("Failed to serialize new_tree");
@@ -24,7 +20,7 @@ fn archived_delay_update() {
             *readidx = (u64::from(*readidx) + 1u64).into();
             *writeidx = (u64::from(*writeidx) + 1u64).into();
         }
-        _=> panic!(),
+        _ => panic!(),
     };
     let readidx = *match hoge {
         ArchivedStateTree::Delay { readidx, .. } => readidx,
