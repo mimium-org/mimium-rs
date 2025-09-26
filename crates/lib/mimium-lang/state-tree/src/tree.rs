@@ -1,7 +1,7 @@
 use rkyv::{Archive, Deserialize, Serialize};
 //on attributes, see https://github.com/rkyv/rkyv/blob/main/rkyv/examples/json_like_schema.rs
 #[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone)]
-// `attr`を使って、rkyvが生成するArchived型にトレイトを実装させる
+// Use `attr` to make rkyv implement traits on the generated Archived type
 #[rkyv(attr(derive(Debug, PartialEq)))]
 #[rkyv(serialize_bounds(
     __S: rkyv::ser::Writer + rkyv::ser::Allocator,

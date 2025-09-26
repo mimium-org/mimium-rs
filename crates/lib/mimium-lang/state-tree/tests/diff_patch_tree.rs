@@ -6,7 +6,7 @@ use state_tree::{patch::apply, tree::StateTree};
 
 #[test]
 fn test_main() {
-    // --- 1. 古いバージョンのツリーを作成 ---
+    // --- 1. Create old version of the tree ---
     let old_tree = StateTree::FnCall(vec![
         StateTree::Mem {
             data: vec![10, 20].into_boxed_slice(),
@@ -19,30 +19,30 @@ fn test_main() {
         }]),
     ]);
 
-    // --- 2. 古いツリーをrkyvでシリアライズ ---
+    // --- 2. Serialize old tree with rkyv ---
     let mut old_bytes =
         to_bytes::<rkyv::rancor::Error>(&old_tree).expect("Failed to serialize old_tree");
 
-    // --- 3. 新しいバージョンのツリーを作成 ---
+    // --- 3. Create new version of the tree ---
     let new_tree = StateTree::FnCall(vec![
         StateTree::Mem {
-            data: vec![0, 0].into_boxed_slice(), // データのサイズはおなじ
+            data: vec![0, 0].into_boxed_slice(), // Same data size
         },
         StateTree::FnCall(vec![StateTree::Delay {
             typesize: 8,
             readidx: 1,
             writeidx: 2,
-            data: vec![0, 0, 0].into_boxed_slice(), //サイズ変更なので差し替え
+            data: vec![0, 0, 0].into_boxed_slice(), // Size changed, so replace
         }]),
         StateTree::Mem {
-            // 新しく挿入
+            // Newly inserted
             data: vec![0].into_boxed_slice(),
         },
     ]);
     let mut new_bytes =
         to_bytes::<rkyv::rancor::Error>(&new_tree).expect("Failed to serialize new_tree");
 
-    // --- 4. 2つのバイト列からゼロコピーで差分を検出 ---
+    // --- 4. Detect differences from two byte arrays with zero-copy ---
     let archived_old = access_mut::<ArchivedStateTree, rkyv::rancor::Error>(&mut old_bytes)
         .expect("Failed to access archived_old");
     let archived_new = access_mut::<ArchivedStateTree, rkyv::rancor::Error>(&mut new_bytes)
@@ -52,7 +52,7 @@ fn test_main() {
     let mut path = Vec::new();
     diff(&archived_old, &archived_new, &mut path, &mut patches);
 
-    println!("✅ 検出された差分 (Patches):");
+    println!("✅ Detected differences (Patches):");
     for patch in &patches {
         println!("  - {:?}", patch);
     }
@@ -63,7 +63,7 @@ fn test_main() {
                 typesize: 8,
                 readidx: 1,
                 writeidx: 2,
-                data: vec![0, 0, 0].into_boxed_slice(), //サイズ変更なので差し替え
+                data: vec![0, 0, 0].into_boxed_slice(), // Size changed, so replace
             },
         },
         Patch::Insert {
@@ -75,16 +75,16 @@ fn test_main() {
         },
     ];
     assert_eq!(patches, patch_answer);
-    // --- 5. 古いツリーのコピーにパッチを適用して検証 ---
+    // --- 5. Apply patches to copy of old tree for verification ---
     let mut tree_to_patch = old_tree.clone();
     apply(&mut tree_to_patch, &patches).expect("Failed to apply patches");
 
-    println!("\n✅ パッチ適用後のツリー:");
+    println!("\n✅ Tree after patch application:");
     println!("{:#?}", tree_to_patch);
 
     let ans = StateTree::FnCall(vec![
         StateTree::Mem {
-            data: vec![10, 20].into_boxed_slice(), //データの中身がoldで差し替えられている
+            data: vec![10, 20].into_boxed_slice(), // Data content was replaced with old
         },
         StateTree::FnCall(vec![StateTree::Delay {
             typesize: 8,
@@ -93,11 +93,11 @@ fn test_main() {
             data: vec![0, 0, 0].into_boxed_slice(),
         }]),
         StateTree::Mem {
-            // 新しく挿入
+            // Newly inserted
             data: vec![0].into_boxed_slice(),
         },
     ]);
-    // --- 6. パッチ適用後のツリーが、新しいツリーと一致するか確認 ---
+    // --- 6. Check if the patched tree matches the new tree ---
     assert_eq!(tree_to_patch, ans);
-    println!("\n✅ 検証成功: パッチ適用後のツリーは新しいツリーと一致します。");
+    println!("\n✅ Verification successful: The patched tree matches the new tree.");
 }

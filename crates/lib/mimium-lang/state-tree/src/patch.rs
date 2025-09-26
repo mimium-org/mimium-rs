@@ -1,20 +1,20 @@
 use crate::tree::StateTree;
 
-/// ツリー内のノードへのパス
+/// Path to a node in the tree
 pub type Path = Vec<usize>;
 
-/// 変更操作を表すenum
+/// Enum representing change operations
 #[derive(Debug, PartialEq, Clone)]
 pub enum Patch {
-    /// 既存のノードを置き換える
+    /// Replace an existing node
     Replace { path: Path, new_tree: StateTree },
-    /// FnCallノードの子リストに新しいノードを挿入する
+    /// Insert a new node into the child list of a FnCall node
     Insert {
         parent_path: Path,
         index: usize,
         new_tree: StateTree,
     },
-    /// FnCallノードの子リストからノードを削除する
+    /// Remove a node from the child list of a FnCall node
     Remove { parent_path: Path, index: usize },
 }
 
@@ -22,10 +22,10 @@ pub enum Patch {
 pub enum ApplyError {
     PathNotFound,
     InvalidIndex,
-    NotFnCall, // 親がFnCallではない場合のエラー
+    NotFnCall, // Error when parent is not a FnCall
 }
 
-/// StateTreeにPatchを適用する
+/// Apply patches to StateTree
 pub fn apply(root: &mut StateTree, patches: &[Patch]) -> Result<(), ApplyError> {
     for patch in patches {
         match patch {
@@ -64,7 +64,7 @@ pub fn apply(root: &mut StateTree, patches: &[Patch]) -> Result<(), ApplyError> 
     Ok(())
 }
 
-// 可変なStateTreeノードへの参照を探すヘルパー
+// Helper to find a mutable reference to a StateTree node
 fn find_node_mut<'a>(
     root: &'a mut StateTree,
     path: &Path,
@@ -74,7 +74,7 @@ fn find_node_mut<'a>(
         if let StateTree::FnCall(children) = current {
             current = children.get_mut(index).ok_or(ApplyError::PathNotFound)?;
         } else {
-            // パスの途中でFnCallでないノードに行き当たった
+            // Hit a non-FnCall node in the middle of the path
             return Err(ApplyError::PathNotFound);
         }
     }

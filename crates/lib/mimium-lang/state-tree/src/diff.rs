@@ -61,7 +61,7 @@ fn diff_children(
         }
     }
 
-    // 2. 共通サフィックスのスキャン
+    // 2. Scan common suffix
     let mut suffix_len = 0;
     for (old_child, new_child) in old_children[prefix_len..]
         .iter()
@@ -69,10 +69,10 @@ fn diff_children(
         .zip(new_children[prefix_len..].iter().rev())
     {
         if old_child == new_child {
-            // サフィックスの要素も再帰的にチェック
+            // Recursively check suffix elements as well
             let old_idx = old_children.len() - 1 - suffix_len;
             let new_idx = new_children.len() - 1 - suffix_len;
-            // パスは新しいインデックス基準で作成
+            // Create path based on new index
             parent_path.push(new_idx);
             diff(
                 &old_children[old_idx],
@@ -87,21 +87,21 @@ fn diff_children(
         }
     }
 
-    // 3. 残った中央部分でLCSを実行
+    // 3. Execute LCS on the remaining middle part
     let old_middle = &old_children[prefix_len..old_children.len() - suffix_len];
     let new_middle = &new_children[prefix_len..new_children.len() - suffix_len];
 
     if old_middle.is_empty() && new_middle.is_empty() {
-        return; // 中央に差分なし
+        return; // No differences in the middle part
     }
 
-    // 中央部分が単一要素で、互換性がある場合はReplaceを生成
+    // Generate Replace if the middle part is a single element and compatible
     if old_middle.len() == 1 && new_middle.len() == 1 {
         let old_node = &old_middle[0];
         let new_node = &new_middle[0];
 
         if are_compatible(old_node, new_node) && old_node != new_node {
-            // 互換性があるが異なる場合、深い比較を行う
+            // If compatible but different, perform deep comparison
             parent_path.push(prefix_len);
             diff(old_node, new_node, parent_path, patches);
             parent_path.pop();
@@ -109,16 +109,16 @@ fn diff_children(
         }
     }
 
-    // LCSテーブルを作成
+    // Create LCS table
     let lcs_table = lcs(old_middle, new_middle);
 
-    // LCSテーブルを元に差分を生成（バックトラック）
+    // Generate differences based on LCS table (backtrack)
     let mut i = old_middle.len();
     let mut j = new_middle.len();
 
     while i > 0 || j > 0 {
         if i > 0 && j > 0 && old_middle[i - 1] == new_middle[j - 1] {
-            // 共通の要素 -> 再帰的にdiff
+            // Common element -> recursively diff
             let current_idx = prefix_len + j - 1;
             parent_path.push(current_idx);
             diff(&old_middle[i - 1], &new_middle[j - 1], parent_path, patches);
@@ -126,7 +126,7 @@ fn diff_children(
             i -= 1;
             j -= 1;
         } else if j > 0 && (i == 0 || lcs_table[i][j - 1] >= lcs_table[i - 1][j]) {
-            // new にのみ存在する -> Insert
+            // Only exists in new -> Insert
             let deserialized_new = deserialize::<StateTree, Error>(&new_middle[j - 1]).unwrap();
             patches.push(Patch::Insert {
                 parent_path: parent_path.clone(),
@@ -135,19 +135,19 @@ fn diff_children(
             });
             j -= 1;
         } else if i > 0 && (j == 0 || lcs_table[i][j - 1] < lcs_table[i - 1][j]) {
-            // old にのみ存在する -> Remove
+            // Only exists in old -> Remove
             patches.push(Patch::Remove {
                 parent_path: parent_path.clone(),
                 index: prefix_len + i - 1,
             });
             i -= 1;
         } else {
-            break; // ループの終端
+            break; // End of loop
         }
     }
 }
 
-/// LCS (Longest Common Subsequence) の長さを計算するDPテーブルを返す
+/// Calculate DP table for LCS (Longest Common Subsequence) length
 fn lcs(old: &[ArchivedStateTree], new: &[ArchivedStateTree]) -> Vec<Vec<usize>> {
     let mut table = vec![vec![0; new.len() + 1]; old.len() + 1];
     for i in 1..=old.len() {
@@ -162,14 +162,14 @@ fn lcs(old: &[ArchivedStateTree], new: &[ArchivedStateTree]) -> Vec<Vec<usize>> 
     table
 }
 
-/// 2つのノードが互換性があるか（同じ型で、同じサイズのデータを持つか）をチェック
+/// Check if two nodes are compatible (same type and same data size)
 fn are_compatible(old: &ArchivedStateTree, new: &ArchivedStateTree) -> bool {
     use ArchivedStateTree::*;
     match (old, new) {
         (Mem { data: data1 }, Mem { data: data2 }) => data1.len() == data2.len(),
         (Feed { data: data1 }, Feed { data: data2 }) => data1.len() == data2.len(),
-        (Delay { .. }, Delay { .. }) => true, // Delayは常に互換性ありとみなす（Replaceで処理）
-        (FnCall(_), FnCall(_)) => true,       // FnCallは常に互換性があるとみなす
+        (Delay { .. }, Delay { .. }) => true, // Always consider Delay as compatible (handled by Replace)
+        (FnCall(_), FnCall(_)) => true,       // FnCall always has compatibility
         _ => false,
     }
 }
