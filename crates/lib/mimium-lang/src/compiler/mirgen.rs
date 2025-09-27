@@ -1064,15 +1064,15 @@ pub fn compile(
     macro_env: &[Box<dyn MacroFunction>],
     file_path: Option<Symbol>,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
-    let (expr, infer_ctx, errors) = typecheck(root_expr_id, builtin_types, file_path);
+    let contains_macro = root_expr_id.contains_macro();
+    let expr = if contains_macro {
+        Expr::Bracket(root_expr_id).into_id(root_expr_id.to_location())
+    } else {
+        root_expr_id
+    };
+    let (expr, infer_ctx, errors) = typecheck(expr, builtin_types, file_path);
     if errors.is_empty() {
-        let expr = if expr.contains_macro() {
-            let expr = if is_toplevel_macro(&mut infer_ctx.clone(), expr) {
-                expr
-            } else {
-                // wrap toplevel expression with `{} because global expression is stage 1(main)
-                Expr::Bracket(expr).into_id(expr.to_location())
-            };
+        let expr = if contains_macro {
             interpreter::expand_macro(expr, macro_env)
         } else {
             expr
