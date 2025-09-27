@@ -32,29 +32,18 @@ pub enum StateTree {
     FnCall(#[rkyv(omit_bounds)] Vec<StateTree>),
 }
 
-fn serialize_tree_untagged(tree: &StateTree) -> Vec<u64> {
+pub fn serialize_tree_untagged(tree: StateTree) -> Vec<u64> {
     match tree {
         StateTree::Delay {
             readidx,
             writeidx,
             data,
-        } => {
-            let mut v = Vec::with_capacity(2 + data.len());
-            v.push(*readidx);
-            v.push(*writeidx);
-            v.extend(data.iter());
-            v
+        } => itertools::concat(vec![vec![readidx, writeidx], data]),
+        StateTree::Mem { data } => vec![data],
+        StateTree::Feed { data } => data,
+        StateTree::FnCall(state_trees) => {
+            itertools::concat(state_trees.into_iter().map(serialize_tree_untagged))
         }
-        StateTree::Mem { data } => vec![*data],
-        StateTree::Feed { data } => {
-            let mut v = Vec::with_capacity(data.len());
-            v.extend(data.iter());
-            v
-        }
-        StateTree::FnCall(state_trees) => state_trees
-            .iter()
-            .flat_map(serialize_tree_untagged)
-            .collect(),
     }
 }
 
@@ -75,12 +64,9 @@ fn deserialize_tree_untagged_rec(
 ) -> Option<(StateTree, usize)> {
     match data_layout {
         StateTreeSkeleton::Delay { len } => {
-            if data.len() < 2 + (*len as usize) {
-                return None;
-            }
-            let readidx = data[0];
-            let writeidx = data[1];
-            let d = data[2..2 + (*len as usize)].to_vec();
+            let readidx = data.first().copied()?;
+            let writeidx = data.get(1).copied()?;
+            let d = data.get(2..2 + (*len as usize))?.to_vec();
             Some((
                 StateTree::Delay {
                     readidx,
@@ -90,38 +76,31 @@ fn deserialize_tree_untagged_rec(
                 2 + (*len as usize),
             ))
         }
-        StateTreeSkeleton::Mem => {
-            if data.is_empty() {
-                return None;
-            }
-            Some((StateTree::Mem { data: data[0] }, 1))
-        }
+        StateTreeSkeleton::Mem => data.first().map(|data| (StateTree::Mem { data: *data }, 1)),
         StateTreeSkeleton::Feed { size } => {
-            if data.len() < (*size as usize) {
-                return None;
-            }
-            let d = data[0..(*size as usize)].to_vec();
+            let d = data.get(0..(*size as usize))?.to_vec();
             Some((StateTree::Feed { data: d }, *size as usize))
         }
         StateTreeSkeleton::FnCall(children_layout) => {
-            let mut offset = 0;
-            let mut children = Vec::with_capacity(children_layout.len());
-            for child_layout in children_layout {
-                if let Some((child, used)) =
-                    deserialize_tree_untagged_rec(&data[offset..], child_layout)
-                {
-                    children.push(child);
-                    offset += used;
-                } else {
-                    return None;
-                }
-            }
-            Some((StateTree::FnCall(children), offset))
+            let (children, used) =
+                children_layout
+                    .iter()
+                    .try_fold((vec![], 0), |(v, last_used), child_layout| {
+                        let (child, used) =
+                            deserialize_tree_untagged_rec(&data[last_used..], child_layout)?;
+
+                        Some(([v, vec![child]].concat(), used))
+                    })?;
+
+            Some((StateTree::FnCall(children), used))
         }
     }
 }
 
-fn deserialize_tree_untagged(data: &[u64], data_layout: &StateTreeSkeleton) -> Option<StateTree> {
+pub fn deserialize_tree_untagged(
+    data: &[u64],
+    data_layout: &StateTreeSkeleton,
+) -> Option<StateTree> {
     if let Some((tree, used)) = deserialize_tree_untagged_rec(data, data_layout) {
         if used == data.len() { Some(tree) } else { None }
     } else {

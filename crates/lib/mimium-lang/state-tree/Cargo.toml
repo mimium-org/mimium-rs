@@ -4,4 +4,5 @@ version = "0.1.0"
 edition = "2024"
 description = "Utility for keeping internal states of signal between 2 compiled source codes"
 [dependencies]
+itertools.workspace = true
 rkyv = { version = "0.8.11" }
