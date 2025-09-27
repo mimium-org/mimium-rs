@@ -98,16 +98,22 @@ impl GuiToolPlugin {
         // Generate a lambda that calls probe_intercept with the fixed ID
         Value::Code(
             Expr::Lambda(
-                vec![TypedId::new("x".to_symbol(), Type::Primitive(PType::Numeric).into_id())],
+                vec![TypedId::new(
+                    "x".to_symbol(),
+                    Type::Primitive(PType::Numeric).into_id(),
+                )],
                 None,
                 Expr::Apply(
                     Expr::Var(Self::PROBE_INTERCEPT.to_symbol()).into_id_without_span(),
                     vec![
-                        Expr::Literal(Literal::Float(idx.to_string().to_symbol())).into_id_without_span(),
+                        Expr::Literal(Literal::Float(idx.to_string().to_symbol()))
+                            .into_id_without_span(),
                         Expr::Var("x".to_symbol()).into_id_without_span(),
                     ],
-                ).into_id_without_span(),
-            ).into_id_without_span(),
+                )
+                .into_id_without_span(),
+            )
+            .into_id_without_span(),
         )
     }
     pub fn get_slider(&mut self, vm: &mut Machine) -> ReturnCode {
@@ -189,7 +195,7 @@ impl SystemPlugin for GuiToolPlugin {
                 Type::Code(function!(vec![numeric!()], numeric!())).into_id()
             ),
         );
-        
+
         let sliderf: SystemPluginMacroType<Self> = Self::make_slider;
         let make_slider = SysPluginSignature::new_macro(
             "Slider",
@@ -199,21 +205,21 @@ impl SystemPlugin for GuiToolPlugin {
                 Type::Code(Type::Primitive(PType::Numeric).into_id()).into_id()
             ),
         );
-        
+
         let getsliderf: SystemPluginFnType<Self> = Self::get_slider;
         let get_slider = SysPluginSignature::new(
             Self::GET_SLIDER,
             getsliderf,
             function!(vec![numeric!()], numeric!()),
         );
-        
+
         let probe_interceptf: SystemPluginFnType<Self> = Self::probe_intercept;
         let probe_intercept = SysPluginSignature::new(
             Self::PROBE_INTERCEPT,
             probe_interceptf,
             function!(vec![numeric!(), numeric!()], numeric!()),
         );
-        
+
         vec![probe_macro, make_slider, get_slider, probe_intercept]
     }
 }

@@ -42,9 +42,6 @@ fn smoothstep(a, b, t) {
   x * x * (3 - 2 * x)
 }
 
-let myprobe = make_probe("test")
-let myprobe2 = make_probe("test2")
-
 fn dsp() {
   let dest = 0.0
   let time = now / samplerate
@@ -66,7 +63,7 @@ fn dsp() {
     dest = dest + env * sin(phase)
   }
 
-  dest = myprobe(dest)
+  dest = dest |> Probe!("test")
 
   (dest, dest)
 }
