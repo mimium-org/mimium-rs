@@ -95,25 +95,22 @@ impl GuiToolPlugin {
         let idx = self.probe_instances.len();
         self.probe_instances.push(prod);
 
-        // Generate a lambda that calls probe_intercept with the fixed ID  
-        // Wrap in Escape to ensure proper stage evaluation
+        // Generate a lambda that calls probe_intercept with the fixed ID
+        // This lambda will be available at stage 1
         Value::Code(
-            Expr::Escape(
-                Expr::Lambda(
-                    vec![TypedId::new(
-                        "x".to_symbol(),
-                        Type::Unknown.into_id(),
-                    )],
-                    None,
-                    Expr::Apply(
-                        Expr::Var(Self::PROBE_INTERCEPT.to_symbol()).into_id_without_span(),
-                        vec![
-                            Expr::Literal(Literal::Float(idx.to_string().to_symbol()))
-                                .into_id_without_span(),
-                            Expr::Var("x".to_symbol()).into_id_without_span(),
-                        ],
-                    )
-                    .into_id_without_span(),
+            Expr::Lambda(
+                vec![TypedId::new(
+                    "x".to_symbol(),
+                    Type::Unknown.into_id(),
+                )],
+                None,
+                Expr::Apply(
+                    Expr::Var(Self::PROBE_INTERCEPT.to_symbol()).into_id_without_span(),
+                    vec![
+                        Expr::Literal(Literal::Float(idx.to_string().to_symbol()))
+                            .into_id_without_span(),
+                        Expr::Var("x".to_symbol()).into_id_without_span(),
+                    ],
                 )
                 .into_id_without_span(),
             )
