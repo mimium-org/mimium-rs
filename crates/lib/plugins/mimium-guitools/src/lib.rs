@@ -101,7 +101,7 @@ impl GuiToolPlugin {
             Expr::Lambda(
                 vec![TypedId::new(
                     "x".to_symbol(),
-                    Type::Primitive(PType::Numeric).into_id(),
+                    Type::Unknown.into_id(),
                 )],
                 None,
                 Expr::Apply(
