@@ -235,11 +235,13 @@ mod test {
 
     use super::*;
     fn get_source() -> &'static str {
+        //type annotation input:float is not necessary ideally 
+        // but we have to for now for because of subtyping issue
         r#"
 fn counter(){
     self + 1
 }
-fn dsp(input){
+fn dsp(input:float){
     let res = input + counter()
     (0,res)
 }
