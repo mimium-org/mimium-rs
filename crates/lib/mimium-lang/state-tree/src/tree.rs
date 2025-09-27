@@ -32,6 +32,29 @@ pub enum StateTree {
     FnCall(#[rkyv(omit_bounds)] Vec<StateTree>),
 }
 
+impl From<StateTreeSkeleton> for StateTree {
+    //create empty StateTree from StateTreeSkeleton
+    fn from(skeleton: StateTreeSkeleton) -> Self {
+        match skeleton {
+            StateTreeSkeleton::Delay { len } => StateTree::Delay {
+                readidx: 0,
+                writeidx: 0,
+                data: vec![0; len as usize],
+            },
+            StateTreeSkeleton::Mem => StateTree::Mem { data: 0 },
+            StateTreeSkeleton::Feed { size } => StateTree::Feed {
+                data: vec![0; size as usize],
+            },
+            StateTreeSkeleton::FnCall(children_layout) => StateTree::FnCall(
+                children_layout
+                    .into_iter()
+                    .map(|child_layout| StateTree::from(*child_layout))
+                    .collect(),
+            ),
+        }
+    }
+}
+
 pub fn serialize_tree_untagged(tree: StateTree) -> Vec<u64> {
     match tree {
         StateTree::Delay {
@@ -90,7 +113,7 @@ fn deserialize_tree_untagged_rec(
                         let (child, used) =
                             deserialize_tree_untagged_rec(&data[last_used..], child_layout)?;
 
-                        Some(([v, vec![child]].concat(), used))
+                        Some(([v, vec![child]].concat(), last_used + used))
                     })?;
 
             Some((StateTree::FnCall(children), used))
