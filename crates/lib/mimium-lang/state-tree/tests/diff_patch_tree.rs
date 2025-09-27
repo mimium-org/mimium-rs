@@ -1,6 +1,6 @@
 use rkyv::{access_mut, to_bytes};
 use state_tree::diff::{diff, optimize_patches};
-use state_tree::patch::{ApplyError, Patch, apply};
+use state_tree::patch::{Patch, apply};
 use state_tree::tree::ArchivedStateTree;
 use state_tree::tree::StateTree;
 
@@ -501,7 +501,7 @@ fn test_empty_trees_and_edge_cases() {
     let archived_single_b =
         rkyv::access::<ArchivedStateTree, rkyv::rancor::Error>(&bytes_single_b).unwrap();
 
-    let patches_single = diff(&archived_single_a, &archived_single_b, &[]);
+    let patches_single = diff(archived_single_a, archived_single_b, &[]);
     println!("🔸 Single element patches: {patches_single:#?}");
 
     // Expected patches for single element change

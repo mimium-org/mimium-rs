@@ -64,16 +64,6 @@ pub fn diff_mut(
     patches.extend(new_patches);
 }
 
-/// Diff children arrays using the LCS algorithm with optimization
-fn diff_children(
-    old_children: &[ArchivedStateTree],
-    new_children: &[ArchivedStateTree],
-    parent_path: &[usize],
-) -> Vec<Patch> {
-    let patches = diff_children_unoptimized(old_children, new_children, parent_path);
-    optimize_patches(patches)
-}
-
 /// Efficiently compare children of FnCall nodes without optimization
 fn diff_children_unoptimized(
     old_children: &[ArchivedStateTree],
