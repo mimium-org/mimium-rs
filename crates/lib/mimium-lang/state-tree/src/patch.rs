@@ -78,6 +78,6 @@ fn find_node_mut<'a>(
             Err(ApplyError::PathNotFound)
         }
     } else {
-        Ok(tree)//empty path means the root
+        Ok(tree) //empty path means the root
     }
 }

@@ -5,14 +5,25 @@ use rkyv::deserialize;
 use rkyv::rancor::Error;
 
 /// Calculate the difference between two StateTrees and return a list of patches
-/// This is the new functional-style API
+/// This is the new functional-style API with optimization applied
 pub fn diff(old: &ArchivedStateTree, new: &ArchivedStateTree, path: &[usize]) -> Vec<Patch> {
+    let patches = diff_unoptimized(old, new, path);
+    optimize_patches(patches)
+}
+
+/// Calculate the difference between two StateTrees without optimization
+/// This is the core diff algorithm
+fn diff_unoptimized(
+    old: &ArchivedStateTree,
+    new: &ArchivedStateTree,
+    path: &[usize],
+) -> Vec<Patch> {
     // Create a patch to replace nodes when types or values are different
 
     match (old, new) {
         // If both are FnCall, compare their contents using advanced algorithms
         (ArchivedStateTree::FnCall(old_children), ArchivedStateTree::FnCall(new_children)) => {
-            diff_children(old_children, new_children, path)
+            diff_children_unoptimized(old_children, new_children, path)
         }
         _ if old == new => {
             // Do nothing if the nodes are completely identical
@@ -52,8 +63,19 @@ pub fn diff_mut(
     let new_patches = diff(old, new, path);
     patches.extend(new_patches);
 }
-/// Efficiently compare children of FnCall nodes
+
+/// Diff children arrays using the LCS algorithm with optimization
 fn diff_children(
+    old_children: &[ArchivedStateTree],
+    new_children: &[ArchivedStateTree],
+    parent_path: &[usize],
+) -> Vec<Patch> {
+    let patches = diff_children_unoptimized(old_children, new_children, parent_path);
+    optimize_patches(patches)
+}
+
+/// Efficiently compare children of FnCall nodes without optimization
+fn diff_children_unoptimized(
     old_children: &[ArchivedStateTree],
     new_children: &[ArchivedStateTree],
     parent_path: &[usize],
@@ -245,4 +267,54 @@ fn are_compatible(old: &ArchivedStateTree, new: &ArchivedStateTree) -> bool {
         (FnCall(_), FnCall(_)) => true,       // FnCall always has compatibility
         _ => false,
     }
+}
+
+/// Optimize a sequence of patches by merging Remove-Insert pairs into Replace operations
+/// This function identifies consecutive Remove and Insert operations at the same path and index
+/// and merges them into a single Replace operation for better efficiency.
+pub fn optimize_patches(patches: Vec<Patch>) -> Vec<Patch> {
+    let mut optimized = Vec::new();
+    let mut i = 0;
+
+    while i < patches.len() {
+        // Check if current patch is Remove and next patch is Insert at the same location
+        if i + 1 < patches.len() {
+            match (&patches[i], &patches[i + 1]) {
+                (
+                    Patch::Remove {
+                        parent_path: remove_path,
+                        index: remove_idx,
+                    },
+                    Patch::Insert {
+                        parent_path: insert_path,
+                        index: insert_idx,
+                        new_tree,
+                    },
+                ) if remove_path == insert_path && remove_idx == insert_idx => {
+                    // Merge Remove + Insert into Replace
+                    let replace_path = {
+                        let mut path = remove_path.clone();
+                        path.push(*remove_idx);
+                        path
+                    };
+
+                    optimized.push(Patch::Replace {
+                        path: replace_path,
+                        new_tree: new_tree.clone(),
+                    });
+
+                    // Skip both Remove and Insert patches
+                    i += 2;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        // If no optimization possible, keep the original patch
+        optimized.push(patches[i].clone());
+        i += 1;
+    }
+
+    optimized
 }
