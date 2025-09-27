@@ -1,3 +1,4 @@
 fn dsp(){
-   42.0 |> Probe!("test")
+   let num = 42 //ensure the variable is in stage 1
+   num |> Probe!("test")
 }
