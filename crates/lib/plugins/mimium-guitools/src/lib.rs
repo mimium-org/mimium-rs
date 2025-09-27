@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use mimium_lang::{
     ast::{Expr, Literal},
-    function,
+    code, function,
     interner::{ToSymbol, TypeNodeId},
     interpreter::Value,
     log, numeric,
@@ -106,9 +106,9 @@ impl GuiToolPlugin {
                 Expr::Apply(
                     Expr::Var(Self::PROBE_INTERCEPT.to_symbol()).into_id_without_span(),
                     vec![
+                        Expr::Var("x".to_symbol()).into_id_without_span(),
                         Expr::Literal(Literal::Float(idx.to_string().to_symbol()))
                             .into_id_without_span(),
-                        Expr::Var("x".to_symbol()).into_id_without_span(),
                     ],
                 )
                 .into_id_without_span(),
@@ -133,18 +133,16 @@ impl GuiToolPlugin {
     }
 
     pub fn probe_intercept(&mut self, vm: &mut Machine) -> ReturnCode {
-        let probe_idx = Machine::get_as::<f64>(vm.get_stack(0)) as usize;
-        let value = Machine::get_as::<f64>(vm.get_stack(1));
+        let value = Machine::get_as::<f64>(vm.get_stack(0));
+        let probe_idx = Machine::get_as::<f64>(vm.get_stack(1)) as usize;
 
         match self.probe_instances.get_mut(probe_idx) {
             Some(prod) => {
                 let _ = prod.try_push(value);
-                // Set the return value to the same input value (passthrough)
-                vm.set_stack(0, Machine::to_value(value));
+                // Do not modify any stack because we are returning the head of argument as is
             }
             None => {
-                log::error!("invalid probe index: {}", probe_idx);
-                vm.set_stack(0, Machine::to_value(value)); // Still pass through the value
+                log::error!("invalid probe index: {probe_idx}");
             }
         }
 
@@ -185,34 +183,34 @@ impl SystemPlugin for GuiToolPlugin {
         None
     }
     fn gen_interfaces(&self) -> Vec<SysPluginSignature> {
-        // Replace make_probe function with Probe macro
-        let probe_macrf: SystemPluginMacroType<Self> = Self::make_probe_macro;
-        let probe_macro = SysPluginSignature::new_macro(
-            "Probe",
-            probe_macrf,
-            function!(
-                vec![string_t!()],
-                Type::Code(function!(vec![numeric!()], numeric!())).into_id()
-            ),
-        );
-
+        
         let sliderf: SystemPluginMacroType<Self> = Self::make_slider;
         let make_slider = SysPluginSignature::new_macro(
             "Slider",
             sliderf,
             function!(
                 vec![string_t!(), numeric!(), numeric!(), numeric!()],
-                Type::Code(Type::Primitive(PType::Numeric).into_id()).into_id()
+                code!(numeric!())
             ),
         );
-
+        
         let getsliderf: SystemPluginFnType<Self> = Self::get_slider;
         let get_slider = SysPluginSignature::new(
             Self::GET_SLIDER,
             getsliderf,
             function!(vec![numeric!()], numeric!()),
         );
-
+        
+        // Replace make_probe function with Probe macro
+        let probe_macrof: SystemPluginMacroType<Self> = Self::make_probe_macro;
+        let probe_macro = SysPluginSignature::new_macro(
+            "Probe",
+            probe_macrof,
+            function!(
+                vec![string_t!()],
+                Type::Code(function!(vec![numeric!()], numeric!())).into_id()
+            ),
+        );
         let probe_interceptf: SystemPluginFnType<Self> = Self::probe_intercept;
         let probe_intercept = SysPluginSignature::new(
             Self::PROBE_INTERCEPT,
