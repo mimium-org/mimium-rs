@@ -563,19 +563,32 @@ pub fn create_default_interpreter(
     (StageInterpreter::default(), ctx)
 }
 
-pub fn expand_macro(expr: ExprNodeId, extern_macros: &[Box<dyn MacroFunction>]) -> ExprNodeId {
+/// Evaluate root expression. If the result value is not code, return original expression as is.
+/// if the result value is code, this function recursively evaluate the expression inside the code until the result becomes non-code.
+pub fn expand_macro(
+    expr: ExprNodeId,
+    top_type: TypeNodeId,
+    extern_macros: &[Box<dyn MacroFunction>],
+) -> ExprNodeId {
     let (mut interpreter, mut ctx) = create_default_interpreter(extern_macros);
-    let res = interpreter.eval(&mut ctx, expr);
-
-    match res {
-        Value::Code(e) => e,
-        Value::ErrorV(e) => e,
-        Value::Unit => {
-            log::info!(
-                "Macro expansion did not resulted in a code value, which means there were no macro expressions to expand"
-            );
-            expr
+    expand_macro_rec(expr, &mut ctx, &mut interpreter, top_type)
+}
+fn expand_macro_rec(
+    expr: ExprNodeId,
+    ctx: &mut Context<Value>,
+    interpreter: &mut StageInterpreter,
+    ty: TypeNodeId,
+) -> ExprNodeId {
+    if let Type::Code(t) = ty.to_type() {
+        let res = interpreter.eval(ctx, expr);
+        match res {
+            Value::Code(e) => {
+                ctx.stage = EvalStage::Stage(0);
+                expand_macro_rec(e, ctx, interpreter, t)
+            }
+            _ => panic!("macro expansion failed, possible typing error"),
         }
-        _ => panic!("Macro expansion did not result in a code value"),
+    } else {
+        expr
     }
 }
