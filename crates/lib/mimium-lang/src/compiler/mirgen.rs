@@ -1,5 +1,7 @@
 use super::intrinsics;
 use super::typing::{InferContext, infer_root};
+//todo :separate word_size_for_type from this
+use crate::compiler::bytecodegen::ByteCodeGenerator;
 use crate::compiler::parser;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
@@ -10,6 +12,7 @@ pub mod convert_pronoun;
 pub(crate) mod recursecheck;
 // use super::pattern_destructor::destruct_let_pattern;
 use crate::mir::{self, Argument, Instruction, Mir, StateSize, VPtr, VReg, Value};
+use state_tree::tree::StateTreeSkeleton;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -34,7 +37,6 @@ struct ContextData {
     pub func_i: FunctionId,
     pub current_bb: usize,
     pub next_state_offset: Option<Vec<StateSize>>,
-    pub cur_state_pos: Vec<StateSize>,
     pub push_sum: Vec<StateSize>,
 }
 #[derive(Debug, Default, Clone)]
@@ -108,16 +110,21 @@ impl Context {
                 let args = self.eval_args(&[*src, *time]);
                 let max_time = max.as_str().parse::<f64>().unwrap();
                 let shift_size = max_time as u64 + DELAY_ADDITIONAL_OFFSET;
-                self.get_current_fn().state_sizes.push(StateSize {
+                let delay_state_size = StateSize {
                     size: shift_size,
                     ty: *rt,
-                });
-                let coffset = self.get_ctxdata().cur_state_pos.clone();
-                if !coffset.is_empty() {
-                    self.get_ctxdata().push_sum.extend_from_slice(&coffset);
+                };
+                self.get_current_fn().state_sizes.push(delay_state_size);
+                self.get_current_fn()
+                    .push_state_skeleton(StateTreeSkeleton::Delay {
+                        len: max_time as u64,
+                    });
+                if let Some(offset) = self.get_ctxdata().next_state_offset.take() {
+                    self.get_ctxdata().push_sum.extend_from_slice(&offset);
                     self.get_current_basicblock()
                         .0
-                        .push((Arc::new(Value::None), Instruction::PushStateOffset(coffset)));
+                        .push((Arc::new(Value::None), Instruction::PushStateOffset(offset.clone())));
+                    self.get_ctxdata().next_state_offset = Some(vec![delay_state_size]);
                 }
                 let (args, _types): (Vec<VPtr>, Vec<TypeNodeId>) = args.into_iter().unzip();
                 Some(self.push_inst(Instruction::Delay(
@@ -174,6 +181,8 @@ impl Context {
                 self.get_current_fn()
                     .state_sizes
                     .push(StateSize { size: 1, ty: a0_ty });
+                self.get_current_fn()
+                    .push_state_skeleton(StateTreeSkeleton::Mem);
                 Some(Instruction::Mem(a0))
             }
             _ => None,
@@ -271,6 +280,7 @@ impl Context {
             }
         }
     }
+
     fn make_new_function(
         &mut self,
         name: Symbol,
@@ -493,7 +503,10 @@ impl Context {
     }
     fn emit_fncall(&mut self, idx: u64, args: Vec<(VPtr, TypeNodeId)>, ret_t: TypeNodeId) -> VPtr {
         // stack size of the function to be called
-        let state_sizes = self.program.functions[idx as usize].state_sizes.clone();
+        let target_fn = &self.program.functions[idx as usize];
+        let is_stateful = target_fn.is_stateful();
+        let state_sizes = target_fn.state_sizes.clone();
+        let child_skeleton = target_fn.state_skeleton.clone();
 
         if let Some(offset) = self.get_ctxdata().next_state_offset.take() {
             self.get_ctxdata().push_sum.extend_from_slice(&offset);
@@ -507,16 +520,13 @@ impl Context {
             self.get_current_fn()
                 .state_sizes
                 .extend_from_slice(&state_sizes);
+            self.get_current_fn().push_state_skeleton(child_skeleton);
             self.push_inst(Instruction::Uinteger(idx))
         };
 
         let res = self.push_inst(Instruction::Call(f.clone(), args, ret_t));
 
-        if !state_sizes.is_empty() {
-            self.get_ctxdata()
-                .cur_state_pos
-                .extend_from_slice(&state_sizes);
-
+        if is_stateful {
             self.get_ctxdata().next_state_offset = Some(state_sizes);
         }
 
@@ -881,11 +891,15 @@ impl Context {
                 //set typesize lazily
                 let statesize = StateSize { size: 1, ty };
                 let res = self.push_inst(Instruction::GetState(ty));
-                self.get_ctxdata().cur_state_pos.push(statesize);
                 self.add_bind((*id, res.clone()));
                 self.get_ctxdata().next_state_offset = Some(vec![statesize]);
                 let (retv, _t) = self.eval_expr(*expr);
                 self.get_current_fn().state_sizes.push(statesize);
+                //todo:move word size function to type.rs
+                self.get_current_fn()
+                    .push_state_skeleton(StateTreeSkeleton::Feed {
+                        size: ByteCodeGenerator::word_size_for_type(ty) as u64,
+                    });
                 (Arc::new(Value::State(retv)), ty)
             }
             Expr::Let(pat, body, then) => {

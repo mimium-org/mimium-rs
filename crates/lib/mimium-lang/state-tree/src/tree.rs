@@ -47,6 +47,7 @@ pub fn serialize_tree_untagged(tree: StateTree) -> Vec<u64> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub enum StateTreeSkeleton {
     Delay {
         len: u64, //assume we are using only mono f64 data

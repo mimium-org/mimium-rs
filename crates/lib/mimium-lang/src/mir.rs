@@ -5,6 +5,8 @@ use crate::{
     types::TypeSize,
 };
 use std::{cell::OnceCell, sync::Arc};
+// Import StateTreeSkeleton for function state information
+use state_tree::tree::StateTreeSkeleton;
 
 pub mod print;
 
@@ -161,6 +163,8 @@ pub struct Function {
     pub upperfn_i: Option<usize>,
     pub body: Vec<Block>,
     pub state_sizes: Vec<StateSize>,
+    /// StateTree skeleton information for this function's state layout
+    pub state_skeleton: StateTreeSkeleton,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -187,6 +191,7 @@ impl Function {
             upperfn_i,
             body: vec![Block::default()],
             state_sizes: vec![],
+            state_skeleton: StateTreeSkeleton::FnCall(vec![]), // Initialize as empty FnCall, will be set during MIR generation
         }
     }
     pub fn add_new_basicblock(&mut self) -> usize {
@@ -204,6 +209,31 @@ impl Function {
                 self.upindexes.push(v.clone());
                 self.upindexes.len() - 1
             })
+    }
+    fn skeleton_to_state_size(skeleton: &StateTreeSkeleton) -> u64 {
+        match skeleton {
+            StateTreeSkeleton::Delay { len } => len + 2, // +2 for readidx and writeidx
+            StateTreeSkeleton::Mem => 1,                 // Assuming Mem holds a single u64
+            StateTreeSkeleton::Feed { size } => *size,
+            StateTreeSkeleton::FnCall(children) => children
+                .iter()
+                .map(|child| Self::skeleton_to_state_size(child))
+                .sum(),
+        }
+    }
+    pub fn push_state_skeleton(&mut self, skeleton: StateTreeSkeleton) {
+        if let StateTreeSkeleton::FnCall(children) = &mut self.state_skeleton {
+            children.push(Box::new(skeleton))
+        } else {
+            panic!("State skeleton for function must be FnCall type");
+        }
+    }
+    pub fn is_stateful(&self) -> bool {
+        if let StateTreeSkeleton::FnCall(children) = &self.state_skeleton {
+            !children.is_empty()
+        } else {
+            panic!("State skeleton for function must be FnCall type");
+        }
     }
 }
 
@@ -236,5 +266,21 @@ impl Mir {
                     .and_then(|t| t.to_type().get_iochannel_count());
                 input.and_then(|input| output.map(|output| IoChannelInfo { input, output }))
             })
+    }
+
+    /// Get the StateTreeSkeleton for a specific function by name
+    pub fn get_function_state_skeleton(&self, function_name: &str) -> Option<&StateTreeSkeleton> {
+        self.functions.iter().find_map(|f| {
+            if f.label.as_str() == function_name {
+                Some(&f.state_skeleton)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Get the StateTreeSkeleton for the dsp function (commonly used for audio processing)
+    pub fn get_dsp_state_skeleton(&self) -> Option<&StateTreeSkeleton> {
+        self.get_function_state_skeleton("dsp")
     }
 }
