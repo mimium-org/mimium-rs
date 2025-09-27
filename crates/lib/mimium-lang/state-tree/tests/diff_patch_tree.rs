@@ -164,6 +164,46 @@ fn test_complex_nested_tree_diff() {
         println!("  {}: {patch:?}", i + 1);
     }
 
+    // Expected patches based on the diff algorithm behavior
+    let expected_patches = vec![
+        Patch::Replace { path: vec![0], new_tree: StateTree::Mem { data: 200 } },
+        Patch::Remove { parent_path: vec![1], index: 1 },
+        Patch::Remove { parent_path: vec![1], index: 2 },
+        Patch::Insert { 
+            parent_path: vec![1], 
+            index: 1, 
+            new_tree: StateTree::FnCall(vec![
+                StateTree::Feed { data: vec![7, 8] },
+                StateTree::Mem { data: 60 },
+            ])
+        },
+        Patch::Insert { 
+            parent_path: vec![1], 
+            index: 2, 
+            new_tree: StateTree::Delay {
+                readidx: 5,
+                writeidx: 6,
+                data: vec![90, 95],
+            }
+        },
+        Patch::Replace { 
+            path: vec![2], 
+            new_tree: StateTree::Delay {
+                readidx: 2,
+                writeidx: 3,
+                data: vec![30, 40, 50],
+            }
+        },
+        Patch::Insert { 
+            parent_path: vec![], 
+            index: 3, 
+            new_tree: StateTree::Feed { data: vec![100, 200, 300] }
+        },
+    ];
+
+    // Verify that the patches match expectations
+    assert_eq!(patches, expected_patches, "Generated patches should match expected patches");
+
     // Apply patches to verify correctness
     let mut tree_to_patch = old_tree.clone();
     match apply(&mut tree_to_patch, &patches) {
@@ -171,12 +211,44 @@ fn test_complex_nested_tree_diff() {
             println!("✅ Patches applied successfully!");
             println!("🎯 Final result tree:");
             println!("{tree_to_patch:#?}");
+            
+            // Define expected result tree after patch application
+            // Note: Data preservation behavior means some original data is kept
+            let _expected_result = StateTree::FnCall(vec![
+                StateTree::Mem { data: 100 }, // Original data preserved (Mem nodes preserve old data)
+                StateTree::FnCall(vec![
+                    StateTree::Feed { data: vec![1, 2, 3] },
+                    StateTree::FnCall(vec![
+                        StateTree::Feed { data: vec![7, 8] },
+                        StateTree::Mem { data: 60 },
+                    ]),
+                    StateTree::Delay {
+                        readidx: 5,
+                        writeidx: 6,
+                        data: vec![90, 95],
+                    },
+                ]),
+                StateTree::Delay {
+                    readidx: 2,
+                    writeidx: 3,
+                    data: vec![30, 40, 50],
+                },
+                StateTree::Feed { data: vec![100, 200, 300] },
+            ]);
+            
+            // We might need to adjust this assertion based on actual behavior
+            // For now, just verify the structure is reasonable
+            match &tree_to_patch {
+                StateTree::FnCall(children) => {
+                    assert_eq!(children.len(), 4, "Result should have 4 top-level children");
+                    // Add more specific assertions as needed
+                }
+                _ => panic!("Result should be a FnCall"),
+            }
         }
         Err(e) => {
             println!("❌ Failed to apply patches: {e:?}");
-            // This is expected for complex reorganizations
-            // The diff algorithm may produce patches that don't apply cleanly
-            // due to the complexity of the changes
+            panic!("Patch application should succeed for this test case");
         }
     }
 
@@ -225,13 +297,41 @@ fn test_multiple_removes_and_inserts() {
         println!("  {}: {patch:?}", i + 1);
     }
 
+    // Expected patches for this transformation (based on actual algorithm output)
+    let expected_patches = vec![
+        Patch::Remove { parent_path: vec![], index: 0 },
+        Patch::Remove { parent_path: vec![], index: 1 },
+        Patch::Insert { parent_path: vec![], index: 0, new_tree: StateTree::Feed { data: vec![30, 40, 50] } },
+        Patch::Remove { parent_path: vec![], index: 3 },
+        Patch::Remove { parent_path: vec![], index: 4 },
+        Patch::Insert { parent_path: vec![], index: 2, new_tree: StateTree::FnCall(vec![StateTree::Mem { data: 99 }]) },
+        Patch::Insert { parent_path: vec![], index: 3, new_tree: StateTree::Delay { readidx: 5, writeidx: 6, data: vec![200, 300] } },
+    ];
+
+    // Verify the patches match expectations
+    assert_eq!(patches, expected_patches, "Generated patches should match expected sequence");
+
     let mut tree_to_patch = old_tree.clone();
     match apply(&mut tree_to_patch, &patches) {
-        Ok(()) => println!("✅ Patches applied successfully!"),
-        Err(e) => println!("⚠️ Patch application partially failed: {e:?} (This may be expected for complex reorganizations)"),
+        Ok(()) => {
+            println!("✅ Patches applied successfully!");
+            println!("📊 Result tree: {tree_to_patch:#?}");
+            
+            // Verify the structure after applying patches
+            match &tree_to_patch {
+                StateTree::FnCall(children) => {
+                    assert_eq!(children.len(), 4, "Should have 4 children after transformation");
+                }
+                _ => panic!("Result should be a FnCall"),
+            }
+        }
+        Err(e) => {
+            println!("⚠️ Patch application failed as expected: {e:?}");
+            // For this complex reorganization, patch application may fail due to index conflicts
+            // This is a known limitation of the current patch application algorithm
+            println!("📝 Note: Complex reorganizations may result in patch application failures");
+        }
     }
-
-    println!("📊 Result tree: {tree_to_patch:#?}");
     println!("✅ Multiple removes and inserts test completed!");
 }
 
@@ -293,13 +393,73 @@ fn test_deep_nesting_changes() {
         println!("  {}: {patch:?}", i + 1);
     }
 
+    // Expected patches based on actual output
+    let expected_patches = vec![
+        Patch::Replace { 
+            path: vec![0, 0, 0, 1], 
+            new_tree: StateTree::Delay { 
+                readidx: 0, 
+                writeidx: 1, 
+                data: vec![1, 2, 3, 4, 5] 
+            } 
+        },
+        Patch::Insert { 
+            parent_path: vec![0, 0, 0], 
+            index: 2, 
+            new_tree: StateTree::Feed { data: vec![77] } 
+        },
+        Patch::Insert { 
+            parent_path: vec![0], 
+            index: 1, 
+            new_tree: StateTree::Mem { data: 888 } 
+        },
+        Patch::Insert { 
+            parent_path: vec![], 
+            index: 2, 
+            new_tree: StateTree::Delay { readidx: 10, writeidx: 11, data: vec![500] } 
+        },
+    ];
+
+    // Verify patches match expectations
+    assert_eq!(patches, expected_patches, "Deep nesting patches should match expected sequence");
+
     let mut tree_to_patch = old_tree.clone();
     match apply(&mut tree_to_patch, &patches) {
-        Ok(()) => println!("✅ Deep nesting patches applied successfully!"),
-        Err(e) => println!("⚠️ Deep nesting patch application partially failed: {e:?}"),
+        Ok(()) => {
+            println!("✅ Deep nesting patches applied successfully!");
+            
+            // Define expected result tree
+            let expected_result = StateTree::FnCall(vec![
+                StateTree::FnCall(vec![
+                    StateTree::FnCall(vec![
+                        StateTree::FnCall(vec![
+                            StateTree::Mem { data: 42 },
+                            StateTree::Delay {
+                                readidx: 0,
+                                writeidx: 1,
+                                data: vec![1, 2, 3, 4, 5],
+                            },
+                            StateTree::Feed { data: vec![77] },
+                        ]),
+                        StateTree::Feed { data: vec![100] },
+                    ]),
+                    StateTree::Mem { data: 888 },
+                ]),
+                StateTree::Mem { data: 999 },
+                StateTree::Delay {
+                    readidx: 10,
+                    writeidx: 11,
+                    data: vec![500],
+                },
+            ]);
+            
+            assert_eq!(tree_to_patch, expected_result, "Final tree should match expected result");
+            println!("🎯 Deep nesting result verification passed!");
+        }
+        Err(e) => {
+            panic!("Deep nesting patch application should succeed: {e:?}");
+        }
     }
-    
-    println!("🎯 Deep nesting result: {tree_to_patch:#?}");
     println!("✅ Deep nesting changes test completed!");
 }
 
@@ -451,4 +611,62 @@ fn test_mixed_type_reorganization() {
     }
     
     println!("✅ Mixed type reorganization test completed!");
+}
+
+#[test]
+fn test_simple_tree_modifications() {
+    // Simple test case with predictable patches and final state
+    
+    let old_tree = StateTree::FnCall(vec![
+        StateTree::Mem { data: 100 },
+        StateTree::Feed { data: vec![1, 2] },
+    ]);
+
+    let new_tree = StateTree::FnCall(vec![
+        StateTree::Mem { data: 200 }, // Changed value 
+        StateTree::Feed { data: vec![1, 2] }, // Same
+        StateTree::Delay { readidx: 5, writeidx: 6, data: vec![99] }, // Added
+    ]);
+
+    let mut old_bytes = to_bytes::<rkyv::rancor::Error>(&old_tree).unwrap();
+    let mut new_bytes = to_bytes::<rkyv::rancor::Error>(&new_tree).unwrap();
+    
+    let archived_old = access_mut::<ArchivedStateTree, rkyv::rancor::Error>(&mut old_bytes).unwrap();
+    let archived_new = access_mut::<ArchivedStateTree, rkyv::rancor::Error>(&mut new_bytes).unwrap();
+    
+    let patches = diff(&archived_old, &archived_new, &[]);
+    
+    println!("📋 Simple modification patches:");
+    for (i, patch) in patches.iter().enumerate() {
+        println!("  {}: {patch:?}", i + 1);
+    }
+    
+    // Expected patches for this simple case
+    let expected_patches = vec![
+        Patch::Replace { 
+            path: vec![0], 
+            new_tree: StateTree::Mem { data: 200 } 
+        },
+        Patch::Insert { 
+            parent_path: vec![], 
+            index: 2, 
+            new_tree: StateTree::Delay { readidx: 5, writeidx: 6, data: vec![99] } 
+        },
+    ];
+    
+    assert_eq!(patches, expected_patches, "Simple modification patches should match expected");
+    
+    let mut tree_to_patch = old_tree.clone();
+    apply(&mut tree_to_patch, &patches).expect("Simple patches should apply successfully");
+    
+    // Expected final tree (considering data preservation behavior)
+    let expected_final_tree = StateTree::FnCall(vec![
+        StateTree::Mem { data: 100 }, // Original data preserved for Mem nodes
+        StateTree::Feed { data: vec![1, 2] },
+        StateTree::Delay { readidx: 5, writeidx: 6, data: vec![99] },
+    ]);
+    
+    assert_eq!(tree_to_patch, expected_final_tree, "Final tree should match expected result");
+    
+    println!("✅ Simple tree modifications test passed with all assertions!");
 }
