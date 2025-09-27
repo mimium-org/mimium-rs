@@ -1,4 +1,3 @@
 fn dsp(){
-   let num = 42
-   num |> Probe!("test")
+   42.0 |> Probe!("test")
 }
