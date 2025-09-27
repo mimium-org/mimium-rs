@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::sync::Arc;
 
 use mimium_lang::{
     ast::{Expr, Literal},
@@ -6,16 +6,15 @@ use mimium_lang::{
     interner::{ToSymbol, TypeNodeId},
     interpreter::Value,
     log, numeric,
-    plugin::{
-        ExtClsInfo, SysPluginSignature, SystemPlugin, SystemPluginFnType, SystemPluginMacroType,
-    },
+    pattern::TypedId,
+    plugin::{SysPluginSignature, SystemPlugin, SystemPluginFnType, SystemPluginMacroType},
     runtime::vm::{Machine, ReturnCode},
     string_t,
     types::{PType, Type},
 };
 use plot_window::PlotApp;
 use ringbuf::{
-    HeapRb,
+    HeapProd, HeapRb,
     traits::{Producer, Split},
 };
 
@@ -26,6 +25,7 @@ pub mod plot_window;
 pub struct GuiToolPlugin {
     window: Option<PlotApp>,
     slider_instances: Vec<Arc<FloatParameter>>,
+    probe_instances: Vec<HeapProd<f64>>,
 }
 
 impl Default for GuiToolPlugin {
@@ -33,6 +33,7 @@ impl Default for GuiToolPlugin {
         Self {
             window: Some(PlotApp::default()),
             slider_instances: Vec::new(),
+            probe_instances: Vec::new(),
         }
     }
 }
@@ -42,6 +43,7 @@ impl GuiToolPlugin {
         function!(vec![numeric!()], numeric!())
     }
     const GET_SLIDER: &'static str = "__get_slider";
+    const PROBE_INTERCEPT: &'static str = "__probe_intercept";
 
     pub fn make_slider(&mut self, v: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(v.len(), 4);
@@ -77,6 +79,37 @@ impl GuiToolPlugin {
             .into_id_without_span(),
         )
     }
+
+    pub fn make_probe_macro(&mut self, v: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(v.len(), 1);
+        let (name, window) = match (v[0].0.clone(), self.window.as_mut()) {
+            (Value::String(name), Some(window)) => (name, window),
+            _ => {
+                log::error!("invalid argument for Probe macro");
+                return Value::Number(0.0);
+            }
+        };
+
+        let (prod, cons) = HeapRb::<f64>::new(4096).split();
+        window.add_plot(name.as_str(), cons);
+        let idx = self.probe_instances.len();
+        self.probe_instances.push(prod);
+
+        // Generate a lambda that calls probe_intercept with the fixed ID
+        Value::Code(
+            Expr::Lambda(
+                vec![TypedId::new("x".to_symbol(), Type::Primitive(PType::Numeric).into_id())],
+                None,
+                Expr::Apply(
+                    Expr::Var(Self::PROBE_INTERCEPT.to_symbol()).into_id_without_span(),
+                    vec![
+                        Expr::Literal(Literal::Float(idx.to_string().to_symbol())).into_id_without_span(),
+                        Expr::Var("x".to_symbol()).into_id_without_span(),
+                    ],
+                ).into_id_without_span(),
+            ).into_id_without_span(),
+        )
+    }
     pub fn get_slider(&mut self, vm: &mut Machine) -> ReturnCode {
         let slider_idx = Machine::get_as::<f64>(vm.get_stack(0)) as usize;
 
@@ -92,30 +125,23 @@ impl GuiToolPlugin {
 
         1
     }
-    /// This method is exposed as "make_probe(label:String)->(float)->float".
-    pub fn make_probe(&mut self, vm: &mut Machine) -> ReturnCode {
-        if let Some(app) = self.window.as_mut() {
-            let idx = vm.get_stack(0);
-            let probename = vm.prog.strings[idx as usize].as_str();
 
-            let (mut prod, cons) = HeapRb::<f64>::new(4096).split();
-            app.add_plot(probename, cons);
-            let cb = move |vm: &mut Machine| -> ReturnCode {
-                let v = Machine::get_as::<f64>(vm.get_stack(0));
-                let _ = prod.try_push(v);
-                //do not modify any stack values
-                1
-            };
-            let info = ExtClsInfo::new(
-                "probegetter".to_symbol(),
-                Self::get_closure_type(),
-                Rc::new(RefCell::new(cb)),
-            );
-            let cls = vm.wrap_extern_cls(info);
-            vm.set_stack(0, Machine::to_value(cls));
-        } else {
-            log::warn!("make_probe called other than global context.");
+    pub fn probe_intercept(&mut self, vm: &mut Machine) -> ReturnCode {
+        let probe_idx = Machine::get_as::<f64>(vm.get_stack(0)) as usize;
+        let value = Machine::get_as::<f64>(vm.get_stack(1));
+
+        match self.probe_instances.get_mut(probe_idx) {
+            Some(prod) => {
+                let _ = prod.try_push(value);
+                // Set the return value to the same input value (passthrough)
+                vm.set_stack(0, Machine::to_value(value));
+            }
+            None => {
+                log::error!("invalid probe index: {}", probe_idx);
+                vm.set_stack(0, Machine::to_value(value)); // Still pass through the value
+            }
         }
+
         1
     }
 }
@@ -153,9 +179,17 @@ impl SystemPlugin for GuiToolPlugin {
         None
     }
     fn gen_interfaces(&self) -> Vec<SysPluginSignature> {
-        let ty = function!(vec![string_t!()], Self::get_closure_type());
-        let probef: SystemPluginFnType<Self> = Self::make_probe;
-        let make_probe = SysPluginSignature::new("make_probe", probef, ty);
+        // Replace make_probe function with Probe macro
+        let probe_macrf: SystemPluginMacroType<Self> = Self::make_probe_macro;
+        let probe_macro = SysPluginSignature::new_macro(
+            "Probe",
+            probe_macrf,
+            function!(
+                vec![string_t!()],
+                Type::Code(function!(vec![numeric!()], numeric!())).into_id()
+            ),
+        );
+        
         let sliderf: SystemPluginMacroType<Self> = Self::make_slider;
         let make_slider = SysPluginSignature::new_macro(
             "Slider",
@@ -165,12 +199,21 @@ impl SystemPlugin for GuiToolPlugin {
                 Type::Code(Type::Primitive(PType::Numeric).into_id()).into_id()
             ),
         );
+        
         let getsliderf: SystemPluginFnType<Self> = Self::get_slider;
         let get_slider = SysPluginSignature::new(
             Self::GET_SLIDER,
             getsliderf,
             function!(vec![numeric!()], numeric!()),
         );
-        vec![make_probe, make_slider, get_slider]
+        
+        let probe_interceptf: SystemPluginFnType<Self> = Self::probe_intercept;
+        let probe_intercept = SysPluginSignature::new(
+            Self::PROBE_INTERCEPT,
+            probe_interceptf,
+            function!(vec![numeric!(), numeric!()], numeric!()),
+        );
+        
+        vec![probe_macro, make_slider, get_slider, probe_intercept]
     }
 }

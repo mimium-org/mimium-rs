@@ -1,4 +1,5 @@
 use mimium_lang::{interner::ToSymbol, utils::error::report};
+use mimium_audiodriver::driver::Driver;
 use mimium_test::*;
 use wasm_bindgen_test::*;
 
@@ -577,5 +578,31 @@ fn multistage_lift() {
 fn multistage_explicit_type() {
     let res = run_file_test_mono("multistage_explicit_type.mmm", 1).unwrap();
     let ans = vec![32.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn probe_macro() {
+    let (_, src) = load_src("probe_macro.mmm");
+    
+    // Create a custom execution with the guitools plugin
+    let mut driver = mimium_audiodriver::backends::local_buffer::LocalBufferDriver::new(1);
+    let audiodriverplug: Box<dyn mimium_lang::plugin::Plugin> = Box::new(driver.get_as_plugin());
+    let mut ctx = mimium_lang::ExecContext::new(
+        [audiodriverplug].into_iter(),
+        None,
+        mimium_lang::Config::default(),
+    );
+    
+    // Add the guitools system plugin
+    ctx.add_system_plugin(mimium_guitools::GuiToolPlugin::default());
+    
+    ctx.prepare_machine(&src).unwrap();
+    let _ = ctx.run_main();
+    driver.init(ctx, None);
+    driver.play();
+    let res = driver.get_generated_samples().to_vec();
+    
+    let ans = vec![42.0]; // Probe should pass through the value
     assert_eq!(res, ans);
 }
