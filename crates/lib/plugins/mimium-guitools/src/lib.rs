@@ -96,6 +96,7 @@ impl GuiToolPlugin {
         self.probe_instances.push(prod);
 
         // Generate a lambda that calls probe_intercept with the fixed ID
+        // This lambda will be available at stage 1
         Value::Code(
             Expr::Lambda(
                 vec![TypedId::new(
