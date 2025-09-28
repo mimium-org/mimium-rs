@@ -709,34 +709,10 @@ impl InferContext {
                     Ok(Type::Record(kts).into_id_with_location(loc))
                 }
             }
-            Expr::RecordUpdate(record, fields) => {
-                // For record update, the type should be the same as the original record
-                // but we need to validate that all updated fields exist and have compatible types
-                let record_type = self.infer_type_unwrapping(*record);
-                log::trace!("record update on type: {}", record_type.to_type());
-
-                match record_type.to_type() {
-                    Type::Record(ref record_fields) => {
-                        // Check that all update fields exist in the original record and have compatible types
-                        for RecordField { name, expr } in fields {
-                            let field_type = self.infer_type_unwrapping(*expr);
-                            if let Some(original_field) =
-                                record_fields.iter().find(|f| f.key == *name)
-                            {
-                                let rel = self.unify_types(original_field.ty, field_type)?;
-                            } else {
-                                return Err(vec![Error::FieldNotExist {
-                                    field: *name,
-                                    loc: loc.clone(),
-                                    et: record_type,
-                                }]);
-                            }
-                        }
-                        // Return the same record type
-                        Ok(record_type)
-                    }
-                    _ => Err(vec![Error::FieldForNonRecord(loc, record_type)]),
-                }
+            Expr::RecordUpdate(_, _) => {
+                // RecordUpdate should never reach type inference as it gets expanded
+                // to Block/Let/Assign expressions during syntax sugar conversion in convert_pronoun.rs
+                unreachable!("RecordUpdate should be expanded before type inference")
             }
             Expr::FieldAccess(expr, field) => {
                 let et = self.infer_type_unwrapping(*expr);
