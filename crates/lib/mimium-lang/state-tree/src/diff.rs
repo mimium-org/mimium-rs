@@ -29,7 +29,10 @@ fn diff_unoptimized(
             // Do nothing if the nodes are completely identical
             Vec::new()
         }
-
+        (Mem { data: _ }, Mem { data: _ }) => {
+            // Reuse the same object for Mem if they are both Mem
+            Vec::new()
+        }
         (Feed { data: data1 }, Feed { data: data2 })
         | (Delay { data: data1, .. }, Delay { data: data2, .. })
             if data1.len() == data2.len() =>
@@ -50,18 +53,6 @@ fn diff_unoptimized(
             Vec::new()
         }
     }
-}
-
-/// Legacy API wrapper for backward compatibility
-/// Calculate the difference between two StateTrees and mutate patches vector
-pub fn diff_mut(
-    old: &ArchivedStateTree,
-    new: &ArchivedStateTree,
-    path: &mut [usize],
-    patches: &mut Vec<Patch>,
-) {
-    let new_patches = diff(old, new, path);
-    patches.extend(new_patches);
 }
 
 /// Efficiently compare children of FnCall nodes without optimization

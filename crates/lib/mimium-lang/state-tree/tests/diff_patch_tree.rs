@@ -124,7 +124,7 @@ fn test_complex_nested_tree_diff() {
 
     // New tree: Multiple changes at different levels
     let new_tree = StateTree::FnCall(vec![
-        StateTree::Mem { data: 200 }, // Changed value
+        StateTree::Mem { data: 0 }, 
         StateTree::FnCall(vec![
             StateTree::Feed {
                 data: vec![1, 2, 3],
