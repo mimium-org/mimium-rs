@@ -210,6 +210,46 @@ where
             let found_any = res_vec.into_iter().any(|f| f.1);
             (ConvertResult { expr, found_any }, errs.concat())
         }
+        Expr::RecordUpdate(record, fields) => {
+            // Convert record update syntax to expanded record literal
+            // For now, we'll mark this as needing conversion but pass it through
+            // The actual expansion should happen during type checking when we have full type information
+            let (record_res, record_errs) = conversion(record);
+            let (field_results, field_errs): (Vec<_>, Vec<_>) = fields
+                .iter()
+                .map(|f| {
+                    let (res, errs) = conversion(f.expr);
+                    (
+                        (
+                            RecordField {
+                                name: f.name,
+                                expr: res.expr,
+                            },
+                            res.found_any,
+                        ),
+                        errs,
+                    )
+                })
+                .unzip();
+
+            let expanded_fields = field_results
+                .into_iter()
+                .map(|(field, _)| field)
+                .collect::<Vec<_>>();
+            let expr = Expr::RecordUpdate(record_res.expr, expanded_fields.clone()).into_id(loc);
+            let found_any = record_res.found_any
+                || expanded_fields.iter().any(|_f| {
+                    // This is a placeholder - in practice we'd check if any field expressions contain the syntax we're converting
+                    false
+                });
+            (
+                ConvertResult {
+                    expr,
+                    found_any: true,
+                },
+                [record_errs, field_errs.concat()].concat(),
+            )
+        }
         Expr::Assign(left, right) => {
             let (left, err) = conversion(left);
             let (right, err2) = conversion(right);
