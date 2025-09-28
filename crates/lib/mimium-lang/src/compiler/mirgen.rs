@@ -628,6 +628,11 @@ impl Context {
                 // The default values will be handled in the type system and during record construction
                 self.alloc_aggregates(&fields.iter().map(|f| f.expr).collect::<Vec<_>>(), ty)
             }
+            Expr::RecordUpdate(record, fields) => {
+                // Record update syntax should be expanded during conversion phase
+                // This case should not be reached after syntax sugar expansion
+                unreachable!("RecordUpdate should be expanded during syntax sugar conversion")
+            }
             Expr::FieldAccess(expr, accesskey) => {
                 let (expr_v, expr_ty) = self.eval_expr(*expr);
                 match expr_ty.to_type() {

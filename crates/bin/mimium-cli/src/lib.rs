@@ -10,7 +10,16 @@ use mimium_audiodriver::{
     load_default_runtime,
 };
 use mimium_lang::{
-    compiler::{bytecodegen::SelfEvalMode, emit_ast}, interner::{Symbol, ToSymbol}, log, plugin::Plugin, utils::{error::{report, ReportableError}, fileloader, miniprint::MiniPrint}, Config, ExecContext
+    Config, ExecContext,
+    compiler::{bytecodegen::SelfEvalMode, emit_ast},
+    interner::{Symbol, ToSymbol},
+    log,
+    plugin::Plugin,
+    utils::{
+        error::{ReportableError, report},
+        fileloader,
+        miniprint::MiniPrint,
+    },
 };
 use mimium_symphonia::SamplerPlugin;
 
@@ -237,7 +246,6 @@ pub fn run_file(
         }
     }
 }
-
 
 pub fn lib_main() -> Result<(), Box<dyn std::error::Error>> {
     if cfg!(debug_assertions) | cfg!(test) {
