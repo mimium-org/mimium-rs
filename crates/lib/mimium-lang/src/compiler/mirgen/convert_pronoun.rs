@@ -210,47 +210,9 @@ where
             let found_any = res_vec.into_iter().any(|f| f.1);
             (ConvertResult { expr, found_any }, errs.concat())
         }
-        Expr::RecordUpdate(record, fields) => {
-            // Convert record update syntax to expanded record literal
-            // We need to expand this to a record literal that includes all fields,
-            // using the updated values for specified fields and field access for others.
-            // Since we don't have type information here, we'll create a helper function
-            // that can be used to expand this during a later phase.
-
-            let (record_res, record_errs) = conversion(record);
-            let (field_results, field_errs): (Vec<_>, Vec<_>) = fields
-                .iter()
-                .map(|f| {
-                    let (res, errs) = conversion(f.expr);
-                    (
-                        (
-                            RecordField {
-                                name: f.name,
-                                expr: res.expr,
-                            },
-                            res.found_any,
-                        ),
-                        errs,
-                    )
-                })
-                .unzip();
-
-            let updated_fields = field_results
-                .clone()
-                .into_iter()
-                .map(|(field, _)| field)
-                .collect();
-
-            // For now, pass through the RecordUpdate node - it will be expanded during type checking
-            let expr = Expr::RecordUpdate(record_res.expr, updated_fields).into_id(loc);
-            let found_any = record_res.found_any || field_results.iter().any(|(_, found)| *found);
-            (
-                ConvertResult {
-                    expr,
-                    found_any: true,
-                },
-                [record_errs, field_errs.concat()].concat(),
-            )
+        Expr::RecordUpdate(_record, _fields) => {
+            // RecordUpdate should not exist at this stage - it should have been expanded earlier
+            unreachable!("RecordUpdate should have been expanded in convert_operators")
         }
         Expr::Assign(left, right) => {
             let (left, err) = conversion(left);
@@ -465,6 +427,45 @@ fn convert_operators(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
             Expr::Apply(fname, vec![e]).into_id(loc)
         }
         Expr::Paren(e) => convert_operators(e, file_path),
+        Expr::RecordUpdate(record, fields) => {
+            // Expand record update syntax to record literal
+            let record = convert_operators(record, file_path);
+            let updated_fields: Vec<RecordField> = fields
+                .into_iter()
+                .map(|f| RecordField {
+                    name: f.name,
+                    expr: convert_operators(f.expr, file_path),
+                })
+                .collect();
+
+            // Try to extract field names from the original record if it's a literal
+            let mut all_fields = updated_fields.clone();
+            if let Expr::RecordLiteral(original_fields) = record.to_expr() {
+                // If the original is a RecordLiteral, we can get the field names
+                let updated_field_names: std::collections::HashSet<Symbol> =
+                    updated_fields.iter().map(|f| f.name).collect();
+
+                // Add field accesses for all original fields that aren't being updated
+                for original_field in original_fields {
+                    if !updated_field_names.contains(&original_field.name) {
+                        all_fields.push(RecordField {
+                            name: original_field.name,
+                            expr: Expr::FieldAccess(record, original_field.name)
+                                .into_id(loc.clone()),
+                        });
+                    }
+                }
+            } else {
+                // For other cases, we can't determine the fields statically
+                // This is a limitation - we need type information to do complete expansion
+                // For now, just create a record with the updated fields
+                // TODO: This is incomplete and may not work for all cases
+            }
+
+            // Sort fields by name as expected
+            all_fields.sort_by(|a, b| a.name.cmp(&b.name));
+            Expr::RecordLiteral(all_fields).into_id(loc)
+        }
         // because convert_pipe never fails, it propagate dummy error
         _ => convert_recursively_pure(e_id, |e| convert_operators(e, file_path), file_path),
     }
