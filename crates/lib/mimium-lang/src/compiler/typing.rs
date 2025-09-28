@@ -710,20 +710,20 @@ impl InferContext {
                 }
             }
             Expr::RecordUpdate(record, fields) => {
-                // For record update, the type should be the same as the original record
-                // but we need to validate that all updated fields exist and have compatible types
+                // For record update, expand it to a complete record literal
+                // This is where we do the actual syntax sugar expansion
                 let record_type = self.infer_type_unwrapping(*record);
                 log::trace!("record update on type: {}", record_type.to_type());
 
                 match record_type.to_type() {
                     Type::Record(ref record_fields) => {
-                        // Check that all update fields exist in the original record and have compatible types
+                        // Validate that all update fields exist and have compatible types
                         for RecordField { name, expr } in fields {
                             let field_type = self.infer_type_unwrapping(*expr);
                             if let Some(original_field) =
                                 record_fields.iter().find(|f| f.key == *name)
                             {
-                                let rel = self.unify_types(original_field.ty, field_type)?;
+                                let _rel = self.unify_types(original_field.ty, field_type)?;
                             } else {
                                 return Err(vec![Error::FieldNotExist {
                                     field: *name,
@@ -732,8 +732,40 @@ impl InferContext {
                                 }]);
                             }
                         }
-                        // Return the same record type
-                        Ok(record_type)
+
+                        // Create the expanded record literal by including all fields
+                        let updated_field_map: std::collections::HashMap<Symbol, ExprNodeId> =
+                            fields
+                                .iter()
+                                .map(|RecordField { name, expr }| (*name, *expr))
+                                .collect();
+
+                        let mut expanded_fields = Vec::new();
+                        for original_field in record_fields {
+                            let field_expr = if let Some(updated_expr) =
+                                updated_field_map.get(&original_field.key)
+                            {
+                                // Use the updated value
+                                *updated_expr
+                            } else {
+                                // Use field access to get the original value
+                                Expr::FieldAccess(*record, original_field.key).into_id(loc.clone())
+                            };
+
+                            expanded_fields.push(RecordField {
+                                name: original_field.key,
+                                expr: field_expr,
+                            });
+                        }
+
+                        // Sort fields by name as expected by the RecordLiteral
+                        expanded_fields.sort_by(|a, b| a.name.cmp(&b.name));
+
+                        // Create a new RecordLiteral expression and type check it
+                        let expanded_expr =
+                            Expr::RecordLiteral(expanded_fields).into_id(loc.clone());
+                        // Recursively type check the expanded expression
+                        self.infer_type(expanded_expr)
                     }
                     _ => Err(vec![Error::FieldForNonRecord(loc, record_type)]),
                 }
