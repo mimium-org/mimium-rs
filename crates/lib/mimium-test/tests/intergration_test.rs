@@ -514,6 +514,13 @@ fn record_update() {
 }
 
 #[test]
+fn record_update_immutable() {
+    let res = run_file_test_mono("record_update_immutable.mmm", 1).unwrap();
+    let ans = vec![10.0]; // 0.0 + 10.0 - original record unchanged
+    assert_eq!(res, ans);
+}
+
+#[test]
 fn parameter_pack_tuple() {
     let res = run_file_test_mono("parameter_pack_tuple.mmm", 1).unwrap();
     let ans = vec![13.0]; // 1 + 5 + 7
