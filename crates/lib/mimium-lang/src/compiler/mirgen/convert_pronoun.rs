@@ -451,21 +451,18 @@ fn convert_operators(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
             };
 
             // Build the chain of assignments and final return
-            let mut current_expr = Expr::Var(temp_var_name).into_id(loc.clone());
+            let target_expr = Expr::Var(temp_var_name).into_id(loc.clone());
 
             // Process assignments in reverse order to build the Then chain correctly
-            for field in fields.into_iter().rev() {
-                let field_expr = convert_operators(field.expr, file_path);
-                let field_access =
-                    Expr::FieldAccess(Expr::Var(temp_var_name).into_id(loc.clone()), field.name)
-                        .into_id(loc.clone());
-                let assignment = Expr::Assign(field_access, field_expr).into_id(loc.clone());
-                current_expr = Expr::Then(assignment, Some(current_expr)).into_id(loc.clone());
-            }
+            let then_chain = fields.into_iter().rev().fold(target_expr, |e, field| {
+                let access = Expr::FieldAccess(target_expr, field.name).into_id_without_span();
+                let assign = Expr::Assign(access, field.expr).into_id_without_span();
+                Expr::Then(assign, Some(e)).into_id_without_span()
+            });
 
             // Create the let expression: let original = record in (assignments; original)
-            let let_expr = Expr::Let(temp_pattern, record, Some(current_expr)).into_id(loc.clone());
-
+            let let_expr = Expr::Let(temp_pattern, record, Some(then_chain)).into_id(loc.clone());
+            log::trace!("expanded record update:{}", let_expr.simple_print());
             // Wrap in a block
             Expr::Block(Some(let_expr)).into_id(loc)
         }
