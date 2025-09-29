@@ -828,17 +828,51 @@ impl InferContext {
                 }
             }
             Expr::Assign(assignee, expr) => {
-                let name = match assignee.to_expr() {
-                    Expr::Var(v) => v,
+                match assignee.to_expr() {
+                    Expr::Var(name) => {
+                        let assignee_t =
+                            self.unwrap_result(self.lookup(name, loc).map_err(|e| vec![e]));
+                        let e_t = self.infer_type_unwrapping(*expr);
+                        let _rel = self.unify_types(assignee_t, e_t)?;
+                        Ok(unit!())
+                    }
+                    Expr::FieldAccess(record, field_name) => {
+                        // Handle field assignment: record.field = value
+                        let record_type = self.infer_type_unwrapping(record);
+                        let value_type = self.infer_type_unwrapping(*expr);
+
+                        // Validate that the record has the specified field
+                        match record_type.to_type() {
+                            Type::Record(fields) => {
+                                // Find the field and check type compatibility
+                                let field_found = fields.iter().find(|f| f.key == field_name);
+                                match field_found {
+                                    Some(field) => {
+                                        let field_type = field.ty;
+                                        let _rel = self.unify_types(field_type, value_type)?;
+                                        Ok(unit!())
+                                    }
+                                    None => Err(vec![Error::FieldNotExist {
+                                        field: field_name,
+                                        loc: loc.clone(),
+                                        et: record_type,
+                                    }]),
+                                }
+                            }
+                            _ => Err(vec![Error::FieldForNonRecord(loc.clone(), record_type)]),
+                        }
+                    }
                     Expr::ArrayAccess(_, _) => {
                         unimplemented!("Assignment to array is not implemented yet.")
                     }
-                    _ => unreachable!(),
-                };
-                let assignee_t = self.unwrap_result(self.lookup(name, loc).map_err(|e| vec![e]));
-                let e_t = self.infer_type_unwrapping(*expr);
-                let rel = self.unify_types(assignee_t, e_t)?;
-                Ok(unit!())
+                    _ => {
+                        // This should be caught by parser, but add a generic error just in case
+                        Err(vec![Error::VariableNotFound(
+                            "invalid_assignment_target".to_symbol(),
+                            loc.clone(),
+                        )])
+                    }
+                }
             }
             Expr::Then(e, then) => {
                 let _ = self.infer_type(*e)?;

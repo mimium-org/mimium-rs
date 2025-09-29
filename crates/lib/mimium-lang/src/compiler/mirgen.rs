@@ -454,40 +454,71 @@ impl Context {
         v
     }
     fn eval_assign(&mut self, assignee: ExprNodeId, src: VPtr, t: TypeNodeId, _span: &Span) {
-        let name = match assignee.to_expr() {
-            Expr::Var(v) => v,
+        match assignee.to_expr() {
+            Expr::Var(name) => {
+                match self.lookup(&name) {
+                    LookupRes::Local(v) => match v.as_ref() {
+                        Value::Argument(_i) => {
+                            //todo: collect warning for the language server
+                            log::warn!(
+                                "assignment to argument {name} does not affect to the external environments."
+                            );
+                            self.push_inst(Instruction::Store(v.clone(), src, t));
+                        }
+                        _ => {
+                            self.push_inst(Instruction::Store(v.clone(), src, t));
+                        }
+                    },
+                    LookupRes::UpValue(_level, upv) => {
+                        //todo: nested closure
+                        let currentf = self.get_current_fn();
+                        let upi = currentf.get_or_insert_upvalue(&upv) as _;
+                        self.push_inst(Instruction::SetUpValue(upi, src, t));
+                    }
+                    LookupRes::Global(dst) => match dst.as_ref() {
+                        Value::Global(_gv) => {
+                            self.push_inst(Instruction::SetGlobal(dst.clone(), src.clone(), t));
+                        }
+                        _ => unreachable!("non global_value"),
+                    },
+                    LookupRes::None => {
+                        unreachable!("invalid value assignment")
+                    }
+                }
+            }
+            Expr::FieldAccess(record, field_name) => {
+                // Handle field assignment: record.field = value
+                let (record_val, record_ty) = self.eval_expr(record);
+
+                match record_ty.to_type() {
+                    Type::Record(fields) => {
+                        let offset = fields
+                            .iter()
+                            .position(|RecordTypeField { key, .. }| *key == field_name)
+                            .expect("field access to non-existing field");
+
+                        // Get pointer to the field using GetElement
+                        let field_ptr = self.push_inst(Instruction::GetElement {
+                            value: record_val,
+                            ty: record_ty,
+                            tuple_offset: offset as u64,
+                        });
+
+                        // Store the new value to the field pointer
+                        self.push_inst(Instruction::Store(field_ptr, src, t));
+                    }
+                    _ => {
+                        unreachable!(
+                            "field access to non-record type should be caught by type checker"
+                        )
+                    }
+                }
+            }
             Expr::ArrayAccess(_, _) => {
                 unimplemented!("Assignment to array is not implemented yet.")
             }
-            _ => unreachable!(),
-        };
-        match self.lookup(&name) {
-            LookupRes::Local(v) => match v.as_ref() {
-                Value::Argument(_i) => {
-                    //todo: collect warning for the language server
-                    log::warn!(
-                        "assignment to argument {name} does not affect to the external environments."
-                    );
-                    self.push_inst(Instruction::Store(v.clone(), src, t));
-                }
-                _ => {
-                    self.push_inst(Instruction::Store(v.clone(), src, t));
-                }
-            },
-            LookupRes::UpValue(_level, upv) => {
-                //todo: nested closure
-                let currentf = self.get_current_fn();
-                let upi = currentf.get_or_insert_upvalue(&upv) as _;
-                self.push_inst(Instruction::SetUpValue(upi, src, t));
-            }
-            LookupRes::Global(dst) => match dst.as_ref() {
-                Value::Global(_gv) => {
-                    self.push_inst(Instruction::SetGlobal(dst.clone(), src.clone(), t));
-                }
-                _ => unreachable!("non global_value"),
-            },
-            LookupRes::None => {
-                unreachable!("invalid value assignment")
+            _ => {
+                unreachable!("invalid assignment target")
             }
         }
     }
