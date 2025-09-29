@@ -840,27 +840,18 @@ impl InferContext {
                         // Handle field assignment: record.field = value
                         let record_type = self.infer_type_unwrapping(record);
                         let value_type = self.infer_type_unwrapping(*expr);
-
-                        // Validate that the record has the specified field
-                        match record_type.to_type() {
-                            Type::Record(fields) => {
-                                // Find the field and check type compatibility
-                                let field_found = fields.iter().find(|f| f.key == field_name);
-                                match field_found {
-                                    Some(field) => {
-                                        let field_type = field.ty;
-                                        let _rel = self.unify_types(field_type, value_type)?;
-                                        Ok(unit!())
-                                    }
-                                    None => Err(vec![Error::FieldNotExist {
-                                        field: field_name,
-                                        loc: loc.clone(),
-                                        et: record_type,
-                                    }]),
-                                }
-                            }
-                            _ => Err(vec![Error::FieldForNonRecord(loc.clone(), record_type)]),
-                        }
+                        let tmptype = Type::Record(vec![RecordTypeField {
+                            key: field_name,
+                            ty: value_type,
+                            has_default: false,
+                        }])
+                        .into_id();
+                        if self.unify_types(record_type, tmptype)? == Relation::Supertype {
+                            unreachable!(
+                                "record field access for an empty record will not likely to happen."
+                            )
+                        };
+                        Ok(value_type)
                     }
                     Expr::ArrayAccess(_, _) => {
                         unimplemented!("Assignment to array is not implemented yet.")
