@@ -227,6 +227,25 @@ mod expr {
                     .group()
                     .braces()
             }
+            Expr::RecordUpdate(record, fields) => {
+                let record_doc = pretty(record, allocator);
+                let field_docs = fields
+                    .into_iter()
+                    .map(|f| {
+                        allocator
+                            .text(f.name)
+                            .append(allocator.text(" = "))
+                            .append(pretty(f.expr, allocator))
+                            .group()
+                    })
+                    .collect::<Vec<_>>();
+
+                record_doc
+                    .append(allocator.text(" <- "))
+                    .append(allocator.intersperse(field_docs, breakable_comma(allocator)))
+                    .group()
+                    .braces()
+            }
 
             Expr::FieldAccess(expr_node_id, symbol) => {
                 let expr_doc = pretty(expr_node_id, allocator);
