@@ -1,7 +1,6 @@
 use rkyv::{Archive, Deserialize, Serialize};
 
 /// State Tree structure.
-/// This data represents just a memory layout on a flat array, do not own actual data.
 
 //on attributes, see https://github.com/rkyv/rkyv/blob/main/rkyv/examples/json_like_schema.rs
 #[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone)]
@@ -61,7 +60,7 @@ pub fn serialize_tree_untagged(tree: StateTree) -> Vec<u64> {
             readidx,
             writeidx,
             data,
-        } => itertools::concat(vec![vec![readidx, writeidx], data]),
+        } => itertools::concat([vec![readidx, writeidx], data]),
         StateTree::Mem { data } => vec![data],
         StateTree::Feed { data } => data,
         StateTree::FnCall(state_trees) => {
@@ -70,6 +69,7 @@ pub fn serialize_tree_untagged(tree: StateTree) -> Vec<u64> {
     }
 }
 
+/// This data represents just a memory layout on a flat array, do not own actual data.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StateTreeSkeleton {
     Delay {
@@ -125,9 +125,6 @@ pub fn deserialize_tree_untagged(
     data: &[u64],
     data_layout: &StateTreeSkeleton,
 ) -> Option<StateTree> {
-    if let Some((tree, used)) = deserialize_tree_untagged_rec(data, data_layout) {
-        if used == data.len() { Some(tree) } else { None }
-    } else {
-        None
-    }
+    deserialize_tree_untagged_rec(data, data_layout)
+        .and_then(|(tree, used)| (used == data.len()).then_some(tree))
 }
