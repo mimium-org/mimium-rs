@@ -507,6 +507,13 @@ fn record_pattern_capture() {
 }
 
 #[test]
+fn record_assign_field() {
+    let res = run_file_test_mono("record_assign_field.mmm", 1).unwrap();
+    let ans = vec![20.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
 fn record_update() {
     let res = run_file_test_mono("record_update.mmm", 1).unwrap();
     let ans = vec![6000.0]; // 4000.0 + 2000.0

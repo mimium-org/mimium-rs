@@ -1,0 +1,5 @@
+fn dsp(){
+    let myadsr = { attack = 0.0, decay = 10.0,}
+    myadsr.attack = 20.0
+    myadsr.attack
+}
