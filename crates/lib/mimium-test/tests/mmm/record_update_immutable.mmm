@@ -1,0 +1,7 @@
+fn dsp() -> float {
+    let myadsr = { attack = 0.0, decay = 10.0, sustain = 0.7, release = 10.0 }
+    let newadsr = { myadsr <- attack = 4000.0, decay = 2000.0 }
+    // Verify that the original record (myadsr) was NOT modified
+    // This ensures record update creates new records, doesn't mutate originals
+    myadsr.attack + myadsr.decay // Should be 0.0 + 10.0 = 10.0 (unchanged)
+}
