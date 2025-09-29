@@ -428,46 +428,25 @@ fn convert_operators(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
         }
         Expr::Paren(e) => convert_operators(e, file_path),
         Expr::RecordUpdate(record, fields) => {
-            // Expand record update syntax using the suggested approach:
-            // { record <- field1 = val1, field2 = val2 }
-            // becomes:
-            // {
-            //   let original = record
-            //   original.field1 = val1
-            //   original.field2 = val2
-            //   original
-            // }
+            // TEMPORARY IMPLEMENTATION:
+            // Since field assignment is not supported in mimium, we cannot use the
+            // let-assign approach suggested. For now, we'll expand to a simple
+            // record literal with just the updated fields.
+            // This is incomplete but will compile and allow testing.
+            // TODO: Implement proper expansion that includes original record fields
 
-            let record = convert_operators(record, file_path);
+            let updated_fields: Vec<RecordField> = fields
+                .into_iter()
+                .map(|f| RecordField {
+                    name: f.name,
+                    expr: convert_operators(f.expr, file_path),
+                })
+                .collect();
 
-            // Generate a unique temporary variable name
-            let temp_var_name = "record_update_temp".to_symbol();
-
-            // Create the initial let binding: let original = record
-            let temp_pattern = crate::pattern::TypedPattern {
-                pat: crate::pattern::Pattern::Single(temp_var_name),
-                ty: crate::types::Type::Unknown.into_id_with_location(loc.clone()),
-                default_value: None,
-            };
-
-            // Build the chain of assignments and final return
-            let mut current_expr = Expr::Var(temp_var_name).into_id(loc.clone());
-
-            // Process assignments in reverse order to build the Then chain correctly
-            for field in fields.into_iter().rev() {
-                let field_expr = convert_operators(field.expr, file_path);
-                let field_access =
-                    Expr::FieldAccess(Expr::Var(temp_var_name).into_id(loc.clone()), field.name)
-                        .into_id(loc.clone());
-                let assignment = Expr::Assign(field_access, field_expr).into_id(loc.clone());
-                current_expr = Expr::Then(assignment, Some(current_expr)).into_id(loc.clone());
-            }
-
-            // Create the let expression: let original = record in (assignments; original)
-            let let_expr = Expr::Let(temp_pattern, record, Some(current_expr)).into_id(loc.clone());
-
-            // Wrap in a block
-            Expr::Block(Some(let_expr)).into_id(loc)
+            // For now, create a simple record literal with just the updated fields
+            // This will fail at runtime if the original record had other fields,
+            // but it will compile and allow us to test the syntax parsing
+            Expr::RecordLiteral(updated_fields).into_id(loc)
         }
         // because convert_pipe never fails, it propagate dummy error
         _ => convert_recursively_pure(e_id, |e| convert_operators(e, file_path), file_path),
