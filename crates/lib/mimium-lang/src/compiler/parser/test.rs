@@ -508,6 +508,27 @@ fn test_record_literal() {
     ]);
     test_expr_string("{x = 0.0, y = 2.0}", ans.into_id(loc(0..9)));
 }
+
+#[test]
+fn test_record_update() {
+    let ans = Expr::RecordUpdate(
+        Expr::Var("myadsr".to_symbol()).into_id(loc(1..2)),
+        vec![
+            RecordField {
+                name: "attack".to_symbol(),
+                expr: Expr::Literal(Literal::Float("4000.0".to_symbol())).into_id(loc(5..6)),
+            },
+            RecordField {
+                name: "decay".to_symbol(),
+                expr: Expr::Literal(Literal::Float("2000.0".to_symbol())).into_id(loc(9..10)),
+            },
+        ],
+    );
+    test_expr_string(
+        "{ myadsr <- attack = 4000.0, decay = 2000.0 }",
+        ans.into_id(loc(0..11)),
+    );
+}
 #[test]
 fn test_field_access() {
     let ans = Expr::FieldAccess(

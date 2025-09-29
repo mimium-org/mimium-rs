@@ -1,0 +1,5 @@
+fn dsp() -> float {
+    let myadsr = { attack = 0.0, decay = 10.0, sustain = 0.7, release = 10.0 }
+    let newadsr = { myadsr <- attack = 4000.0, decay = 2000.0 }
+    newadsr.attack + newadsr.decay // 4000.0 + 2000.0 = 6000.0
+}

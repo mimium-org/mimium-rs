@@ -41,6 +41,9 @@ fn try_find_recurse(e_s: ExprNodeId, name: Symbol) -> bool {
         Expr::ImcompleteRecord(record_fields) => {
             record_fields.iter().any(|f| try_find_recurse(f.expr, name))
         }
+        Expr::RecordUpdate(record, fields) => {
+            try_find_recurse(record, name) || fields.iter().any(|f| try_find_recurse(f.expr, name))
+        }
         Expr::FieldAccess(record, _field) => try_find_recurse(record, name),
         Expr::BinOp(_, _, _) => unreachable!(),
         Expr::UniOp(_, _) => unreachable!(),
@@ -97,6 +100,16 @@ pub fn convert_recurse(e_s: ExprNodeId, file_path: Symbol) -> ExprNodeId {
         ),
         Expr::ImcompleteRecord(record_fields) => Expr::ImcompleteRecord(
             record_fields
+                .iter()
+                .map(|f| RecordField {
+                    name: f.name,
+                    expr: convert(f.expr),
+                })
+                .collect(),
+        ),
+        Expr::RecordUpdate(record, fields) => Expr::RecordUpdate(
+            convert(record),
+            fields
                 .iter()
                 .map(|f| RecordField {
                     name: f.name,
