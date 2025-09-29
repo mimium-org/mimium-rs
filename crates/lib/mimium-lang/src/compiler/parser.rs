@@ -714,7 +714,18 @@ where
         .then(expr.clone())
         .map_with(|(ident, body), e| (Statement::LetRec(ident, body), get_span(e.span())))
         .labelled("letrec");
-    let assign = var_parser(ctx.clone())
+    let assign = expr
+        .clone()
+        .validate(|v, e, emitter| match v.to_expr() {
+            Expr::Var(_) | Expr::FieldAccess(_, _) | Expr::ArrayAccess(_, _) => v,
+            _ => {
+                emitter.emit(Rich::custom(
+                    v.to_span().into(),
+                    "Left hand side of assignment must denotes specific memory address.",
+                ));
+                v
+            }
+        })
         .then_ignore(just(Token::Assign))
         .then(expr.clone())
         .map_with(|(lvar, body), e| (Statement::Assign(lvar, body), get_span(e.span())))
