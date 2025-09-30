@@ -210,6 +210,10 @@ where
             let found_any = res_vec.into_iter().any(|f| f.1);
             (ConvertResult { expr, found_any }, errs.concat())
         }
+        Expr::RecordUpdate(_record, _fields) => {
+            // RecordUpdate should not exist at this stage - it should have been expanded earlier
+            unreachable!("RecordUpdate should have been expanded in convert_operators")
+        }
         Expr::Assign(left, right) => {
             let (left, err) = conversion(left);
             let (right, err2) = conversion(right);
@@ -423,6 +427,45 @@ fn convert_operators(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
             Expr::Apply(fname, vec![e]).into_id(loc)
         }
         Expr::Paren(e) => convert_operators(e, file_path),
+        Expr::RecordUpdate(record, fields) => {
+            // Expand record update syntax using the suggested approach:
+            // { record <- field1 = val1, field2 = val2 }
+            // becomes:
+            // {
+            //   let original = record
+            //   original.field1 = val1
+            //   original.field2 = val2
+            //   original
+            // }
+
+            let record = convert_operators(record, file_path);
+
+            // Generate a unique temporary variable name
+            let temp_var_name = "record_update_temp".to_symbol();
+
+            // Create the initial let binding: let original = record
+            let temp_pattern = crate::pattern::TypedPattern {
+                pat: crate::pattern::Pattern::Single(temp_var_name),
+                ty: crate::types::Type::Unknown.into_id_with_location(loc.clone()),
+                default_value: None,
+            };
+
+            // Build the chain of assignments and final return
+            let target_expr = Expr::Var(temp_var_name).into_id(loc.clone());
+
+            // Process assignments in reverse order to build the Then chain correctly
+            let then_chain = fields.into_iter().rev().fold(target_expr, |e, field| {
+                let access = Expr::FieldAccess(target_expr, field.name).into_id_without_span();
+                let assign = Expr::Assign(access, field.expr).into_id_without_span();
+                Expr::Then(assign, Some(e)).into_id_without_span()
+            });
+
+            // Create the let expression: let original = record in (assignments; original)
+            let let_expr = Expr::Let(temp_pattern, record, Some(then_chain)).into_id(loc.clone());
+            log::trace!("expanded record update:{}", let_expr.simple_print());
+            // Wrap in a block
+            Expr::Block(Some(let_expr)).into_id(loc)
+        }
         // because convert_pipe never fails, it propagate dummy error
         _ => convert_recursively_pure(e_id, |e| convert_operators(e, file_path), file_path),
     }

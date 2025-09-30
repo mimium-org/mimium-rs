@@ -70,7 +70,8 @@ pub enum Expr {
     ArrayLiteral(Vec<ExprNodeId>),   // Array literal [e1, e2, ..., en]
     RecordLiteral(Vec<RecordField>), // Complete record literal {field1 = expr1, field2 = expr2, ...}
     ImcompleteRecord(Vec<RecordField>), // Incomplete record literal with default values {field1 = expr1, ..}
-    FieldAccess(ExprNodeId, Symbol),    // Record field access: record.field
+    RecordUpdate(ExprNodeId, Vec<RecordField>), // Record update syntax: { record <- field1 = expr1, field2 = expr2, ... }
+    FieldAccess(ExprNodeId, Symbol),            // Record field access: record.field
     Apply(ExprNodeId, Vec<ExprNodeId>),
 
     MacroExpand(ExprNodeId, Vec<ExprNodeId>), // syntax sugar: hoge!(a,b) => ${hoge(a,b)}
@@ -134,7 +135,6 @@ impl ExprNodeId {
             | Expr::Paren(e)
             | Expr::Lambda(_, _, e)
             | Expr::Feed(_, e) => conv(&e),
-
             Expr::ArrayAccess(e1, e2) | Expr::BinOp(e1, _, e2) | Expr::Assign(e1, e2) => {
                 conv2(&e1, &e2)
             }
@@ -142,6 +142,7 @@ impl ExprNodeId {
             Expr::Tuple(es) | Expr::ArrayLiteral(es) => convvec(&es),
 
             Expr::RecordLiteral(fields) | Expr::ImcompleteRecord(fields) => convfields(&fields),
+            Expr::RecordUpdate(e1, fields) => conv(&e1).min(convfields(&fields)),
             Expr::Apply(e, args) => conv(&e).min(convvec(&args)),
             Expr::Then(e1, e2) | Expr::Let(_, e1, e2) | Expr::LetRec(_, e1, e2) => {
                 conv(&e1).min(conv_opt(&e2))
@@ -252,6 +253,18 @@ impl MiniPrint for Expr {
                     .collect::<Vec<String>>()
                     .join(", ");
                 format!("(incomplete-record {{{}, ..}})", fields_str)
+            }
+            Expr::RecordUpdate(record, fields) => {
+                let fields_str = fields
+                    .iter()
+                    .map(|f| f.simple_print())
+                    .collect::<Vec<String>>()
+                    .join(", ");
+                format!(
+                    "(record-update {} {{{}}})",
+                    record.simple_print(),
+                    fields_str
+                )
             }
             Expr::FieldAccess(record, field) => {
                 format!("(field-access {} {})", record.simple_print(), field)

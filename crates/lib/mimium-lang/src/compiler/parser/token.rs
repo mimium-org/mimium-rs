@@ -51,6 +51,7 @@ pub enum Token {
     Function,    //"fn"
     Macro,       //"macro"
     Arrow,       // ->
+    LeftArrow,   // <-
     PlaceHolder, // _
 
     If,
@@ -102,6 +103,7 @@ impl fmt::Display for Token {
             Token::Function => write!(f, "fn"),
             Token::Macro => write!(f, "macro"),
             Token::Arrow => write!(f, "->"),
+            Token::LeftArrow => write!(f, "<-"),
             Token::PlaceHolder => write!(f, "_"),
             Token::If => write!(f, "if"),
             Token::Else => write!(f, "else"),

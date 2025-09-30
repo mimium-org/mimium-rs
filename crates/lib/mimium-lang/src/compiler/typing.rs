@@ -709,6 +709,11 @@ impl InferContext {
                     Ok(Type::Record(kts).into_id_with_location(loc))
                 }
             }
+            Expr::RecordUpdate(_, _) => {
+                // RecordUpdate should never reach type inference as it gets expanded
+                // to Block/Let/Assign expressions during syntax sugar conversion in convert_pronoun.rs
+                unreachable!("RecordUpdate should be expanded before type inference")
+            }
             Expr::FieldAccess(expr, field) => {
                 let et = self.infer_type_unwrapping(*expr);
                 log::trace!("field access {} : {}", field, et.to_type());
@@ -823,17 +828,42 @@ impl InferContext {
                 }
             }
             Expr::Assign(assignee, expr) => {
-                let name = match assignee.to_expr() {
-                    Expr::Var(v) => v,
+                match assignee.to_expr() {
+                    Expr::Var(name) => {
+                        let assignee_t =
+                            self.unwrap_result(self.lookup(name, loc).map_err(|e| vec![e]));
+                        let e_t = self.infer_type_unwrapping(*expr);
+                        let _rel = self.unify_types(assignee_t, e_t)?;
+                        Ok(unit!())
+                    }
+                    Expr::FieldAccess(record, field_name) => {
+                        // Handle field assignment: record.field = value
+                        let record_type = self.infer_type_unwrapping(record);
+                        let value_type = self.infer_type_unwrapping(*expr);
+                        let tmptype = Type::Record(vec![RecordTypeField {
+                            key: field_name,
+                            ty: value_type,
+                            has_default: false,
+                        }])
+                        .into_id();
+                        if self.unify_types(record_type, tmptype)? == Relation::Supertype {
+                            unreachable!(
+                                "record field access for an empty record will not likely to happen."
+                            )
+                        };
+                        Ok(value_type)
+                    }
                     Expr::ArrayAccess(_, _) => {
                         unimplemented!("Assignment to array is not implemented yet.")
                     }
-                    _ => unreachable!(),
-                };
-                let assignee_t = self.unwrap_result(self.lookup(name, loc).map_err(|e| vec![e]));
-                let e_t = self.infer_type_unwrapping(*expr);
-                let rel = self.unify_types(assignee_t, e_t)?;
-                Ok(unit!())
+                    _ => {
+                        // This should be caught by parser, but add a generic error just in case
+                        Err(vec![Error::VariableNotFound(
+                            "invalid_assignment_target".to_symbol(),
+                            loc.clone(),
+                        )])
+                    }
+                }
             }
             Expr::Then(e, then) => {
                 let _ = self.infer_type(*e)?;

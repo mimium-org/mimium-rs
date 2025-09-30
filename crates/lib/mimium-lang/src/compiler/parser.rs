@@ -550,28 +550,54 @@ where
             Expr::ArrayLiteral(items).into_id(loc)
         })
         .labelled("array_literal");
-    let record_literal = record_fields(expr.clone())
-        .separated_by(breakable_comma())
-        .allow_trailing()
-        .collect::<Vec<_>>()
-        .then(just(Token::DoubleDot).or_not())
-        .delimited_by(breakable_blockbegin(), breakable_blockend())
-        .map_with(move |(fields, is_imcomplete), e| {
-            //fields are implicitly sorted by name.
-            let mut fields = fields;
-            fields.sort_by(|a, b| a.name.cmp(&b.name));
-            let loc = Location {
-                span: get_span(e.span()),
-                path: ctx.file_path,
-            };
-            if is_imcomplete.is_some() {
-                log::trace!("is imcomplete record literal");
-                Expr::ImcompleteRecord(fields).into_id(loc)
-            } else {
-                Expr::RecordLiteral(fields).into_id(loc)
-            }
-        })
-        .labelled("record_literal");
+
+    // Combined parser for record literals and record updates
+    let record_parser = choice((
+        // Record update syntax: { expr <- field1 = value1, field2 = value2 }
+        expr_group
+            .clone()
+            .then_ignore(just(Token::LeftArrow))
+            .then(
+                record_fields(expr.clone())
+                    .separated_by(breakable_comma())
+                    .allow_trailing()
+                    .collect::<Vec<_>>(),
+            )
+            .delimited_by(breakable_blockbegin(), breakable_blockend())
+            .map_with(move |(record, fields), e| {
+                let mut fields = fields;
+                fields.sort_by(|a, b| a.name.cmp(&b.name));
+                let loc = Location {
+                    span: get_span(e.span()),
+                    path: ctx.file_path,
+                };
+                Expr::RecordUpdate(record, fields).into_id(loc)
+            })
+            .labelled("record_update"),
+        // Regular record literal: { field1 = value1, field2 = value2 } or { field1 = value1, .. }
+        record_fields(expr.clone())
+            .separated_by(breakable_comma())
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .then(just(Token::DoubleDot).or_not())
+            .delimited_by(breakable_blockbegin(), breakable_blockend())
+            .map_with(move |(fields, is_imcomplete), e| {
+                let mut fields = fields;
+                fields.sort_by(|a, b| a.name.cmp(&b.name));
+                let loc = Location {
+                    span: get_span(e.span()),
+                    path: ctx.file_path,
+                };
+                if is_imcomplete.is_some() {
+                    log::trace!("is imcomplete record literal");
+                    Expr::ImcompleteRecord(fields).into_id(loc)
+                } else {
+                    Expr::RecordLiteral(fields).into_id(loc)
+                }
+            })
+            .labelled("record_literal"),
+    ))
+    .labelled("record_parser");
     let parenexpr = expr
         .clone()
         .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
@@ -589,7 +615,7 @@ where
         lambda,
         macro_expand,
         parenexpr,
-        record_literal,
+        record_parser,
         array_literal,
         tuple,
     ))
@@ -688,7 +714,18 @@ where
         .then(expr.clone())
         .map_with(|(ident, body), e| (Statement::LetRec(ident, body), get_span(e.span())))
         .labelled("letrec");
-    let assign = var_parser(ctx.clone())
+    let assign = expr
+        .clone()
+        .validate(|v, e, emitter| match v.to_expr() {
+            Expr::Var(_) | Expr::FieldAccess(_, _) | Expr::ArrayAccess(_, _) => v,
+            _ => {
+                emitter.emit(Rich::custom(
+                    v.to_span().into(),
+                    "Left hand side of assignment must denotes specific memory address.",
+                ));
+                v
+            }
+        })
         .then_ignore(just(Token::Assign))
         .then(expr.clone())
         .map_with(|(lvar, body), e| (Statement::Assign(lvar, body), get_span(e.span())))

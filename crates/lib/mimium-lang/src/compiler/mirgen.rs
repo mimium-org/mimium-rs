@@ -17,7 +17,7 @@ use std::sync::Arc;
 use crate::types::{PType, RecordTypeField, Type};
 use crate::utils::environment::{Environment, LookupRes};
 use crate::utils::error::ReportableError;
-use crate::utils::metadata::{Location, Span};
+use crate::utils::metadata::{GLOBAL_LABEL, Location, Span};
 
 use crate::ast::{Expr, Literal};
 
@@ -56,7 +56,11 @@ struct Context {
     data: Vec<ContextData>,
     data_i: usize,
 }
-
+enum AssignDestination {
+    Local(VPtr),
+    UpValue(u64, VPtr),
+    Global(VPtr),
+}
 impl Context {
     pub fn new(typeenv: InferContext, file_path: Option<Symbol>) -> Self {
         Self {
@@ -231,7 +235,7 @@ impl Context {
                     }
                     self.push_inst(Instruction::SetGlobal(gv.clone(), v.clone(), ty));
                     self.add_bind((*id, gv))
-                } else {
+                } else if id.as_str() != GLOBAL_LABEL {
                     self.add_bind((*id, v))
                 }
             }
@@ -332,6 +336,7 @@ impl Context {
         //post action
         let _ = self.data.pop();
         self.data_i -= 1;
+        log::trace!("end of lexical scope {fname}");
         self.valenv.to_outer();
         (c_idx, fptr)
     }
@@ -349,7 +354,7 @@ impl Context {
             &[],
             |ctx, c_idx| {
                 let (v, ty) = ctx.eval_expr(e);
-                let v = ctx.push_inst(Instruction::Return(v, ty));
+                let _v = ctx.push_inst(Instruction::Return(v, ty));
                 let f = Arc::new(Value::Function(c_idx.0 as usize));
                 (f, ty)
             },
@@ -378,7 +383,7 @@ impl Context {
     }
 
     pub fn eval_literal(&mut self, lit: &Literal, _span: &Span) -> VPtr {
-        let v = match lit {
+        match lit {
             Literal::String(s) => self.push_inst(Instruction::String(*s)),
             Literal::Int(i) => self.push_inst(Instruction::Integer(*i)),
             Literal::Float(f) => self.push_inst(Instruction::Float(
@@ -400,19 +405,27 @@ impl Context {
                 self.push_inst(Instruction::CallCls(samplerate, vec![], ftype))
             }
             Literal::SelfLit | Literal::PlaceHolder => unreachable!(),
-        };
-        v
+        }
     }
-    fn eval_rvar(&mut self, name: Symbol, t: TypeNodeId, span: &Span) -> VPtr {
+    fn eval_rvar(&mut self, e: ExprNodeId, t: TypeNodeId) -> VPtr {
+        let span = &e.to_span();
         let loc = self.get_loc_from_span(span);
-        log::trace!("rv t:{} {}", name.to_string(), t.to_type());
-        let v = match self.lookup(&name) {
+        let name = match e.to_expr() {
+            Expr::Var(name) => name,
+            _ => unreachable!("eval_rvar called on non-variable expr"),
+        };
+        log::trace!("rv t:{} {}", name, t.to_type());
+
+        match self.lookup(&name) {
             LookupRes::Local(v) => match v.as_ref() {
                 Value::Function(i) => {
                     let reg = self.push_inst(Instruction::Uinteger(*i as u64));
                     self.push_inst(Instruction::Closure(reg))
                 }
-                _ => self.push_inst(Instruction::Load(v.clone(), t)),
+                _ => {
+                    let ptr = self.eval_expr_as_address(e);
+                    self.push_inst(Instruction::Load(ptr, t))
+                }
             },
             LookupRes::UpValue(level, v) => {
                 (0..level)
@@ -450,44 +463,67 @@ impl Context {
                 );
                 Arc::new(Value::ExtFunction(name, ty))
             }
-        };
-        v
+        }
     }
-    fn eval_assign(&mut self, assignee: ExprNodeId, src: VPtr, t: TypeNodeId, _span: &Span) {
-        let name = match assignee.to_expr() {
-            Expr::Var(v) => v,
+    /// Evaluates an assignee expression and returns a VPtr that is a pointer to the destination.
+    fn eval_destination_ptr(&mut self, assignee: ExprNodeId) -> AssignDestination {
+        match assignee.to_expr() {
+            Expr::Var(name) => {
+                // For a simple variable, lookup its pointer from the environment.
+                match self.lookup(&name) {
+                    LookupRes::Local(v_ptr) => AssignDestination::Local(v_ptr.clone()),
+                    LookupRes::Global(v_ptr) => AssignDestination::Global(v_ptr.clone()),
+                    LookupRes::UpValue(_level, v_ptr) => {
+                        let currentf = self.get_current_fn();
+                        let upi = currentf.get_or_insert_upvalue(&v_ptr) as _;
+                        AssignDestination::UpValue(upi, v_ptr.clone())
+                    }
+                    LookupRes::None => {
+                        unreachable!("Invalid assignment target: variable not found")
+                    }
+                }
+            }
+            Expr::FieldAccess(expr, accesskey) => {
+                // For a field access, we need to calculate the pointer to the field.
+                let base_ptr = self.eval_expr_as_address(expr);
+
+                let record_ty_id = self.typeenv.infer_type(expr).unwrap();
+                let record_ty = record_ty_id.to_type();
+
+                if let Type::Record(fields) = record_ty {
+                    let offset = fields
+                        .iter()
+                        .position(|RecordTypeField { key, .. }| *key == accesskey)
+                        .expect("field access to non-existing field");
+
+                    // Use GetElementPtr to calculate the pointer to the specific field.
+                    let ptr = self.push_inst(Instruction::GetElement {
+                        value: base_ptr.clone(),
+                        ty: record_ty_id,
+                        tuple_offset: offset as u64,
+                    });
+                    AssignDestination::Local(ptr)
+                } else {
+                    panic!("Expected record type for field access assignment, but got {record_ty}");
+                }
+            }
             Expr::ArrayAccess(_, _) => {
                 unimplemented!("Assignment to array is not implemented yet.")
             }
-            _ => unreachable!(),
-        };
-        match self.lookup(&name) {
-            LookupRes::Local(v) => match v.as_ref() {
-                Value::Argument(_i) => {
-                    //todo: collect warning for the language server
-                    log::warn!(
-                        "assignment to argument {name} does not affect to the external environments."
-                    );
-                    self.push_inst(Instruction::Store(v.clone(), src, t));
-                }
-                _ => {
-                    self.push_inst(Instruction::Store(v.clone(), src, t));
-                }
-            },
-            LookupRes::UpValue(_level, upv) => {
-                //todo: nested closure
-                let currentf = self.get_current_fn();
-                let upi = currentf.get_or_insert_upvalue(&upv) as _;
+            _ => unreachable!("Invalid assignee expression"),
+        }
+    }
+
+    fn eval_assign(&mut self, assignee: ExprNodeId, src: VPtr, t: TypeNodeId) {
+        match self.eval_destination_ptr(assignee) {
+            AssignDestination::Local(value) => {
+                self.push_inst(Instruction::Store(value, src, t));
+            }
+            AssignDestination::UpValue(upi, _value) => {
                 self.push_inst(Instruction::SetUpValue(upi, src, t));
             }
-            LookupRes::Global(dst) => match dst.as_ref() {
-                Value::Global(_gv) => {
-                    self.push_inst(Instruction::SetGlobal(dst.clone(), src.clone(), t));
-                }
-                _ => unreachable!("non global_value"),
-            },
-            LookupRes::None => {
-                unreachable!("invalid value assignment")
+            AssignDestination::Global(value) => {
+                self.push_inst(Instruction::SetGlobal(value, src, t));
             }
         }
     }
@@ -522,6 +558,7 @@ impl Context {
 
         res
     }
+
     fn eval_args(&mut self, args: &[ExprNodeId]) -> Vec<(VPtr, TypeNodeId)> {
         args.iter()
             .map(|a_meta| {
@@ -558,7 +595,7 @@ impl Context {
         (e, rt)
     }
     fn alloc_aggregates(&mut self, items: &[ExprNodeId], ty: TypeNodeId) -> (VPtr, TypeNodeId) {
-        log::trace!("alloc_aggregates: items = {:?}, ty = {:?}", items, ty);
+        log::trace!("alloc_aggregates: items = {items:?}, ty = {ty:?}");
         let len = items.len();
         if len == 0 {
             return (Arc::new(Value::None), Type::Record(vec![]).into_id());
@@ -583,6 +620,44 @@ impl Context {
         // from the type information.
         (dst, ty)
     }
+    /// Evaluates an expression as an l-value, returning a pointer to its memory location.
+    fn eval_expr_as_address(&mut self, e: ExprNodeId) -> VPtr {
+        match e.to_expr() {
+            Expr::Var(name) => {
+                // do not load here
+                match self.lookup(&name) {
+                    LookupRes::Local(ptr) => ptr,
+                    LookupRes::Global(ptr) => ptr,
+                    _ => unreachable!("Cannot get address of this expression"),
+                }
+            }
+            Expr::FieldAccess(base_expr, accesskey) => {
+                let base_ptr = self.eval_expr_as_address(base_expr);
+
+                let record_ty_id = self.typeenv.infer_type(base_expr).unwrap();
+                let record_ty = record_ty_id.to_type();
+
+                if let Type::Record(fields) = record_ty {
+                    let offset = fields
+                        .iter()
+                        .position(|f| f.key == accesskey)
+                        .expect("Field not found");
+
+                    self.push_inst(Instruction::GetElement {
+                        value: base_ptr,
+                        ty: record_ty_id,
+                        tuple_offset: offset as u64,
+                    })
+                } else {
+                    panic!("Cannot access field on a non-record type");
+                }
+            }
+            Expr::ArrayAccess(_, _) => {
+                unimplemented!("Array element assignment is not implemented yet.")
+            }
+            _ => unreachable!("This expression cannot be used as an l-value"),
+        }
+    }
     pub fn eval_expr(&mut self, e: ExprNodeId) -> (VPtr, TypeNodeId) {
         let span = e.to_span();
         let ty = self
@@ -595,7 +670,7 @@ impl Context {
                 let v = self.eval_literal(lit, &span);
                 (v, ty)
             }
-            Expr::Var(name) => (self.eval_rvar(*name, ty, &span), ty),
+            Expr::Var(_name) => (self.eval_rvar(e, ty), ty),
             Expr::Block(b) => {
                 if let Some(block) = b {
                     self.eval_expr(*block)
@@ -627,6 +702,11 @@ impl Context {
                 // For incomplete records, we also aggregate the available fields
                 // The default values will be handled in the type system and during record construction
                 self.alloc_aggregates(&fields.iter().map(|f| f.expr).collect::<Vec<_>>(), ty)
+            }
+            Expr::RecordUpdate(_, _) => {
+                // Record update syntax should be expanded during conversion phase
+                // This case should not be reached after syntax sugar expansion
+                unreachable!("RecordUpdate should be expanded during syntax sugar conversion")
             }
             Expr::FieldAccess(expr, accesskey) => {
                 let (expr_v, expr_ty) = self.eval_expr(*expr);
@@ -693,7 +773,7 @@ impl Context {
                     let atvvec = if args.len() == 1 {
                         let (arg_val, ty) = self.eval_args(args).first().unwrap().clone();
                         if ty.to_type().can_be_unpacked() {
-                            log::trace!("Unpacking argument {} for {}", ty, at);
+                            log::trace!("Unpacking argument {ty} for {at}");
                             // Check if the argument is a tuple or record that we need to unpack
                             match ty.to_type() {
                                 Type::Tuple(tys) => tys
@@ -896,35 +976,32 @@ impl Context {
                         self.fn_label.map_or("".to_string(), |s| s.to_string())
                     )
                 };
-                let insert_bb = self.get_ctxdata().current_bb;
-                let insert_pos = if self.program.functions.is_empty() {
-                    0
-                } else {
-                    self.get_current_basicblock().0.len()
-                };
+                // let insert_bb = self.get_ctxdata().current_bb;
+                // let insert_pos = if self.program.functions.is_empty() {
+                //     0
+                // } else {
+                //     self.get_current_basicblock().0.len()
+                // };
                 let (bodyv, t) = self.eval_expr(*body);
-                //todo:need to boolean and insert cast
                 self.fn_label = None;
 
-                match (
-                    self.get_ctxdata().func_i.0 == 0,
-                    matches!(bodyv.as_ref(), Value::Function(_)),
-                    then,
-                ) {
-                    (false, false, Some(then_e)) => {
-                        let alloc_res = self.gen_new_register();
-                        let block = &mut self.get_current_fn().body.get_mut(insert_bb).unwrap().0;
-                        block.insert(insert_pos, (alloc_res.clone(), Instruction::Alloc(t)));
-                        let _ =
-                            self.push_inst(Instruction::Store(alloc_res.clone(), bodyv.clone(), t));
-                        self.add_bind_pattern(pat, alloc_res, t, false);
-                        self.eval_expr(*then_e)
-                    }
-                    (is_global, _, Some(then_e)) => {
-                        self.add_bind_pattern(pat, bodyv, t, is_global);
-                        self.eval_expr(*then_e)
-                    }
-                    (_, _, None) => (Arc::new(Value::None), unit!()),
+                let is_global = self.get_ctxdata().func_i.0 == 0;
+                let is_function = matches!(bodyv.as_ref(), Value::Function(_));
+
+                if !is_global && !is_function {
+                    // ローカル変数の場合、常にAllocaとStoreを使う
+                    let ptr = self.push_inst(Instruction::Alloc(t));
+                    self.push_inst(Instruction::Store(ptr.clone(), bodyv, t));
+                    self.add_bind_pattern(pat, ptr, t, false);
+                } else {
+                    // グローバル変数や関数はこれまで通りの扱い
+                    self.add_bind_pattern(pat, bodyv, t, is_global);
+                }
+
+                if let Some(then_e) = then {
+                    self.eval_expr(*then_e)
+                } else {
+                    (Arc::new(Value::None), unit!())
                 }
             }
             Expr::LetRec(id, body, then) => {
@@ -956,7 +1033,7 @@ impl Context {
             }
             Expr::Assign(assignee, body) => {
                 let (src, ty) = self.eval_expr(*body);
-                self.eval_assign(*assignee, src, ty, &span);
+                self.eval_assign(*assignee, src, ty);
                 (Arc::new(Value::None), unit!())
             }
             Expr::Then(body, then) => {

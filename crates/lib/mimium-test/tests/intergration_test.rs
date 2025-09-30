@@ -506,6 +506,28 @@ fn record_pattern_capture() {
     let ans = vec![300.0]; // v1 + v2
     assert_eq!(res, ans);
 }
+
+#[test]
+fn record_assign_field() {
+    let res = run_file_test_mono("record_assign_field.mmm", 1).unwrap();
+    let ans = vec![20.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn record_update() {
+    let res = run_file_test_mono("record_update.mmm", 1).unwrap();
+    let ans = vec![6000.0]; // 4000.0 + 2000.0
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn record_update_immutable() {
+    let res = run_file_test_mono("record_update_immutable.mmm", 1).unwrap();
+    let ans = vec![10.0]; // 0.0 + 10.0 - original record unchanged
+    assert_eq!(res, ans);
+}
+
 #[test]
 fn parameter_pack_tuple() {
     let res = run_file_test_mono("parameter_pack_tuple.mmm", 1).unwrap();
