@@ -1968,6 +1968,7 @@ name = "mimium-test"
 version = "2.4.2-alpha"
 dependencies = [
  "mimium-audiodriver",
+ "mimium-guitools",
  "mimium-lang",
  "mimium-scheduler",
  "wasm-bindgen-test",

@@ -280,6 +280,7 @@ impl Mir {
             .iter()
             .find(|f| f.label.as_str() == "dsp")
             .and_then(|f| {
+                // log::info!("input_type:{:?} output_type:{:?}", f.get_argtypes().as_slice(), f.return_type.get().as_ref());
                 let input = match f.get_argtypes().as_slice() {
                     [] => Some(0),
                     [t] => t.to_type().get_iochannel_count(),
