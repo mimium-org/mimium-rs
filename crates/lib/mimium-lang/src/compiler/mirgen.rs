@@ -1141,19 +1141,12 @@ pub fn compile(
     macro_env: &[Box<dyn MacroFunction>],
     file_path: Option<Symbol>,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
-    let (expr, infer_ctx, errors) = typecheck(root_expr_id, builtin_types, file_path);
+    let expr = root_expr_id.wrap_to_staged_expr();
+    let (expr, mut infer_ctx, errors) = typecheck(expr, builtin_types, file_path);
     if errors.is_empty() {
-        let expr = if expr.contains_macro() {
-            let expr = if is_toplevel_macro(&mut infer_ctx.clone(), expr) {
-                expr
-            } else {
-                // wrap toplevel expression with `{} because global expression is stage 1(main)
-                Expr::Bracket(expr).into_id(expr.to_location())
-            };
-            interpreter::expand_macro(expr, macro_env)
-        } else {
-            expr
-        };
+        let top_type = infer_ctx.infer_type(expr).unwrap();
+        let expr = interpreter::expand_macro(expr, top_type, macro_env);
+
         log::trace!(
             "ast after macro expansion: {:?}",
             expr.to_expr().simple_print()
