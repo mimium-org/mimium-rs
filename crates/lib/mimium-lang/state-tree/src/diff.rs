@@ -29,11 +29,9 @@ fn diff_unoptimized(
             // Do nothing if the nodes are completely identical
             Vec::new()
         }
-        (Mem { data: _ }, Mem { data: _ }) => {
-            // Reuse the same object for Mem if they are both Mem
-            Vec::new()
-        }
-        (Feed { data: data1 }, Feed { data: data2 })
+
+        (Mem { data: data1 }, Mem { data: data2 })
+        | (Feed { data: data1 }, Feed { data: data2 })
         | (Delay { data: data1, .. }, Delay { data: data2, .. })
             if data1.len() == data2.len() =>
         {
@@ -112,16 +110,29 @@ fn diff_children_unoptimized(
         return [prefix_patches, suffix_patches].concat(); // No differences in the middle part
     }
 
-    // Generate Replace if the middle part is a single element and compatible
+    // Generate Replace if the middle part is a single element
     let middle_patches = if old_middle.len() == 1 && new_middle.len() == 1 {
         let old_node = &old_middle[0];
         let new_node = &new_middle[0];
 
-        if are_compatible(old_node, new_node) && old_node != new_node {
-            // If compatible but different, perform deep comparison
-            let mut current_path = parent_path.to_vec();
-            current_path.push(prefix_len);
-            diff(old_node, new_node, &current_path)
+        if old_node != new_node {
+            if are_compatible(old_node, new_node) {
+                // If compatible but different, perform deep comparison
+                let mut current_path = parent_path.to_vec();
+                current_path.push(prefix_len);
+                diff(old_node, new_node, &current_path)
+            } else {
+                // If not compatible, generate a Replace patch
+                let deserialized_new = deserialize::<StateTree, Error>(new_node).unwrap();
+                vec![Patch::Replace {
+                    path: {
+                        let mut path = parent_path.to_vec();
+                        path.push(prefix_len);
+                        path
+                    },
+                    new_tree: deserialized_new,
+                }]
+            }
         } else {
             Vec::new()
         }
@@ -242,8 +253,8 @@ fn lcs(old: &[ArchivedStateTree], new: &[ArchivedStateTree]) -> Vec<Vec<usize>> 
 fn are_compatible(old: &ArchivedStateTree, new: &ArchivedStateTree) -> bool {
     use ArchivedStateTree::*;
     match (old, new) {
-        (Mem { .. }, Mem { .. }) => true,
-        (Feed { data: data1 }, Feed { data: data2 }) => data1.len() == data2.len(),
+        (Mem { data: data1 }, Mem { data: data2 })
+        | (Feed { data: data1 }, Feed { data: data2 }) => data1.len() == data2.len(),
         (Delay { .. }, Delay { .. }) => true, // Always consider Delay as compatible (handled by Replace)
         (FnCall(_), FnCall(_)) => true,       // FnCall always has compatibility
         _ => false,

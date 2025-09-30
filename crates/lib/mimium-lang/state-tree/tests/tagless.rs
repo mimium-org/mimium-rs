@@ -1,10 +1,17 @@
 use rkyv::{access_mut, to_bytes};
 use state_tree::diff::diff;
-use state_tree::patch::{apply, Patch};
+use state_tree::patch::{Patch, apply};
 use state_tree::tree::ArchivedStateTree;
 use state_tree::tree::{
     StateTree, StateTreeSkeleton, deserialize_tree_untagged, serialize_tree_untagged,
 };
+
+struct DummyType(pub u64);
+impl state_tree::tree::SizedType for DummyType {
+    fn word_size(&self) -> u64 {
+        self.0
+    }
+}
 
 /// Comprehensive scenario test: Raw data -> Deserialize -> Edit -> Diff -> Patch -> Serialize -> Verify
 #[test]
@@ -13,9 +20,9 @@ fn test_serde_append_delay() {
 
     // Step 1: Start with raw data (Vec<u64>) and skeleton
     let original_data = vec![42, 1, 2, 3]; // Mem{data: 42} + Feed{data: [1, 2, 3]}
-    let skeleton = StateTreeSkeleton::FnCall(vec![
-        Box::new(StateTreeSkeleton::Mem),
-        Box::new(StateTreeSkeleton::Feed { size: 3 }),
+    let skeleton = StateTreeSkeleton::<DummyType>::FnCall(vec![
+        Box::new(StateTreeSkeleton::Mem(DummyType(1))),
+        Box::new(StateTreeSkeleton::Feed(DummyType(3))),
     ]);
 
     println!("📊 Original raw data: {original_data:?}");
@@ -27,8 +34,8 @@ fn test_serde_append_delay() {
     println!("🌳 Deserialized tree: {original_tree:#?}");
 
     let modified_skeleton = StateTreeSkeleton::FnCall(vec![
-        Box::new(StateTreeSkeleton::Mem),
-        Box::new(StateTreeSkeleton::Feed { size: 3 }),
+        Box::new(StateTreeSkeleton::Mem(DummyType(1))),
+        Box::new(StateTreeSkeleton::Feed(DummyType(3))),
         Box::new(StateTreeSkeleton::Delay { len: 2 }),
     ]);
     let modified_tree = StateTree::from(modified_skeleton);
@@ -64,7 +71,7 @@ fn test_serde_append_delay() {
     // Step 5: Apply patches to original tree
     let mut patched_tree = original_tree.clone();
     apply(&mut patched_tree, &patches).expect("Should apply patches successfully");
-    
+
     // Step 6: Serialize patched tree back to raw data
     let patched_raw_data = serialize_tree_untagged(patched_tree);
 

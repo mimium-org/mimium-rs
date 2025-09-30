@@ -32,7 +32,7 @@ fn test_main() {
         }]),
         StateTree::Mem {
             // Newly inserted
-            data: 0,
+            data: vec![0],
         },
     ]);
     let mut new_bytes =
@@ -64,7 +64,7 @@ fn test_main() {
         Patch::Insert {
             parent_path: vec![],
             index: 2,
-            new_tree: StateTree::Mem { data: 0 },
+            new_tree: StateTree::Mem { data: vec![0] },
         },
     ];
     assert_eq!(patches, patch_answer);
@@ -86,7 +86,7 @@ fn test_main() {
         }]),
         StateTree::Mem {
             // Newly inserted
-            data: 0,
+            data: vec![0],
         },
     ]);
     // --- 6. Check if the patched tree matches the new tree ---
@@ -100,7 +100,7 @@ fn test_complex_nested_tree_diff() {
 
     // Old tree: Complex nested structure with multiple types
     let old_tree = StateTree::FnCall(vec![
-        StateTree::Mem { data: 100 },
+        StateTree::Mem { data: vec![100] },
         StateTree::FnCall(vec![
             StateTree::Feed {
                 data: vec![1, 2, 3],
@@ -111,7 +111,7 @@ fn test_complex_nested_tree_diff() {
                 data: vec![10, 20],
             },
             StateTree::FnCall(vec![
-                StateTree::Mem { data: 50 },
+                StateTree::Mem { data: vec![50] },
                 StateTree::Feed { data: vec![7, 8] },
             ]),
         ]),
@@ -124,7 +124,7 @@ fn test_complex_nested_tree_diff() {
 
     // New tree: Multiple changes at different levels
     let new_tree = StateTree::FnCall(vec![
-        StateTree::Mem { data: 0 }, 
+        StateTree::Mem { data: vec![0] },
         StateTree::FnCall(vec![
             StateTree::Feed {
                 data: vec![1, 2, 3],
@@ -133,7 +133,7 @@ fn test_complex_nested_tree_diff() {
             StateTree::FnCall(vec![
                 //Mem removed
                 StateTree::Feed { data: vec![7, 8] }, //Same
-                StateTree::Mem { data: 60 },          // New Mem added
+                StateTree::Mem { data: vec![60] },    // New Mem added
             ]),
             StateTree::Delay {
                 // New Delay inserted
@@ -174,10 +174,6 @@ fn test_complex_nested_tree_diff() {
 
     // Expected patches based on the diff algorithm behavior with optimization applied
     let expected_patches = vec![
-        Patch::Replace {
-            path: vec![0],
-            new_tree: StateTree::Mem { data: 200 },
-        },
         Patch::Remove {
             parent_path: vec![1],
             index: 1,
@@ -191,7 +187,7 @@ fn test_complex_nested_tree_diff() {
             index: 1,
             new_tree: StateTree::FnCall(vec![
                 StateTree::Feed { data: vec![7, 8] },
-                StateTree::Mem { data: 60 },
+                StateTree::Mem { data: vec![60] },
             ]),
         },
         Patch::Insert {
@@ -237,14 +233,14 @@ fn test_complex_nested_tree_diff() {
             // Define expected result tree after patch application
             // Note: Data preservation behavior means some original data is kept
             let _expected_result = StateTree::FnCall(vec![
-                StateTree::Mem { data: 100 }, // Original data preserved (Mem nodes preserve old data)
+                StateTree::Mem { data: vec![100] }, // Original data preserved (Mem nodes preserve old data)
                 StateTree::FnCall(vec![
                     StateTree::Feed {
                         data: vec![1, 2, 3],
                     },
                     StateTree::FnCall(vec![
                         StateTree::Feed { data: vec![7, 8] },
-                        StateTree::Mem { data: 60 },
+                        StateTree::Mem { data: vec![60] },
                     ]),
                     StateTree::Delay {
                         readidx: 5,
@@ -293,7 +289,7 @@ fn test_deep_nesting_changes() {
     let old_tree = StateTree::FnCall(vec![
         StateTree::FnCall(vec![StateTree::FnCall(vec![
             StateTree::FnCall(vec![
-                StateTree::Mem { data: 42 },
+                StateTree::Mem { data: vec![42] },
                 StateTree::Delay {
                     readidx: 0,
                     writeidx: 1,
@@ -302,14 +298,14 @@ fn test_deep_nesting_changes() {
             ]),
             StateTree::Feed { data: vec![100] },
         ])]),
-        StateTree::Mem { data: 999 },
+        StateTree::Mem { data: vec![999] },
     ]);
 
     let new_tree = StateTree::FnCall(vec![
         StateTree::FnCall(vec![
             StateTree::FnCall(vec![
                 StateTree::FnCall(vec![
-                    StateTree::Mem { data: 42 }, // Same
+                    StateTree::Mem { data: vec![42] }, // Same
                     StateTree::Delay {
                         readidx: 0,
                         writeidx: 1,
@@ -319,9 +315,9 @@ fn test_deep_nesting_changes() {
                 ]),
                 StateTree::Feed { data: vec![100] }, // Same
             ]),
-            StateTree::Mem { data: 888 }, // New intermediate level
+            StateTree::Mem { data: vec![888] }, // New intermediate level
         ]),
-        StateTree::Mem { data: 999 }, // Same
+        StateTree::Mem { data: vec![999] }, // Same
         StateTree::Delay {
             // New at top level
             readidx: 10,
@@ -363,7 +359,7 @@ fn test_deep_nesting_changes() {
         Patch::Insert {
             parent_path: vec![0],
             index: 1,
-            new_tree: StateTree::Mem { data: 888 },
+            new_tree: StateTree::Mem { data: vec![888] },
         },
         Patch::Insert {
             parent_path: vec![],
@@ -392,7 +388,7 @@ fn test_deep_nesting_changes() {
                 StateTree::FnCall(vec![
                     StateTree::FnCall(vec![
                         StateTree::FnCall(vec![
-                            StateTree::Mem { data: 42 },
+                            StateTree::Mem { data: vec![42] },
                             StateTree::Delay {
                                 readidx: 0,
                                 writeidx: 1,
@@ -402,9 +398,9 @@ fn test_deep_nesting_changes() {
                         ]),
                         StateTree::Feed { data: vec![100] },
                     ]),
-                    StateTree::Mem { data: 888 },
+                    StateTree::Mem { data: vec![888] },
                 ]),
-                StateTree::Mem { data: 999 },
+                StateTree::Mem { data: vec![999] },
                 StateTree::Delay {
                     readidx: 10,
                     writeidx: 11,
@@ -432,7 +428,7 @@ fn test_empty_trees_and_edge_cases() {
     // Case 1: Empty to non-empty
     let empty_tree = StateTree::FnCall(vec![]);
     let non_empty_tree = StateTree::FnCall(vec![
-        StateTree::Mem { data: 42 },
+        StateTree::Mem { data: vec![42] },
         StateTree::Feed { data: vec![1, 2] },
     ]);
 
@@ -452,7 +448,7 @@ fn test_empty_trees_and_edge_cases() {
         Patch::Insert {
             parent_path: vec![],
             index: 0,
-            new_tree: StateTree::Mem { data: 42 },
+            new_tree: StateTree::Mem { data: vec![42] },
         },
         Patch::Insert {
             parent_path: vec![],
@@ -491,8 +487,10 @@ fn test_empty_trees_and_edge_cases() {
     println!("🔄 Identical trees produce no patches: ✅");
 
     // Case 4: Single element changes
-    let single_a = StateTree::FnCall(vec![StateTree::Mem { data: 100 }]);
-    let single_b = StateTree::FnCall(vec![StateTree::Mem { data: 200 }]);
+    let single_a = StateTree::FnCall(vec![StateTree::Mem { data: vec![100] }]);
+    let single_b = StateTree::FnCall(vec![StateTree::Mem {
+        data: vec![200, 300],
+    }]);
 
     let bytes_single_a = rkyv::to_bytes::<rkyv::rancor::Error>(&single_a).unwrap();
     let archived_single_a =
@@ -507,7 +505,9 @@ fn test_empty_trees_and_edge_cases() {
     // Expected patches for single element change
     let expected_single = vec![Patch::Replace {
         path: vec![0],
-        new_tree: StateTree::Mem { data: 200 },
+        new_tree: StateTree::Mem {
+            data: vec![200, 300],
+        },
     }];
     assert_eq!(
         patches_single, expected_single,
@@ -549,12 +549,12 @@ fn test_simple_tree_modifications() {
     // Simple test case with predictable patches and final state
 
     let old_tree = StateTree::FnCall(vec![
-        StateTree::Mem { data: 100 },
+        StateTree::Mem { data: vec![100] },
         StateTree::Feed { data: vec![1, 2] },
     ]);
 
     let new_tree = StateTree::FnCall(vec![
-        StateTree::Mem { data: 200 },         // Changed value
+        StateTree::Mem { data: vec![200] },   // Changed value, but same size
         StateTree::Feed { data: vec![1, 2] }, // Same
         StateTree::Delay {
             readidx: 5,
@@ -580,10 +580,6 @@ fn test_simple_tree_modifications() {
 
     // Expected patches for this simple case
     let expected_patches = vec![
-        Patch::Replace {
-            path: vec![0],
-            new_tree: StateTree::Mem { data: 200 },
-        },
         Patch::Insert {
             parent_path: vec![],
             index: 2,
@@ -605,7 +601,7 @@ fn test_simple_tree_modifications() {
 
     // Expected final tree (actual behavior: Replace patches update data)
     let expected_final_tree = StateTree::FnCall(vec![
-        StateTree::Mem { data: 200 }, // Replace patch updates the data
+        StateTree::Mem { data: vec![100] }, //keep using old data
         StateTree::Feed { data: vec![1, 2] },
         StateTree::Delay {
             readidx: 5,
@@ -686,7 +682,7 @@ fn test_patch_optimization_non_consecutive() {
         },
         Patch::Replace {
             path: vec![1],
-            new_tree: StateTree::Mem { data: 777 },
+            new_tree: StateTree::Mem { data: vec![777] },
         }, // Dummy instruction
         Patch::Insert {
             parent_path: vec![],
@@ -732,7 +728,7 @@ fn test_patch_optimization_multiple_pairs() {
         Patch::Insert {
             parent_path: vec![1],
             index: 1,
-            new_tree: StateTree::Mem { data: 42 },
+            new_tree: StateTree::Mem { data: vec![42] },
         },
         Patch::Remove {
             parent_path: vec![1],
@@ -760,7 +756,7 @@ fn test_patch_optimization_multiple_pairs() {
     let expected_optimized = vec![
         Patch::Replace {
             path: vec![1, 1],
-            new_tree: StateTree::Mem { data: 42 },
+            new_tree: StateTree::Mem { data: vec![42] },
         },
         Patch::Replace {
             path: vec![1, 2],

@@ -23,7 +23,7 @@ pub enum StateTree {
         data: Vec<u64>, //assume we are using only mono f64 data
     },
     Mem {
-        data: u64, //assume we are using only mono f64 data
+        data: Vec<u64>, //assume we are using only mono f64 data
     },
     Feed {
         data: Vec<u64>, //assume we are using generic data, might be tuple of float
@@ -31,18 +31,20 @@ pub enum StateTree {
     FnCall(#[rkyv(omit_bounds)] Vec<StateTree>),
 }
 
-impl From<StateTreeSkeleton> for StateTree {
+impl<T: SizedType> From<StateTreeSkeleton<T>> for StateTree {
     //create empty StateTree from StateTreeSkeleton
-    fn from(skeleton: StateTreeSkeleton) -> Self {
+    fn from(skeleton: StateTreeSkeleton<T>) -> Self {
         match skeleton {
             StateTreeSkeleton::Delay { len } => StateTree::Delay {
                 readidx: 0,
                 writeidx: 0,
                 data: vec![0; len as usize],
             },
-            StateTreeSkeleton::Mem => StateTree::Mem { data: 0 },
-            StateTreeSkeleton::Feed { size } => StateTree::Feed {
-                data: vec![0; size as usize],
+            StateTreeSkeleton::Mem(t) => StateTree::Mem {
+                data: vec![0; t.word_size() as usize],
+            },
+            StateTreeSkeleton::Feed(t) => StateTree::Feed {
+                data: vec![0; t.word_size() as usize],
             },
             StateTreeSkeleton::FnCall(children_layout) => StateTree::FnCall(
                 children_layout
@@ -61,30 +63,31 @@ pub fn serialize_tree_untagged(tree: StateTree) -> Vec<u64> {
             writeidx,
             data,
         } => itertools::concat([vec![readidx, writeidx], data]),
-        StateTree::Mem { data } => vec![data],
-        StateTree::Feed { data } => data,
+        StateTree::Mem { data } | StateTree::Feed { data } => data,
         StateTree::FnCall(state_trees) => {
             itertools::concat(state_trees.into_iter().map(serialize_tree_untagged))
         }
     }
 }
 
+pub trait SizedType {
+    fn word_size(&self) -> u64;
+}
+
 /// This data represents just a memory layout on a flat array, do not own actual data.
 #[derive(Debug, Clone, PartialEq)]
-pub enum StateTreeSkeleton {
+pub enum StateTreeSkeleton<T: SizedType> {
     Delay {
         len: u64, //assume we are using only mono f64 data
     },
-    Mem,
-    Feed {
-        size: u64, //assume we are using generic data, might be tuple of float
-    },
-    FnCall(Vec<Box<StateTreeSkeleton>>),
+    Mem(T),
+    Feed(T),
+    FnCall(Vec<Box<StateTreeSkeleton<T>>>),
 }
 
-fn deserialize_tree_untagged_rec(
+fn deserialize_tree_untagged_rec<T: SizedType>(
     data: &[u64],
-    data_layout: &StateTreeSkeleton,
+    data_layout: &StateTreeSkeleton<T>,
 ) -> Option<(StateTree, usize)> {
     match data_layout {
         StateTreeSkeleton::Delay { len } => {
@@ -100,10 +103,15 @@ fn deserialize_tree_untagged_rec(
                 2 + (*len as usize),
             ))
         }
-        StateTreeSkeleton::Mem => data.first().map(|data| (StateTree::Mem { data: *data }, 1)),
-        StateTreeSkeleton::Feed { size } => {
-            let d = data.get(0..(*size as usize))?.to_vec();
-            Some((StateTree::Feed { data: d }, *size as usize))
+        StateTreeSkeleton::Mem(t) => {
+            let size = t.word_size() as usize;
+            let data = data.get(0..size)?.to_vec();
+            Some((StateTree::Mem { data }, size))
+        }
+        StateTreeSkeleton::Feed(t) => {
+            let size = t.word_size() as usize;
+            let data = data.get(0..size)?.to_vec();
+            Some((StateTree::Feed { data }, size))
         }
         StateTreeSkeleton::FnCall(children_layout) => {
             let (children, used) =
@@ -121,9 +129,9 @@ fn deserialize_tree_untagged_rec(
     }
 }
 
-pub fn deserialize_tree_untagged(
+pub fn deserialize_tree_untagged<T: SizedType>(
     data: &[u64],
-    data_layout: &StateTreeSkeleton,
+    data_layout: &StateTreeSkeleton<T>,
 ) -> Option<StateTree> {
     deserialize_tree_untagged_rec(data, data_layout)
         .and_then(|(tree, used)| (used == data.len()).then_some(tree))
