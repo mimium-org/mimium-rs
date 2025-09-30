@@ -206,6 +206,7 @@ enum RawValType {
     // UInt,
 }
 
+#[derive(Clone, Copy)]
 enum ExtFnIdx {
     Fun(usize),
     Cls(usize),
@@ -380,14 +381,28 @@ impl Machine {
     }
     /// Create a new VM instance with the new program, preserving the current state as possible.
     pub fn new_resume(&self, prog: Program) -> Self {
-        let mut new_vm = Self::new(prog, [].into_iter(), [].into_iter());
-        self.ext_fun_table.iter().for_each(|(name, fun)| {
-            let _ = new_vm.install_extern_fn(*name, *fun);
-        });
-        self.ext_cls_table.iter().for_each(|(name, cls)| {
-            let _ = new_vm.install_extern_cls(*name, cls.clone());
-        });
-        new_vm.link_functions();
+        let mut new_vm = Self {
+            prog,
+            stack: vec![],
+            base_pointer: 0,
+            closures: Default::default(),
+            ext_fun_table: vec![],
+            ext_cls_table: vec![],
+            fn_map: HashMap::new(),
+            // cls_map: HashMap::new(),
+            arrays: ArrayStorage::default(),
+            global_states: Default::default(),
+            states_stack: Default::default(),
+            delaysizes_pos_stack: vec![0],
+            global_vals: vec![],
+            debug_stacktype: vec![RawValType::Int; 255],
+        };
+        //expect there are no change changes in external function use for now
+        new_vm.ext_fun_table = self.ext_fun_table.clone();
+        new_vm.ext_cls_table = self.ext_cls_table.clone();
+        new_vm.global_vals = self.global_vals.clone();
+        new_vm.arrays = self.arrays.clone();
+        new_vm.fn_map = self.fn_map.clone();
         let new_state = state_tree::update_state_storage(
             &self.global_states.rawdata,
             self.prog
@@ -412,6 +427,7 @@ impl Machine {
                 log::error!("Failed to migrate global state: {e}");
             }
         }
+        new_vm.execute_main();
         new_vm
     }
     pub fn clear_stack(&mut self) {
@@ -1073,8 +1089,8 @@ impl Machine {
     }
     pub fn execute_main(&mut self) -> ReturnCode {
         //internal function table 0 is always mimium_main
-        self.global_states
-            .resize(self.prog.global_fn_table[0].1.state_size as usize);
+        // self.global_states
+        //     .resize(self.prog.global_fn_table[0].1.state_size as usize);
         // 0 is always base pointer to the main function
         self.base_pointer += 1;
         self.execute(0, None)

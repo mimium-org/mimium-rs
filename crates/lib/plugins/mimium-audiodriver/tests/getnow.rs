@@ -1,6 +1,6 @@
 use mimium_audiodriver::{
     backends::local_buffer::LocalBufferDriver,
-    driver::{Driver, SampleRate},
+    driver::{Driver, RuntimeData, SampleRate},
 };
 use mimium_lang::{
     Config, ExecContext,
@@ -53,7 +53,8 @@ fn getnow_test() {
     let p: Box<dyn Plugin> = Box::new(driver.get_as_plugin());
     let mut ctx = ExecContext::new([p].into_iter(), None, Config::default());
     ctx.prepare_machine_with_bytecode(prog);
-    let _iochannels = driver.init(ctx, Some(SampleRate::from(48000)));
+    let runtimedata = RuntimeData::try_from(&mut ctx).unwrap();
+    let _iochannels = driver.init(runtimedata, Some(SampleRate::from(48000)));
     driver.play();
 
     let res = driver.get_generated_samples();

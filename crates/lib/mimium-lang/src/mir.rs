@@ -2,7 +2,7 @@
 use crate::{
     compiler::IoChannelInfo,
     interner::{Symbol, TypeNodeId},
-    types::{Type, TypeSize},
+    types::{PType, RecordTypeField, Type, TypeSize},
 };
 use std::{cell::OnceCell, sync::Arc};
 // Import StateTreeSkeleton for function state information
@@ -153,6 +153,31 @@ pub struct OpenUpValue {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct StateType(pub u64);
+impl state_tree::tree::SizedType for StateType {
+    fn word_size(&self) -> u64 {
+        self.0
+    }
+}
+impl From<TypeNodeId> for StateType {
+    fn from(t: TypeNodeId) -> Self {
+        match t.to_type() {
+            Type::Primitive(PType::Unit) => StateType(0),
+            Type::Primitive(PType::Numeric) | Type::Function { .. } => StateType(1),
+            Type::Record(fields) => StateType(
+                fields
+                    .iter()
+                    .map(|RecordTypeField { ty, .. }| ty.word_size())
+                    .sum(),
+            ),
+            Type::Tuple(elems) => StateType(elems.iter().map(|ty| ty.word_size()).sum()),
+            Type::Array(_elem_ty) => StateType(1),
+            _ => todo!(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Function {
     pub index: usize,
     pub label: Symbol,
@@ -164,7 +189,7 @@ pub struct Function {
     pub body: Vec<Block>,
     pub state_sizes: Vec<StateSize>,
     /// StateTree skeleton information for this function's state layout
-    pub state_skeleton: StateTreeSkeleton<TypeNodeId>,
+    pub state_skeleton: StateTreeSkeleton<StateType>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -221,7 +246,7 @@ impl Function {
                 .sum(),
         }
     }
-    pub fn push_state_skeleton(&mut self, skeleton: StateTreeSkeleton<TypeNodeId>) {
+    pub fn push_state_skeleton(&mut self, skeleton: StateTreeSkeleton<StateType>) {
         if let StateTreeSkeleton::FnCall(children) = &mut self.state_skeleton {
             children.push(Box::new(skeleton))
         } else {
@@ -272,7 +297,7 @@ impl Mir {
     pub fn get_function_state_skeleton(
         &self,
         function_name: &str,
-    ) -> Option<&StateTreeSkeleton<TypeNodeId>> {
+    ) -> Option<&StateTreeSkeleton<StateType>> {
         self.functions.iter().find_map(|f| {
             if f.label.as_str() == function_name {
                 Some(&f.state_skeleton)
@@ -283,7 +308,7 @@ impl Mir {
     }
 
     /// Get the StateTreeSkeleton for the dsp function (commonly used for audio processing)
-    pub fn get_dsp_state_skeleton(&self) -> Option<&StateTreeSkeleton<TypeNodeId>> {
+    pub fn get_dsp_state_skeleton(&self) -> Option<&StateTreeSkeleton<StateType>> {
         self.get_function_state_skeleton("dsp")
     }
 }

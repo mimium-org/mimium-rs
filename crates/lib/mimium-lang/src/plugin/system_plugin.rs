@@ -81,9 +81,6 @@ pub trait SystemPlugin {
         0
     }
     fn gen_interfaces(&self) -> Vec<SysPluginSignature>;
-    fn try_get_main_loop(&mut self) -> Option<Box<dyn FnOnce()>> {
-        None
-    }
 }
 
 #[derive(Clone)]

@@ -15,8 +15,9 @@ use mimium_lang::{
     plugin::{DynSystemPlugin, ExtClsInfo, InstantPlugin},
     runtime::{
         Time,
-        vm::{self, FuncProto, ReturnCode},
+        vm::{self, FuncProto, Program, ReturnCode},
     },
+    utils::{error::SimpleError, metadata::Location},
 };
 use num_traits::Float;
 
@@ -68,9 +69,14 @@ pub trait Driver {
     type Sample: Float;
     fn get_runtimefn_infos(&self) -> Vec<ExtClsInfo>;
     /// Call ctx.run_main() before moving ctx to Driver with this function.
-    fn init(&mut self, ctx: ExecContext, sample_rate: Option<SampleRate>) -> Option<IoChannelInfo>;
+    fn init(
+        &mut self,
+        runtimedata: RuntimeData,
+        sample_rate: Option<SampleRate>,
+    ) -> Option<IoChannelInfo>;
     fn play(&mut self) -> bool;
     fn pause(&mut self) -> bool;
+    fn renew_vm(&mut self, _new_vm: vm::Program) {}
     fn get_samplerate(&self) -> u32;
     fn get_current_sample(&self) -> Time;
     fn is_playing(&self) -> bool;
@@ -99,23 +105,31 @@ impl RuntimeData {
             dsp_i,
         }
     }
+    pub fn new_resume(&self, new_prog: Program) -> Self {
+        let dsp_i = self.vm.prog.get_fun_index(&"dsp".to_symbol()).unwrap_or(0);
 
-    /// warn: Currently duplicated with ExecContext::run_main.
-    /// only LocalBufferDriver uses this function.
-    pub fn run_main(&mut self) -> ReturnCode {
-        self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
-            //todo: encapsulate unsafety within SystemPlugin functionality
-            let p = unsafe { plug.inner.get().as_mut().unwrap_unchecked() };
-            let _ = p.on_init(&mut self.vm);
-        });
-        let res = self.vm.execute_main();
-        self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
-            //todo: encapsulate unsafety within SystemPlugin functionality
-            let p = unsafe { plug.inner.get().as_mut().unwrap_unchecked() };
-            let _ = p.after_main(&mut self.vm);
-        });
-        res
+        Self {
+            vm: self.vm.new_resume(new_prog),
+            sys_plugins: self.sys_plugins.clone(),
+            dsp_i,
+        }
     }
+    // /// warn: Currently duplicated with ExecContext::run_main.
+    // /// only LocalBufferDriver uses this function.
+    // pub fn run_main(&mut self) -> ReturnCode {
+    //     self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
+    //         //todo: encapsulate unsafety within SystemPlugin functionality
+    //         let p = unsafe { plug.inner.get().as_mut().unwrap_unchecked() };
+    //         let _ = p.on_init(&mut self.vm);
+    //     });
+    //     let res = self.vm.execute_main();
+    //     self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
+    //         //todo: encapsulate unsafety within SystemPlugin functionality
+    //         let p = unsafe { plug.inner.get().as_mut().unwrap_unchecked() };
+    //         let _ = p.after_main(&mut self.vm);
+    //     });
+    //     res
+    // }
     pub fn get_dsp_fn(&self) -> &FuncProto {
         &self.vm.prog.global_fn_table[self.dsp_i].1
     }
@@ -128,4 +142,24 @@ impl RuntimeData {
         });
         self.vm.execute_idx(self.dsp_i)
     }
+}
+
+impl TryFrom<&mut ExecContext> for RuntimeData {
+    fn try_from(ctx: &mut ExecContext) -> Result<Self, Self::Error> {
+        let vm = ctx.take_vm().ok_or(SimpleError {
+            message: "Failed to take VM".into(),
+            span: Location {
+                path: "".to_symbol(),
+                span: 0..0,
+            },
+        })?;
+        let dsp_i = vm.prog.get_fun_index(&"dsp".to_symbol()).unwrap_or(0);
+        let sys_plugins = ctx.get_system_plugins().cloned().collect();
+        Ok(Self {
+            vm,
+            sys_plugins,
+            dsp_i,
+        })
+    }
+    type Error = SimpleError;
 }

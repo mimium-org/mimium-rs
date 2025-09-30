@@ -6,6 +6,7 @@ use state_tree::tree::{
     StateTree, StateTreeSkeleton, deserialize_tree_untagged, serialize_tree_untagged,
 };
 
+#[derive(Debug)]
 struct DummyType(pub u64);
 impl state_tree::tree::SizedType for DummyType {
     fn word_size(&self) -> u64 {

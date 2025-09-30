@@ -4,9 +4,9 @@ use std::{
     path::Path,
 };
 
-use mimium_lang::{ExecContext, compiler::IoChannelInfo, plugin::ExtClsInfo, runtime::vm};
+use mimium_lang::{compiler::IoChannelInfo, plugin::ExtClsInfo};
 
-use crate::driver::Driver;
+use crate::driver::{Driver, RuntimeData};
 
 use super::local_buffer::LocalBufferDriver;
 
@@ -39,10 +39,10 @@ impl Driver for CsvDriver {
 
     fn init(
         &mut self,
-        ctx: ExecContext,
+        runtime_data: RuntimeData,
         sample_rate: Option<crate::driver::SampleRate>,
     ) -> Option<IoChannelInfo> {
-        let res = self.driver.init(ctx, sample_rate);
+        let res = self.driver.init(runtime_data, sample_rate);
 
         let chunk_size = res.map_or(0, |io| io.output);
         let mut header = String::new();

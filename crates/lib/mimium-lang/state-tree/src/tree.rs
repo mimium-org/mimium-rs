@@ -70,7 +70,7 @@ pub fn serialize_tree_untagged(tree: StateTree) -> Vec<u64> {
     }
 }
 
-pub trait SizedType {
+pub trait SizedType: std::fmt::Debug {
     fn word_size(&self) -> u64;
 }
 
@@ -91,16 +91,19 @@ fn deserialize_tree_untagged_rec<T: SizedType>(
 ) -> Option<(StateTree, usize)> {
     match data_layout {
         StateTreeSkeleton::Delay { len } => {
+            const DELAY_ADDITIONAL_OFFSET: usize = 3;
             let readidx = data.first().copied()?;
             let writeidx = data.get(1).copied()?;
-            let d = data.get(2..2 + (*len as usize))?.to_vec();
+            let d = data
+                .get(DELAY_ADDITIONAL_OFFSET..DELAY_ADDITIONAL_OFFSET + (*len as usize))?
+                .to_vec();
             Some((
                 StateTree::Delay {
                     readidx,
                     writeidx,
                     data: d,
                 },
-                2 + (*len as usize),
+                DELAY_ADDITIONAL_OFFSET + (*len as usize),
             ))
         }
         StateTreeSkeleton::Mem(t) => {
@@ -133,6 +136,10 @@ pub fn deserialize_tree_untagged<T: SizedType>(
     data: &[u64],
     data_layout: &StateTreeSkeleton<T>,
 ) -> Option<StateTree> {
-    deserialize_tree_untagged_rec(data, data_layout)
-        .and_then(|(tree, used)| (used == data.len()).then_some(tree))
+    eprintln!("Deserializing  with layout: {:?}", data_layout);
+    if let Some((tree, used)) = deserialize_tree_untagged_rec(data, data_layout) {
+        if used == data.len() { Some(tree) } else { None }
+    } else {
+        None
+    }
 }

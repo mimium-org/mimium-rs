@@ -142,6 +142,18 @@ impl ExecContext {
         self.prepare_machine_with_bytecode(prog);
         Ok(())
     }
+    pub fn prepare_machine_resume(
+        &mut self,
+        src: &str,
+    ) -> Result<vm::Program, Vec<Box<dyn ReportableError>>> {
+        if self.compiler.is_none() {
+            self.prepare_compiler();
+        }
+
+        let prog = self.compiler.as_ref().unwrap().emit_bytecode(src)?;
+
+        Ok(prog)
+    }
     /// Build a VM from the given bytecode [`Program`].
     pub fn prepare_machine_with_bytecode(&mut self, prog: Program) {
         let cls =
@@ -154,17 +166,7 @@ impl ExecContext {
         let vm = vm::Machine::new(prog, [].into_iter(), cls);
         self.vm = Some(vm);
     }
-    pub fn try_get_main_loop(&mut self) -> Option<Box<dyn FnOnce()>> {
-        let mut mainloops = self.sys_plugins.iter_mut().filter_map(|p| {
-            let p = unsafe { p.inner.get().as_mut().unwrap_unchecked() };
-            p.try_get_main_loop()
-        });
-        let res = mainloops.next();
-        if mainloops.next().is_some() {
-            log::warn!("more than 2 main loops in system plugins found")
-        }
-        res
-    }
+
     pub fn get_iochannel_count(&self) -> Option<IoChannelInfo> {
         self.vm.as_ref().and_then(|vm| vm.prog.iochannels)
     }

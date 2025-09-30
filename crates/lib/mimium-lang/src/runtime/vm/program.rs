@@ -17,7 +17,7 @@ pub struct FuncProto {
     pub state_size: u64,
     pub delay_sizes: Vec<u64>,
     /// StateTree skeleton information inherited from MIR for this function's state layout
-    pub state_skeleton: StateTreeSkeleton<TypeNodeId>,
+    pub state_skeleton: StateTreeSkeleton<mir::StateType>,
 }
 
 impl Default for FuncProto {
@@ -61,6 +61,8 @@ pub struct Program {
     pub strings: Vec<Symbol>,
     pub file_path: Option<Symbol>,
     pub iochannels: Option<IoChannelInfo>,
+    //hold absolute index of dsp function because the symbol interner can't be used in the audio thread
+    pub dsp_index: Option<usize>,
 }
 impl Program {
     pub fn get_fun_index(&self, name: &Symbol) -> Option<usize> {
@@ -72,17 +74,13 @@ impl Program {
         self.get_fun_index(&"dsp".to_symbol())
             .and_then(|idx| self.global_fn_table.get(idx).map(|(_, f)| f))
     }
-    /// Get the StateTreeSkeleton for a specific function by name
-    pub fn get_function_state_skeleton(
-        &self,
-        function_name: &str,
-    ) -> Option<&StateTreeSkeleton<TypeNodeId>> {
-        self.get_fun_index(&function_name.to_symbol())
-            .and_then(|idx| self.global_fn_table.get(idx).map(|(_, f)| &f.state_skeleton))
-    }
+
     /// Get the StateTreeSkeleton for the dsp function (commonly used for audio processing)
-    pub fn get_dsp_state_skeleton(&self) -> Option<&StateTreeSkeleton<TypeNodeId>> {
-        self.get_function_state_skeleton("dsp")
+    pub fn get_dsp_state_skeleton(&self) -> Option<&StateTreeSkeleton<mir::StateType>> {
+        let dsp_i = self.dsp_index?;
+        self.global_fn_table
+            .get(dsp_i)
+            .map(|(_, f)| &f.state_skeleton)
     }
     pub fn add_new_str(&mut self, s: Symbol) -> usize {
         self.strings

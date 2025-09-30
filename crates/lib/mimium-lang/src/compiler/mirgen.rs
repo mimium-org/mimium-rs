@@ -26,7 +26,7 @@ use crate::ast::{Expr, Literal};
 // pub mod closure_convert;
 // pub mod feedconvert;
 // pub mod hir_solve_stage;
-type StateSkeleton = StateTreeSkeleton<TypeNodeId>;
+type StateSkeleton = StateTreeSkeleton<mir::StateType>;
 
 const DELAY_ADDITIONAL_OFFSET: u64 = 3;
 
@@ -187,7 +187,7 @@ impl Context {
                     .state_sizes
                     .push(StateSize { size: 1, ty: a0_ty });
                 self.get_current_fn()
-                    .push_state_skeleton(StateSkeleton::Mem(numeric!()));
+                    .push_state_skeleton(StateSkeleton::Mem(mir::StateType::from(numeric!())));
                 Some(Instruction::Mem(a0))
             }
             _ => None,
@@ -978,7 +978,7 @@ impl Context {
                 self.get_current_fn().state_sizes.push(statesize);
                 //todo:move word size function to type.rs
                 self.get_current_fn()
-                    .push_state_skeleton(StateTreeSkeleton::Feed(ty));
+                    .push_state_skeleton(StateTreeSkeleton::Feed(mir::StateType::from(ty)));
                 (Arc::new(Value::State(retv)), ty)
             }
             Expr::Let(pat, body, then) => {

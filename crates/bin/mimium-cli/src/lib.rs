@@ -6,7 +6,7 @@ use std::{
 use clap::{Parser, ValueEnum};
 use mimium_audiodriver::{
     backends::{csv::csv_driver, local_buffer::LocalBufferDriver},
-    driver::{Driver, SampleRate},
+    driver::{Driver, RuntimeData, SampleRate},
     load_default_runtime,
 };
 use mimium_lang::{
@@ -22,6 +22,7 @@ use mimium_lang::{
     },
 };
 use mimium_symphonia::SamplerPlugin;
+use ringbuf::{HeapCons, traits::Producer};
 
 #[derive(clap::Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -225,7 +226,8 @@ pub fn run_file(
             let plug = localdriver.get_as_plugin();
             ctx.add_plugin(plug);
             ctx.prepare_machine(content)?;
-            Ok(println!("{}", ctx.get_vm().unwrap().prog))
+            println!("{}", ctx.get_vm().unwrap().prog);
+            Ok(())
         }
         _ => {
             let mut driver = options.get_driver();
@@ -233,15 +235,51 @@ pub fn run_file(
             ctx.add_plugin(audiodriver_plug);
             ctx.prepare_machine(content)?;
             let _res = ctx.run_main();
-            let mainloop = ctx.try_get_main_loop().unwrap_or(Box::new(|| {
-                //wait until input something
-                let mut dummy = String::new();
-                eprintln!("Press Enter to exit");
-                let _size = stdin().read_line(&mut dummy).expect("stdin read error.");
-            }));
-            driver.init(ctx, Some(SampleRate::from(48000)));
+            let runtimedata = RuntimeData::try_from(&mut ctx).unwrap();
+            //this takes ownership of ctx
+            driver.init(runtimedata, Some(SampleRate::from(48000)));
             driver.play();
-            mainloop();
+            loop {
+                let mut line = String::new();
+                let _size = stdin().read_line(&mut line).expect("stdin read error.");
+                match line.trim() {
+                    // "p" | "play" => {
+                    //     log::info!("play");
+                    //     let _ = driver.play();
+                    // }
+                    // "s" | "stop" | "pause" => {
+                    //     log::info!("pause");
+                    //     let _ = driver.pause();
+                    // }
+                    "u" | "update" => {
+                        log::info!("update");
+                        match fileloader::load(fullpath.to_str().unwrap()) {
+                            Ok(new_content) => match ctx.prepare_machine_resume(&new_content) {
+                                Ok(prog) => {
+                                    driver.renew_vm(prog);
+                                }
+                                Err(e) => {
+                                    report(content, path_sym, &e);
+                                }
+                            },
+                            Err(e) => {
+                                log::error!(
+                                    "failed to reload the file {}: {}",
+                                    fullpath.display(),
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    "q" | "quit" | "exit" | "" => {
+                        eprintln!("exit");
+                        break;
+                    }
+                    _ => {
+                        println!("commands: play(p), pause(s), quit(q/empty)");
+                    }
+                }
+            }
             Ok(())
         }
     }

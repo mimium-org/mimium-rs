@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::interner::{Symbol, TypeNodeId};
+use crate::interner::{Symbol, ToSymbol, TypeNodeId};
 use crate::mir::{self, Mir, StateSize};
 use crate::runtime::vm::bytecode::{ConstPos, GlobalPos, Reg};
 use crate::runtime::vm::{self, StateOffset};
@@ -808,6 +808,7 @@ impl ByteCodeGenerator {
         self.program.iochannels = mir.get_dsp_iochannels();
         log::debug!("iochannels: {:?}", self.program.iochannels.unwrap());
         let _io = self.program.iochannels.unwrap();
+        self.program.dsp_index = self.program.get_fun_index(&"dsp".to_symbol());
         self.program.clone()
     }
 }
