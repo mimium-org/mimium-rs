@@ -3,10 +3,11 @@ use crate::compiler::IoChannelInfo;
 use crate::interner::{Symbol, ToSymbol, TypeNodeId};
 use crate::mir;
 pub use mir::OpenUpValue;
+use state_tree::tree::StateTreeSkeleton;
 
 /// Function prototype definition in the bytecode program.
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FuncProto {
     pub nparam: usize,
     pub nret: usize,
@@ -15,12 +16,30 @@ pub struct FuncProto {
     pub constants: Vec<RawVal>,
     pub state_size: u64,
     pub delay_sizes: Vec<u64>,
+    /// StateTree skeleton information inherited from MIR for this function's state layout
+    pub state_skeleton: StateTreeSkeleton<TypeNodeId>,
+}
+
+impl Default for FuncProto {
+    fn default() -> Self {
+        Self {
+            nparam: 0,
+            nret: 0,
+            upindexes: Vec::new(),
+            bytecodes: Vec::new(),
+            constants: Vec::new(),
+            state_size: 0,
+            delay_sizes: Vec::new(),
+            state_skeleton: StateTreeSkeleton::FnCall(vec![]), // Initialize as empty FnCall
+        }
+    }
 }
 impl FuncProto {
     pub fn new(nparam: usize, nret: usize) -> Self {
         Self {
             nparam,
             nret,
+            state_skeleton: StateTreeSkeleton::FnCall(vec![]), // Initialize as empty FnCall
             ..Default::default()
         }
     }
@@ -53,6 +72,18 @@ impl Program {
         self.get_fun_index(&"dsp".to_symbol())
             .and_then(|idx| self.global_fn_table.get(idx).map(|(_, f)| f))
     }
+    /// Get the StateTreeSkeleton for a specific function by name
+    pub fn get_function_state_skeleton(
+        &self,
+        function_name: &str,
+    ) -> Option<&StateTreeSkeleton<TypeNodeId>> {
+        self.get_fun_index(&function_name.to_symbol())
+            .and_then(|idx| self.global_fn_table.get(idx).map(|(_, f)| &f.state_skeleton))
+    }
+    /// Get the StateTreeSkeleton for the dsp function (commonly used for audio processing)
+    pub fn get_dsp_state_skeleton(&self) -> Option<&StateTreeSkeleton<TypeNodeId>> {
+        self.get_function_state_skeleton("dsp")
+    }
     pub fn add_new_str(&mut self, s: Symbol) -> usize {
         self.strings
             .iter()
@@ -71,6 +102,7 @@ impl std::fmt::Display for Program {
             let _ = writeln!(f, "nparams:{} nret: {}", fns.1.nparam, fns.1.nret);
             let _ = write!(f, "upindexes: {:?}  ", fns.1.upindexes);
             let _ = writeln!(f, "state_size: {}  ", fns.1.state_size);
+            let _ = writeln!(f, "state_skeleton: {:?}", fns.1.state_skeleton);
             let _ = writeln!(f, "constants:  {:?}", fns.1.constants);
             let _ = writeln!(f, "instructions:");
             for inst in fns.1.bytecodes.iter() {

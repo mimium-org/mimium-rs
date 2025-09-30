@@ -767,6 +767,7 @@ impl ByteCodeGenerator {
                     .expect("return type not inferred correctly"),
             ) as _,
             state_size,
+            state_skeleton: mirfunc.state_skeleton.clone(), // Transfer state skeleton from MIR
             ..Default::default()
         };
         self.vregister.0.push(VRegister::default());
