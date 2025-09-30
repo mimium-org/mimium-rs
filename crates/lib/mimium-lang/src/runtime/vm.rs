@@ -378,6 +378,42 @@ impl Machine {
         res.link_functions();
         res
     }
+    /// Create a new VM instance with the new program, preserving the current state as possible.
+    pub fn new_resume(&self, prog: Program) -> Self {
+        let mut new_vm = Self::new(prog, [].into_iter(), [].into_iter());
+        self.ext_fun_table.iter().for_each(|(name, fun)| {
+            let _ = new_vm.install_extern_fn(*name, *fun);
+        });
+        self.ext_cls_table.iter().for_each(|(name, cls)| {
+            let _ = new_vm.install_extern_cls(*name, cls.clone());
+        });
+        new_vm.link_functions();
+        let new_state = state_tree::update_state_storage(
+            &self.global_states.rawdata,
+            self.prog
+                .get_dsp_state_skeleton()
+                .cloned()
+                .expect("dsp function not found"),
+            new_vm
+                .prog
+                .get_dsp_state_skeleton()
+                .cloned()
+                .expect("dsp function not found"),
+        );
+        match new_state {
+            Ok(Some(s)) => {
+                new_vm.global_states.rawdata = s;
+            }
+            Ok(None) => {
+                log::warn!("No state structure change detected. Just copies buffer");
+                new_vm.global_states.rawdata = self.global_states.rawdata.clone();
+            }
+            Err(e) => {
+                log::error!("Failed to migrate global state: {e}");
+            }
+        }
+        new_vm
+    }
     pub fn clear_stack(&mut self) {
         self.stack.fill(0);
     }

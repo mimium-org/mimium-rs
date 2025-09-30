@@ -24,6 +24,16 @@ pub enum ApplyError {
     InvalidIndex,
     NotFnCall, // Error when parent is not a FnCall
 }
+impl std::fmt::Display for ApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApplyError::PathNotFound => write!(f, "Path not found in the tree"),
+            ApplyError::InvalidIndex => write!(f, "Invalid index for insertion/removal"),
+            ApplyError::NotFnCall => write!(f, "Parent node is not a FnCall"),
+        }
+    }
+}
+impl std::error::Error for ApplyError {}
 
 /// Apply patches to StateTree
 pub fn apply(root: &mut StateTree, patches: &[Patch]) -> Result<(), ApplyError> {
