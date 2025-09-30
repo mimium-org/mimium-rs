@@ -17,7 +17,7 @@ use string_interner::{StringInterner, backend::StringBackend};
 use crate::{
     ast::Expr,
     dummy_span,
-    types::{RecordTypeField, Type},
+    types::{PType, RecordTypeField, Type},
     utils::metadata::{Location, Span},
 };
 slotmap::new_key_type! {
@@ -193,6 +193,29 @@ impl Eq for TypeNodeId {}
 impl Hash for TypeNodeId {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.0.hash(state);
+    }
+}
+
+impl state_tree::tree::SizedType for TypeNodeId {
+    fn word_size(&self) -> u64 {
+        match self.to_type() {
+            Type::Primitive(PType::Unit) => 0,
+            Type::Primitive(PType::String) => 1,
+            Type::Primitive(_) => 1,
+            Type::Array(_) => 1, //array is represented as a pointer to the special storage
+            Type::Tuple(types) => types.iter().map(|t| t.word_size()).sum(),
+            Type::Record(types) => types
+                .iter()
+                .map(|RecordTypeField { ty, .. }| ty.word_size())
+                .sum(),
+            Type::Function { arg: _, ret: _ } => 1,
+            Type::Ref(_) => 1,
+            Type::Code(_) => todo!(),
+            _ => {
+                //todo: this may contain intermediate types
+                1
+            }
+        }
     }
 }
 

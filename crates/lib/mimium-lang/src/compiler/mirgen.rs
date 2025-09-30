@@ -1,7 +1,6 @@
 use super::intrinsics;
 use super::typing::{InferContext, infer_root};
-//todo :separate word_size_for_type from this
-use crate::compiler::bytecodegen::ByteCodeGenerator;
+
 use crate::compiler::parser;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
@@ -27,6 +26,7 @@ use crate::ast::{Expr, Literal};
 // pub mod closure_convert;
 // pub mod feedconvert;
 // pub mod hir_solve_stage;
+type StateSkeleton = StateTreeSkeleton<TypeNodeId>;
 
 const DELAY_ADDITIONAL_OFFSET: u64 = 3;
 
@@ -120,14 +120,15 @@ impl Context {
                 };
                 self.get_current_fn().state_sizes.push(delay_state_size);
                 self.get_current_fn()
-                    .push_state_skeleton(StateTreeSkeleton::Delay {
+                    .push_state_skeleton(StateSkeleton::Delay {
                         len: max_time as u64,
                     });
                 if let Some(offset) = self.get_ctxdata().next_state_offset.take() {
                     self.get_ctxdata().push_sum.extend_from_slice(&offset);
-                    self.get_current_basicblock()
-                        .0
-                        .push((Arc::new(Value::None), Instruction::PushStateOffset(offset.clone())));
+                    self.get_current_basicblock().0.push((
+                        Arc::new(Value::None),
+                        Instruction::PushStateOffset(offset.clone()),
+                    ));
                     self.get_ctxdata().next_state_offset = Some(vec![delay_state_size]);
                 }
                 let (args, _types): (Vec<VPtr>, Vec<TypeNodeId>) = args.into_iter().unzip();
@@ -186,7 +187,7 @@ impl Context {
                     .state_sizes
                     .push(StateSize { size: 1, ty: a0_ty });
                 self.get_current_fn()
-                    .push_state_skeleton(StateTreeSkeleton::Mem);
+                    .push_state_skeleton(StateSkeleton::Mem(numeric!()));
                 Some(Instruction::Mem(a0))
             }
             _ => None,
@@ -977,9 +978,7 @@ impl Context {
                 self.get_current_fn().state_sizes.push(statesize);
                 //todo:move word size function to type.rs
                 self.get_current_fn()
-                    .push_state_skeleton(StateTreeSkeleton::Feed {
-                        size: ByteCodeGenerator::word_size_for_type(ty) as u64,
-                    });
+                    .push_state_skeleton(StateTreeSkeleton::Feed(ty));
                 (Arc::new(Value::State(retv)), ty)
             }
             Expr::Let(pat, body, then) => {
