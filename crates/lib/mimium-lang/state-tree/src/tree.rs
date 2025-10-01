@@ -136,7 +136,7 @@ pub fn deserialize_tree_untagged<T: SizedType>(
     data: &[u64],
     data_layout: &StateTreeSkeleton<T>,
 ) -> Option<StateTree> {
-    eprintln!("Deserializing  with layout: {:?}", data_layout);
+    log::trace!("Deserializing  with layout: {data_layout:?}");
     if let Some((tree, used)) = deserialize_tree_untagged_rec(data, data_layout) {
         if used == data.len() { Some(tree) } else { None }
     } else {

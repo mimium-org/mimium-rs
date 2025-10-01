@@ -1,6 +1,7 @@
 //same as cascadeosc.mmm, but written with new multi-stage computation feature.
 // include("osc.mmm")
-`{
+#stage(main)
+
 let PI = 3.14159265359
 
 let phasor_shift =  |freq,phase_shift|{
@@ -13,22 +14,34 @@ let sinwave = |freq,phase|{
 let osc = |freq|{
   sinwave(freq,0.0)
 }
-${
-    letrec cascade = |n,gen|{
-        if (n>0.0){
-            let c = cascade(n - 1.0 ,gen)
-            let multiplier = 1.0-(1.0/(n*2.0)) |> lift_f
-            `{|rate| rate + ($gen)(rate/2.0)* 0.5 * rate* $multiplier  |> $c }
-        }else{
-            `{|rate| ($gen)(rate)}
-        }
-    }
-`{
 
-let dsp = | | {
-    let r =  200 |> cascade!(20.0,`osc)
-    (r,r)
+#stage(macro)
+fn cascade (n,gen:`(float)->float)->`(float)->float{
+    if (n>0.0){
+
+        let multiplier = 1.0-(1.0/(n*2.0)) |> lift_f
+        `{|rate| rate + ($gen)(rate/2.0)* 0.5 * rate* $multiplier  |> $cascade(n - 1.0 ,gen) }
+    }else{
+        `{|rate| ($gen)(rate)}
     }
 }
-    }
+
+#stage(main)
+fn fbdelay(input,time,fb,mix){
+    input*mix + (1.0-mix) * delay(40001.0,(input+self*fb),time)
+}
+fn dsp(){
+    let time_r = sinwave(0.03,0) *1000
+    let time_l = sinwave(0.04,0) *1000
+    // let f = 100
+    let f = Slider!("freq",100,1,200) 
+    let r =  f
+             |> cascade!(30.0,`osc) 
+             |> |x| x*0.3;
+    let l = fbdelay(r,10400+time_l,0.999,0.7)
+             |> Probe!("L")
+    let r = fbdelay(r,10000+time_r,0.999,0.7)
+             |> Probe!("R")
+    (l,r)
+    
 }
