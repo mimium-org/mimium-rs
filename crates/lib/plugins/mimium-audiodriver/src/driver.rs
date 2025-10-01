@@ -3,9 +3,13 @@
 //! Drivers provide an interface between the runtime and concrete audio backends
 //! such as cpal or the CSV writer used for testing.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU32, Ordering},
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+        mpsc,
+    },
 };
 
 use mimium_lang::{
@@ -77,6 +81,9 @@ pub trait Driver {
     fn play(&mut self) -> bool;
     fn pause(&mut self) -> bool;
     fn renew_vm(&mut self, _new_vm: vm::Program) {}
+    fn get_vm_channel(&self) -> Option<mpsc::Sender<vm::Program>> {
+        None
+    }
     fn get_samplerate(&self) -> u32;
     fn get_current_sample(&self) -> Time;
     fn is_playing(&self) -> bool;
@@ -149,8 +156,8 @@ impl TryFrom<&mut ExecContext> for RuntimeData {
         let vm = ctx.take_vm().ok_or(SimpleError {
             message: "Failed to take VM".into(),
             span: Location {
-                path: "".to_symbol(),
                 span: 0..0,
+                path: PathBuf::new(),
             },
         })?;
         let dsp_i = vm.prog.get_fun_index(&"dsp".to_symbol()).unwrap_or(0);

@@ -60,11 +60,7 @@ pub fn lib_main() {
             println!("{rendered}");
         }
         Err(errs) => {
-            report(
-                code.as_str(),
-                file_path.map_or("<stdin>".to_symbol(), |p| p.to_string_lossy().to_symbol()),
-                &errs,
-            );
+            report(code.as_str(), file_path.unwrap_or_default(), &errs);
         }
     }
 }

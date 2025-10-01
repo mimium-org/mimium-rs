@@ -1,5 +1,5 @@
-use std::sync::{mpsc, Arc};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
 
 use crate::driver::{Driver, RuntimeData, SampleRate};
 use crate::runtime_fn;
@@ -371,6 +371,9 @@ impl Driver for NativeDriver {
         self.swap_prod
             .as_mut()
             .and_then(|sp| sp.send(new_prog).ok());
+    }
+    fn get_vm_channel(&self) -> Option<mpsc::Sender<vm::Program>> {
+        self.swap_prod.clone()
     }
     fn is_playing(&self) -> bool {
         self.is_playing

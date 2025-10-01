@@ -6,20 +6,21 @@ use chumsky::error::{Rich, RichReason};
 use chumsky::span::Span;
 use std::fmt;
 use std::hash::Hash;
+use std::path::PathBuf;
 #[derive(Debug)]
 pub struct ParseError<'a, T>
 where
     T: Hash + std::cmp::Eq + fmt::Debug + fmt::Display,
 {
     pub content: Rich<'a, T>,
-    pub file: Symbol,
+    pub file: PathBuf,
 }
 
 impl<'src, 'b, T> ParseError<'b, T>
 where
     T: Hash + std::cmp::Eq + fmt::Debug + fmt::Display + Clone,
 {
-    pub fn new(content: Rich<'src, T>, file: Symbol) -> Self {
+    pub fn new(content: Rich<'src, T>, file: PathBuf) -> Self {
         Self {
             content: content.into_owned(),
             file,
@@ -66,7 +67,7 @@ where
         vec![(
             Location {
                 span: self.content.span().start()..self.content.span().end(),
-                path: self.file,
+                path: self.file.clone(),
             },
             self.get_message(),
         )]

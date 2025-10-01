@@ -8,7 +8,7 @@ use std::{
     cell::RefCell,
     collections::BTreeMap,
     fmt::{self, Display},
-    hash::Hash,
+    hash::Hash, path::PathBuf,
 };
 
 use slotmap::SlotMap;
@@ -235,7 +235,7 @@ impl ExprNodeId {
             Some(loc) => loc.clone(),
             None => Location {
                 span: dummy_span!(),
-                path: "".to_symbol(),
+                path: PathBuf::new(),
             },
         })
     }
@@ -253,7 +253,7 @@ impl TypeNodeId {
         })
     }
     pub fn to_loc(&self) -> Location {
-        let dummy_path = "".to_symbol();
+        let dummy_path = PathBuf::new();
         with_session_globals(|session_globals| match session_globals.get_span(*self) {
             Some(loc) => loc.clone(),
             None => Location {

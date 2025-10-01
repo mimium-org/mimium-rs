@@ -137,7 +137,8 @@ fn gen_sampler_mono(machine: &mut Machine) -> ReturnCode {
     let mmmfilepath = machine
         .prog
         .file_path
-        .map_or_else(|| "".to_string(), |s| s.to_string());
+        .clone()
+        .map_or("".to_string(), |p| p.to_string_lossy().to_string());
     let abspath = fileloader::get_canonical_path(&mmmfilepath, relpath.as_str())
         .inspect_err(|e| {
             panic!("{}", e);

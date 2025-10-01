@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 ///remove redundunt letrec definition and convert them to plain let
 use crate::{
     ast::{Expr, RecordField},
@@ -53,11 +55,11 @@ fn try_find_recurse(e_s: ExprNodeId, name: Symbol) -> bool {
     }
 }
 
-pub fn convert_recurse(e_s: ExprNodeId, file_path: Symbol) -> ExprNodeId {
-    let convert = |v: ExprNodeId| convert_recurse(v, file_path);
+pub fn convert_recurse(e_s: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
+    let convert = |v: ExprNodeId| convert_recurse(v, file_path.clone());
     let convert_vec = |v: Vec<_>| {
         v.into_iter()
-            .map(|e| convert_recurse(e, file_path))
+            .map(|e| convert_recurse(e, file_path.clone()))
             .collect()
     };
     let span = e_s.to_span();
@@ -126,7 +128,7 @@ pub fn convert_recurse(e_s: ExprNodeId, file_path: Symbol) -> ExprNodeId {
     };
     let loc = Location {
         span,
-        path: file_path,
+        path: file_path.clone(),
     };
     res.into_id(loc)
 }
@@ -138,7 +140,6 @@ mod test {
         app,
         ast::{Expr, Literal},
         ifexpr,
-        interner::ToSymbol,
         lambda, let_, letrec, number,
         pattern::TypedId,
         var,
@@ -177,6 +178,6 @@ mod test {
             None
         );
 
-        assert_eq!(convert_recurse(sample, "/".to_symbol()), ans)
+        assert_eq!(convert_recurse(sample, PathBuf::from("/")), ans)
     }
 }

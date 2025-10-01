@@ -13,8 +13,9 @@ pub mod runtime;
 
 pub mod plugin;
 
+use std::path::PathBuf;
+
 use compiler::IoChannelInfo;
-use interner::Symbol;
 pub use log;
 use plugin::{DynSystemPlugin, ExtFunTypeInfo, Plugin, SystemPlugin};
 use runtime::vm::{self, Program, ReturnCode};
@@ -46,7 +47,7 @@ pub struct ExecContext {
     vm: Option<runtime::vm::Machine>,
     plugins: Vec<Box<dyn Plugin>>,
     sys_plugins: Vec<DynSystemPlugin>,
-    path: Option<Symbol>,
+    path: Option<PathBuf>,
     config: Config,
 }
 
@@ -55,7 +56,7 @@ impl ExecContext {
     /// Create a new execution context with the given plugins and configuration.
     pub fn new(
         plugins: impl Iterator<Item = Box<dyn Plugin>>,
-        path: Option<Symbol>,
+        path: Option<PathBuf>,
         config: Config,
     ) -> Self {
         let plugins = plugins
@@ -75,7 +76,10 @@ impl ExecContext {
     pub fn add_plugin<T: Plugin + 'static>(&mut self, plug: T) {
         self.plugins.push(Box::new(plug))
     }
-    pub fn get_system_plugins(&self) -> impl Iterator<Item = &DynSystemPlugin> {
+    pub fn get_plugins(&self) -> impl ExactSizeIterator<Item = &Box<dyn Plugin>> {
+        self.plugins.iter()
+    }
+    pub fn get_system_plugins(&self) -> impl ExactSizeIterator<Item = &DynSystemPlugin> {
         self.sys_plugins.iter()
     }
     //todo: make it to builder pattern
@@ -86,6 +90,9 @@ impl ExecContext {
     }
     pub fn get_compiler(&self) -> Option<&compiler::Context> {
         self.compiler.as_ref()
+    }
+    pub fn take_compiler(&mut self) -> Option<compiler::Context> {
+        self.compiler.take()
     }
     pub fn take_vm(&mut self) -> Option<runtime::vm::Machine> {
         self.vm.take()
@@ -128,7 +135,7 @@ impl ExecContext {
         self.compiler = Some(compiler::Context::new(
             self.get_extfun_types(),
             macroinfos,
-            self.path,
+            self.path.clone(),
             self.config.compiler,
         ));
     }

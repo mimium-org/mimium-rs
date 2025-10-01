@@ -11,9 +11,11 @@ pub mod convert_pronoun;
 pub(crate) mod recursecheck;
 // use super::pattern_destructor::destruct_let_pattern;
 use crate::mir::{self, Argument, Instruction, Mir, StateSize, VPtr, VReg, Value};
+
 use state_tree::tree::StateTreeSkeleton;
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::types::{PType, RecordTypeField, Type};
@@ -64,7 +66,7 @@ enum AssignDestination {
     Global(VPtr),
 }
 impl Context {
-    pub fn new(typeenv: InferContext, file_path: Option<Symbol>) -> Self {
+    pub fn new(typeenv: InferContext, file_path: Option<PathBuf>) -> Self {
         Self {
             typeenv,
             valenv: Environment::new(),
@@ -78,7 +80,10 @@ impl Context {
         }
     }
     fn get_loc_from_span(&self, span: &Span) -> Location {
-        Location::new(span.clone(), self.program.file_path.unwrap_or_default())
+        Location::new(
+            span.clone(),
+            self.program.file_path.clone().unwrap_or_default(),
+        )
     }
     fn get_ctxdata(&mut self) -> &mut ContextData {
         self.data.get_mut(self.data_i).unwrap()
@@ -1123,13 +1128,13 @@ fn is_toplevel_macro(typeenv: &mut InferContext, top_ast: ExprNodeId) -> bool {
 pub fn typecheck(
     root_expr_id: ExprNodeId,
     builtin_types: &[(Symbol, TypeNodeId)],
-    file_path: Option<Symbol>,
+    file_path: Option<PathBuf>,
 ) -> (ExprNodeId, InferContext, Vec<Box<dyn ReportableError>>) {
     let (expr, convert_errs) =
-        convert_pronoun::convert_pronoun(root_expr_id, file_path.unwrap_or_default());
-    let expr = recursecheck::convert_recurse(expr, file_path.unwrap_or_default());
+        convert_pronoun::convert_pronoun(root_expr_id, file_path.clone().unwrap_or_default());
+    let expr = recursecheck::convert_recurse(expr, file_path.clone().unwrap_or_default());
     // let expr = destruct_let_pattern(expr);
-    let infer_ctx = infer_root(expr, builtin_types, file_path.unwrap_or_default());
+    let infer_ctx = infer_root(expr, builtin_types, file_path.clone().unwrap_or_default());
     let errors = infer_ctx
         .errors
         .iter()
@@ -1152,10 +1157,10 @@ pub fn compile(
     root_expr_id: ExprNodeId,
     builtin_types: &[(Symbol, TypeNodeId)],
     macro_env: &[Box<dyn MacroFunction>],
-    file_path: Option<Symbol>,
+    file_path: Option<PathBuf>,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
     let expr = root_expr_id.wrap_to_staged_expr();
-    let (expr, mut infer_ctx, errors) = typecheck(expr, builtin_types, file_path);
+    let (expr, mut infer_ctx, errors) = typecheck(expr, builtin_types, file_path.clone());
     if errors.is_empty() {
         let top_type = infer_ctx.infer_type(expr).unwrap();
         let expr = interpreter::expand_macro(expr, top_type, macro_env);
@@ -1164,10 +1169,10 @@ pub fn compile(
             "ast after macro expansion: {:?}",
             expr.to_expr().simple_print()
         );
-        let expr = parser::add_global_context(expr, file_path.unwrap_or_default());
-        let mut ctx = Context::new(infer_ctx, file_path);
+        let expr = parser::add_global_context(expr, file_path.clone().unwrap_or_default());
+        let mut ctx = Context::new(infer_ctx, file_path.clone());
         let _res = ctx.eval_expr(expr);
-        ctx.program.file_path = file_path;
+        ctx.program.file_path = file_path.clone();
         Ok(ctx.program.clone())
     } else {
         Err(errors)

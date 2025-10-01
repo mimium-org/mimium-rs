@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use super::{ConstPos, Instruction, RawVal};
 use crate::compiler::IoChannelInfo;
 use crate::interner::{Symbol, ToSymbol, TypeNodeId};
@@ -59,7 +61,7 @@ pub struct Program {
     pub ext_fun_table: Vec<(Symbol, TypeNodeId)>,
     pub global_vals: Vec<RawVal>,
     pub strings: Vec<Symbol>,
-    pub file_path: Option<Symbol>,
+    pub file_path: Option<PathBuf>,
     pub iochannels: Option<IoChannelInfo>,
     //hold absolute index of dsp function because the symbol interner can't be used in the audio thread
     pub dsp_index: Option<usize>,

@@ -804,7 +804,7 @@ impl ByteCodeGenerator {
                 self.generate_funcproto(func, i, config)
             })
             .collect();
-        self.program.file_path = mir.file_path;
+        self.program.file_path = mir.file_path.clone();
         self.program.iochannels = mir.get_dsp_iochannels();
         log::debug!("iochannels: {:?}", self.program.iochannels.unwrap());
         let _io = self.program.iochannels.unwrap();

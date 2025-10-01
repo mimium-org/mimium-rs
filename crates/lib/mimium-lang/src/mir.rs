@@ -4,7 +4,7 @@ use crate::{
     interner::{Symbol, TypeNodeId},
     types::{PType, RecordTypeField, Type, TypeSize},
 };
-use std::{cell::OnceCell, sync::Arc};
+use std::{cell::OnceCell, path::PathBuf, sync::Arc};
 // Import StateTreeSkeleton for function state information
 use state_tree::tree::{SizedType, StateTreeSkeleton};
 
@@ -265,11 +265,11 @@ impl Function {
 #[derive(Debug, Clone, Default)]
 pub struct Mir {
     pub functions: Vec<Function>,
-    pub file_path: Option<Symbol>,
+    pub file_path: Option<PathBuf>,
 }
 
 impl Mir {
-    pub fn new(file_path: Option<Symbol>) -> Self {
+    pub fn new(file_path: Option<PathBuf>) -> Self {
         Self {
             file_path,
             ..Default::default()

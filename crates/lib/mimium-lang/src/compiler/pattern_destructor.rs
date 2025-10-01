@@ -158,6 +158,8 @@ pub fn destruct_let_pattern(expr: ExprNodeId) -> ExprNodeId {
 }
 #[cfg(test)]
 mod test {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::{dummy_span, interner::ToSymbol, utils::metadata::Location};
 
@@ -171,7 +173,7 @@ mod test {
         // let y = _anonymous_pat_0.1;
         let dummy_loc = Location {
             span: dummy_span!(),
-            path: "".to_symbol(),
+            path: PathBuf::from("dummy"),
         };
         let value = Expr::Let(
             TypedPattern::new(

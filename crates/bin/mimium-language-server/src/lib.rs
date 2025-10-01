@@ -213,8 +213,8 @@ fn diagnostic_from_error(
             let span = &loc.span;
             let start_position = offset_to_position(span.start, rope)?;
             let end_position = offset_to_position(span.end, rope)?;
-            let uri = if loc.path.to_string() != "" {
-                Url::from_file_path(std::path::PathBuf::from(loc.path.to_string()))
+            let uri = if loc.path.to_string_lossy() != "" {
+                Url::from_file_path(loc.path.clone())
                     .unwrap_or(url.clone())
             } else {
                 url.clone()
