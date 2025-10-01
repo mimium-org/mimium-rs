@@ -85,8 +85,22 @@ impl GuiToolPlugin {
         let (name, window) = match (v[0].0.clone(), self.window.as_mut()) {
             (Value::String(name), Some(window)) => (name, window),
             _ => {
-                log::error!("invalid argument for Probe macro");
-                return Value::Number(0.0);
+                log::error!(
+                    "invalid argument for Probe macro type:{},{:#?}",
+                    v[0].1,
+                    self.window.is_some()
+                );
+                return Value::Code(
+                    Expr::Lambda(
+                        vec![TypedId::new(
+                            "x".to_symbol(),
+                            Type::Primitive(PType::Numeric).into_id(),
+                        )],
+                        None,
+                        Expr::Var("x".to_symbol()).into_id_without_span(),
+                    )
+                    .into_id_without_span(),
+                );
             }
         };
 

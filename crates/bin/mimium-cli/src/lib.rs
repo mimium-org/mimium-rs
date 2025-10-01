@@ -241,7 +241,6 @@ impl FileRunner {
                 // }
                 "u" | "update" => {
                     log::info!("update");
-
                     match fileloader::load(&self.fullpath.to_string_lossy()) {
                         Ok(new_content) => {
                             let _ = self.tx_compiler.send(CompileRequest {

@@ -197,7 +197,7 @@ impl Context {
         // let ast = parser::add_global_context(ast, self.file_path.unwrap_or_default());
         let mir = mirgen::compile(
             ast,
-            &self.get_ext_typeinfos(),
+            self.get_ext_typeinfos().as_slice(),
             &self.macros,
             self.file_path.clone(),
         );

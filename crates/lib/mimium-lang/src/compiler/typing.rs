@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 mod unification;
 use unification::{Error as UnificationError, Relation, unify_types};
@@ -396,7 +397,7 @@ impl InferContext {
     }
 
     fn gen_intermediate_type_with_location(&mut self, loc: Location) -> TypeNodeId {
-        let res = Type::Intermediate(Rc::new(RefCell::new(TypeVar::new(
+        let res = Type::Intermediate(Arc::new(Mutex::new(TypeVar::new(
             self.interm_idx,
             self.level,
         ))))
@@ -461,7 +462,7 @@ impl InferContext {
     pub fn substitute_type(t: TypeNodeId) -> TypeNodeId {
         match t.to_type() {
             Type::Intermediate(cell) => {
-                let TypeVar { parent, .. } = &cell.borrow() as &TypeVar;
+                let TypeVar { parent, .. } = &*cell.lock().unwrap() as &TypeVar;
                 match parent {
                     Some(p) => Self::substitute_type(*p),
                     None => Type::Unknown.into_id_with_location(t.to_loc()),
@@ -486,7 +487,7 @@ impl InferContext {
     fn generalize(&mut self, t: TypeNodeId) -> TypeNodeId {
         match t.to_type() {
             Type::Intermediate(tvar) => {
-                let &TypeVar { level, var, .. } = &tvar.borrow() as _;
+                let &TypeVar { level, var, .. } = &*tvar.lock().unwrap() as &TypeVar;
                 if level > self.level {
                     self.get_typescheme(var, t.to_loc())
                 } else {
@@ -672,7 +673,7 @@ impl InferContext {
                 match tup.to_type() {
                     Type::Tuple(vec) => vec_to_ans(&vec),
                     Type::Intermediate(tv) => {
-                        let tv = tv.borrow();
+                        let tv = tv.lock().unwrap();
                         if let Some(parent) = tv.parent {
                             match parent.to_type() {
                                 Type::Tuple(vec) => vec_to_ans(&vec),
@@ -740,7 +741,7 @@ impl InferContext {
                 match et.to_type() {
                     Type::Record(fields) => fields_to_ans(&fields),
                     Type::Intermediate(tv) => {
-                        let tv = tv.borrow();
+                        let tv = tv.lock().unwrap();
                         if let Some(parent) = tv.parent {
                             match parent.to_type() {
                                 Type::Record(fields) => fields_to_ans(&fields),
@@ -872,7 +873,7 @@ impl InferContext {
             }
             Expr::Var(name) => {
                 let res = self.unwrap_result(self.lookup(*name, loc).map_err(|e| vec![e]));
-                log::trace!("{} {} /level{}", name.as_str(), res.to_type(), self.level);
+                // log::trace!("{} {} /level{}", name.as_str(), res.to_type(), self.level);
                 Ok(self.instantiate(res))
             }
             Expr::Apply(fun, callee) => {

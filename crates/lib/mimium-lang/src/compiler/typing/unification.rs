@@ -36,7 +36,7 @@ fn occur_check(id1: IntermediateId, t2: TypeNodeId) -> bool {
 
     match &t2.to_type() {
         Type::Intermediate(cell) => cell
-            .try_borrow()
+            .try_lock()
             .map(|tv2| match tv2.parent {
                 Some(tid2) => id1 == tv2.var || occur_check(id1, tid2),
                 None => id1 == tv2.var,
@@ -105,16 +105,19 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
 
         (_t, Type::Record(v)) if v.len() == 1 => unify_types_args(t1, v.first().unwrap().ty)?,
         (Type::Record(v), _t) if v.len() == 1 => unify_types_args(v.first().unwrap().ty, t2)?,
-        (Type::Intermediate(i1), Type::Intermediate(i2)) if i1 == i2 => Relation::Identical,
+
         (Type::Intermediate(i1), Type::Intermediate(i2)) => {
-            let tv1 = &mut i1.borrow_mut() as &mut TypeVar;
+            let tv1 = &mut i1.lock().unwrap() as &mut TypeVar;
+            let tv2 = &mut i2.lock().unwrap() as &mut TypeVar;
+            if tv1 == tv2 {
+                return Ok(Relation::Identical);
+            }
             if occur_check(tv1.var, t2) {
                 return Err(vec![Error::CircularType {
                     left: loc1,
                     right: loc2,
                 }]);
             }
-            let tv2 = &mut i2.borrow_mut() as &mut TypeVar;
             if tv2.level > tv1.level {
                 tv2.level = tv1.level
             }
@@ -136,14 +139,14 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
             Relation::Identical
         }
         (Type::Intermediate(i1), _) => {
-            let tv1 = &mut i1.borrow_mut() as &mut TypeVar;
+            let tv1 = &mut i1.lock().unwrap() as &mut TypeVar;
             tv1.parent = Some(t2r);
             tv1.bound.upper = t2r;
 
             Relation::Identical
         }
         (_, Type::Intermediate(i2)) => {
-            let tv2 = &mut i2.borrow_mut() as &mut TypeVar;
+            let tv2 = &mut i2.lock().unwrap() as &mut TypeVar;
             tv2.parent = Some(t1r);
             tv2.bound.upper = t1r;
             Relation::Identical
@@ -172,16 +175,18 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
     let t1r = t1.get_root();
     let t2r = t2.get_root();
     let res = match &(t1r.to_type(), t2r.to_type()) {
-        (Type::Intermediate(i1), Type::Intermediate(i2)) if i1 == i2 => Relation::Identical,
         (Type::Intermediate(i1), Type::Intermediate(i2)) => {
-            let tv1 = &mut i1.borrow_mut() as &mut TypeVar;
+            let tv1 = &mut i1.lock().unwrap() as &mut TypeVar;
+            let tv2 = &mut i2.lock().unwrap() as &mut TypeVar;
+            if tv1.var == tv2.var {
+                return Ok(Relation::Identical);
+            }
             if occur_check(tv1.var, t2) {
                 return Err(vec![Error::CircularType {
                     left: loc1,
                     right: loc2,
                 }]);
             }
-            let tv2 = &mut i2.borrow_mut() as &mut TypeVar;
             if tv2.level > tv1.level {
                 tv2.level = tv1.level
             }
@@ -203,14 +208,14 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             Relation::Identical
         }
         (Type::Intermediate(i1), _) => {
-            let tv1 = &mut i1.borrow_mut() as &mut TypeVar;
+            let tv1 = &mut i1.lock().unwrap() as &mut TypeVar;
             tv1.parent = Some(t2r);
             tv1.bound.lower = t2r;
 
             Relation::Identical
         }
         (_, Type::Intermediate(i2)) => {
-            let tv2 = &mut i2.borrow_mut() as &mut TypeVar;
+            let tv2 = &mut i2.lock().unwrap() as &mut TypeVar;
             tv2.parent = Some(t1r);
             tv2.bound.lower = t1r;
             Relation::Identical

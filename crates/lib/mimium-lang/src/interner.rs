@@ -8,7 +8,7 @@ use std::{
     cell::RefCell,
     collections::BTreeMap,
     fmt::{self, Display},
-    hash::Hash, path::PathBuf,
+    hash::Hash, path::PathBuf, sync::{LazyLock, Mutex},
 };
 
 use slotmap::SlotMap;
@@ -78,20 +78,25 @@ impl SessionGlobals {
     }
 }
 
-thread_local!(static SESSION_GLOBALS: RefCell<SessionGlobals> =  RefCell::new(
-    SessionGlobals {
+static SESSION_GLOBALS: LazyLock<Mutex<SessionGlobals>> = LazyLock::new(|| {
+    Mutex::new(SessionGlobals {
         symbol_interner: StringInterner::new(),
         expr_storage: SlotMap::with_key(),
         type_storage: SlotMap::with_key(),
-        loc_storage: BTreeMap::new()
-    }
-));
+        loc_storage: BTreeMap::new(),
+    })
+});
+
 
 pub fn with_session_globals<R, F>(f: F) -> R
 where
     F: FnOnce(&mut SessionGlobals) -> R,
 {
-    SESSION_GLOBALS.with_borrow_mut(f)
+    if let Ok(mut guard) = SESSION_GLOBALS.lock() {
+        f(&mut *guard)
+    } else {
+        panic!("Failed to acquire lock on SESSION_GLOBALS");
+    }
 }
 
 #[derive(Default, Copy, Clone, PartialEq, Hash, Eq, PartialOrd, Ord)]
