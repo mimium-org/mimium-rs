@@ -1,11 +1,12 @@
 use rkyv::{Archive, Deserialize, Serialize};
+pub const DELAY_ADDITIONAL_OFFSET: usize = 2;
 
 /// State Tree structure.
 
 //on attributes, see https://github.com/rkyv/rkyv/blob/main/rkyv/examples/json_like_schema.rs
-#[derive(Archive, Deserialize, Serialize, Debug, PartialEq, Clone)]
+#[derive(Archive, Deserialize, Serialize, PartialEq, Clone)]
 // Use `attr` to make rkyv implement traits on the generated Archived type
-#[rkyv(attr(derive(Debug, PartialEq)))]
+#[rkyv(attr(derive(PartialEq)))]
 #[rkyv(serialize_bounds(
     __S: rkyv::ser::Writer + rkyv::ser::Allocator,
     __S::Error: rkyv::rancor::Source,
@@ -30,7 +31,52 @@ pub enum StateTree {
     },
     FnCall(#[rkyv(omit_bounds)] Vec<StateTree>),
 }
-
+impl std::fmt::Display for StateTree {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StateTree::Delay {
+                readidx,
+                writeidx,
+                data,
+            } => write!(
+                f,
+                "Delay(readidx: {}, writeidx: {}, data: {:?} ...)",
+                readidx,
+                writeidx,
+                data.iter().take(10).collect::<Vec<&u64>>()
+            ),
+            StateTree::Mem { data } => write!(f, "Mem(data: {data:?})"),
+            StateTree::Feed { data } => write!(f, "Feed(data: {data:?})"),
+            StateTree::FnCall(children) => {
+                let children_str: Vec<String> = children.iter().map(|c| format!("{c}")).collect();
+                write!(f, "FnCall([{}])", children_str.join(", "))
+            }
+        }
+    }
+}
+impl std::fmt::Debug for StateTree {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StateTree::Delay {
+                readidx,
+                writeidx,
+                data,
+            } => write!(
+                f,
+                "Delay(readidx: {}, writeidx: {}, data: {:?} ...)",
+                readidx,
+                writeidx,
+                data.iter().take(10).collect::<Vec<&u64>>()
+            ),
+            StateTree::Mem { data } => write!(f, "Mem(data: {data:?})"),
+            StateTree::Feed { data } => write!(f, "Feed(data: {data:?})"),
+            StateTree::FnCall(children) => {
+                let children_str: Vec<String> = children.iter().map(|c| format!("{c:?}")).collect();
+                write!(f, "FnCall([{}])", children_str.join(", "))
+            }
+        }
+    }
+}
 impl<T: SizedType> From<StateTreeSkeleton<T>> for StateTree {
     //create empty StateTree from StateTreeSkeleton
     fn from(skeleton: StateTreeSkeleton<T>) -> Self {
@@ -91,7 +137,6 @@ fn deserialize_tree_untagged_rec<T: SizedType>(
 ) -> Option<(StateTree, usize)> {
     match data_layout {
         StateTreeSkeleton::Delay { len } => {
-            const DELAY_ADDITIONAL_OFFSET: usize = 3;
             let readidx = data.first().copied()?;
             let writeidx = data.get(1).copied()?;
             let d = data

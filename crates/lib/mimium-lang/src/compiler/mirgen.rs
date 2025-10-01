@@ -30,7 +30,7 @@ use crate::ast::{Expr, Literal};
 // pub mod hir_solve_stage;
 type StateSkeleton = StateTreeSkeleton<mir::StateType>;
 
-const DELAY_ADDITIONAL_OFFSET: u64 = 3;
+use state_tree::tree::DELAY_ADDITIONAL_OFFSET;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct FunctionId(pub u64);
@@ -118,7 +118,7 @@ impl Context {
                 //need to evaluate args first before calculate state offset because the argument for time contains stateful function call.
                 let args = self.eval_args(&[*src, *time]);
                 let max_time = max.as_str().parse::<f64>().unwrap();
-                let shift_size = max_time as u64 + DELAY_ADDITIONAL_OFFSET;
+                let shift_size = max_time as u64 + DELAY_ADDITIONAL_OFFSET as u64;
                 let delay_state_size = StateSize {
                     size: shift_size,
                     ty: *rt,

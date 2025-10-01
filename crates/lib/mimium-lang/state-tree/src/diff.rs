@@ -8,7 +8,9 @@ use rkyv::rancor::Error;
 /// This is the new functional-style API with optimization applied
 pub fn diff(old: &ArchivedStateTree, new: &ArchivedStateTree, path: &[usize]) -> Vec<Patch> {
     let patches = diff_unoptimized(old, new, path);
-    optimize_patches(patches)
+    let res = optimize_patches(patches);
+    log::debug!("Optimized patches: {res:#?}");
+    res
 }
 
 /// Calculate the difference between two StateTrees without optimization
@@ -75,7 +77,7 @@ fn diff_children_unoptimized(
         .flat_map(|(index, (old_child, new_child))| {
             let mut current_path = parent_path.to_vec();
             current_path.push(index);
-            diff(old_child, new_child, &current_path)
+            diff_unoptimized(old_child, new_child, &current_path)
         })
         .collect();
 
@@ -98,7 +100,7 @@ fn diff_children_unoptimized(
             let new_idx = new_children.len() - 1 - rev_index;
             let mut current_path = parent_path.to_vec();
             current_path.push(new_idx);
-            diff(old_child, new_child, &current_path)
+            diff_unoptimized(old_child, new_child, &current_path)
         })
         .collect();
 
@@ -120,7 +122,7 @@ fn diff_children_unoptimized(
                 // If compatible but different, perform deep comparison
                 let mut current_path = parent_path.to_vec();
                 current_path.push(prefix_len);
-                diff(old_node, new_node, &current_path)
+                diff_unoptimized(old_node, new_node, &current_path)
             } else {
                 // If not compatible, generate a Replace patch
                 let deserialized_new = deserialize::<StateTree, Error>(new_node).unwrap();
@@ -191,7 +193,7 @@ fn backtrack_lcs(
             i - 1,
             j - 1,
         );
-        patches.extend(diff(&old_middle[i - 1], &new_middle[j - 1], &current_path));
+        patches.extend(diff_unoptimized(&old_middle[i - 1], &new_middle[j - 1], &current_path));
         patches
     } else if j > 0 && (i == 0 || lcs_table[i][j - 1] >= lcs_table[i - 1][j]) {
         // Only exists in new -> Insert

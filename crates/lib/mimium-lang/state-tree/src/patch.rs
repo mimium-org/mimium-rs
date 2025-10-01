@@ -18,17 +18,21 @@ pub enum Patch {
     Remove { parent_path: Path, index: usize },
 }
 
+
 #[derive(Debug)]
 pub enum ApplyError {
     PathNotFound,
-    InvalidIndex,
+    InvalidIndex { len: usize, index: usize },
     NotFnCall, // Error when parent is not a FnCall
 }
 impl std::fmt::Display for ApplyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ApplyError::PathNotFound => write!(f, "Path not found in the tree"),
-            ApplyError::InvalidIndex => write!(f, "Invalid index for insertion/removal"),
+            ApplyError::InvalidIndex { len, index } => write!(
+                f,
+                "Invalid index {index} for insertion/removal in a list of length {len}"
+            ),
             ApplyError::NotFnCall => write!(f, "Parent node is not a FnCall"),
         }
     }
@@ -51,7 +55,10 @@ pub fn apply(root: &mut StateTree, patches: &[Patch]) -> Result<(), ApplyError> 
                 let parent_node = find_node_mut(root, parent_path.iter())?;
                 if let StateTree::FnCall(children) = parent_node {
                     if *index > children.len() {
-                        return Err(ApplyError::InvalidIndex);
+                        return Err(ApplyError::InvalidIndex {
+                            len: children.len(),
+                            index: *index,
+                        });
                     }
                     children.insert(*index, new_tree.clone());
                 } else {
@@ -62,7 +69,10 @@ pub fn apply(root: &mut StateTree, patches: &[Patch]) -> Result<(), ApplyError> 
                 let parent_node = find_node_mut(root, parent_path.iter())?;
                 if let StateTree::FnCall(children) = parent_node {
                     if *index >= children.len() {
-                        return Err(ApplyError::InvalidIndex);
+                        return Err(ApplyError::InvalidIndex {
+                            len: children.len(),
+                            index: *index,
+                        });
                     }
                     children.remove(*index);
                 } else {
