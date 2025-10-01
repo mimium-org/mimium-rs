@@ -150,17 +150,21 @@ impl GuiToolPlugin {
     }
 }
 impl SystemPlugin for GuiToolPlugin {
-    fn after_main(&mut self, _machine: &mut Machine) -> ReturnCode {
+    fn try_get_main_loop(&mut self) -> Option<Box<dyn FnOnce()>> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(window) = self.window.take() {
-            std::thread::spawn(|| {
+            Some(Box::new(move || {
                 let native_options = eframe::NativeOptions {
                     viewport: egui::ViewportBuilder::default()
                         .with_inner_size([400.0, 300.0])
-                        .with_min_inner_size([300.0, 220.0]), // .with_icon(
-                    //     // NOTE: Adding an icon is optional
-                    //     eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon-256.png")[..])
-                    //         .expect("Failed to load icon"),)
+                        .with_min_inner_size([300.0, 220.0])
+                        .with_icon(
+                            // NOTE: Adding an icon is optional
+                            eframe::icon_data::from_png_bytes(
+                                &include_bytes!("../assets/mimium_logo_256.png")[..],
+                            )
+                            .expect("Failed to load icon"),
+                        ),
                     ..Default::default()
                 };
                 let _ = eframe::run_native(
@@ -169,12 +173,14 @@ impl SystemPlugin for GuiToolPlugin {
                     Box::new(|_cc| Ok(Box::new(window))),
                 )
                 .inspect_err(|e| log::error!("{e}"));
-            });
-        };
-        1
+            }))
+        } else {
+            None
+        }
+        #[cfg(target_arch = "wasm32")]
+        None
     }
     fn gen_interfaces(&self) -> Vec<SysPluginSignature> {
-        
         let sliderf: SystemPluginMacroType<Self> = Self::make_slider;
         let make_slider = SysPluginSignature::new_macro(
             "Slider",
@@ -184,14 +190,14 @@ impl SystemPlugin for GuiToolPlugin {
                 code!(numeric!())
             ),
         );
-        
+
         let getsliderf: SystemPluginFnType<Self> = Self::get_slider;
         let get_slider = SysPluginSignature::new(
             Self::GET_SLIDER,
             getsliderf,
             function!(vec![numeric!()], numeric!()),
         );
-        
+
         // Replace make_probe function with Probe macro
         let probe_macrof: SystemPluginMacroType<Self> = Self::make_probe_macro;
         let probe_macro = SysPluginSignature::new_macro(

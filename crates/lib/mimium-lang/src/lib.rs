@@ -189,6 +189,17 @@ impl ExecContext {
             0
         }
     }
+    pub fn try_get_main_loop(&mut self) -> Option<Box<dyn FnOnce()>> {
+        let mut mainloops = self.sys_plugins.iter_mut().filter_map(|p| {
+            let p = unsafe { p.inner.get().as_mut().unwrap_unchecked() };
+            p.try_get_main_loop()
+        });
+        let res = mainloops.next();
+        if mainloops.next().is_some() {
+            log::warn!("more than 2 main loops in system plugins found")
+        }
+        res
+    }
 }
 //todo: remove
 // pub mod ast_interpreter;

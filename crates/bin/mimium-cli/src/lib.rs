@@ -1,6 +1,7 @@
 use std::{
     io::stdin,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use clap::{Parser, ValueEnum};
@@ -14,7 +15,7 @@ use mimium_lang::{
     compiler::{bytecodegen::SelfEvalMode, emit_ast},
     interner::{Symbol, ToSymbol},
     log,
-    plugin::Plugin,
+    plugin::{DynSystemPlugin, Plugin},
     utils::{
         error::{ReportableError, report},
         fileloader,
@@ -197,94 +198,133 @@ pub fn get_default_context(path: Option<Symbol>, with_gui: bool, config: Config)
     ctx
 }
 
+struct FileRunner {
+    pub exec_ctx: ExecContext,
+    pub driver: Box<dyn Driver<Sample = f64>>,
+    pub content: String,
+    pub fullpath: PathBuf,
+}
+
+impl FileRunner {
+    //this function takes ownership and never returns
+    pub fn spawn_cli_loop(ctx: Arc<Mutex<Self>>) {
+        let _handle = std::thread::spawn(move || {
+            if let Ok(mut runner) = ctx.lock() {
+                loop {
+                    let mut line = String::new();
+
+                    let _size = stdin().read_line(&mut line).expect("stdin read error.");
+                    match line.trim() {
+                        // "p" | "play" => {
+                        //     log::info!("play");
+                        //     let _ = driver.play();
+                        // }
+                        // "s" | "stop" | "pause" => {
+                        //     log::info!("pause");
+                        //     let _ = driver.pause();
+                        // }
+                        "u" | "update" => {
+                            log::info!("update");
+                            let path_sym = runner.fullpath.to_string_lossy().to_symbol();
+
+                            match fileloader::load(runner.fullpath.to_str().unwrap()) {
+                                Ok(new_content) => {
+                                    match runner.exec_ctx.prepare_machine_resume(&new_content) {
+                                        Ok(prog) => {
+                                            runner.driver.renew_vm(prog);
+                                        }
+                                        Err(e) => {
+                                            report(&new_content, path_sym, &e);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!(
+                                        "failed to reload the file {}: {}",
+                                        runner.fullpath.display(),
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        "q" | "quit" | "exit" | "" => {
+                            eprintln!("exit");
+                            break;
+                        }
+                        _ => {
+                            println!("commands: play(p), pause(s), quit(q/empty)");
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
 /// Compile and run a single source file according to the provided options.
 pub fn run_file(
     options: RunOptions,
     content: &str,
     fullpath: &Path,
-) -> Result<(), Vec<Box<dyn ReportableError>>> {
+) -> Result<Option<(Arc<Mutex<ExecContext>>, Box<dyn FnOnce()>)>, Vec<Box<dyn ReportableError>>> {
     log::debug!("Filename: {}", fullpath.display());
     let path_sym = fullpath.to_string_lossy().to_symbol();
-    let mut ctx = get_default_context(Some(path_sym), options.with_gui, options.config);
-
-    match options.mode {
-        RunMode::EmitAst => {
-            let ast = emit_ast(content, Some(path_sym))?;
-            println!("{}", ast.pretty_print());
-            Ok(())
-        }
-        RunMode::EmitMir => {
-            ctx.prepare_compiler();
-            let res = ctx.get_compiler().unwrap().emit_mir(content);
-            res.map(|r| {
-                println!("{r}");
-            })
-        }
-        RunMode::EmitByteCode => {
-            // need to prepare dummy audio plugin to link `now` and `samplerate`
-            let localdriver = LocalBufferDriver::new(0);
-            let plug = localdriver.get_as_plugin();
-            ctx.add_plugin(plug);
-            ctx.prepare_machine(content)?;
-            println!("{}", ctx.get_vm().unwrap().prog);
-            Ok(())
-        }
-        _ => {
-            let mut driver = options.get_driver();
-            let audiodriver_plug = driver.get_as_plugin();
-            ctx.add_plugin(audiodriver_plug);
-            ctx.prepare_machine(content)?;
-            let _res = ctx.run_main();
-            let runtimedata = RuntimeData::try_from(&mut ctx).unwrap();
-            //this takes ownership of ctx
-            driver.init(runtimedata, Some(SampleRate::from(48000)));
-            driver.play();
-            loop {
-                let mut line = String::new();
-                let _size = stdin().read_line(&mut line).expect("stdin read error.");
-                match line.trim() {
-                    // "p" | "play" => {
-                    //     log::info!("play");
-                    //     let _ = driver.play();
-                    // }
-                    // "s" | "stop" | "pause" => {
-                    //     log::info!("pause");
-                    //     let _ = driver.pause();
-                    // }
-                    "u" | "update" => {
-                        log::info!("update");
-                        match fileloader::load(fullpath.to_str().unwrap()) {
-                            Ok(new_content) => match ctx.prepare_machine_resume(&new_content) {
-                                Ok(prog) => {
-                                    driver.renew_vm(prog);
-                                }
-                                Err(e) => {
-                                    report(content, path_sym, &e);
-                                }
-                            },
-                            Err(e) => {
-                                log::error!(
-                                    "failed to reload the file {}: {}",
-                                    fullpath.display(),
-                                    e
-                                );
-                            }
-                        }
-                    }
-                    "q" | "quit" | "exit" | "" => {
-                        eprintln!("exit");
-                        break;
-                    }
-                    _ => {
-                        println!("commands: play(p), pause(s), quit(q/empty)");
-                    }
-                }
+    let ctx = Arc::new(Mutex::new(get_default_context(
+        Some(path_sym),
+        options.with_gui,
+        options.config,
+    )));
+    let mainloop = if let Ok(mut ctx) = ctx.lock() {
+        match options.mode {
+            RunMode::EmitAst => {
+                let ast = emit_ast(content, Some(path_sym))?;
+                println!("{}", ast.pretty_print());
+                Ok(None)
             }
-            Ok(())
+            RunMode::EmitMir => {
+                ctx.prepare_compiler();
+                let res = ctx.get_compiler().unwrap().emit_mir(content);
+                res.map(|r| {
+                    println!("{r}");
+                    None
+                })
+            }
+            RunMode::EmitByteCode => {
+                // need to prepare dummy audio plugin to link `now` and `samplerate`
+                let localdriver = LocalBufferDriver::new(0);
+                let plug = localdriver.get_as_plugin();
+                ctx.add_plugin(plug);
+                ctx.prepare_machine(content)?;
+                println!("{}", ctx.get_vm().unwrap().prog);
+                Ok(None)
+            }
+            _ => {
+                let mut driver = options.get_driver();
+                let audiodriver_plug = driver.get_as_plugin();
+                ctx.add_plugin(audiodriver_plug);
+                ctx.prepare_machine(content)?;
+                let _res = ctx.run_main();
+
+                let runtimedata = {
+                    let ctxmut: &mut ExecContext = &mut ctx;
+                    RuntimeData::try_from(ctxmut).unwrap()
+                };
+
+                let mainloop = ctx.try_get_main_loop();
+                //this takes ownership of ctx
+                driver.init(runtimedata, Some(SampleRate::from(48000)));
+                driver.play();
+                Ok(mainloop)
+            }
         }
+    } else {
+        Ok(None)
+    };
+    if let Ok(Some(mainloop)) = mainloop {
+        Ok(Some((ctx.clone(), mainloop)))
+    } else {
+        Ok(None)
     }
 }
-
 pub fn lib_main() -> Result<(), Box<dyn std::error::Error>> {
     if cfg!(debug_assertions) | cfg!(test) {
         colog::default_builder()
