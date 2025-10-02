@@ -275,6 +275,20 @@ fn closure_counter_tuple() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn test_tuple_global() {
+    let res = run_file_test_mono("tuple_global.mmm", 5).unwrap();
+    let ans = vec![100.0, 100.0, 100.0, 100.0, 100.0];
+    assert_eq!(res, ans);
+}
+#[wasm_bindgen_test(unsupported = test)]
+fn test_tuple_global2() {
+    let res = run_file_test_mono("tuple_global2.mmm", 5).unwrap();
+    let ans = vec![100.0, 100.0, 100.0, 100.0, 100.0];
+    assert_eq!(res, ans);
+}
+
+
+#[wasm_bindgen_test(unsupported = test)]
 fn hof_state() {
     let res = run_file_test_mono("hof_state.mmm", 10).unwrap();
     let ans = vec![
