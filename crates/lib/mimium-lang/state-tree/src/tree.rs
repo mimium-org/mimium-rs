@@ -139,7 +139,7 @@ pub trait SizedType: std::fmt::Debug {
 }
 
 /// This data represents just a memory layout on a flat array, do not own actual data.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum StateTreeSkeleton<T: SizedType> {
     Delay {
         len: u64, //assume we are using only mono f64 data
@@ -157,6 +157,17 @@ impl<T: SizedType> StateTreeSkeleton<T> {
                 .iter()
                 .map(|child_layout| child_layout.total_size())
                 .sum(),
+        }
+    }
+}
+impl<T: SizedType> PartialEq for StateTreeSkeleton<T> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Delay { len: l_len }, Self::Delay { len: r_len }) => l_len == r_len,
+            (Self::Mem(l0), Self::Mem(r0)) => l0.word_size() == r0.word_size(),
+            (Self::Feed(l0), Self::Feed(r0)) => l0.word_size() == r0.word_size(),
+            (Self::FnCall(l0), Self::FnCall(r0)) => l0 == r0,
+            _ => false,
         }
     }
 }
