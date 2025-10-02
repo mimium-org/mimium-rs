@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use mimium_lang::interner::Symbol;
 
 pub mod semantic_token;
@@ -6,7 +8,9 @@ use dashmap::DashMap;
 use log::debug;
 use mimium_lang::compiler::mirgen;
 use mimium_lang::interner::{ExprNodeId, TypeNodeId};
+use mimium_lang::plugin::Plugin;
 use mimium_lang::utils::error::ReportableError;
+use mimium_lang::{Config, ExecContext};
 use ropey::Rope;
 use semantic_token::{ImCompleteSemanticToken, LEGEND_TYPE, ParseResult, parse};
 use serde::{Deserialize, Serialize};
@@ -16,12 +20,31 @@ use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 type SrcUri = String;
+
+/// Construct an [`ExecContext`] with the default set of plugins.
+fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config) -> ExecContext {
+    let plugins: Vec<Box<dyn Plugin>> = vec![Box::new(mimium_symphonia::SamplerPlugin)];
+    let mut ctx = ExecContext::new(plugins.into_iter(), path, config);
+    ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
+    if let Some(midi_plug) = mimium_midi::MidiPlugin::try_new() {
+        ctx.add_system_plugin(midi_plug);
+    } else {
+        log::warn!("Midi is not supported on this platform.")
+    }
+
+    if with_gui {
+        #[cfg(not(target_arch = "wasm32"))]
+        ctx.add_system_plugin(mimium_guitools::GuiToolPlugin::default());
+    }
+
+    ctx
+}
 struct MimiumCtx {
     builtin_types: Vec<(Symbol, TypeNodeId)>,
 }
 impl MimiumCtx {
     fn new() -> Self {
-        let mut execctx = mimium_cli::get_default_context(None, true, Default::default());
+        let mut execctx = get_default_context(None, true, Default::default());
         execctx.prepare_compiler();
         let builtin_types = execctx.get_compiler().unwrap().get_ext_typeinfos();
         Self { builtin_types }
