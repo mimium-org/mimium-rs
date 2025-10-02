@@ -14,17 +14,17 @@ pub fn update_state_storage<T: SizedType>(
     let target_tree = deserialize_tree_untagged(old, &old_state_skeleton)
         .ok_or("Failed to deserialize old state tree")?;
     let totalsize = new_state_skeleton.total_size();
-    let mut new_empty_tree = StateTree::from(new_state_skeleton);
-    let patches = tree_diff::take_diff(&target_tree, &new_empty_tree);
+    let mut new_tree = StateTree::from(new_state_skeleton);
+    let patches = tree_diff::take_diff(&target_tree, &new_tree);
     if patches.is_empty() {
         Ok(None)
     } else {
         for patch in &patches {
             log::info!("Patch: {patch:?}");
         }
-        patch::apply_patches(&mut new_empty_tree, &target_tree, &patches);
+        patch::apply_patches(&mut new_tree, &target_tree, &patches);
 
-        let res = serialize_tree_untagged(target_tree);
+        let res = serialize_tree_untagged(new_tree);
         debug_assert_eq!(res.len(), totalsize as usize);
 
         Ok(Some(res))

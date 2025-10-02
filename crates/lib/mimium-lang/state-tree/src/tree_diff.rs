@@ -97,14 +97,45 @@ fn build_patches_recursive(
         // 自作のlcs_by関数を使用
         let lcs_results = lcs_by(old_children, new_children, |a, b| nodes_match(a, b));
 
-        for result in lcs_results {
-            if let DiffResult::Common {
-                old_index,
-                new_index,
-            } = result
-            {
-                let old_child = &old_children[old_index];
-                let new_child = &new_children[new_index];
+        let mut unmatched_old = Vec::new();
+        let mut unmatched_new = Vec::new();
+
+        for result in &lcs_results {
+            match *result {
+                DiffResult::Common {
+                    old_index,
+                    new_index,
+                } => {
+                    let old_child = &old_children[old_index];
+                    let new_child = &new_children[new_index];
+
+                    let mut next_old_path = old_path.clone();
+                    next_old_path.push(old_index);
+                    let mut next_new_path = new_path.clone();
+                    next_new_path.push(new_index);
+
+                    build_patches_recursive(
+                        old_child,
+                        new_child,
+                        next_old_path,
+                        next_new_path,
+                        patches,
+                    );
+                }
+                DiffResult::Delete { old_index } => {
+                    unmatched_old.push(old_index);
+                }
+                DiffResult::Insert { new_index } => {
+                    unmatched_new.push(new_index);
+                }
+            }
+        }
+
+        for new_index in unmatched_new {
+            if let Some(position) = unmatched_old.iter().position(|&old_index| {
+                nodes_match(&old_children[old_index], &new_children[new_index])
+            }) {
+                let old_index = unmatched_old.remove(position);
 
                 let mut next_old_path = old_path.clone();
                 next_old_path.push(old_index);
@@ -112,8 +143,8 @@ fn build_patches_recursive(
                 next_new_path.push(new_index);
 
                 build_patches_recursive(
-                    old_child,
-                    new_child,
+                    &old_children[old_index],
+                    &new_children[new_index],
                     next_old_path,
                     next_new_path,
                     patches,

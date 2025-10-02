@@ -18,7 +18,7 @@ pub struct CopyFromPatch {
 /// # Panics
 /// パッチに含まれるパスが無効な場合、またはコピー元とコピー先のノードの型が一致しない場合にパニックする可能性があります。
 /// （`diff`が正しく実装されていれば、通常は起こりません）
-pub fn apply_patches(new_tree: &mut StateÏTree, old_tree: &StateTree, patches: &[CopyFromPatch]) {
+pub fn apply_patches(new_tree: &mut StateTree, old_tree: &StateTree, patches: &[CopyFromPatch]) {
     for patch in patches {
         let source_node = old_tree
             .get_node(&patch.old_path)

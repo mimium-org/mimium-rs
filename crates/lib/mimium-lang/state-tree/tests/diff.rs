@@ -1,5 +1,8 @@
-
-use state_tree::{patch::{apply_patches, CopyFromPatch}, tree::StateTree, tree_diff::take_diff, *};
+use state_tree::{
+    patch::{CopyFromPatch, apply_patches},
+    tree::StateTree,
+    tree_diff::take_diff,
+};
 
 // --- 既存のテスト ... ---
 #[test]
@@ -91,16 +94,12 @@ fn test_apply_with_structural_changes() {
             writeidx: 11,
             data: vec![1],
         }, // old: [0]
-        StateTree::Mem {
-            data: vec![2, 3],
-        }, // old: [1]
-        StateTree::Feed { data: vec![4] }, // (削除される)
+        StateTree::Mem { data: vec![2, 3] }, // old: [1]
+        StateTree::Feed { data: vec![4] },   // (削除される)
     ]);
 
     let mut new_tree = StateTree::FnCall(vec![
-        StateTree::Mem {
-            data: vec![0, 0],
-        }, // new: [0] <- old: [1]
+        StateTree::Mem { data: vec![0, 0] }, // new: [0] <- old: [1]
         StateTree::Delay {
             readidx: 0,
             writeidx: 0,
@@ -113,9 +112,7 @@ fn test_apply_with_structural_changes() {
 
     // 期待される最終状態
     let expected_tree = StateTree::FnCall(vec![
-        StateTree::Mem {
-            data: vec![2, 3],
-        }, // old: [1]からコピー
+        StateTree::Mem { data: vec![2, 3] }, // old: [1]からコピー
         StateTree::Delay {
             readidx: 10,
             writeidx: 11,
@@ -127,16 +124,19 @@ fn test_apply_with_structural_changes() {
     ]);
 
     let patches = take_diff(&old_tree, &new_tree);
-    let expected_patches = vec![
-        CopyFromPatch {
-            old_path: vec![1],
-            new_path: vec![0],
-        },
-        CopyFromPatch {
-            old_path: vec![0],
-            new_path: vec![1],
-        },
-    ];
+    assert_eq!(
+        patches,
+        vec![
+            CopyFromPatch {
+                old_path: vec![1],
+                new_path: vec![0]
+            },
+            CopyFromPatch {
+                old_path: vec![0],
+                new_path: vec![1]
+            },
+        ]
+    );
     apply_patches(&mut new_tree, &old_tree, &patches);
 
     assert_eq!(new_tree, expected_tree);
