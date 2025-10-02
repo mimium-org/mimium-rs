@@ -15,6 +15,7 @@ pub mod plugin;
 
 use std::path::PathBuf;
 
+use crate::plugin::{MachineFunction, MacroFunction};
 use compiler::IoChannelInfo;
 pub use log;
 use plugin::{DynSystemPlugin, ExtFunTypeInfo, Plugin, SystemPlugin};
@@ -24,7 +25,6 @@ use utils::error::ReportableError;
 #[cfg(not(target_arch = "wasm32"))]
 use mimalloc::MiMalloc;
 
-use crate::plugin::{MachineFunction, MacroFunction};
 #[cfg(not(target_arch = "wasm32"))]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;

@@ -5,10 +5,11 @@
 
 use std::{
     borrow::Cow,
-    cell::RefCell,
     collections::BTreeMap,
     fmt::{self, Display},
-    hash::Hash, path::PathBuf, sync::{LazyLock, Mutex},
+    hash::Hash,
+    path::PathBuf,
+    sync::{LazyLock, Mutex},
 };
 
 use slotmap::SlotMap;
@@ -66,11 +67,19 @@ impl SessionGlobals {
     //
     // cf. https://github.com/tomoyanonymous/mimium-rs/pull/27#issuecomment-2306226748
     pub fn get_expr(&self, expr_id: ExprNodeId) -> Expr {
-        unsafe { self.expr_storage.get_unchecked(expr_id.0) }.clone()
+        if cfg!(test) {
+            self.expr_storage.get(expr_id.0).unwrap().clone()
+        } else {
+            unsafe { self.expr_storage.get_unchecked(expr_id.0) }.clone()
+        }
     }
 
     pub fn get_type(&self, type_id: TypeNodeId) -> Type {
-        unsafe { self.type_storage.get_unchecked(type_id.0) }.clone()
+        if cfg!(test) {
+            self.type_storage.get(type_id.0).unwrap().clone()
+        } else {
+            unsafe { self.type_storage.get_unchecked(type_id.0) }.clone()
+        }
     }
 
     pub fn get_span<T: ToNodeId>(&self, node_id: T) -> Option<&Location> {
@@ -86,7 +95,6 @@ static SESSION_GLOBALS: LazyLock<Mutex<SessionGlobals>> = LazyLock::new(|| {
         loc_storage: BTreeMap::new(),
     })
 });
-
 
 pub fn with_session_globals<R, F>(f: F) -> R
 where
