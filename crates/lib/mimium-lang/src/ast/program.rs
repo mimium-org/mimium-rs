@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 
-use state_tree::patch::Path;
-
 use super::resolve_include::resolve_include;
 use super::statement::Statement;
 use crate::ast::Expr;

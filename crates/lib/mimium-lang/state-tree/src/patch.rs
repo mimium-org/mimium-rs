@@ -1,102 +1,60 @@
 use crate::tree::StateTree;
 
-/// Path to a node in the tree
-pub type Path = Vec<usize>;
-
-/// Enum representing change operations
-#[derive(Debug, PartialEq, Eq, Clone, Hash)]
-pub enum Patch {
-    /// Replace an existing node
-    Replace { path: Path, new_tree: StateTree },
-    /// Insert a new node into the child list of a FnCall node
-    Insert {
-        parent_path: Path,
-        index: usize,
-        new_tree: StateTree,
-    },
-    /// Remove a node from the child list of a FnCall node
-    Remove { parent_path: Path, index: usize },
+/// A patch to be applied to a Empty StateTree from old tree.
+#[derive(Debug, PartialEq, Clone)]
+pub struct CopyFromPatch {
+    pub new_path: Vec<usize>,
+    pub old_path: Vec<usize>,
 }
 
-#[derive(Debug)]
-pub enum ApplyError {
-    PathNotFound,
-    InvalidIndex { len: usize, index: usize },
-    NotFnCall, // Error when parent is not a FnCall
-}
-impl std::fmt::Display for ApplyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ApplyError::PathNotFound => write!(f, "Path not found in the tree"),
-            ApplyError::InvalidIndex { len, index } => write!(
-                f,
-                "Invalid index {index} for insertion/removal in a list of length {len}"
-            ),
-            ApplyError::NotFnCall => write!(f, "Parent node is not a FnCall"),
-        }
-    }
-}
-impl std::error::Error for ApplyError {}
 
-/// Apply patches to StateTree
-pub fn apply(root: &mut StateTree, patches: &[Patch]) -> Result<(), ApplyError> {
+/// パッチを新しい木に適用する
+///
+/// # Arguments
+/// * `new_tree` - データのコピー先となる、構造が新しい木（中身は0で初期化済み）
+/// * `old_tree` - データのコピー元となる、古い木
+/// * `patches` - `diff`関数で生成されたパッチのリスト
+///
+/// # Panics
+/// パッチに含まれるパスが無効な場合、またはコピー元とコピー先のノードの型が一致しない場合にパニックする可能性があります。
+/// （`diff`が正しく実装されていれば、通常は起こりません）
+pub fn apply_patches(new_tree: &mut StateÏTree, old_tree: &StateTree, patches: &[CopyFromPatch]) {
     for patch in patches {
-        match patch {
-            Patch::Replace { path, new_tree } => {
-                let node_to_replace = find_node_mut(root, path.iter())?;
-                *node_to_replace = new_tree.clone();
+        let source_node = old_tree
+            .get_node(&patch.old_path)
+            .expect("Invalid old_path in patch");
+        let dest_node = new_tree
+            .get_node_mut(&patch.new_path)
+            .expect("Invalid new_path in patch");
+
+        // `diff`の`nodes_match`によって型とlenが一致していることは保証されているはず
+        // ここでは、その前提に基づいてデータをコピーする
+        match (source_node, dest_node) {
+            (
+                StateTree::Delay { readidx: r_src, writeidx: w_src, data: d_src },
+                StateTree::Delay { readidx: r_dest, writeidx: w_dest, data: d_dest },
+            ) => {
+                *r_dest = *r_src;
+                *w_dest = *w_src;
+                d_dest.copy_from_slice(d_src);
             }
-            Patch::Insert {
-                parent_path,
-                index,
-                new_tree,
-            } => {
-                let parent_node = find_node_mut(root, parent_path.iter())?;
-                if let StateTree::FnCall(children) = parent_node {
-                    if *index > children.len() {
-                        return Err(ApplyError::InvalidIndex {
-                            len: children.len(),
-                            index: *index,
-                        });
-                    }
-                    children.insert(*index, new_tree.clone());
-                } else {
-                    return Err(ApplyError::NotFnCall);
-                }
+            (
+                StateTree::Mem { data: d_src },
+                StateTree::Mem { data: d_dest },
+            ) => {
+                d_dest.copy_from_slice(d_src);
             }
-            Patch::Remove { parent_path, index } => {
-                let parent_node = find_node_mut(root, parent_path.iter())?;
-                if let StateTree::FnCall(children) = parent_node {
-                    if *index >= children.len() {
-                        return Err(ApplyError::InvalidIndex {
-                            len: children.len(),
-                            index: *index,
-                        });
-                    }
-                    children.remove(*index);
-                } else {
-                    return Err(ApplyError::NotFnCall);
-                }
+            (
+                StateTree::Feed { data: d_src },
+                StateTree::Feed { data: d_dest },
+            ) => {
+                d_dest.copy_from_slice(d_src);
             }
+            // FnCallはデータを持たないので何もしない
+            (StateTree::FnCall(_), StateTree::FnCall(_)) => (),
+            // 型が一致しない場合はロジックエラー
+            _ => panic!("Mismatched node types during patch application. This should not happen."),
         }
     }
-    Ok(())
 }
 
-// Helper to find a mutable reference to a StateTree node
-fn find_node_mut<'a>(
-    tree: &'a mut StateTree,
-    mut path_i: impl Iterator<Item = &'a usize>,
-) -> Result<&'a mut StateTree, ApplyError> {
-    if let Some(i) = path_i.next() {
-        if let StateTree::FnCall(children) = tree {
-            let c = children.get_mut(*i).ok_or(ApplyError::PathNotFound)?;
-            find_node_mut(c, path_i)
-        } else {
-            // Hit a non-FnCall node in the middle of the path
-            Err(ApplyError::PathNotFound)
-        }
-    } else {
-        Ok(tree) //empty path means the root
-    }
-}

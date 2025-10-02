@@ -1,22 +1,9 @@
-use rkyv::{Archive, Deserialize, Serialize};
 pub const DELAY_ADDITIONAL_OFFSET: usize = 2;
 
 /// State Tree structure.
 
 //on attributes, see https://github.com/rkyv/rkyv/blob/main/rkyv/examples/json_like_schema.rs
-#[derive(Archive, Deserialize, Serialize, PartialEq, Eq, Hash, Clone)]
-// Use `attr` to make rkyv implement traits on the generated Archived type
-#[rkyv(attr(derive(PartialEq)))]
-#[rkyv(serialize_bounds(
-    __S: rkyv::ser::Writer + rkyv::ser::Allocator,
-    __S::Error: rkyv::rancor::Source,
-))]
-#[rkyv(deserialize_bounds(__D::Error: rkyv::rancor::Source))]
-#[rkyv(bytecheck(
-    bounds(
-        __C: rkyv::validation::ArchiveContext,
-    )
-))]
+#[derive(Clone, PartialEq, Eq)]
 pub enum StateTree {
     Delay {
         readidx: u64,
@@ -29,8 +16,9 @@ pub enum StateTree {
     Feed {
         data: Vec<u64>, //assume we are using generic data, might be tuple of float
     },
-    FnCall(#[rkyv(omit_bounds)] Vec<StateTree>),
+    FnCall(Vec<StateTree>),
 }
+
 impl std::fmt::Display for StateTree {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -99,6 +87,36 @@ impl<T: SizedType> From<StateTreeSkeleton<T>> for StateTree {
                     .collect(),
             ),
         }
+    }
+}
+
+impl StateTree {
+    /// パスを指定して、イミュータブルなノードへの参照を取得する
+    pub fn get_node(&self, path: &[usize]) -> Option<&StateTree> {
+        let mut current = self;
+        for &index in path {
+            if let StateTree::FnCall(children) = current {
+                current = children.get(index)?;
+            } else {
+                // パスが深すぎるか、FnCallではないノードを指している
+                return None;
+            }
+        }
+        Some(current)
+    }
+
+    /// パスを指定して、ミュータブルなノードへの参照を取得する
+    pub fn get_node_mut(&mut self, path: &[usize]) -> Option<&mut StateTree> {
+        let mut current = self;
+        for &index in path {
+            if let StateTree::FnCall(children) = current {
+                current = children.get_mut(index)?;
+            } else {
+                // パスが深すぎるか、FnCallではないノードを指している
+                return None;
+            }
+        }
+        Some(current)
     }
 }
 
