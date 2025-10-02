@@ -21,4 +21,4 @@ mimium-guitools = { workspace = true }
 mimium-symphonia = { workspace = true }
 
 dashmap = "6.1.0"
-log = "0.4.28"
+log = { workspace = true }

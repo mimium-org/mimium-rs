@@ -42,6 +42,12 @@ mimium-language-server = { path = "crates/bin/mimium-language-server", version =
 itertools = "0.13.0"
 wasm-bindgen = "0.2.93"
 wasm-bindgen-test = "0.3"
+ringbuf = "0.4.7"
+atomic_float = "1.1.0"
+log = "0.4.28"
+colog = "1.3.0"
+
+
 
 # do not add git tag for each crates on release.
 [workspace.metadata.release]

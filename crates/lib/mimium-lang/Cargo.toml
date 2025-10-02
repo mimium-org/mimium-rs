@@ -13,10 +13,10 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 chumsky = { version = "0.11", features = ["lexical-numbers"] }
 ariadne = "0.5"
-log = "0.4.22"
 string-interner = "0.17.0"
 slotmap = "1.0.7"
-colog = "1.3.0"
+log = {workspace = true}
+colog = {workspace = true}
 half = "2.4.1"
 intx = "0.1.0"
 itertools.workspace = true

@@ -13,5 +13,5 @@ description = "audio driver plugin for mimium"
 [dependencies]
 cpal = "0.15.3"
 num-traits = "0.2.19"
-ringbuf = "0.4.1"
+ringbuf = { workspace = true }
 mimium-lang = { workspace = true }

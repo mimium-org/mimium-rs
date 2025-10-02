@@ -12,7 +12,7 @@ build = "build.rs"
 
 
 [dependencies]
-atomic_float = "1.1.0"
+atomic_float = { workspace = true }
 midir = "0.10.0"
 
 mimium-lang = { workspace = true }
