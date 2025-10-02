@@ -130,7 +130,7 @@ impl RunOptions {
         if args.mode.emit_mir {
             return Self {
                 mode: RunMode::EmitMir,
-                with_gui: false,
+                with_gui: true,
                 config,
             };
         }

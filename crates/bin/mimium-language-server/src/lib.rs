@@ -214,8 +214,7 @@ fn diagnostic_from_error(
             let start_position = offset_to_position(span.start, rope)?;
             let end_position = offset_to_position(span.end, rope)?;
             let uri = if loc.path.to_string_lossy() != "" {
-                Url::from_file_path(loc.path.clone())
-                    .unwrap_or(url.clone())
+                Url::from_file_path(loc.path.clone()).unwrap_or(url.clone())
             } else {
                 url.clone()
             };
@@ -250,6 +249,7 @@ impl Backend {
         self.semantic_token_map
             .insert(url.to_string(), semantic_tokens);
         let errs = {
+            let ast = ast.wrap_to_staged_expr();
             let (_, _, typeerrs) = mirgen::typecheck(ast, &self.compiler_ctx.builtin_types, None);
             errors.into_iter().chain(typeerrs).collect::<Vec<_>>()
         };
