@@ -562,7 +562,9 @@ impl Context {
             self.get_current_fn()
                 .state_sizes
                 .extend_from_slice(&state_sizes);
-            self.get_current_fn().push_state_skeleton(child_skeleton);
+            if child_skeleton != StateSkeleton::FnCall(vec![]) {
+                self.get_current_fn().push_state_skeleton(child_skeleton);
+            }
             self.push_inst(Instruction::Uinteger(idx))
         };
 
