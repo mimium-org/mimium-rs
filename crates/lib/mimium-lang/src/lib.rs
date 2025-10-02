@@ -22,12 +22,12 @@ use plugin::{DynSystemPlugin, ExtFunTypeInfo, Plugin, SystemPlugin};
 use runtime::vm::{self, Program, ReturnCode};
 use utils::error::ReportableError;
 
-#[cfg(not(target_arch = "wasm32"))]
-use mimalloc::MiMalloc;
+// #[cfg(not(target_arch = "wasm32"))]
+// use mimalloc::MiMalloc;
 
-#[cfg(not(target_arch = "wasm32"))]
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+// #[cfg(not(target_arch = "wasm32"))]
+// #[global_allocator]
+// static GLOBAL: MiMalloc = MiMalloc;
 
 /// Configuration for the compiler and runtime.
 #[derive(Debug, Clone, Copy, Default)]
