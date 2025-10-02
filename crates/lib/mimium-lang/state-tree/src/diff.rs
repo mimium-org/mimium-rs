@@ -1,16 +1,27 @@
 use crate::patch::Patch;
 use crate::tree::{ArchivedStateTree, StateTree};
 use ArchivedStateTree::*;
-use rkyv::deserialize;
 use rkyv::rancor::Error;
+use rkyv::{access_mut, deserialize, to_bytes};
 
 /// Calculate the difference between two StateTrees and return a list of patches
 /// This is the new functional-style API with optimization applied
-pub fn diff(old: &ArchivedStateTree, new: &ArchivedStateTree, path: &[usize]) -> Vec<Patch> {
-    let patches = diff_unoptimized(old, new, path);
-    let res = optimize_patches(patches);
-    log::debug!("Optimized patches: {res:#?}");
-    res
+pub fn diff(old: &ArchivedStateTree, new: &ArchivedStateTree) -> Vec<Patch> {
+    let patches = diff_unoptimized(old, new, &[]);
+    // let res = optimize_patches(patches);
+    // log::debug!("Optimized patches: {res:#?}");
+    patches
+}
+pub fn diff_live(old: &StateTree, new: &StateTree) -> Vec<Patch> {
+    let mut old_bytes = to_bytes::<rkyv::rancor::Error>(old).expect("Should serialize old tree");
+    let mut new_bytes = to_bytes::<rkyv::rancor::Error>(new).expect("Should serialize new tree");
+
+    let archived_old = access_mut::<ArchivedStateTree, rkyv::rancor::Error>(&mut old_bytes)
+        .expect("Should access archived old");
+    let archived_new = access_mut::<ArchivedStateTree, rkyv::rancor::Error>(&mut new_bytes)
+        .expect("Should access archived new");
+
+    diff(&archived_old, &archived_new)
 }
 
 /// Calculate the difference between two StateTrees without optimization
@@ -193,7 +204,11 @@ fn backtrack_lcs(
             i - 1,
             j - 1,
         );
-        patches.extend(diff_unoptimized(&old_middle[i - 1], &new_middle[j - 1], &current_path));
+        patches.extend(diff_unoptimized(
+            &old_middle[i - 1],
+            &new_middle[j - 1],
+            &current_path,
+        ));
         patches
     } else if j > 0 && (i == 0 || lcs_table[i][j - 1] >= lcs_table[i - 1][j]) {
         // Only exists in new -> Insert

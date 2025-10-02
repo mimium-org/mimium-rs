@@ -4,7 +4,7 @@ pub const DELAY_ADDITIONAL_OFFSET: usize = 2;
 /// State Tree structure.
 
 //on attributes, see https://github.com/rkyv/rkyv/blob/main/rkyv/examples/json_like_schema.rs
-#[derive(Archive, Deserialize, Serialize, PartialEq, Clone)]
+#[derive(Archive, Deserialize, Serialize, PartialEq, Eq, Hash, Clone)]
 // Use `attr` to make rkyv implement traits on the generated Archived type
 #[rkyv(attr(derive(PartialEq)))]
 #[rkyv(serialize_bounds(
@@ -129,6 +129,18 @@ pub enum StateTreeSkeleton<T: SizedType> {
     Mem(T),
     Feed(T),
     FnCall(Vec<Box<StateTreeSkeleton<T>>>),
+}
+impl<T: SizedType> StateTreeSkeleton<T> {
+    pub fn total_size(&self) -> u64 {
+        match self {
+            StateTreeSkeleton::Delay { len } => DELAY_ADDITIONAL_OFFSET as u64 + *len,
+            StateTreeSkeleton::Mem(t) | StateTreeSkeleton::Feed(t) => t.word_size(),
+            StateTreeSkeleton::FnCall(children_layout) => children_layout
+                .iter()
+                .map(|child_layout| child_layout.total_size())
+                .sum(),
+        }
+    }
 }
 
 fn deserialize_tree_untagged_rec<T: SizedType>(

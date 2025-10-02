@@ -56,7 +56,7 @@ fn test_serde_append_delay() {
         access_mut::<ArchivedStateTree, rkyv::rancor::Error>(&mut modified_bytes)
             .expect("Should access archived modified");
 
-    let patches = diff(&archived_original, &archived_modified, &[]);
+    let patches = diff(&archived_original, &archived_modified);
     let expected_patches = vec![Patch::Insert {
         parent_path: vec![],
         index: 2,

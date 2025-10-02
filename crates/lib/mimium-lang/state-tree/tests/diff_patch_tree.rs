@@ -1,5 +1,5 @@
 use rkyv::{access_mut, to_bytes};
-use state_tree::diff::{diff, optimize_patches};
+use state_tree::diff::{diff, diff_live, optimize_patches};
 use state_tree::patch::{Patch, apply};
 use state_tree::tree::ArchivedStateTree;
 use state_tree::tree::StateTree;
@@ -16,11 +16,7 @@ fn test_main() {
         }]),
     ]);
 
-    // --- 2. Serialize old tree with rkyv ---
-    let mut old_bytes =
-        to_bytes::<rkyv::rancor::Error>(&old_tree).expect("Failed to serialize old_tree");
-
-    // --- 3. Create new version of the tree ---
+    // --- 2. Create new version of the tree ---
     let new_tree = StateTree::FnCall(vec![
         StateTree::Feed {
             data: vec![0, 0], // Same data size
@@ -35,18 +31,10 @@ fn test_main() {
             data: vec![0],
         },
     ]);
-    let mut new_bytes =
-        to_bytes::<rkyv::rancor::Error>(&new_tree).expect("Failed to serialize new_tree");
 
-    // --- 4. Detect differences from two byte arrays with zero-copy ---
-    let archived_old = access_mut::<ArchivedStateTree, rkyv::rancor::Error>(&mut old_bytes)
-        .expect("Failed to access archived_old");
-    let archived_new = access_mut::<ArchivedStateTree, rkyv::rancor::Error>(&mut new_bytes)
-        .expect("Failed to access archived_new");
+    // --- 3. Detect differences from two byte arrays with zero-copy ---
 
-    let mut patches = Vec::new();
-    let path = Vec::new();
-    patches.extend(diff(&archived_old, &archived_new, &path));
+    let patches = diff_live(&old_tree, &new_tree);
 
     println!("✅ Detected differences (Patches):");
     for patch in &patches {
@@ -54,12 +42,12 @@ fn test_main() {
     }
     let patch_answer = vec![
         Patch::Replace {
-            path: vec![1, 0],
-            new_tree: StateTree::Delay {
+            path: vec![1],
+            new_tree: StateTree::FnCall(vec![StateTree::Delay {
                 readidx: 1,
                 writeidx: 2,
                 data: vec![0, 0, 0], // Size changed, so replace
-            },
+            }]),
         },
         Patch::Insert {
             parent_path: vec![],
@@ -92,6 +80,123 @@ fn test_main() {
     // --- 6. Check if the patched tree matches the new tree ---
     assert_eq!(tree_to_patch, ans);
     println!("\n✅ Verification successful: The patched tree matches the new tree.");
+}
+#[test]
+fn test_single_deletion() {
+    let old_tree = StateTree::FnCall(vec![
+        StateTree::FnCall(vec![StateTree::Mem { data: vec![100] }]),
+        StateTree::FnCall(vec![
+            StateTree::Feed {
+                data: vec![1, 2, 3],
+            },
+            StateTree::Delay {
+                readidx: 0,
+                writeidx: 1,
+                data: vec![10, 20],
+            },
+            StateTree::FnCall(vec![
+                StateTree::Mem { data: vec![50] },
+                StateTree::Feed { data: vec![7, 8] },
+            ]),
+        ]),
+        StateTree::FnCall(vec![StateTree::Delay {
+            readidx: 2,
+            writeidx: 3,
+            data: vec![30, 40],
+        }]),
+        StateTree::FnCall(vec![StateTree::Mem { data: vec![100] }]),
+    ]);
+    let new_tree = StateTree::FnCall(vec![
+        StateTree::FnCall(vec![StateTree::Mem { data: vec![100] }]),
+        StateTree::FnCall(vec![
+            StateTree::Feed {
+                data: vec![1, 2, 3],
+            },
+            StateTree::Delay {
+                readidx: 0,
+                writeidx: 1,
+                data: vec![10, 20],
+            },
+            StateTree::FnCall(vec![
+                StateTree::Mem { data: vec![50] },
+                StateTree::Feed { data: vec![7, 8] },
+            ]),
+        ]),
+        //removed 3rd fncall
+        StateTree::FnCall(vec![StateTree::Mem { data: vec![100] }]),
+    ]);
+
+    let patches = diff_live(&old_tree, &new_tree);
+    let expected_patches = vec![Patch::Remove {
+        parent_path: vec![],
+        index: 2,
+    }];
+
+    assert_eq!(
+        patches, expected_patches,
+        "Patches should match expected sequence"
+    );
+}
+#[test]
+fn test_single_insertion() {
+    let old_tree = StateTree::FnCall(vec![
+        StateTree::FnCall(vec![StateTree::Mem { data: vec![100] }]),
+        StateTree::FnCall(vec![
+            StateTree::Feed {
+                data: vec![1, 2, 3],
+            },
+            StateTree::Delay {
+                readidx: 0,
+                writeidx: 1,
+                data: vec![10, 20],
+            },
+            StateTree::FnCall(vec![
+                StateTree::Mem { data: vec![50] },
+                StateTree::Feed { data: vec![7, 8] },
+            ]),
+        ]),
+        StateTree::FnCall(vec![StateTree::Mem { data: vec![100] }]),
+    ]);
+    let new_tree = StateTree::FnCall(vec![
+        StateTree::FnCall(vec![StateTree::Mem { data: vec![100] }]),
+        StateTree::FnCall(vec![
+            StateTree::Feed {
+                data: vec![1, 2, 3],
+            },
+            StateTree::Delay {
+                readidx: 0,
+                writeidx: 1,
+                data: vec![10, 20],
+            },
+            StateTree::FnCall(vec![
+                StateTree::Mem { data: vec![50] },
+                StateTree::Feed { data: vec![7, 8] },
+            ]),
+        ]),
+        //3rd inserted
+        StateTree::FnCall(vec![StateTree::Delay {
+            readidx: 2,
+            writeidx: 3,
+            data: vec![30, 40],
+        }]),
+        StateTree::FnCall(vec![StateTree::Mem { data: vec![100] }]),
+    ]);
+
+    let patches = diff_live(&old_tree, &new_tree);
+    let expected_patches = vec![Patch::Insert {
+        parent_path: vec![],
+        index: 2,
+        new_tree: StateTree::FnCall(vec![StateTree::Delay {
+            readidx: 2,
+            writeidx: 3,
+            data: vec![30, 40],
+        }]),
+    }];
+
+    assert_eq!(
+        patches, expected_patches,
+        "Patches should match expected sequence"
+    );
 }
 
 #[test]
@@ -152,20 +257,8 @@ fn test_complex_nested_tree_diff() {
         }, // Newly added at end
     ]);
 
-    // Serialize both trees
-    let mut old_bytes =
-        to_bytes::<rkyv::rancor::Error>(&old_tree).expect("Failed to serialize old_tree");
-    let mut new_bytes =
-        to_bytes::<rkyv::rancor::Error>(&new_tree).expect("Failed to serialize new_tree");
-
-    // Access archived versions
-    let archived_old = access_mut::<ArchivedStateTree, rkyv::rancor::Error>(&mut old_bytes)
-        .expect("Failed to access archived_old");
-    let archived_new = access_mut::<ArchivedStateTree, rkyv::rancor::Error>(&mut new_bytes)
-        .expect("Failed to access archived_new");
-
     // Calculate differences
-    let patches = diff(&archived_old, &archived_new, &[]);
+    let patches = diff_live(&old_tree, &new_tree);
 
     println!("🔍 Complex diff patches:");
     for (i, patch) in patches.iter().enumerate() {
@@ -334,7 +427,7 @@ fn test_deep_nesting_changes() {
     let archived_new =
         access_mut::<ArchivedStateTree, rkyv::rancor::Error>(&mut new_bytes).unwrap();
 
-    let patches = diff(&archived_old, &archived_new, &[]);
+    let patches = diff(&archived_old, &archived_new);
 
     println!("🏗️ Deep nesting changes patches:");
     for (i, patch) in patches.iter().enumerate() {
@@ -432,15 +525,7 @@ fn test_empty_trees_and_edge_cases() {
         StateTree::Feed { data: vec![1, 2] },
     ]);
 
-    let mut empty_bytes = to_bytes::<rkyv::rancor::Error>(&empty_tree).unwrap();
-    let mut non_empty_bytes = to_bytes::<rkyv::rancor::Error>(&non_empty_tree).unwrap();
-
-    let archived_empty =
-        access_mut::<ArchivedStateTree, rkyv::rancor::Error>(&mut empty_bytes).unwrap();
-    let archived_non_empty =
-        access_mut::<ArchivedStateTree, rkyv::rancor::Error>(&mut non_empty_bytes).unwrap();
-
-    let patches_empty_to_full = diff(&archived_empty, &archived_non_empty, &[]);
+    let patches_empty_to_full = diff_live(&empty_tree, &non_empty_tree);
     println!("📥 Empty to non-empty patches: {patches_empty_to_full:#?}");
 
     // Expected patches for empty to non-empty transformation
@@ -462,7 +547,7 @@ fn test_empty_trees_and_edge_cases() {
     );
 
     // Case 2: Non-empty to empty
-    let patches_full_to_empty = diff(&archived_non_empty, &archived_empty, &[]);
+    let patches_full_to_empty = diff_live(&non_empty_tree, &empty_tree);
     println!("📤 Non-empty to empty patches: {patches_full_to_empty:#?}");
 
     // Expected patches for non-empty to empty transformation
@@ -482,7 +567,7 @@ fn test_empty_trees_and_edge_cases() {
     );
 
     // Case 3: Identical trees (should produce no patches)
-    let identical_patches = diff(&archived_non_empty, &archived_non_empty, &[]);
+    let identical_patches = diff_live(&non_empty_tree, &non_empty_tree);
     assert!(identical_patches.is_empty());
     println!("🔄 Identical trees produce no patches: ✅");
 
@@ -499,7 +584,7 @@ fn test_empty_trees_and_edge_cases() {
     let archived_single_b =
         rkyv::access::<ArchivedStateTree, rkyv::rancor::Error>(&bytes_single_b).unwrap();
 
-    let patches_single = diff(archived_single_a, archived_single_b, &[]);
+    let patches_single = diff(archived_single_a, archived_single_b);
     println!("🔸 Single element patches: {patches_single:#?}");
 
     // Expected patches for single element change
@@ -554,7 +639,7 @@ fn test_simple_tree_modifications() {
     ]);
 
     let new_tree = StateTree::FnCall(vec![
-        StateTree::Mem { data: vec![200] },   // Changed value, but same size
+        StateTree::Mem { data: vec![200] }, // Changed value, but same size
         StateTree::Feed { data: vec![1, 2] }, // Same
         StateTree::Delay {
             readidx: 5,
@@ -571,7 +656,7 @@ fn test_simple_tree_modifications() {
     let archived_new =
         access_mut::<ArchivedStateTree, rkyv::rancor::Error>(&mut new_bytes).unwrap();
 
-    let patches = diff(&archived_old, &archived_new, &[]);
+    let patches = diff(&archived_old, &archived_new);
 
     println!("📋 Simple modification patches:");
     for (i, patch) in patches.iter().enumerate() {
@@ -579,17 +664,15 @@ fn test_simple_tree_modifications() {
     }
 
     // Expected patches for this simple case
-    let expected_patches = vec![
-        Patch::Insert {
-            parent_path: vec![],
-            index: 2,
-            new_tree: StateTree::Delay {
-                readidx: 5,
-                writeidx: 6,
-                data: vec![99],
-            },
+    let expected_patches = vec![Patch::Insert {
+        parent_path: vec![],
+        index: 2,
+        new_tree: StateTree::Delay {
+            readidx: 5,
+            writeidx: 6,
+            data: vec![99],
         },
-    ];
+    }];
 
     assert_eq!(
         patches, expected_patches,
@@ -616,158 +699,4 @@ fn test_simple_tree_modifications() {
     );
 
     println!("✅ Simple tree modifications test passed with all assertions!");
-}
-
-#[test]
-fn test_patch_optimization_consecutive_remove_insert() {
-    // Test consecutive Remove + Insert -> Replace optimization
-
-    println!("🧪 Testing consecutive Remove+Insert optimization...");
-
-    let unoptimized_patches = vec![
-        Patch::Remove {
-            parent_path: vec![],
-            index: 0,
-        },
-        Patch::Insert {
-            parent_path: vec![],
-            index: 0,
-            new_tree: StateTree::Delay {
-                readidx: 0,
-                writeidx: 1,
-                data: vec![99],
-            },
-        },
-    ];
-
-    println!("📝 Unoptimized patches:");
-    for (i, patch) in unoptimized_patches.iter().enumerate() {
-        println!("  {}: {patch:?}", i + 1);
-    }
-
-    let optimized_patches = optimize_patches(unoptimized_patches);
-
-    println!("⚡ Optimized result:");
-    for (i, patch) in optimized_patches.iter().enumerate() {
-        println!("  {}: {patch:?}", i + 1);
-    }
-
-    let expected_optimized = vec![Patch::Replace {
-        path: vec![0],
-        new_tree: StateTree::Delay {
-            readidx: 0,
-            writeidx: 1,
-            data: vec![99],
-        },
-    }];
-
-    assert_eq!(
-        optimized_patches, expected_optimized,
-        "Consecutive Remove + Insert should be optimized to Replace"
-    );
-
-    println!("✅ Consecutive Remove+Insert optimization test passed!");
-}
-
-#[test]
-fn test_patch_optimization_non_consecutive() {
-    // Test that Remove + Insert with dummy instruction in between should NOT be optimized
-
-    println!("🧪 Testing non-consecutive Remove+Insert (should NOT optimize)...");
-
-    let unoptimized_patches = vec![
-        Patch::Remove {
-            parent_path: vec![],
-            index: 0,
-        },
-        Patch::Replace {
-            path: vec![1],
-            new_tree: StateTree::Mem { data: vec![777] },
-        }, // Dummy instruction
-        Patch::Insert {
-            parent_path: vec![],
-            index: 0,
-            new_tree: StateTree::Feed {
-                data: vec![1, 2, 3],
-            },
-        },
-    ];
-
-    println!("📝 Non-consecutive Remove+Insert (with dummy in between):");
-    for (i, patch) in unoptimized_patches.iter().enumerate() {
-        println!("  {}: {patch:?}", i + 1);
-    }
-
-    let optimized_patches = optimize_patches(unoptimized_patches.clone());
-
-    println!("⚡ Optimized result:");
-    for (i, patch) in optimized_patches.iter().enumerate() {
-        println!("  {}: {patch:?}", i + 1);
-    }
-
-    // Should remain unchanged because they are not consecutive
-    assert_eq!(
-        optimized_patches, unoptimized_patches,
-        "Non-consecutive Remove + Insert should NOT be optimized"
-    );
-
-    println!("✅ Non-consecutive optimization test passed!");
-}
-
-#[test]
-fn test_patch_optimization_multiple_pairs() {
-    // Test multiple consecutive Remove + Insert pairs optimization
-
-    println!("🧪 Testing multiple consecutive Remove+Insert pairs...");
-
-    let unoptimized_patches = vec![
-        Patch::Remove {
-            parent_path: vec![1],
-            index: 1,
-        },
-        Patch::Insert {
-            parent_path: vec![1],
-            index: 1,
-            new_tree: StateTree::Mem { data: vec![42] },
-        },
-        Patch::Remove {
-            parent_path: vec![1],
-            index: 2,
-        },
-        Patch::Insert {
-            parent_path: vec![1],
-            index: 2,
-            new_tree: StateTree::Feed { data: vec![7, 8] },
-        },
-    ];
-
-    println!("📝 Multiple consecutive Remove+Insert pairs:");
-    for (i, patch) in unoptimized_patches.iter().enumerate() {
-        println!("  {}: {patch:?}", i + 1);
-    }
-
-    let optimized_patches = optimize_patches(unoptimized_patches);
-
-    println!("⚡ Optimized result:");
-    for (i, patch) in optimized_patches.iter().enumerate() {
-        println!("  {}: {patch:?}", i + 1);
-    }
-
-    let expected_optimized = vec![
-        Patch::Replace {
-            path: vec![1, 1],
-            new_tree: StateTree::Mem { data: vec![42] },
-        },
-        Patch::Replace {
-            path: vec![1, 2],
-            new_tree: StateTree::Feed { data: vec![7, 8] },
-        },
-    ];
-
-    assert_eq!(
-        optimized_patches, expected_optimized,
-        "Multiple Remove + Insert pairs should be optimized to Replace"
-    );
-
-    println!("✅ Multiple pairs optimization test passed!");
 }

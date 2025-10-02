@@ -4,7 +4,7 @@ use crate::tree::StateTree;
 pub type Path = Vec<usize>;
 
 /// Enum representing change operations
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum Patch {
     /// Replace an existing node
     Replace { path: Path, new_tree: StateTree },
@@ -17,7 +17,6 @@ pub enum Patch {
     /// Remove a node from the child list of a FnCall node
     Remove { parent_path: Path, index: usize },
 }
-
 
 #[derive(Debug)]
 pub enum ApplyError {
