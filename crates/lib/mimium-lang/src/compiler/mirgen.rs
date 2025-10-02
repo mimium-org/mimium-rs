@@ -256,8 +256,39 @@ impl Context {
                     self.add_bind((*id, v))
                 }
             }
+            (Pattern::Tuple(patterns), Type::Tuple(tvec)) => {
+                for ((i, pat), cty) in patterns.iter().enumerate().zip(tvec.iter()) {
+                    let elem_v = self.push_inst(Instruction::GetElement {
+                        value: v.clone(),
+                        ty,
+                        tuple_offset: i as u64,
+                    });
+                    let tid = Type::Unknown.into_id_with_location(self.get_loc_from_span(&span));
+                    let tpat = TypedPattern::new(pat.clone(), tid);
+                    self.add_bind_pattern(&tpat, elem_v, *cty, is_global);
+                }
+            }
+            (Pattern::Record(patterns), Type::Record(kvvec)) => {
+                for (k, pat) in patterns.iter() {
+                    let i = kvvec
+                        .iter()
+                        .position(|RecordTypeField { key, .. }| key == k);
+                    if let Some(offset) = i {
+                        let elem_v = self.push_inst(Instruction::GetElement {
+                            value: v.clone(),
+                            ty,
+                            tuple_offset: offset as u64,
+                        });
+                        let tid =
+                            Type::Unknown.into_id_with_location(self.get_loc_from_span(&span));
+                        let tpat = TypedPattern::new(pat.clone(), tid);
+                        let elem_t = kvvec[offset].ty;
+                        self.add_bind_pattern(&tpat, elem_v, elem_t, is_global);
+                    };
+                }
+            }
             _ => {
-                unreachable!("pattern must be destructed before this stage")
+                panic!("typing error in the previous stage")
             }
         }
     }

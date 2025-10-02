@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use super::pattern_destructor::destruct_let_pattern;
 use crate::ast::operators::Op;
 use crate::ast::{Expr, Literal, RecordField};
 use crate::interner::{ExprNodeId, Symbol, ToSymbol};
@@ -505,7 +504,6 @@ fn convert_macroexpand(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
 pub fn convert_pronoun(expr: ExprNodeId, file_path: PathBuf) -> (ExprNodeId, Vec<Error>) {
     // these 3 operations can be done in any order, and ideally, merged to one pattern matching.
     // However, for clarity, we split them into separated operations.
-    let expr = destruct_let_pattern(expr);
     let expr = convert_operators(expr, file_path.clone());
     let expr = convert_placeholder(expr, file_path.clone());
     let expr = convert_macroexpand(expr, file_path.clone());
