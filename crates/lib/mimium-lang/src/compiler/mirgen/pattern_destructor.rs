@@ -187,7 +187,7 @@ mod test {
             Some(Expr::Var("dummy".to_symbol()).into_id(dummy_loc.clone())),
         )
         .into_id(dummy_loc.clone());
-        let new_rvar = Expr::Var("_anonymous_pat_0".to_symbol()).into_id(dummy_loc.clone());
+
         let answer = Expr::Let(
             TypedPattern::new(
                 Pattern::Single("_anonymous_pat_0".to_symbol()),
@@ -197,14 +197,86 @@ mod test {
             Some(
                 Expr::Let(
                     TypedPattern::new(Pattern::Single("x".to_symbol()), Type::Unknown.into_id()),
-                    Expr::Proj(new_rvar, 0).into_id(dummy_loc.clone()),
+                    Expr::Proj(
+                        Expr::Var("_anonymous_pat_0".to_symbol()).into_id(dummy_loc.clone()),
+                        0,
+                    )
+                    .into_id(dummy_loc.clone()),
                     Some(
                         Expr::Let(
                             TypedPattern::new(
                                 Pattern::Single("y".to_symbol()),
                                 Type::Unknown.into_id(),
                             ),
-                            Expr::Proj(new_rvar, 1).into_id(dummy_loc.clone()),
+                            Expr::Proj(
+                                Expr::Var("_anonymous_pat_0".to_symbol())
+                                    .into_id(dummy_loc.clone()),
+                                1,
+                            )
+                            .into_id(dummy_loc.clone()),
+                            Some(Expr::Var("dummy".to_symbol()).into_id(dummy_loc.clone())),
+                        )
+                        .into_id(dummy_loc.clone()),
+                    ),
+                )
+                .into_id(dummy_loc.clone()),
+            ),
+        )
+        .into_id(dummy_loc.clone());
+
+        let result = destruct_let_pattern(value);
+        assert_eq!(result.to_expr(), answer.to_expr());
+    }
+    #[test]
+    fn test_record_destruct_pattern() {
+        //let {a:x, b:y} = target;
+        // into
+
+        // let _anonymous_pat_0 = target;
+        // let x = _anonymous_pat_0.a;
+        // let y = _anonymous_pat_0.b;
+        let dummy_loc = Location {
+            span: dummy_span!(),
+            path: PathBuf::from("dummy"),
+        };
+        let value = Expr::Let(
+            TypedPattern::new(
+                Pattern::Record(vec![
+                    ("a".to_symbol(), Pattern::Single("x".to_symbol())),
+                    ("b".to_symbol(), Pattern::Single("y".to_symbol())),
+                ]),
+                Type::Unknown.into_id(),
+            ),
+            Expr::Var("target".to_symbol()).into_id(dummy_loc.clone()),
+            Some(Expr::Var("dummy".to_symbol()).into_id(dummy_loc.clone())),
+        )
+        .into_id(dummy_loc.clone());
+        let answer = Expr::Let(
+            TypedPattern::new(
+                Pattern::Single("_anonymous_pat_0".to_symbol()),
+                Type::Unknown.into_id(),
+            ),
+            Expr::Var("target".to_symbol()).into_id(dummy_loc.clone()),
+            Some(
+                Expr::Let(
+                    TypedPattern::new(Pattern::Single("x".to_symbol()), Type::Unknown.into_id()),
+                    Expr::FieldAccess(
+                        Expr::Var("_anonymous_pat_0".to_symbol()).into_id(dummy_loc.clone()),
+                        "a".to_symbol(),
+                    )
+                    .into_id(dummy_loc.clone()),
+                    Some(
+                        Expr::Let(
+                            TypedPattern::new(
+                                Pattern::Single("y".to_symbol()),
+                                Type::Unknown.into_id(),
+                            ),
+                            Expr::FieldAccess(
+                                Expr::Var("_anonymous_pat_0".to_symbol())
+                                    .into_id(dummy_loc.clone()),
+                                "b".to_symbol(),
+                            )
+                            .into_id(dummy_loc.clone()),
                             Some(Expr::Var("dummy".to_symbol()).into_id(dummy_loc.clone())),
                         )
                         .into_id(dummy_loc.clone()),

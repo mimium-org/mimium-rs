@@ -53,13 +53,14 @@ impl FuncProto {
         }) as _
     }
 }
-
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WordSize(pub u64);
 /// Complete bytecode programs.
-#[derive(Debug, Default, Clone, PartialEq)]
+    #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Program {
     pub global_fn_table: Vec<(String, FuncProto)>,
     pub ext_fun_table: Vec<(String, TypeNodeId)>,
-    pub global_vals: Vec<RawVal>,
+    pub global_vals: Vec<WordSize>,
     pub strings: Vec<String>,
     pub file_path: Option<PathBuf>,
     pub iochannels: Option<IoChannelInfo>,

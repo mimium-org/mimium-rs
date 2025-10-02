@@ -8,7 +8,9 @@ use crate::plugin::MacroFunction;
 use crate::utils::miniprint::MiniPrint;
 use crate::{function, interpreter, numeric, unit};
 pub mod convert_pronoun;
+pub(crate) mod pattern_destructor;
 pub(crate) mod recursecheck;
+
 // use super::pattern_destructor::destruct_let_pattern;
 use crate::mir::{self, Argument, Instruction, Mir, StateSize, VPtr, VReg, Value};
 
@@ -254,39 +256,8 @@ impl Context {
                     self.add_bind((*id, v))
                 }
             }
-            (Pattern::Tuple(patterns), Type::Tuple(tvec)) => {
-                for ((i, pat), cty) in patterns.iter().enumerate().zip(tvec.iter()) {
-                    let elem_v = self.push_inst(Instruction::GetElement {
-                        value: v.clone(),
-                        ty,
-                        tuple_offset: i as u64,
-                    });
-                    let tid = Type::Unknown.into_id_with_location(self.get_loc_from_span(&span));
-                    let tpat = TypedPattern::new(pat.clone(), tid);
-                    self.add_bind_pattern(&tpat, elem_v, *cty, is_global);
-                }
-            }
-            (Pattern::Record(patterns), Type::Record(kvvec)) => {
-                for (k, pat) in patterns.iter() {
-                    let i = kvvec
-                        .iter()
-                        .position(|RecordTypeField { key, .. }| key == k);
-                    if let Some(offset) = i {
-                        let elem_v = self.push_inst(Instruction::GetElement {
-                            value: v.clone(),
-                            ty,
-                            tuple_offset: offset as u64,
-                        });
-                        let tid =
-                            Type::Unknown.into_id_with_location(self.get_loc_from_span(&span));
-                        let tpat = TypedPattern::new(pat.clone(), tid);
-                        let elem_t = kvvec[offset].ty;
-                        self.add_bind_pattern(&tpat, elem_v, elem_t, is_global);
-                    };
-                }
-            }
             _ => {
-                panic!("typing error in the previous stage")
+                unreachable!("pattern must be destructed before this stage")
             }
         }
     }
@@ -498,6 +469,16 @@ impl Context {
                         unreachable!("Invalid assignment target: variable not found")
                     }
                 }
+            }
+            Expr::Proj(expr, idx) => {
+                let base_ptr = self.eval_expr_as_address(expr);
+                let tuple_ty_id = self.typeenv.infer_type(expr).unwrap();
+                let ptr = self.push_inst(Instruction::GetElement {
+                    value: base_ptr.clone(),
+                    ty: tuple_ty_id,
+                    tuple_offset: idx as u64,
+                });
+                AssignDestination::Local(ptr)
             }
             Expr::FieldAccess(expr, accesskey) => {
                 // For a field access, we need to calculate the pointer to the field.

@@ -14,6 +14,7 @@ use crate::{
     compiler::bytecodegen::ByteCodeGenerator,
     interner::Symbol,
     plugin::{ExtClsInfo, ExtClsType, ExtFunInfo, ExtFunType, MachineFunction},
+    runtime::vm::program::WordSize,
     types::{Type, TypeSize},
 };
 pub type RawVal = u64;
@@ -1041,7 +1042,13 @@ impl Machine {
 
     fn link_functions(&mut self) {
         //link external functions
-        self.global_vals = self.prog.global_vals.clone();
+        let global_mem_size = self
+            .prog
+            .global_vals
+            .iter()
+            .map(|WordSize(size)| *size as usize)
+            .sum();
+        self.global_vals = vec![0; global_mem_size];
         self.prog
             .ext_fun_table
             .iter_mut()

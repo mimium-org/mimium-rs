@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use crate::interner::{Symbol, TypeNodeId};
 use crate::mir::{self, Mir, StateSize};
 use crate::runtime::vm::bytecode::{ConstPos, GlobalPos, Reg};
+use crate::runtime::vm::program::WordSize;
 use crate::runtime::vm::{self, StateOffset};
 use crate::types::{PType, RecordTypeField, Type, TypeSize};
 use crate::utils::half_float::HFloat;
@@ -92,7 +93,7 @@ pub struct ByteCodeGenerator {
     vregister: VStack,
     varray: Vec<Arc<mir::Value>>,
     fnmap: HashMap<Symbol, usize>,
-    globals: Vec<Arc<mir::Value>>,
+    globals: HashMap<Arc<mir::Value>, usize>, //index to Program.global_vals
     program: vm::Program,
 }
 
@@ -198,28 +199,34 @@ impl ByteCodeGenerator {
     fn get_destination(&mut self, dst: Arc<mir::Value>, size: TypeSize) -> Reg {
         self.vregister.push_stack(&dst, size as _)
     }
-    fn get_or_insert_global(&mut self, gv: Arc<mir::Value>) -> GlobalPos {
-        match self.globals.iter().position(|v| gv == *v) {
-            Some(idx) => idx as GlobalPos,
+    fn get_or_insert_global(&mut self, gv: Arc<mir::Value>, ty: TypeNodeId) -> GlobalPos {
+        match self.globals.get(&gv) {
+            Some(idx) => *idx as GlobalPos,
             None => {
-                self.globals.push(gv.clone());
-                let idx = (self.globals.len() - 1) as GlobalPos;
-                self.program.global_vals.push(idx as u64);
-                idx
+                let size = Self::word_size_for_type(ty) as usize;
+                let idx = if size == 0 && self.program.global_vals.is_empty() {
+                    0
+                } else {
+                    self.program.global_vals.len() + size - 1
+                };
+                self.globals.insert(gv.clone(), idx);
+                let size = WordSize(size as _);
+                self.program.global_vals.push(size);
+                idx as GlobalPos
             }
         }
     }
     fn find(&mut self, v: &Arc<mir::Value>) -> Reg {
         self.vregister
             .find(v)
-            .or_else(|| self.globals.iter().position(|gv| v == gv).map(|v| v as Reg))
+            .or_else(|| self.globals.get(v).map(|&v| v as Reg))
             .or_else(|| self.varray.iter().position(|av| v == av).map(|v| v as Reg))
             .expect(format!("value {v} not found").as_str())
     }
     fn find_keep(&mut self, v: &Arc<mir::Value>) -> Reg {
         self.vregister
             .find_keep(v)
-            .or_else(|| self.globals.iter().position(|gv| v == gv).map(|v| v as Reg))
+            .or_else(|| self.globals.get(v).map(|&v| v as Reg))
             .expect(format!("value {v} not found").as_str())
     }
     fn find_upvalue(&self, upval: &Arc<mir::Value>) -> Reg {
@@ -385,7 +392,7 @@ impl ByteCodeGenerator {
             }
             mir::Instruction::GetGlobal(v, ty) => {
                 let dst = self.get_destination(dst, Self::word_size_for_type(ty));
-                let idx = self.get_or_insert_global(v.clone());
+                let idx = self.get_or_insert_global(v.clone(), ty);
                 Some(VmInstruction::GetGlobal(
                     dst,
                     idx,
@@ -393,7 +400,7 @@ impl ByteCodeGenerator {
                 ))
             }
             mir::Instruction::SetGlobal(v, src, ty) => {
-                let idx = self.get_or_insert_global(v.clone());
+                let idx = self.get_or_insert_global(v.clone(), ty);
                 let s = self.find(&src);
                 Some(VmInstruction::SetGlobal(
                     idx,
