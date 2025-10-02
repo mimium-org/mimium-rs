@@ -5,9 +5,7 @@ use mimium_audiodriver::{
 use mimium_lang::{
     Config, ExecContext,
     compiler::IoChannelInfo,
-    function,
-    interner::ToSymbol as _,
-    numeric,
+    function, numeric,
     plugin::Plugin,
     runtime::vm::{FuncProto, Instruction, Program},
     types::{PType, Type},
@@ -36,11 +34,11 @@ fn getnow_test() {
         constants: vec![0], //cls,
         ..Default::default()
     };
-    let fns = vec![("main".to_symbol(), main_f), ("dsp".to_symbol(), dsp_f)];
+    let fns = vec![("main".to_string(), main_f), ("dsp".to_string(), dsp_f)];
 
     let prog = Program {
         global_fn_table: fns,
-        ext_fun_table: vec![("_mimium_getnow".to_symbol(), function!(vec![], numeric!()))],
+        ext_fun_table: vec![("_mimium_getnow".to_string(), function!(vec![], numeric!()))],
         iochannels: Some(IoChannelInfo {
             input: 0,
             output: 1,

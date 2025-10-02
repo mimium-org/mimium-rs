@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::interner::{Symbol, ToSymbol, TypeNodeId};
+use crate::interner::{Symbol, TypeNodeId};
 use crate::mir::{self, Mir, StateSize};
 use crate::runtime::vm::bytecode::{ConstPos, GlobalPos, Reg};
 use crate::runtime::vm::{self, StateOffset};
@@ -260,9 +260,9 @@ impl ByteCodeGenerator {
         self.program
             .ext_fun_table
             .iter()
-            .position(|(name, _ty)| *name == label)
+            .position(|(name, _ty)| name.as_str() == label.as_str())
             .unwrap_or_else(|| {
-                self.program.ext_fun_table.push((label, ty));
+                self.program.ext_fun_table.push((label.to_string(), ty));
                 self.program.ext_fun_table.len() - 1
             }) as ConstPos
     }
@@ -351,7 +351,7 @@ impl ByteCodeGenerator {
                 }
             }
             mir::Instruction::String(s) => {
-                let pos = self.program.add_new_str(s);
+                let pos = self.program.add_new_str(s.to_string());
                 let cpos = funcproto.add_new_constant(pos as u64);
                 Some(VmInstruction::MoveConst(
                     self.get_destination(dst, 1),
@@ -755,7 +755,7 @@ impl ByteCodeGenerator {
         mirfunc: &mir::Function,
         fidx: usize,
         config: Config,
-    ) -> (Symbol, vm::FuncProto) {
+    ) -> (String, vm::FuncProto) {
         log::trace!("generating function {}", mirfunc.label.0);
         let state_size = Self::calc_state_size(&mirfunc.state_sizes);
         let mut func = vm::FuncProto {
@@ -792,7 +792,7 @@ impl ByteCodeGenerator {
                 func.bytecodes.push(i);
             }
         });
-        (mirfunc.label, func)
+        (mirfunc.label.to_string(), func)
     }
     pub fn generate(&mut self, mir: Mir, config: Config) -> vm::Program {
         self.program.global_fn_table = mir
@@ -808,7 +808,7 @@ impl ByteCodeGenerator {
         self.program.iochannels = mir.get_dsp_iochannels();
         log::debug!("iochannels: {:?}", self.program.iochannels.unwrap());
         let _io = self.program.iochannels.unwrap();
-        self.program.dsp_index = self.program.get_fun_index(&"dsp".to_symbol());
+        self.program.dsp_index = self.program.get_fun_index("dsp");
         self.program.clone()
     }
 }
@@ -821,8 +821,8 @@ fn remove_redundunt_mov(program: vm::Program) -> vm::Program {
         let mut removeconst_idx = std::collections::HashMap::<usize, VmInstruction>::new();
 
         for (i, pair) in f.bytecodes.windows(2).enumerate() {
-            match pair {
-                &[
+            match *pair {
+                [
                     VmInstruction::Move(dst, src),
                     VmInstruction::Move(dst2, src2),
                 ] if dst == src2 && src == dst2 =>
@@ -831,14 +831,14 @@ fn remove_redundunt_mov(program: vm::Program) -> vm::Program {
                     remove_idx.insert(i);
                     remove_idx.insert(i + 1);
                 }
-                &[
+                [
                     VmInstruction::Move(dst, src),
                     VmInstruction::Move(dst2, src2),
                 ] if dst == src2 => {
                     reduce_idx.insert(i, VmInstruction::Move(dst2, src));
                     remove_idx.insert(i + 1);
                 }
-                &[
+                [
                     VmInstruction::MoveConst(dst, src),
                     VmInstruction::Move(dst2, src2),
                 ] if dst == src2 => {
@@ -877,8 +877,8 @@ pub fn gen_bytecode(mir: mir::Mir, config: Config) -> vm::Program {
 #[cfg(test)]
 mod test {
 
-    use crate::{compiler::IoChannelInfo, interner::ToSymbol};
-
+    use crate::compiler::IoChannelInfo;
+    use crate::interner::ToSymbol;
     #[test]
     fn build() {
         use super::*;
@@ -895,7 +895,7 @@ mod test {
         let mut src = mir::Mir::default();
         let arg = mir::Argument("hoge".to_symbol(), numeric!());
         let argv = Arc::new(mir::Value::Argument(0));
-        let mut func = mir::Function::new(0, "dsp".to_symbol(), &[arg.clone()], None);
+        let mut func = mir::Function::new(0, "dsp".to_symbol(), std::slice::from_ref(&arg), None);
         func.return_type.get_or_init(|| numeric!());
         let mut block = mir::Block::default();
         let resint = Arc::new(mir::Value::Register(1));
@@ -929,7 +929,8 @@ mod test {
             VmInstruction::AddF(1, 0, 1),
             VmInstruction::Return(1, 1),
         ];
-        answer.global_fn_table.push(("dsp".to_symbol(), main));
+        answer.global_fn_table.push(("dsp".to_string(), main));
+        answer.dsp_index = Some(0);
         assert_eq!(res, answer);
     }
 }

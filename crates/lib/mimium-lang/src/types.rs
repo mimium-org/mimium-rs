@@ -2,7 +2,7 @@ use std::{
     cell::RefCell,
     fmt,
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
 };
 
 use crate::{
@@ -100,7 +100,7 @@ pub enum Type {
     Ref(TypeNodeId),
     //(experimental) code-type for multi-stage computation that will be evaluated on the next stage
     Code(TypeNodeId),
-    Intermediate(Arc<Mutex<TypeVar>>),
+    Intermediate(Arc<RwLock<TypeVar>>),
     TypeScheme(TypeSchemeId),
     /// Any type is the top level, it can be unified with anything.
     Any,
@@ -112,8 +112,8 @@ impl PartialEq for Type {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Type::Intermediate(a), Type::Intermediate(b)) => {
-                        let a = a.lock().unwrap();
-                        let b = b.lock().unwrap();
+                        let a = a.read().unwrap();
+                        let b = b.read().unwrap();
                         a.var == b.var
                     }
             (Type::Primitive(a), Type::Primitive(b)) => a == b,
@@ -161,7 +161,7 @@ impl Type {
             _ => false,
         }
     }
-    pub fn is_intermediate(&self) -> Option<Arc<Mutex<TypeVar>>> {
+    pub fn is_intermediate(&self) -> Option<Arc<RwLock<TypeVar>>> {
         match self {
             Type::Intermediate(tvar) => Some(tvar.clone()),
             _ => None,
@@ -264,7 +264,7 @@ impl TypeNodeId {
     pub fn get_root(&self) -> TypeNodeId {
         match self.to_type() {
             Type::Intermediate(cell) => {
-                let tv = cell.lock().unwrap();
+                let tv = cell.read().unwrap();
                 tv.parent.map_or(*self, |t| t.get_root())
             }
             _ => *self,
@@ -367,7 +367,7 @@ impl fmt::Display for Type {
 
             Type::Code(c) => write!(f, "<{}>", c.to_type()),
             Type::Intermediate(id) => {
-                write!(f, "{}", id.lock().unwrap())
+                write!(f, "{}", id.read().unwrap())
             }
             Type::TypeScheme(id) => {
                 write!(f, "g({})", id.0)

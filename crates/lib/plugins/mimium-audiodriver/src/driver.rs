@@ -105,7 +105,7 @@ pub struct RuntimeData {
 impl RuntimeData {
     pub fn new(vm: vm::Machine, sys_plugins: Vec<DynSystemPlugin>) -> Self {
         //todo:error handling
-        let dsp_i = vm.prog.get_fun_index(&"dsp".to_symbol()).unwrap_or(0);
+        let dsp_i = vm.prog.get_fun_index("dsp").unwrap_or(0);
         Self {
             vm,
             sys_plugins,
@@ -113,7 +113,7 @@ impl RuntimeData {
         }
     }
     pub fn new_resume(&self, new_prog: Program) -> Self {
-        let dsp_i = self.vm.prog.get_fun_index(&"dsp".to_symbol()).unwrap_or(0);
+        let dsp_i = self.vm.prog.get_fun_index("dsp").unwrap_or(0);
 
         Self {
             vm: self.vm.new_resume(new_prog),
@@ -160,7 +160,7 @@ impl TryFrom<&mut ExecContext> for RuntimeData {
                 path: PathBuf::new(),
             },
         })?;
-        let dsp_i = vm.prog.get_fun_index(&"dsp".to_symbol()).unwrap_or(0);
+        let dsp_i = vm.prog.get_fun_index("dsp").unwrap_or(0);
         let sys_plugins = ctx.get_system_plugins().cloned().collect();
         Ok(Self {
             vm,

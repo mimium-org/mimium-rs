@@ -605,7 +605,7 @@ impl Machine {
     pub fn wrap_extern_cls(&mut self, extcls: ExtClsInfo) -> ClosureIdx {
         let ExtClsInfo { name, fun, ty } = extcls;
 
-        self.prog.ext_fun_table.push((name, ty));
+        self.prog.ext_fun_table.push((name.to_string(), ty));
         let prog_funid = self.prog.ext_fun_table.len() - 1;
         self.ext_cls_table.push((name, fun));
         let vm_clsid = self.ext_cls_table.len() - 1;
@@ -640,7 +640,7 @@ impl Machine {
             constants: vec![prog_funid as _],
             ..Default::default()
         };
-        self.prog.global_fn_table.push((name, newfunc));
+        self.prog.global_fn_table.push((name.to_string(), newfunc));
         let fn_i = self.prog.global_fn_table.len() - 1;
         let mut cls = Closure::new(
             &self.prog,
@@ -1051,14 +1051,14 @@ impl Machine {
                     .ext_fun_table
                     .iter()
                     .enumerate()
-                    .find(|(_j, (fname, _fn))| name == fname)
+                    .find(|(_j, (fname, _fn))| name == fname.as_str())
                 {
                     let _ = self.fn_map.insert(i, ExtFnIdx::Fun(j));
                 } else if let Some((j, _)) = self
                     .ext_cls_table
                     .iter()
                     .enumerate()
-                    .find(|(_j, (fname, _fn))| name == fname)
+                    .find(|(_j, (fname, _fn))| name == fname.as_str())
                 {
                     let _ = self.fn_map.insert(i, ExtFnIdx::Cls(j));
                 } else {
@@ -1080,7 +1080,7 @@ impl Machine {
             0
         }
     }
-    pub fn execute_entry(&mut self, entry: &Symbol) -> ReturnCode {
+    pub fn execute_entry(&mut self, entry: &str) -> ReturnCode {
         if let Some(idx) = self.prog.get_fun_index(entry) {
             self.execute_idx(idx)
         } else {

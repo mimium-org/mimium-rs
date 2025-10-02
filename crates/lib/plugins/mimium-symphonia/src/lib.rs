@@ -132,7 +132,7 @@ fn interpolate_vec(vec: &[f64], pos: f64) -> f64 {
 fn gen_sampler_mono(machine: &mut Machine) -> ReturnCode {
     //return higher order closure
 
-    let relpath = machine.prog.strings[vm::Machine::get_as::<usize>(machine.get_stack(0))];
+    let relpath = machine.prog.strings[vm::Machine::get_as::<usize>(machine.get_stack(0))].clone();
 
     let mmmfilepath = machine
         .prog

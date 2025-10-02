@@ -57,23 +57,23 @@ impl FuncProto {
 /// Complete bytecode programs.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Program {
-    pub global_fn_table: Vec<(Symbol, FuncProto)>,
-    pub ext_fun_table: Vec<(Symbol, TypeNodeId)>,
+    pub global_fn_table: Vec<(String, FuncProto)>,
+    pub ext_fun_table: Vec<(String, TypeNodeId)>,
     pub global_vals: Vec<RawVal>,
-    pub strings: Vec<Symbol>,
+    pub strings: Vec<String>,
     pub file_path: Option<PathBuf>,
     pub iochannels: Option<IoChannelInfo>,
     //hold absolute index of dsp function because the symbol interner can't be used in the audio thread
     pub dsp_index: Option<usize>,
 }
 impl Program {
-    pub fn get_fun_index(&self, name: &Symbol) -> Option<usize> {
+    pub fn get_fun_index(&self, name: &str) -> Option<usize> {
         self.global_fn_table
             .iter()
-            .position(|(label, _f)| label == name)
+            .position(|(label, _f)| label.as_str() == name)
     }
     pub fn get_dsp_fn(&self) -> Option<&FuncProto> {
-        self.get_fun_index(&"dsp".to_symbol())
+        self.get_fun_index("dsp")
             .and_then(|idx| self.global_fn_table.get(idx).map(|(_, f)| f))
     }
 
@@ -84,10 +84,10 @@ impl Program {
             .get(dsp_i)
             .map(|(_, f)| &f.state_skeleton)
     }
-    pub fn add_new_str(&mut self, s: Symbol) -> usize {
+    pub fn add_new_str(&mut self, s: String) -> usize {
         self.strings
             .iter()
-            .position(|&c| s == c)
+            .position(|c| s == *c)
             .unwrap_or_else(|| {
                 self.strings.push(s);
                 self.strings.len() - 1
