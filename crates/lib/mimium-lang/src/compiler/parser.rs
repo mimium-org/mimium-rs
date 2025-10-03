@@ -5,7 +5,7 @@ use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::types::{PType, RecordTypeField, Type};
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::*;
-use std::path::{self, PathBuf};
+use std::path::PathBuf;
 
 use chumsky::input::{Stream, ValueInput};
 use chumsky::{Parser, prelude::*};

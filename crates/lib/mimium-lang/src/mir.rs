@@ -68,8 +68,8 @@ pub enum Instruction {
     GetUpValue(u64, TypeNodeId),
     SetUpValue(u64, VPtr, TypeNodeId),
     //internal state: feed and delay
-    PushStateOffset(Vec<StateSize>),
-    PopStateOffset(Vec<StateSize>),
+    PushStateOffset(u64),
+    PopStateOffset(u64),
     //load internal state to register(destination)
     GetState(TypeNodeId),
 
@@ -139,6 +139,38 @@ pub enum Instruction {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Block(pub Vec<(VPtr, Instruction)>);
 
+impl Block {
+    pub fn get_total_stateskeleton(
+        &self,
+        functions: &[Function],
+    ) -> Vec<StateTreeSkeleton<StateType>> {
+        let mut children = vec![];
+        for (_v, instr) in &self.0 {
+            match instr {
+                Instruction::Delay(len, _, _) => {
+                    children.push(Box::new(StateTreeSkeleton::Delay { len: *len }))
+                }
+                Instruction::Mem(_) => {
+                    children.push(Box::new(StateTreeSkeleton::Mem(StateType(1))))
+                }
+                Instruction::ReturnFeed(_, ty) => {
+                    children.push(Box::new(StateTreeSkeleton::Feed(StateType::from(*ty))))
+                }
+                Instruction::Call(v, _, _) => {
+                    if let Value::Function(idx) = **v {
+                        let func = &functions[idx];
+                        if func.is_stateful() {
+                            children.push(Box::new(func.state_skeleton.clone()))
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        children.into_iter().map(|e| *e).collect()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpIndex {
     Local(usize),   // index of local variables in upper functions
@@ -187,15 +219,8 @@ pub struct Function {
     pub upindexes: Vec<Arc<Value>>,
     pub upperfn_i: Option<usize>,
     pub body: Vec<Block>,
-    pub state_sizes: Vec<StateSize>,
     /// StateTree skeleton information for this function's state layout
     pub state_skeleton: StateTreeSkeleton<StateType>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct StateSize {
-    pub size: u64,
-    pub ty: TypeNodeId,
 }
 
 impl Function {
@@ -217,7 +242,6 @@ impl Function {
             upindexes: vec![],
             upperfn_i,
             body: vec![Block::default()],
-            state_sizes: vec![],
             state_skeleton: StateTreeSkeleton::FnCall(state_boxed),
         }
     }
@@ -236,17 +260,6 @@ impl Function {
                 self.upindexes.push(v.clone());
                 self.upindexes.len() - 1
             })
-    }
-    fn skeleton_to_state_size(skeleton: &StateTreeSkeleton<TypeNodeId>) -> u64 {
-        match skeleton {
-            StateTreeSkeleton::Delay { len } => len + 2, // +2 for readidx and writeidx
-            StateTreeSkeleton::Mem(t) => t.word_size(),
-            StateTreeSkeleton::Feed(t) => t.word_size(),
-            StateTreeSkeleton::FnCall(children) => children
-                .iter()
-                .map(|child| Self::skeleton_to_state_size(child))
-                .sum(),
-        }
     }
     pub fn push_state_skeleton(&mut self, skeleton: StateTreeSkeleton<StateType>) {
         if let StateTreeSkeleton::FnCall(children) = &mut self.state_skeleton {

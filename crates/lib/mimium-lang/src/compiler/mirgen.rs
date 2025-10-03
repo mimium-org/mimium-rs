@@ -12,9 +12,8 @@ pub(crate) mod pattern_destructor;
 pub(crate) mod recursecheck;
 
 // use super::pattern_destructor::destruct_let_pattern;
-use crate::mir::{self, Argument, Instruction, Mir, StateSize, VPtr, VReg, Value};
+use crate::mir::{self, Argument, Instruction, Mir, VPtr, VReg, Value};
 
-use half::vec;
 use state_tree::tree::StateTreeSkeleton;
 
 use std::collections::BTreeMap;
@@ -33,16 +32,14 @@ use crate::ast::{Expr, Literal};
 // pub mod hir_solve_stage;
 type StateSkeleton = StateTreeSkeleton<mir::StateType>;
 
-use state_tree::tree::DELAY_ADDITIONAL_OFFSET;
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct FunctionId(pub u64);
 #[derive(Debug, Default)]
 struct ContextData {
     pub func_i: FunctionId,
     pub current_bb: usize,
-    pub next_state_offset: Option<Vec<StateSize>>,
-    pub push_sum: Vec<StateSize>,
+    pub next_state_offset: Option<u64>,
+    pub push_sum: u64,
 }
 #[derive(Debug, Default, Clone)]
 struct DefaultArgData {
@@ -125,24 +122,12 @@ impl Context {
                 //need to evaluate args first before calculate state offset because the argument for time contains stateful function call.
                 let (args, astates) = self.eval_args(&[*src, *time]);
                 let max_time = max.as_str().parse::<f64>().unwrap();
-                let shift_size = max_time as u64 + DELAY_ADDITIONAL_OFFSET as u64;
-                let delay_state_size = StateSize {
-                    size: shift_size,
-                    ty: *rt,
+                let new_skeleton = StateSkeleton::Delay {
+                    len: max_time as u64,
                 };
-                self.get_current_fn().state_sizes.push(delay_state_size);
-                // self.get_current_fn()
-                //     .push_state_skeleton(StateSkeleton::Delay {
-                //         len: max_time as u64,
-                //     });
-                if let Some(offset) = self.get_ctxdata().next_state_offset.take() {
-                    self.get_ctxdata().push_sum.extend_from_slice(&offset);
-                    self.get_current_basicblock().0.push((
-                        Arc::new(Value::None),
-                        Instruction::PushStateOffset(offset.clone()),
-                    ));
-                    self.get_ctxdata().next_state_offset = Some(vec![delay_state_size]);
-                }
+                self.consume_and_insert_pushoffset();
+                self.get_ctxdata().next_state_offset = Some(new_skeleton.total_size());
+
                 let (args, _types): (Vec<VPtr>, Vec<TypeNodeId>) = args.into_iter().unzip();
                 Some((
                     self.push_inst(Instruction::Delay(
@@ -150,13 +135,7 @@ impl Context {
                         args[0].clone(),
                         args[1].clone(),
                     )),
-                    [
-                        astates,
-                        vec![StateSkeleton::Delay {
-                            len: max_time as u64,
-                        }],
-                    ]
-                    .concat(),
+                    [astates, vec![new_skeleton]].concat(),
                 ))
             }
             _ => unreachable!("unbounded delay access, should be an error at typing stage."),
@@ -204,11 +183,6 @@ impl Context {
             intrinsics::SIN => (Some(Instruction::SinF(a0)), vec![]),
             intrinsics::COS => (Some(Instruction::CosF(a0)), vec![]),
             intrinsics::MEM => {
-                self.get_current_fn()
-                    .state_sizes
-                    .push(StateSize { size: 1, ty: a0_ty });
-                // self.get_current_fn()
-                //     .push_state_skeleton(StateSkeleton::Mem(mir::StateType::from(numeric!())));
                 let skeleton = StateSkeleton::Mem(mir::StateType::from(numeric!()));
                 (Some(Instruction::Mem(a0)), vec![skeleton])
             }
@@ -590,6 +564,15 @@ impl Context {
             }
         }
     }
+    fn consume_and_insert_pushoffset(&mut self) {
+        if let Some(offset) = self.get_ctxdata().next_state_offset.take() {
+            self.get_ctxdata().push_sum += offset;
+            //insert pushstateoffset
+            self.get_current_basicblock()
+                .0
+                .push((Arc::new(Value::None), Instruction::PushStateOffset(offset)));
+        }
+    }
     fn emit_fncall(
         &mut self,
         idx: u64,
@@ -599,32 +582,16 @@ impl Context {
         // stack size of the function to be called
         let target_fn = &self.program.functions[idx as usize];
         let is_stateful = target_fn.is_stateful();
-        let state_sizes = target_fn.state_sizes.clone();
         let child_skeleton = target_fn.state_skeleton.clone();
 
-        if let Some(offset) = self.get_ctxdata().next_state_offset.take() {
-            self.get_ctxdata().push_sum.extend_from_slice(&offset);
-            //insert pushstateoffset
-            self.get_current_basicblock()
-                .0
-                .push((Arc::new(Value::None), Instruction::PushStateOffset(offset)));
-        }
+        self.consume_and_insert_pushoffset();
 
-        let f = {
-            self.get_current_fn()
-                .state_sizes
-                .extend_from_slice(&state_sizes);
-            // if !is_stateful {
-            // self.get_current_fn()
-            //     .push_state_skeleton(child_skeleton.clone());
-            // }
-            self.push_inst(Instruction::Uinteger(idx))
-        };
+        let f = self.push_inst(Instruction::Uinteger(idx));
 
         let res = self.push_inst(Instruction::Call(f.clone(), args, ret_t));
 
         if is_stateful {
-            self.get_ctxdata().next_state_offset = Some(state_sizes);
+            self.get_ctxdata().next_state_offset = Some(child_skeleton.total_size());
         }
         let s = if is_stateful {
             vec![child_skeleton]
@@ -1029,7 +996,7 @@ impl Context {
                         }
 
                         let push_sum = ctx.get_ctxdata().push_sum.clone();
-                        if !push_sum.is_empty() {
+                        if push_sum > 0 {
                             ctx.get_current_basicblock().0.push((
                                 Arc::new(mir::Value::None),
                                 Instruction::PopStateOffset(push_sum),
@@ -1074,16 +1041,14 @@ impl Context {
                 (res, ty, vec![])
             }
             Expr::Feed(id, expr) => {
-                //set typesize lazily
-                let statesize = StateSize { size: 1, ty };
-                let res = self.push_inst(Instruction::GetState(ty));
-                self.add_bind((*id, res.clone()));
-                self.get_ctxdata().next_state_offset = Some(vec![statesize]);
-                let (retv, _t, states) = self.eval_expr(*expr);
-                self.get_current_fn().state_sizes.push(statesize);
+                debug_assert!(self.get_ctxdata().next_state_offset.is_none());
 
+                let res = self.push_inst(Instruction::GetState(ty));
                 let skeleton = StateTreeSkeleton::Feed(mir::StateType::from(ty));
-                // self.get_current_fn().push_state_skeleton(skeleton.clone());
+                self.add_bind((*id, res.clone()));
+                self.get_ctxdata().next_state_offset = Some(skeleton.total_size());
+                let (retv, _t, states) = self.eval_expr(*expr);
+
                 (
                     Arc::new(Value::State(retv)),
                     ty,

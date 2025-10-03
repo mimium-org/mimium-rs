@@ -1,8 +1,8 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::interner::{Symbol, TypeNodeId};
-use crate::mir::{self, Mir, StateSize};
+use crate::mir::{self, Mir};
 use crate::runtime::vm::bytecode::{ConstPos, GlobalPos, Reg};
 use crate::runtime::vm::program::WordSize;
 use crate::runtime::vm::{self, StateOffset};
@@ -154,13 +154,7 @@ impl ByteCodeGenerator {
             }
         }
     }
-    pub fn calc_state_size<T: AsRef<[StateSize]>>(state_sizes: T) -> u64 {
-        state_sizes
-            .as_ref()
-            .iter()
-            .map(|x| x.size * Self::word_size_for_type(x.ty) as u64)
-            .sum()
-    }
+
     fn get_binop(&mut self, v1: Arc<mir::Value>, v2: Arc<mir::Value>) -> (Reg, Reg) {
         let r1 = self.find(&v1);
         let r2 = self.find(&v2);
@@ -544,13 +538,11 @@ impl ByteCodeGenerator {
                 ))
             }
             mir::Instruction::PushStateOffset(v) => {
-                let state_size = StateOffset::try_from(Self::calc_state_size(v))
-                    .expect("too much large state offset.");
+                let state_size = StateOffset::try_from(v).expect("too much large state offset.");
                 Some(VmInstruction::PushStatePos(state_size))
             }
             mir::Instruction::PopStateOffset(v) => {
-                let state_size = StateOffset::try_from(Self::calc_state_size(v))
-                    .expect("too much large state offset.");
+                let state_size = StateOffset::try_from(v).expect("too much large state offset.");
                 Some(VmInstruction::PopStatePos(state_size))
             }
             mir::Instruction::GetState(ty) => {
