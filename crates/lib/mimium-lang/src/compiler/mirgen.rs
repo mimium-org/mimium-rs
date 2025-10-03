@@ -108,7 +108,7 @@ impl Context {
         f: &VPtr,
         args: &[ExprNodeId],
     ) -> Option<(VPtr, Vec<StateSkeleton>)> {
-        let rt = match f.as_ref() {
+        let _rt = match f.as_ref() {
             Value::ExtFunction(name, ft) if *name == "delay".to_symbol() => ft,
             _ => return None,
         };
@@ -985,7 +985,7 @@ impl Context {
                 };
 
                 let name = self.consume_fnlabel();
-                let (c_idx, f, astates) =
+                let (c_idx, f, _astates) =
                     self.do_in_child_ctx(name, &binds, vec![], |ctx, c_idx| {
                         let (res, _, states) = ctx.eval_expr(*body);
 
@@ -995,7 +995,7 @@ impl Context {
                             *child = states.clone().into_iter().map(Box::new).collect();
                         }
 
-                        let push_sum = ctx.get_ctxdata().push_sum.clone();
+                        let push_sum = ctx.get_ctxdata().push_sum;
                         if push_sum > 0 {
                             ctx.get_current_basicblock().0.push((
                                 Arc::new(mir::Value::None),
