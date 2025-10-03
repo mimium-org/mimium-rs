@@ -204,8 +204,10 @@ impl Function {
         name: Symbol,
         args: &[Argument],
         // argtypes: &[TypeNodeId],
+        state_skeleton: Vec<StateTreeSkeleton<StateType>>,
         upperfn_i: Option<usize>,
     ) -> Self {
+        let state_boxed = state_skeleton.into_iter().map(Box::new).collect();
         Self {
             index,
             label: name,
@@ -216,7 +218,7 @@ impl Function {
             upperfn_i,
             body: vec![Block::default()],
             state_sizes: vec![],
-            state_skeleton: StateTreeSkeleton::FnCall(vec![]), // Initialize as empty FnCall, will be set during MIR generation
+            state_skeleton: StateTreeSkeleton::FnCall(state_boxed),
         }
     }
     pub fn add_new_basicblock(&mut self) -> usize {

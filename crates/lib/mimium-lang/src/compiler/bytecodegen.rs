@@ -900,7 +900,13 @@ mod test {
         let mut src = mir::Mir::default();
         let arg = mir::Argument("hoge".to_symbol(), numeric!());
         let argv = Arc::new(mir::Value::Argument(0));
-        let mut func = mir::Function::new(0, "dsp".to_symbol(), std::slice::from_ref(&arg), None);
+        let mut func = mir::Function::new(
+            0,
+            "dsp".to_symbol(),
+            std::slice::from_ref(&arg),
+            vec![],
+            None,
+        );
         func.return_type.get_or_init(|| numeric!());
         let mut block = mir::Block::default();
         let resint = Arc::new(mir::Value::Register(1));
