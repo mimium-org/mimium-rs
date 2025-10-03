@@ -764,7 +764,6 @@ impl ByteCodeGenerator {
         config: Config,
     ) -> (String, vm::FuncProto) {
         log::trace!("generating function {}", mirfunc.label.0);
-        let state_size = Self::calc_state_size(&mirfunc.state_sizes);
         let mut func = vm::FuncProto {
             nparam: mirfunc.args.len(),
             nret: Self::word_size_for_type(
@@ -773,7 +772,6 @@ impl ByteCodeGenerator {
                     .get()
                     .expect("return type not inferred correctly"),
             ) as _,
-            state_size,
             state_skeleton: mirfunc.state_skeleton.clone(), // Transfer state skeleton from MIR
             ..Default::default()
         };

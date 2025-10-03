@@ -207,7 +207,7 @@ pub fn test_state_sizes<T: IntoIterator<Item = (&'static str, u64)>>(path: &'sta
             continue;
         }
 
-        let actual = proto.state_size;
+        let actual = proto.state_skeleton.total_size();
         match state_sizes.get(fn_name) {
             Some(&expected) => {
                 assert_eq!(

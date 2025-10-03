@@ -95,7 +95,7 @@ fn build_patches_recursive(
     if let (StateTree::FnCall(old_children), StateTree::FnCall(new_children)) = (old_node, new_node)
     {
         // 自作のlcs_by関数を使用
-        let lcs_results = lcs_by(old_children, new_children, |a, b| nodes_match(a, b));
+        let lcs_results = lcs_by(old_children, new_children, nodes_match);
 
         let mut unmatched_old = Vec::new();
         let mut unmatched_new = Vec::new();

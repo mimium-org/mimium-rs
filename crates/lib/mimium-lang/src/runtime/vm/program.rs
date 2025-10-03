@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use super::{ConstPos, Instruction, RawVal};
 use crate::compiler::IoChannelInfo;
-use crate::interner::{Symbol, ToSymbol, TypeNodeId};
+use crate::interner::TypeNodeId;
 use crate::mir;
 pub use mir::OpenUpValue;
 use state_tree::tree::StateTreeSkeleton;
@@ -16,7 +16,6 @@ pub struct FuncProto {
     pub upindexes: Vec<OpenUpValue>,
     pub bytecodes: Vec<Instruction>,
     pub constants: Vec<RawVal>,
-    pub state_size: u64,
     pub delay_sizes: Vec<u64>,
     /// StateTree skeleton information inherited from MIR for this function's state layout
     pub state_skeleton: StateTreeSkeleton<mir::StateType>,
@@ -30,7 +29,6 @@ impl Default for FuncProto {
             upindexes: Vec::new(),
             bytecodes: Vec::new(),
             constants: Vec::new(),
-            state_size: 0,
             delay_sizes: Vec::new(),
             state_skeleton: StateTreeSkeleton::FnCall(vec![]), // Initialize as empty FnCall
         }
@@ -56,7 +54,7 @@ impl FuncProto {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WordSize(pub u64);
 /// Complete bytecode programs.
-    #[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Program {
     pub global_fn_table: Vec<(String, FuncProto)>,
     pub ext_fun_table: Vec<(String, TypeNodeId)>,
@@ -102,7 +100,6 @@ impl std::fmt::Display for Program {
             let _ = writeln!(f, "{}", fns.0);
             let _ = writeln!(f, "nparams:{} nret: {}", fns.1.nparam, fns.1.nret);
             let _ = write!(f, "upindexes: {:?}  ", fns.1.upindexes);
-            let _ = writeln!(f, "state_size: {}  ", fns.1.state_size);
             let _ = writeln!(f, "state_skeleton: {:?}", fns.1.state_skeleton);
             let _ = writeln!(f, "constants:  {:?}", fns.1.constants);
             let _ = writeln!(f, "instructions:");

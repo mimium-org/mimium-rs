@@ -1,8 +1,6 @@
 use std::{
-    cell::RefCell,
     fmt,
-    rc::Rc,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, RwLock},
 };
 
 use crate::{
@@ -112,15 +110,17 @@ impl PartialEq for Type {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Type::Intermediate(a), Type::Intermediate(b)) => {
-                        let a = a.read().unwrap();
-                        let b = b.read().unwrap();
-                        a.var == b.var
-                    }
+                let a = a.read().unwrap();
+                let b = b.read().unwrap();
+                a.var == b.var
+            }
             (Type::Primitive(a), Type::Primitive(b)) => a == b,
             (Type::Array(a), Type::Array(b)) => a == b,
             (Type::Tuple(a), Type::Tuple(b)) => a == b,
             (Type::Record(a), Type::Record(b)) => a == b,
-            (Type::Function { arg: a1, ret: a2 }, Type::Function { arg: b1, ret: b2 }) => a1 == b1 && a2 == b2,
+            (Type::Function { arg: a1, ret: a2 }, Type::Function { arg: b1, ret: b2 }) => {
+                a1 == b1 && a2 == b2
+            }
             (Type::Ref(a), Type::Ref(b)) => a == b,
             (Type::Code(a), Type::Code(b)) => a == b,
             (Type::TypeScheme(a), Type::TypeScheme(b)) => a == b,
