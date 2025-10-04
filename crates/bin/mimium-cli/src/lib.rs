@@ -25,7 +25,7 @@ use mimium_lang::{
     },
 };
 use mimium_symphonia::SamplerPlugin;
-use notify::{Event, FsEventWatcher, RecursiveMode, Watcher, event::ModifyKind};
+use notify::{Event, RecursiveMode, Watcher};
 
 #[derive(clap::Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -209,7 +209,7 @@ struct FileRunner {
 
 struct FileWatcher {
     pub rx: mpsc::Receiver<notify::Result<Event>>,
-    pub watcher: FsEventWatcher,
+    pub watcher: notify::RecommendedWatcher,
 }
 impl FileRunner {
     pub fn new(
