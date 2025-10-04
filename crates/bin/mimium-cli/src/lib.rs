@@ -345,8 +345,10 @@ pub fn run_file(
             };
 
             let mainloop = ctx.try_get_main_loop().unwrap_or(Box::new(move || {
-                loop {
-                    std::thread::sleep(std::time::Duration::from_millis(1000));
+                if options.with_gui {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(1000));
+                    }
                 }
             }));
             //this takes ownership of ctx
@@ -357,8 +359,9 @@ pub fn run_file(
 
             let frunner =
                 FileRunner::new(compiler, fullpath.to_path_buf(), driver.get_vm_channel());
-
-            std::thread::spawn(move || frunner.cli_loop());
+            if options.with_gui {
+                std::thread::spawn(move || frunner.cli_loop());
+            }
             mainloop();
             Ok(())
         }
