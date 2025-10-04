@@ -21,7 +21,7 @@ pub fn update_state_storage<T: SizedType + PartialEq>(
     let patches = tree_diff::take_diff(&target_tree, &new_tree);
 
     for patch in &patches {
-        log::info!("Patch: {patch:?}");
+        log::debug!("Patch: {patch:?}");
     }
     patch::apply_patches(&mut new_tree, &target_tree, &patches);
 

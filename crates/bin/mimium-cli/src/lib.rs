@@ -1,11 +1,11 @@
 mod async_compiler;
 
 use std::{
-    io::stdin,
     path::{Path, PathBuf},
     sync::mpsc,
 };
 
+use crate::async_compiler::{CompileRequest, Errors, Response};
 use clap::{Parser, ValueEnum};
 use mimium_audiodriver::{
     backends::{csv::csv_driver, local_buffer::LocalBufferDriver},
@@ -15,7 +15,6 @@ use mimium_audiodriver::{
 use mimium_lang::{
     Config, ExecContext,
     compiler::{self, bytecodegen::SelfEvalMode, emit_ast},
-    interner::{Symbol, ToSymbol},
     log,
     plugin::Plugin,
     runtime::vm,
@@ -26,9 +25,7 @@ use mimium_lang::{
     },
 };
 use mimium_symphonia::SamplerPlugin;
-use ringbuf::{HeapCons, traits::Producer};
-
-use crate::async_compiler::{CompileRequest, Errors, Response};
+use notify::{Event, FsEventWatcher, RecursiveMode, Watcher, event::ModifyKind};
 
 #[derive(clap::Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -210,6 +207,10 @@ struct FileRunner {
     pub fullpath: PathBuf,
 }
 
+struct FileWatcher {
+    pub rx: mpsc::Receiver<notify::Result<Event>>,
+    pub watcher: FsEventWatcher,
+}
 impl FileRunner {
     pub fn new(
         compiler: compiler::Context,
@@ -224,70 +225,81 @@ impl FileRunner {
             fullpath: path,
         }
     }
-    //this api never returns
-    pub fn cli_loop(&self) {
-        loop {
-            let mut line = String::new();
-
-            let _size = stdin().read_line(&mut line).expect("stdin read error.");
-            match line.trim() {
-                // "p" | "play" => {
-                //     log::info!("play");
-                //     let _ = driver.play();
-                // }
-                // "s" | "stop" | "pause" => {
-                //     log::info!("pause");
-                //     let _ = driver.pause();
-                // }
-                "u" | "update" => {
-                    log::info!("update");
-                    match fileloader::load(&self.fullpath.to_string_lossy()) {
-                        Ok(new_content) => {
-                            let _ = self.tx_compiler.send(CompileRequest {
-                                source: new_content.clone(),
-                                path: self.fullpath.clone(),
-                                option: RunOptions {
-                                    mode: RunMode::EmitByteCode,
-                                    with_gui: true,
-                                    config: Config::default(),
-                                },
-                            });
-                            let _ = self.rx_compiler.recv().map(|res| match res {
-                                Ok(Response::Ast(_)) | Ok(Response::Mir(_)) => {
-                                    log::warn!("unexpected response: AST/MIR");
-                                }
-                                Ok(Response::ByteCode(prog)) => {
-                                    log::info!("compiled successfully.");
-                                    if let Some(tx) = &self.tx_prog {
-                                        let _ = tx.send(prog);
-                                    }
-                                }
-                                Err(errs) => {
-                                    let errs = errs
-                                        .into_iter()
-                                        .map(|e| Box::new(e) as Box<dyn ReportableError>)
-                                        .collect::<Vec<_>>();
-                                    report(&new_content, self.fullpath.clone(), &errs);
-                                }
-                            });
-
-                            // match runner.exec_ctx.prepare_machine_resume(&new_content) {
-                        }
-                        Err(e) => {
-                            log::error!(
-                                "failed to reload the file {}: {}",
-                                self.fullpath.display(),
-                                e
-                            );
+    fn try_new_watcher(&self) -> Result<FileWatcher, notify::Error> {
+        let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
+        let mut watcher = notify::recommended_watcher(tx)?;
+        watcher.watch(Path::new(&self.fullpath), RecursiveMode::NonRecursive)?;
+        Ok(FileWatcher { rx, watcher })
+    }
+    fn recompile_file(&self) {
+        match fileloader::load(&self.fullpath.to_string_lossy()) {
+            Ok(new_content) => {
+                let _ = self.tx_compiler.send(CompileRequest {
+                    source: new_content.clone(),
+                    path: self.fullpath.clone(),
+                    option: RunOptions {
+                        mode: RunMode::EmitByteCode,
+                        with_gui: true,
+                        config: Config::default(),
+                    },
+                });
+                let _ = self.rx_compiler.recv().map(|res| match res {
+                    Ok(Response::Ast(_)) | Ok(Response::Mir(_)) => {
+                        log::warn!("unexpected response: AST/MIR");
+                    }
+                    Ok(Response::ByteCode(prog)) => {
+                        log::info!("compiled successfully.");
+                        if let Some(tx) = &self.tx_prog {
+                            let _ = tx.send(prog);
                         }
                     }
+                    Err(errs) => {
+                        let errs = errs
+                            .into_iter()
+                            .map(|e| Box::new(e) as Box<dyn ReportableError>)
+                            .collect::<Vec<_>>();
+                        report(&new_content, self.fullpath.clone(), &errs);
+                    }
+                });
+
+                // match runner.exec_ctx.prepare_machine_resume(&new_content) {
+            }
+            Err(e) => {
+                log::error!(
+                    "failed to reload the file {}: {}",
+                    self.fullpath.display(),
+                    e
+                );
+            }
+        }
+    }
+    //this api never returns
+    pub fn cli_loop(&self) {
+        use notify::event::{EventKind, ModifyKind};
+        //watcher instance lives only this context
+        let file_watcher = match self.try_new_watcher() {
+            Ok(watcher) => watcher,
+            Err(e) => {
+                log::error!("Failed to watch file: {e}");
+                return;
+            }
+        };
+
+        loop {
+            match file_watcher.rx.recv() {
+                Ok(Ok(Event {
+                    kind: EventKind::Modify(ModifyKind::Data(_)),
+                    ..
+                })) => {
+                    log::info!("File changed, recompiling...");
+                    self.recompile_file();
                 }
-                "q" | "quit" | "exit" | "" => {
-                    eprintln!("exit");
-                    break;
+                Ok(Err(e)) => {
+                    log::error!("watch error event: {e}");
                 }
-                _ => {
-                    println!("commands: play(p), pause(s), quit(q/empty)");
+                Ok(_) => {}
+                Err(e) => {
+                    log::error!("receiver error: {e}");
                 }
             }
         }

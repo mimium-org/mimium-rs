@@ -421,7 +421,7 @@ impl Machine {
                 new_vm.global_states.rawdata = s;
             }
             Ok(None) => {
-                log::warn!("No state structure change detected. Just copies buffer");
+                log::info!("No state structure change detected. Just copies buffer");
                 new_vm.global_states.rawdata = self.global_states.rawdata.clone();
             }
             Err(e) => {
@@ -1076,7 +1076,8 @@ impl Machine {
     pub fn execute_idx(&mut self, idx: usize) -> ReturnCode {
         let (_name, func) = &self.prog.global_fn_table[idx];
         if !func.bytecodes.is_empty() {
-            self.global_states.resize(func.state_skeleton.total_size() as usize);
+            self.global_states
+                .resize(func.state_skeleton.total_size() as usize);
             // 0 is always base pointer to the main function
             if !self.stack.is_empty() {
                 self.stack[0] = 0;
