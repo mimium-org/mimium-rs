@@ -163,8 +163,7 @@ impl SamplerPlugin {
         let rel_path_str = match &v[0].0 {
             Value::String(s) => s.to_string(),
             _ => {
-                mimium_lang::log::error!("Sampler_mono! expects a string argument");
-                return Self::error_fallback();
+                unreachable!("Sampler_mono! expects a string argument, guaranteed by type checker")
             }
         };
 
