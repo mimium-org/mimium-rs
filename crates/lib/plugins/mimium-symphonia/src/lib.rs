@@ -7,7 +7,9 @@ use mimium_lang::interner::{ToSymbol, TypeNodeId};
 use mimium_lang::interpreter::Value;
 use mimium_lang::numeric;
 use mimium_lang::pattern::TypedId;
-use mimium_lang::plugin::{SysPluginSignature, SystemPlugin, SystemPluginFnType, SystemPluginMacroType};
+use mimium_lang::plugin::{
+    SysPluginSignature, SystemPlugin, SystemPluginFnType, SystemPluginMacroType,
+};
 use mimium_lang::runtime::vm::{Machine, ReturnCode};
 use mimium_lang::string_t;
 use mimium_lang::types::{PType, Type};
@@ -132,18 +134,10 @@ fn interpolate_vec(vec: &[f64], pos: f64) -> f64 {
     }
 }
 
+#[derive(Default)]
 pub struct SamplerPlugin {
     sample_cache: HashMap<String, Arc<Vec<f64>>>,
     sample_namemap: HashMap<String, usize>,
-}
-
-impl Default for SamplerPlugin {
-    fn default() -> Self {
-        Self {
-            sample_cache: HashMap::default(),
-            sample_namemap: HashMap::default(),
-        }
-    }
 }
 
 impl SamplerPlugin {
@@ -170,11 +164,14 @@ impl SamplerPlugin {
         };
 
         // Resolve the path (absolute or relative to CWD)
-        // Note: In the future, we could enhance this to use source file path
         let abs_path = match std::fs::canonicalize(&rel_path_str) {
             Ok(p) => p.to_string_lossy().to_string(),
             Err(e) => {
-                mimium_lang::log::error!("Failed to resolve audio file path: {} (error: {})", rel_path_str, e);
+                mimium_lang::log::error!(
+                    "Failed to resolve audio file path '{}': {}",
+                    rel_path_str,
+                    e
+                );
                 return Value::Code(
                     Expr::Lambda(
                         vec![TypedId::new(
@@ -191,15 +188,11 @@ impl SamplerPlugin {
 
         // Get the sampler index, loading the file if necessary
         let idx = if let Some(&idx) = self.sample_namemap.get(&abs_path) {
-            mimium_lang::log::debug!("Reusing cached sampler for path: {} at index {}", abs_path, idx);
             idx
         } else {
             // Load the audio file at compile time
             let vec = match load_wavfile_to_vec(&abs_path) {
-                Ok(v) => {
-                    mimium_lang::log::info!("Loaded audio file: {} ({} samples)", abs_path, v.len());
-                    Arc::new(v)
-                }
+                Ok(v) => Arc::new(v),
                 Err(e) => {
                     mimium_lang::log::error!("Failed to load audio file '{}': {}", abs_path, e);
                     return Value::Code(
@@ -219,7 +212,6 @@ impl SamplerPlugin {
             let idx = self.sample_cache.len();
             self.sample_cache.insert(abs_path.clone(), vec);
             self.sample_namemap.insert(abs_path, idx);
-            mimium_lang::log::info!("Registered sampler at index {}", idx);
             idx
         };
 
@@ -249,8 +241,6 @@ impl SamplerPlugin {
         let pos = Machine::get_as::<f64>(vm.get_stack(0));
         let sample_idx = Machine::get_as::<f64>(vm.get_stack(1)) as usize;
 
-        mimium_lang::log::trace!("get_sampler called: pos={}, idx={}, cache_size={}", pos, sample_idx, self.sample_cache.len());
-
         // Get the sample data from cache
         let samples = self.sample_cache.values().nth(sample_idx);
 
@@ -260,7 +250,7 @@ impl SamplerPlugin {
                 vm.set_stack(0, Machine::to_value(val));
             }
             None => {
-                mimium_lang::log::error!("Invalid sample index: {} (cache has {} entries)", sample_idx, self.sample_cache.len());
+                mimium_lang::log::error!("Invalid sample index: {}", sample_idx);
                 vm.set_stack(0, Machine::to_value(0.0));
             }
         }
