@@ -143,23 +143,28 @@ pub struct SamplerPlugin {
 impl SamplerPlugin {
     const GET_SAMPLER: &'static str = "__get_sampler";
 
+    /// Returns a fallback lambda that ignores input and always returns 0.0 (silence)
+    fn error_fallback() -> Value {
+        Value::Code(
+            Expr::Lambda(
+                vec![TypedId::new(
+                    "_".to_symbol(),
+                    Type::Primitive(PType::Numeric).into_id(),
+                )],
+                None,
+                Expr::Literal(Literal::Float("0.0".to_symbol())).into_id_without_span(),
+            )
+            .into_id_without_span(),
+        )
+    }
+
     pub fn make_sampler_mono(&mut self, v: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(v.len(), 1);
         let rel_path_str = match &v[0].0 {
             Value::String(s) => s.to_string(),
             _ => {
                 mimium_lang::log::error!("Sampler_mono! expects a string argument");
-                return Value::Code(
-                    Expr::Lambda(
-                        vec![TypedId::new(
-                            "x".to_symbol(),
-                            Type::Primitive(PType::Numeric).into_id(),
-                        )],
-                        None,
-                        Expr::Literal(Literal::Float("0.0".to_symbol())).into_id_without_span(),
-                    )
-                    .into_id_without_span(),
-                );
+                return Self::error_fallback();
             }
         };
 
@@ -172,17 +177,7 @@ impl SamplerPlugin {
                     rel_path_str,
                     e
                 );
-                return Value::Code(
-                    Expr::Lambda(
-                        vec![TypedId::new(
-                            "x".to_symbol(),
-                            Type::Primitive(PType::Numeric).into_id(),
-                        )],
-                        None,
-                        Expr::Literal(Literal::Float("0.0".to_symbol())).into_id_without_span(),
-                    )
-                    .into_id_without_span(),
-                );
+                return Self::error_fallback();
             }
         };
 
@@ -195,17 +190,7 @@ impl SamplerPlugin {
                 Ok(v) => Arc::new(v),
                 Err(e) => {
                     mimium_lang::log::error!("Failed to load audio file '{}': {}", abs_path, e);
-                    return Value::Code(
-                        Expr::Lambda(
-                            vec![TypedId::new(
-                                "x".to_symbol(),
-                                Type::Primitive(PType::Numeric).into_id(),
-                            )],
-                            None,
-                            Expr::Literal(Literal::Float("0.0".to_symbol())).into_id_without_span(),
-                        )
-                        .into_id_without_span(),
-                    );
+                    return Self::error_fallback();
                 }
             };
 
