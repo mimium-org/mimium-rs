@@ -183,8 +183,9 @@ impl RunOptions {
 
 /// Construct an [`ExecContext`] with the default set of plugins.
 pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config) -> ExecContext {
-    let plugins: Vec<Box<dyn Plugin>> = vec![Box::new(SamplerPlugin)];
+    let plugins: Vec<Box<dyn Plugin>> = vec![];
     let mut ctx = ExecContext::new(plugins.into_iter(), path, config);
+    ctx.add_system_plugin(SamplerPlugin::default());
     ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
     if let Some(midi_plug) = mimium_midi::MidiPlugin::try_new() {
         ctx.add_system_plugin(midi_plug);
