@@ -18,3 +18,4 @@ symphonia = { version = "0.5.4", features = ["all-codecs"] }
 
 [dev-dependencies]
 mimium-test = { workspace = true }
+mimium-audiodriver = { workspace = true }

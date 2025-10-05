@@ -1,13 +1,16 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::collections::HashMap;
+use std::sync::Arc;
 
-use mimium_lang::compiler::EvalStage;
-use mimium_lang::interner::ToSymbol;
-use mimium_lang::plugin::{ExtClsInfo, ExtFunTypeInfo, MachineFunction, Plugin};
-use mimium_lang::runtime::vm::{self, Machine, ReturnCode};
+use mimium_lang::ast::{Expr, Literal};
+use mimium_lang::function;
+use mimium_lang::interner::{ToSymbol, TypeNodeId};
+use mimium_lang::interpreter::Value;
+use mimium_lang::numeric;
+use mimium_lang::pattern::TypedId;
+use mimium_lang::plugin::{SysPluginSignature, SystemPlugin, SystemPluginFnType, SystemPluginMacroType};
+use mimium_lang::runtime::vm::{Machine, ReturnCode};
+use mimium_lang::string_t;
 use mimium_lang::types::{PType, Type};
-use mimium_lang::utils::fileloader;
-use mimium_lang::{function, numeric, string_t};
 use symphonia::core::audio::{Layout, SampleBuffer, SignalSpec};
 use symphonia::core::codecs::{CODEC_TYPE_NULL, CodecParameters, Decoder, DecoderOptions};
 use symphonia::core::errors::Error as SymphoniaError;
@@ -129,68 +132,162 @@ fn interpolate_vec(vec: &[f64], pos: f64) -> f64 {
     }
 }
 
-fn gen_sampler_mono(machine: &mut Machine) -> ReturnCode {
-    //return higher order closure
-
-    let relpath = machine.prog.strings[vm::Machine::get_as::<usize>(machine.get_stack(0))].clone();
-
-    let mmmfilepath = machine
-        .prog
-        .file_path
-        .clone()
-        .map_or("".to_string(), |p| p.to_string_lossy().to_string());
-    let abspath = fileloader::get_canonical_path(&mmmfilepath, relpath.as_str())
-        .inspect_err(|e| {
-            panic!("{}", e);
-        })
-        .unwrap();
-
-    let vec = load_wavfile_to_vec(abspath.to_str().unwrap())
-        .inspect_err(|e| {
-            panic!("gen_sampler_mono error: {e}");
-        })
-        .unwrap(); //the generated vector is moved into the closure
-
-    let res = move |machine: &mut Machine| -> ReturnCode {
-        let pos = vm::Machine::get_as::<f64>(machine.get_stack(0));
-        // this sampler read with boundary checks.
-        let val = interpolate_vec(&vec, pos);
-        machine.set_stack(0, Machine::to_value(val));
-        1
-    };
-    let ty = function!(vec![numeric!()], numeric!());
-    let idx = machine.wrap_extern_cls(ExtClsInfo::new(
-        "sampler_mono".to_symbol(),
-        ty,
-        Rc::new(RefCell::new(res)),
-    ));
-    machine.set_stack(0, Machine::to_value(idx));
-    1
+pub struct SamplerPlugin {
+    sample_cache: HashMap<String, Arc<Vec<f64>>>,
+    sample_namemap: HashMap<String, usize>,
 }
 
-pub struct SamplerPlugin;
+impl Default for SamplerPlugin {
+    fn default() -> Self {
+        Self {
+            sample_cache: HashMap::default(),
+            sample_namemap: HashMap::default(),
+        }
+    }
+}
 
-impl Plugin for SamplerPlugin {
-    fn get_ext_closures(&self) -> Vec<Box<dyn MachineFunction>> {
-        let t = function!(vec![string_t!()], function!(vec![numeric!()], numeric!()));
-        let sig = ExtClsInfo::new(
-            "gen_sampler_mono".to_symbol(),
-            t,
-            Rc::new(RefCell::new(gen_sampler_mono)),
-        );
-        vec![Box::new(sig) as Box<dyn MachineFunction>]
+impl SamplerPlugin {
+    const GET_SAMPLER: &'static str = "__get_sampler";
+
+    pub fn make_sampler_mono(&mut self, v: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(v.len(), 1);
+        let rel_path_str = match &v[0].0 {
+            Value::String(s) => s.to_string(),
+            _ => {
+                mimium_lang::log::error!("Sampler_mono! expects a string argument");
+                return Value::Code(
+                    Expr::Lambda(
+                        vec![TypedId::new(
+                            "x".to_symbol(),
+                            Type::Primitive(PType::Numeric).into_id(),
+                        )],
+                        None,
+                        Expr::Literal(Literal::Float("0.0".to_symbol())).into_id_without_span(),
+                    )
+                    .into_id_without_span(),
+                );
+            }
+        };
+
+        // Resolve the path (absolute or relative to CWD)
+        // Note: In the future, we could enhance this to use source file path
+        let abs_path = match std::fs::canonicalize(&rel_path_str) {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(e) => {
+                mimium_lang::log::error!("Failed to resolve audio file path: {} (error: {})", rel_path_str, e);
+                return Value::Code(
+                    Expr::Lambda(
+                        vec![TypedId::new(
+                            "x".to_symbol(),
+                            Type::Primitive(PType::Numeric).into_id(),
+                        )],
+                        None,
+                        Expr::Literal(Literal::Float("0.0".to_symbol())).into_id_without_span(),
+                    )
+                    .into_id_without_span(),
+                );
+            }
+        };
+
+        // Get the sampler index, loading the file if necessary
+        let idx = if let Some(&idx) = self.sample_namemap.get(&abs_path) {
+            mimium_lang::log::debug!("Reusing cached sampler for path: {} at index {}", abs_path, idx);
+            idx
+        } else {
+            // Load the audio file at compile time
+            let vec = match load_wavfile_to_vec(&abs_path) {
+                Ok(v) => {
+                    mimium_lang::log::info!("Loaded audio file: {} ({} samples)", abs_path, v.len());
+                    Arc::new(v)
+                }
+                Err(e) => {
+                    mimium_lang::log::error!("Failed to load audio file '{}': {}", abs_path, e);
+                    return Value::Code(
+                        Expr::Lambda(
+                            vec![TypedId::new(
+                                "x".to_symbol(),
+                                Type::Primitive(PType::Numeric).into_id(),
+                            )],
+                            None,
+                            Expr::Literal(Literal::Float("0.0".to_symbol())).into_id_without_span(),
+                        )
+                        .into_id_without_span(),
+                    );
+                }
+            };
+
+            let idx = self.sample_cache.len();
+            self.sample_cache.insert(abs_path.clone(), vec);
+            self.sample_namemap.insert(abs_path, idx);
+            mimium_lang::log::info!("Registered sampler at index {}", idx);
+            idx
+        };
+
+        // Generate code that creates a closure for sampling
+        Value::Code(
+            Expr::Lambda(
+                vec![TypedId::new(
+                    "pos".to_symbol(),
+                    Type::Primitive(PType::Numeric).into_id(),
+                )],
+                None,
+                Expr::Apply(
+                    Expr::Var(Self::GET_SAMPLER.to_symbol()).into_id_without_span(),
+                    vec![
+                        Expr::Var("pos".to_symbol()).into_id_without_span(),
+                        Expr::Literal(Literal::Float(idx.to_string().to_symbol()))
+                            .into_id_without_span(),
+                    ],
+                )
+                .into_id_without_span(),
+            )
+            .into_id_without_span(),
+        )
     }
 
-    fn get_macro_functions(&self) -> Vec<Box<dyn mimium_lang::plugin::MacroFunction>> {
-        vec![]
-    }
+    pub fn get_sampler(&mut self, vm: &mut Machine) -> ReturnCode {
+        let pos = Machine::get_as::<f64>(vm.get_stack(0));
+        let sample_idx = Machine::get_as::<f64>(vm.get_stack(1)) as usize;
 
-    fn get_type_infos(&self) -> Vec<mimium_lang::plugin::ExtFunTypeInfo> {
-        let sig = ExtFunTypeInfo::new(
-            "gen_sampler_mono".to_symbol(),
-            function!(vec![string_t!()], function!(vec![numeric!()], numeric!())),
-            EvalStage::Stage(1),
+        mimium_lang::log::trace!("get_sampler called: pos={}, idx={}, cache_size={}", pos, sample_idx, self.sample_cache.len());
+
+        // Get the sample data from cache
+        let samples = self.sample_cache.values().nth(sample_idx);
+
+        match samples {
+            Some(vec) => {
+                let val = interpolate_vec(vec, pos);
+                vm.set_stack(0, Machine::to_value(val));
+            }
+            None => {
+                mimium_lang::log::error!("Invalid sample index: {} (cache has {} entries)", sample_idx, self.sample_cache.len());
+                vm.set_stack(0, Machine::to_value(0.0));
+            }
+        }
+
+        1
+    }
+}
+
+impl SystemPlugin for SamplerPlugin {
+    fn gen_interfaces(&self) -> Vec<SysPluginSignature> {
+        let sampler_macrof: SystemPluginMacroType<Self> = Self::make_sampler_mono;
+        let sampler_macro = SysPluginSignature::new_macro(
+            "Sampler_mono",
+            sampler_macrof,
+            function!(
+                vec![string_t!()],
+                Type::Code(function!(vec![numeric!()], numeric!())).into_id()
+            ),
         );
-        vec![sig]
+
+        let get_samplerf: SystemPluginFnType<Self> = Self::get_sampler;
+        let get_sampler = SysPluginSignature::new(
+            Self::GET_SAMPLER,
+            get_samplerf,
+            function!(vec![numeric!(), numeric!()], numeric!()),
+        );
+
+        vec![sampler_macro, get_sampler]
     }
 }

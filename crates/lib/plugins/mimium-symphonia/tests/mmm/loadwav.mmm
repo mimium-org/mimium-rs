@@ -1,5 +1,5 @@
-//gen_sampler_mono returns higher-order function that takes playback position in samples as an argument
-let sampler = gen_sampler_mono("../assets/count_100_by_0_01_f32_48000Hz.wav")
+//Sampler_mono! macro returns a closure that takes playback position in samples as an argument
+let sampler = Sampler_mono!("crates/lib/plugins/mimium-symphonia/tests/assets/count_100_by_0_01_f32_48000Hz.wav")
 fn counter(){
     self+1.0 
 }

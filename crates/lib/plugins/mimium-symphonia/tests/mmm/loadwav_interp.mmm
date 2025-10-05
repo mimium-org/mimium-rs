@@ -1,4 +1,4 @@
-let sampler = gen_sampler_mono("../assets/count_100_by_0_01_f32_48000Hz.wav")
+let sampler = Sampler_mono!("crates/lib/plugins/mimium-symphonia/tests/assets/count_100_by_0_01_f32_48000Hz.wav")
 fn counter(){
     self+1.0
 }
