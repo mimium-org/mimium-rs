@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::interner::{Symbol, ToSymbol};
 
 pub type Span = std::ops::Range<usize>;
@@ -5,10 +7,10 @@ pub type Span = std::ops::Range<usize>;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Location {
     pub span: Span,
-    pub path: Symbol,
+    pub path: PathBuf,
 }
 impl Location {
-    pub fn new(span: Span, path: Symbol) -> Self {
+    pub fn new(span: Span, path: PathBuf) -> Self {
         Self { span, path }
     }
 }
@@ -16,13 +18,13 @@ impl Default for Location {
     fn default() -> Self {
         Self {
             span: 0..0,
-            path: "".to_symbol(),
+            path: PathBuf::new(),
         }
     }
 }
 
 impl ariadne::Span for Location {
-    type SourceId = Symbol;
+    type SourceId = PathBuf;
 
     fn source(&self) -> &Self::SourceId {
         &self.path

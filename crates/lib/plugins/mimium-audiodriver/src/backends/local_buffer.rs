@@ -7,9 +7,10 @@ use mimium_lang::{
     ExecContext,
     compiler::IoChannelInfo,
     interner::ToSymbol,
-    plugin::ExtClsInfo,
-    runtime::{Time, vm},
+    plugin::{DynSystemPlugin, ExtClsInfo},
+    runtime::{self, Time, vm},
 };
+use ringbuf::traits::Split;
 
 use crate::driver::{Driver, RuntimeData, SampleRate};
 
@@ -66,25 +67,17 @@ impl Driver for LocalBufferDriver {
 
     fn init(
         &mut self,
-        mut ctx: ExecContext,
+        runtime_data: RuntimeData,
         sample_rate: Option<crate::driver::SampleRate>,
     ) -> Option<IoChannelInfo> {
-        let iochannels = ctx.get_iochannel_count();
-        let vm = ctx.take_vm().expect("vm is not prepared yet");
-        let dsp_i = vm
-            .prog
-            .get_fun_index(&"dsp".to_symbol())
-            .expect("no dsp function found");
-        let (_, dsp_func) = &vm.prog.global_fn_table[dsp_i];
-
-        self.localbuffer = Vec::with_capacity(dsp_func.nret * self.times);
-        self.samplerate = sample_rate.unwrap_or(SampleRate::from(48000));
-
-        self.vmdata = Some(RuntimeData::new(
-            vm,
-            ctx.get_system_plugins().cloned().collect(),
-        ));
-        iochannels
+        if let Some(iochannels) = runtime_data.vm.prog.iochannels {
+            self.localbuffer = Vec::with_capacity(iochannels.output as usize * self.times);
+            self.samplerate = sample_rate.unwrap_or(SampleRate::from(48000));
+            self.vmdata = Some(runtime_data);
+            Some(iochannels)
+        } else {
+            None
+        }
     }
 
     fn play(&mut self) -> bool {

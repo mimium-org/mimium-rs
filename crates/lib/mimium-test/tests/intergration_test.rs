@@ -1,4 +1,4 @@
-use mimium_audiodriver::driver::Driver;
+use mimium_audiodriver::driver::{Driver, RuntimeData};
 use mimium_lang::{interner::ToSymbol, utils::error::report};
 use mimium_test::*;
 use wasm_bindgen_test::*;
@@ -19,7 +19,7 @@ fn dsp(){{
             assert_eq!(res, ans, "expr: {expr}");
         }
         Err(errs) => {
-            report(&src, "(from template)".to_symbol(), &errs);
+            report(&src, "(from template)".into(), &errs);
             panic!("invalid syntax");
         }
     }
@@ -273,6 +273,20 @@ fn closure_counter_tuple() {
     ];
     assert_eq!(res, ans);
 }
+
+#[wasm_bindgen_test(unsupported = test)]
+fn test_tuple_global() {
+    let res = run_file_test_mono("tuple_global.mmm", 5).unwrap();
+    let ans = vec![100.0, 100.0, 100.0, 100.0, 100.0];
+    assert_eq!(res, ans);
+}
+#[wasm_bindgen_test(unsupported = test)]
+fn test_tuple_global2() {
+    let res = run_file_test_mono("tuple_global2.mmm", 5).unwrap();
+    let ans = vec![100.0, 100.0, 100.0, 100.0, 100.0];
+    assert_eq!(res, ans);
+}
+
 
 #[wasm_bindgen_test(unsupported = test)]
 fn hof_state() {
@@ -621,7 +635,11 @@ fn probe_macro() {
 
     ctx.prepare_machine(&src).unwrap();
     let _ = ctx.run_main();
-    driver.init(ctx, None);
+    let runtimedata = {
+        let ctxmut: &mut mimium_lang::ExecContext = &mut ctx;
+        RuntimeData::try_from(ctxmut).unwrap()
+    };
+    driver.init(runtimedata, None);
     driver.play();
     let res = driver.get_generated_samples().to_vec();
 

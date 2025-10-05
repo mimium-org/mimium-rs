@@ -1,5 +1,6 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use egui::ahash::HashMap;
 use mimium_lang::{
     ast::{Expr, Literal},
     code, function,
@@ -23,17 +24,22 @@ pub(crate) mod plot_ui;
 pub mod plot_window;
 
 pub struct GuiToolPlugin {
-    window: Option<PlotApp>,
+    window: Arc<Mutex<PlotApp>>,
     slider_instances: Vec<Arc<FloatParameter>>,
+    slider_namemap: HashMap<String, usize>,
+
     probe_instances: Vec<HeapProd<f64>>,
+    probe_namemap: HashMap<String, usize>,
 }
 
 impl Default for GuiToolPlugin {
     fn default() -> Self {
         Self {
-            window: Some(PlotApp::default()),
+            window: Arc::new(Mutex::new(PlotApp::default())),
             slider_instances: Vec::new(),
+            slider_namemap: HashMap::default(),
             probe_instances: Vec::new(),
+            probe_namemap: HashMap::default(),
         }
     }
 }
@@ -47,27 +53,35 @@ impl GuiToolPlugin {
 
     pub fn make_slider(&mut self, v: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(v.len(), 4);
-        let (name, init, min, max, window) = match (
+        let (name, init, min, max, mut window) = match (
             v[0].0.clone(),
             v[1].0.clone(),
             v[2].0.clone(),
             v[3].0.clone(),
-            self.window.as_mut(),
+            self.window.lock(),
         ) {
             (
                 Value::String(name),
                 Value::Number(init),
                 Value::Number(min),
                 Value::Number(max),
-                Some(window),
+                Ok(window),
             ) => (name, init, min, max, window),
             _ => {
                 log::error!("invalid argument");
                 return Value::Number(0.0);
             }
         };
-        let (p, idx) = window.add_slider(name.as_str(), init, min, max);
-        self.slider_instances.push(p);
+        let idx = if let Some(idx) = self.slider_namemap.get(name.as_str()).cloned() {
+            let p = self.slider_instances.get_mut(idx).unwrap();
+            p.set_range(min, max);
+            idx
+        } else {
+            let (p, idx) = window.add_slider(name.as_str(), init, min, max);
+            self.slider_instances.push(p);
+            self.slider_namemap.insert(name.to_string(), idx);
+            idx
+        };
         Value::Code(
             Expr::Apply(
                 Expr::Var(Self::GET_SLIDER.to_symbol()).into_id_without_span(),
@@ -82,18 +96,35 @@ impl GuiToolPlugin {
 
     pub fn make_probe_macro(&mut self, v: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(v.len(), 1);
-        let (name, window) = match (v[0].0.clone(), self.window.as_mut()) {
-            (Value::String(name), Some(window)) => (name, window),
+        let (name, mut window) = match (v[0].0.clone(), self.window.lock()) {
+            (Value::String(name), Ok(window)) => (name, window),
             _ => {
-                log::error!("invalid argument for Probe macro");
-                return Value::Number(0.0);
+                log::error!("invalid argument for Probe macro type {}", v[0].1);
+                return Value::Code(
+                    Expr::Lambda(
+                        vec![TypedId::new(
+                            "x".to_symbol(),
+                            Type::Primitive(PType::Numeric).into_id(),
+                        )],
+                        None,
+                        Expr::Var("x".to_symbol()).into_id_without_span(),
+                    )
+                    .into_id_without_span(),
+                );
             }
         };
-
-        let (prod, cons) = HeapRb::<f64>::new(4096).split();
-        window.add_plot(name.as_str(), cons);
-        let idx = self.probe_instances.len();
-        self.probe_instances.push(prod);
+        let probeid = self
+            .probe_namemap
+            .get(name.as_str())
+            .cloned()
+            .unwrap_or_else(|| {
+                let (prod, cons) = HeapRb::<f64>::new(4096).split();
+                window.add_plot(name.as_str(), cons);
+                let idx = self.probe_instances.len();
+                self.probe_instances.push(prod);
+                self.probe_namemap.insert(name.to_string(), idx);
+                idx
+            });
 
         // Generate a lambda that calls probe_intercept with the fixed ID
         Value::Code(
@@ -107,7 +138,7 @@ impl GuiToolPlugin {
                     Expr::Var(Self::PROBE_INTERCEPT.to_symbol()).into_id_without_span(),
                     vec![
                         Expr::Var("x".to_symbol()).into_id_without_span(),
-                        Expr::Literal(Literal::Float(idx.to_string().to_symbol()))
+                        Expr::Literal(Literal::Float(probeid.to_string().to_symbol()))
                             .into_id_without_span(),
                     ],
                 )
@@ -153,37 +184,33 @@ impl SystemPlugin for GuiToolPlugin {
     fn try_get_main_loop(&mut self) -> Option<Box<dyn FnOnce()>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let make_window = self.window.as_ref().is_some_and(|w| !w.is_empty());
-            make_window
-                .then(|| {
-                    self.window.take().map(|window| -> Box<dyn FnOnce()> {
-                        Box::new(move || {
-                            let native_options = eframe::NativeOptions {
-                                viewport: egui::ViewportBuilder::default()
-                                    .with_inner_size([400.0, 300.0])
-                                    .with_min_inner_size([300.0, 220.0]), // .with_icon(
-                                //     // NOTE: Adding an icon is optional
-                                //     eframe::icon_data::from_png_bytes(&include_bytes!("../assets/icon-256.png")[..])
-                                //         .expect("Failed to load icon"),)
-                                ..Default::default()
-                            };
-                            let _ = eframe::run_native(
-                                "mimium guitools",
-                                native_options,
-                                Box::new(|_cc| Ok(Box::new(window))),
+            use crate::plot_window::AsyncPlotApp;
+            let app = Box::new(AsyncPlotApp {
+                window: self.window.clone(),
+            });
+            Some(Box::new(move || {
+                let native_options = eframe::NativeOptions {
+                    viewport: egui::ViewportBuilder::default()
+                        .with_inner_size([400.0, 300.0])
+                        .with_min_inner_size([300.0, 220.0])
+                        .with_icon(
+                            // NOTE: Adding an icon is optional
+                            eframe::icon_data::from_png_bytes(
+                                &include_bytes!("../assets/mimium_logo_256.png")[..],
                             )
-                            .inspect_err(|e| log::error!("{e}"));
-                        })
-                    })
-                })
-                .flatten()
+                            .expect("Failed to load icon"),
+                        ),
+                    ..Default::default()
+                };
+                let _ =
+                    eframe::run_native("mimium guitools", native_options, Box::new(|_cc| Ok(app)))
+                        .inspect_err(|e| log::error!("{e}"));
+            }))
         }
-
         #[cfg(target_arch = "wasm32")]
         None
     }
     fn gen_interfaces(&self) -> Vec<SysPluginSignature> {
-        
         let sliderf: SystemPluginMacroType<Self> = Self::make_slider;
         let make_slider = SysPluginSignature::new_macro(
             "Slider",
@@ -193,14 +220,14 @@ impl SystemPlugin for GuiToolPlugin {
                 code!(numeric!())
             ),
         );
-        
+
         let getsliderf: SystemPluginFnType<Self> = Self::get_slider;
         let get_slider = SysPluginSignature::new(
             Self::GET_SLIDER,
             getsliderf,
             function!(vec![numeric!()], numeric!()),
         );
-        
+
         // Replace make_probe function with Probe macro
         let probe_macrof: SystemPluginMacroType<Self> = Self::make_probe_macro;
         let probe_macro = SysPluginSignature::new_macro(

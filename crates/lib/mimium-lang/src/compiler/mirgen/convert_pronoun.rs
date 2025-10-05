@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::ast::operators::Op;
 use crate::ast::{Expr, Literal, RecordField};
 use crate::interner::{ExprNodeId, Symbol, ToSymbol};
@@ -19,7 +21,7 @@ struct ConvertResult {
 fn convert_recursively<F>(
     e_id: ExprNodeId,
     conversion: F,
-    file_path: Symbol,
+    file_path: PathBuf,
 ) -> (ConvertResult, Vec<Error>)
 where
     F: Fn(ExprNodeId) -> (ConvertResult, Vec<Error>),
@@ -239,7 +241,7 @@ where
         ),
     }
 }
-fn convert_recursively_pure<F>(e_id: ExprNodeId, conversion: F, file_path: Symbol) -> ExprNodeId
+fn convert_recursively_pure<F>(e_id: ExprNodeId, conversion: F, file_path: PathBuf) -> ExprNodeId
 where
     F: Fn(ExprNodeId) -> ExprNodeId,
 {
@@ -285,11 +287,12 @@ impl FeedId {
 fn convert_self(
     e_id: ExprNodeId,
     feedctx: FeedId,
-    file_path: Symbol,
+    file_path: PathBuf,
 ) -> (ConvertResult, Vec<Error>) {
-    let conversion =
-        |e: ExprNodeId| -> (ConvertResult, Vec<Error>) { convert_self(e, feedctx, file_path) };
-    let loc = Location::new(e_id.to_span().clone(), file_path);
+    let conversion = |e: ExprNodeId| -> (ConvertResult, Vec<Error>) {
+        convert_self(e, feedctx, file_path.clone())
+    };
+    let loc = Location::new(e_id.to_span().clone(), file_path.clone());
 
     match e_id.to_expr().clone() {
         Expr::Literal(Literal::SelfLit) => match feedctx {
@@ -338,12 +341,12 @@ fn convert_self(
             "Feed should not be shown before conversion at {}..{}",
             loc.span.start, loc.span.end
         ),
-        _ => convert_recursively(e_id, conversion, file_path),
+        _ => convert_recursively(e_id, conversion, file_path.clone()),
     }
 }
 
-fn convert_placeholder(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
-    let loc = Location::new(e_id.to_span().clone(), file_path);
+fn convert_placeholder(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
+    let loc = Location::new(e_id.to_span().clone(), file_path.clone());
     match e_id.to_expr() {
         // if _ is used outside of pipe, treat it as a usual variable.
         Expr::Literal(Literal::PlaceHolder) => Expr::Var("_".to_symbol()).into_id(loc),
@@ -352,13 +355,13 @@ fn convert_placeholder(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
                 .iter()
                 .any(|e| matches!(e.to_expr(), Expr::Literal(Literal::PlaceHolder))) =>
         {
-            let fun = convert_placeholder(fun, file_path);
+            let fun = convert_placeholder(fun, file_path.clone());
             let (lambda_args_sparse, new_args): (Vec<_>, Vec<_>) = args
                 .into_iter()
                 .enumerate()
                 .map(|(i, e)| {
                     if matches!(e.to_expr(), Expr::Literal(Literal::PlaceHolder)) {
-                        let loc = Location::new(e_id.to_span().clone(), file_path);
+                        let loc = Location::new(e_id.to_span().clone(), file_path.clone());
                         let id = format!("__lambda_arg_{i}").to_symbol();
                         let ty = Type::Unknown.into_id_with_location(loc.clone());
                         let newid = TypedId::new(id, ty);
@@ -373,16 +376,20 @@ fn convert_placeholder(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
             let body = Expr::Apply(fun, new_args).into_id(loc.clone());
             Expr::Lambda(lambda_args, None, body).into_id(loc.clone())
         }
-        _ => convert_recursively_pure(e_id, |e| convert_placeholder(e, file_path), file_path),
+        _ => convert_recursively_pure(
+            e_id,
+            |e| convert_placeholder(e, file_path.clone()),
+            file_path.clone(),
+        ),
     }
 }
 
-fn convert_operators(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
-    let loc = Location::new(e_id.to_span().clone(), file_path);
+fn convert_operators(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
+    let loc = Location::new(e_id.to_span().clone(), file_path.clone());
     match e_id.to_expr() {
         Expr::BinOp(arg, (Op::Pipe, _opspan), fun) => {
-            let arg = convert_operators(arg, file_path);
-            let fun = convert_operators(fun, file_path);
+            let arg = convert_operators(arg, file_path.clone());
+            let fun = convert_operators(fun, file_path.clone());
             Expr::Apply(fun, vec![arg]).into_id(loc)
         }
         Expr::BinOp(lhs, (op, opspan), rhs) => {
@@ -392,12 +399,12 @@ fn convert_operators(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
                 op,
                 rhs.to_expr().simple_print()
             );
-            let lhs = convert_operators(lhs, file_path);
-            let rhs = convert_operators(rhs, file_path);
+            let lhs = convert_operators(lhs, file_path.clone());
+            let rhs = convert_operators(rhs, file_path.clone());
             let op_var = op.get_associated_fn_name();
             let oploc = Location {
                 span: opspan.clone(),
-                path: loc.path,
+                path: loc.path.clone(),
             };
             let fname = Expr::Var(op_var).into_id(oploc);
             match op {
@@ -410,7 +417,7 @@ fn convert_operators(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
             let op_var = Op::Minus.get_associated_fn_name();
             let oploc = Location {
                 span: opspan.clone(),
-                path: loc.path,
+                path: loc.path.clone(),
             };
             let fname = Expr::Var(op_var).into_id(oploc);
             let zero = Expr::Literal(Literal::Float("0.0".to_symbol())).into_id(loc.clone());
@@ -421,10 +428,10 @@ fn convert_operators(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
             let op_var = op.get_associated_fn_name();
             let oploc = Location {
                 span: opspan.clone(),
-                path: loc.path,
+                path: loc.path.clone(),
             };
             let fname = Expr::Var(op_var).into_id(oploc);
-            Expr::Apply(fname, vec![e]).into_id(loc)
+            Expr::Apply(fname, vec![e]).into_id(loc.clone())
         }
         Expr::Paren(e) => convert_operators(e, file_path),
         Expr::RecordUpdate(record, fields) => {
@@ -467,32 +474,40 @@ fn convert_operators(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
             Expr::Block(Some(let_expr)).into_id(loc)
         }
         // because convert_pipe never fails, it propagate dummy error
-        _ => convert_recursively_pure(e_id, |e| convert_operators(e, file_path), file_path),
+        _ => convert_recursively_pure(
+            e_id,
+            |e| convert_operators(e, file_path.clone()),
+            file_path.clone(),
+        ),
     }
 }
-fn convert_macroexpand(e_id: ExprNodeId, file_path: Symbol) -> ExprNodeId {
-    let loc = Location::new(e_id.to_span().clone(), file_path);
+fn convert_macroexpand(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
+    let loc = Location::new(e_id.to_span().clone(), file_path.clone());
     match e_id.to_expr() {
         Expr::MacroExpand(callee, args) => {
-            let callee = convert_macroexpand(callee, file_path);
+            let callee = convert_macroexpand(callee, file_path.clone());
             let args = args
                 .into_iter()
-                .map(|arg| convert_macroexpand(arg, file_path))
+                .map(|arg| convert_macroexpand(arg, file_path.clone()))
                 .collect();
 
             Expr::Escape(Expr::Apply(callee, args).into_id(loc.clone())).into_id(loc)
         }
-        _ => convert_recursively_pure(e_id, |e| convert_macroexpand(e, file_path), file_path),
+        _ => convert_recursively_pure(
+            e_id,
+            |e| convert_macroexpand(e, file_path.clone()),
+            file_path.clone(),
+        ),
     }
 }
 
-pub fn convert_pronoun(expr: ExprNodeId, file_path: Symbol) -> (ExprNodeId, Vec<Error>) {
+pub fn convert_pronoun(expr: ExprNodeId, file_path: PathBuf) -> (ExprNodeId, Vec<Error>) {
     // these 3 operations can be done in any order, and ideally, merged to one pattern matching.
     // However, for clarity, we split them into separated operations.
-    let expr = convert_operators(expr, file_path);
-    let expr = convert_placeholder(expr, file_path);
-    let expr = convert_macroexpand(expr, file_path);
-    let (res, errs) = convert_self(expr, FeedId::Global, file_path);
+    let expr = convert_operators(expr, file_path.clone());
+    let expr = convert_placeholder(expr, file_path.clone());
+    let expr = convert_macroexpand(expr, file_path.clone());
+    let (res, errs) = convert_self(expr, FeedId::Global, file_path.clone());
     (res.expr, errs)
     // (expr, vec![])
 }
@@ -510,7 +525,7 @@ mod test {
     pub fn test_selfconvert() {
         let loc = Location {
             span: 0..1,
-            path: "/".to_symbol(),
+            path: PathBuf::from("/"),
         };
         let unknownty = Type::Unknown.into_id_with_location(loc.clone());
         let src = Expr::Let(
@@ -528,7 +543,7 @@ mod test {
             None,
         )
         .into_id(loc.clone());
-        let (res, errs) = convert_pronoun(src, "/".to_symbol());
+        let (res, errs) = convert_pronoun(src, PathBuf::from("/"));
 
         let ans = Expr::Let(
             TypedPattern {

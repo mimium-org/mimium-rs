@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
 
 use crate::driver::{Driver, RuntimeData, SampleRate};
 use crate::runtime_fn;
@@ -8,7 +8,8 @@ use cpal::{self, BufferSize, StreamConfig};
 use mimium_lang::ExecContext;
 use mimium_lang::compiler::IoChannelInfo;
 use mimium_lang::log;
-use mimium_lang::plugin::ExtClsInfo;
+use mimium_lang::plugin::{DynSystemPlugin, ExtClsInfo};
+
 use mimium_lang::runtime::{Time, vm};
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
@@ -21,6 +22,7 @@ pub struct NativeDriver {
     ostream: Option<cpal::Stream>,
     count: Arc<AtomicU64>,
     buffer_size: usize,
+    swap_prod: Option<mpsc::Sender<vm::Program>>,
 }
 impl NativeDriver {
     pub fn new(buffer_size: usize) -> Self {
@@ -33,6 +35,7 @@ impl NativeDriver {
             ostream: None,
             count: Default::default(),
             buffer_size,
+            swap_prod: None,
         }
     }
 }
@@ -54,19 +57,20 @@ struct NativeAudioData {
     buffer: HeapCons<f64>,
     localbuffer: Vec<f64>,
     count: Arc<AtomicU64>,
+    pub swap_channel: mpsc::Receiver<vm::Program>,
 }
 unsafe impl Send for NativeAudioData {}
 
 impl NativeAudioData {
     pub fn new(
-        mut ctx: ExecContext,
         buffer: HeapCons<f64>,
+        runtime_data: RuntimeData,
         count: Arc<AtomicU64>,
         h_ochannels: usize,
+        swap_cons: mpsc::Receiver<vm::Program>,
     ) -> Self {
         //todo: split as trait interface method
-        let vm = ctx.take_vm().expect("vm is not prepared yet");
-        let vmdata = RuntimeData::new(vm, ctx.get_system_plugins().cloned().collect());
+        let vmdata = runtime_data;
         let dsp_ochannels = vmdata.get_dsp_fn().nret;
         let localbuffer: Vec<f64> = vec![0.0f64; 4096 * h_ochannels];
         Self {
@@ -76,9 +80,13 @@ impl NativeAudioData {
             buffer,
             localbuffer,
             count,
+            swap_channel: swap_cons,
         }
     }
     pub fn process(&mut self, dst: &mut [f32], h_ochannels: usize) {
+        if let Ok(swap) = self.swap_channel.try_recv() {
+            self.vmdata.vm = self.vmdata.vm.new_resume(swap);
+        }
         // let len = dst.len().min(self.localbuffer.len());
         let len = dst.len();
 
@@ -216,9 +224,17 @@ impl Driver for NativeDriver {
         vec![getnow, getsamplerate]
     }
 
-    fn init(&mut self, ctx: ExecContext, sample_rate: Option<SampleRate>) -> Option<IoChannelInfo> {
+    fn init(
+        &mut self,
+        runtime_data: RuntimeData,
+        sample_rate: Option<SampleRate>,
+    ) -> Option<IoChannelInfo> {
         let host = cpal::default_host();
-        let iochannels = ctx.get_iochannel_count();
+        //todo
+        let iochannels = Some(IoChannelInfo {
+            input: 0,
+            output: 2,
+        });
         // let ichannels = iochannels.map_or(0, |io| io.input) as _;
         let ochannels: usize = iochannels.map_or(0, |io| io.output) as _;
 
@@ -252,12 +268,20 @@ impl Driver for NativeDriver {
         };
         let _ = in_stream.as_ref().map(|i| i.pause());
         let odevice = host.default_output_device();
+        let (swap_prod, swap_cons) = mpsc::channel();
+        self.swap_prod = Some(swap_prod);
         let out_stream = if let Some(odevice) = odevice {
             let mut oconfig = Self::init_oconfig(&odevice, sample_rate);
             let h_ochannels = oconfig.channels as usize;
             self.hardware_ochannels = h_ochannels;
 
-            let mut processor = NativeAudioData::new(ctx, cons, self.count.clone(), h_ochannels);
+            let mut processor = NativeAudioData::new(
+                cons,
+                runtime_data,
+                self.count.clone(),
+                h_ochannels,
+                swap_cons,
+            );
             oconfig.buffer_size = cpal::BufferSize::Fixed((self.buffer_size) as u32);
             log::info!(
                 "output device {} buffer size:{:?} channels: {} samplerate {}Hz",
@@ -343,6 +367,14 @@ impl Driver for NativeDriver {
         false
     }
 
+    fn renew_vm(&mut self, new_prog: vm::Program) {
+        self.swap_prod
+            .as_mut()
+            .and_then(|sp| sp.send(new_prog).ok());
+    }
+    fn get_vm_channel(&self) -> Option<mpsc::Sender<vm::Program>> {
+        self.swap_prod.clone()
+    }
     fn is_playing(&self) -> bool {
         self.is_playing
     }

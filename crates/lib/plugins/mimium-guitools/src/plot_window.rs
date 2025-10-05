@@ -1,6 +1,6 @@
 use std::{
     ops::RangeInclusive,
-    sync::{Arc, atomic::Ordering},
+    sync::{Arc, Mutex, atomic::Ordering},
 };
 
 use crate::plot_ui::{self, PlotUi};
@@ -14,14 +14,14 @@ use ringbuf::HeapCons;
 pub struct FloatParameter {
     value: AtomicF64,
     name: String,
-    range: RangeInclusive<f64>,
+    range: RangeInclusive<AtomicF64>,
 }
 impl FloatParameter {
     fn new(name: String, init: f64, min: f64, max: f64) -> Self {
         Self {
             value: AtomicF64::new(init),
             name,
-            range: min..=max,
+            range: AtomicF64::new(min)..=AtomicF64::new(max),
         }
     }
     pub fn get(&self) -> f64 {
@@ -29,6 +29,10 @@ impl FloatParameter {
     }
     pub fn set(&self, v: f64) {
         self.value.store(v, Ordering::Relaxed)
+    }
+    pub fn set_range(&self, min: f64, max: f64) {
+        self.range.start().store(min, Ordering::Relaxed);
+        self.range.end().store(max, Ordering::Relaxed);
     }
 }
 
@@ -79,6 +83,9 @@ impl PlotApp {
 
 impl eframe::App for PlotApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.plot.is_empty() && self.sliders.is_empty() {
+            return;
+        }
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
 
@@ -120,9 +127,13 @@ impl eframe::App for PlotApp {
                     let mut v = p.get();
                     if ui
                         .add(
-                            egui::Slider::new(&mut v, p.range.clone())
-                                .text(&p.name)
-                                .clamping(egui::SliderClamping::Always),
+                            egui::Slider::new(
+                                &mut v,
+                                p.range.start().load(Ordering::Relaxed)
+                                    ..=p.range.end().load(Ordering::Relaxed),
+                            )
+                            .text(&p.name)
+                            .clamping(egui::SliderClamping::Always),
                         )
                         .changed()
                     {
@@ -131,5 +142,17 @@ impl eframe::App for PlotApp {
                 }
             });
         });
+    }
+}
+
+pub struct AsyncPlotApp {
+    pub window: Arc<Mutex<PlotApp>>,
+}
+
+impl eframe::App for AsyncPlotApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Ok(mut window) = self.window.lock() {
+            window.update(ctx, _frame);
+        }
     }
 }

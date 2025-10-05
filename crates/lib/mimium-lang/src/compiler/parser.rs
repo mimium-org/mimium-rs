@@ -24,13 +24,13 @@ mod test;
 
 #[derive(Clone)]
 pub(super) struct ParseContext {
-    file_path: Symbol,
+    file_path: PathBuf,
 }
 impl ParseContext {
     pub fn gen_loc(&self, span: SimpleSpan) -> Location {
         Location {
             span: span.start()..span.end(),
-            path: self.file_path,
+            path: self.file_path.clone(),
         }
     }
 }
@@ -81,7 +81,8 @@ where
         Token::IntegerType => PType::Int,
     }
     .map_with(move |t, e| {
-        Type::Primitive(t).into_id_with_location(Location::new(get_span(e.span()), ctx.file_path))
+        Type::Primitive(t)
+            .into_id_with_location(Location::new(get_span(e.span()), ctx.file_path.clone()))
     })
     .labelled("primitive type")
 }
@@ -92,8 +93,9 @@ fn type_parser<'src, I>(
 where
     I: ValueInput<'src, Token = Token, Span = SimpleSpan>,
 {
-    let path = ctx.file_path;
+    let path = ctx.file_path.clone();
     recursive(move |ty| {
+        let path2 = path.clone();
         let tuple = ty
             .clone()
             .separated_by(just(Token::Comma))
@@ -104,7 +106,7 @@ where
             .map_with(move |item: Vec<TypeNodeId>, e| {
                 Type::Tuple(item).into_id_with_location(Location {
                     span: get_span(e.span()),
-                    path,
+                    path: path.clone(),
                 })
             })
             .recover_with(via_parser(nested_delimiters(
@@ -114,6 +116,7 @@ where
                 move |_span| Type::Failure.into_id(),
             )))
             .labelled("Tuple Type");
+        let path = path2.clone();
 
         let record = ident_parser()
             .then_ignore(just(Token::Colon))
@@ -126,7 +129,7 @@ where
             .map_with(move |fields, e| {
                 Type::Record(fields).into_id_with_location(Location {
                     span: get_span(e.span()),
-                    path,
+                    path: path.clone(),
                 })
             })
             .recover_with(via_parser(nested_delimiters(
@@ -137,24 +140,27 @@ where
             )))
             .labelled("Record Type");
         // Parse array type [T]
+        let path = path2.clone();
+
         let array = ty
             .clone()
             .delimited_by(just(Token::ArrayBegin), just(Token::ArrayEnd))
             .map_with(move |element_type, e| {
                 Type::Array(element_type).into_id_with_location(Location {
                     span: get_span(e.span()),
-                    path,
+                    path: path.clone(),
                 })
             })
             .boxed()
             .labelled("Array");
+        let path = path2.clone();
 
         let code = just(Token::BackQuote)
             .ignore_then(ty.clone())
             .map_with(move |inner_type, e| {
                 Type::Code(inner_type).into_id_with_location(Location {
                     span: get_span(e.span()),
-                    path,
+                    path: path.clone(),
                 })
             })
             .labelled("Code");
@@ -205,7 +211,7 @@ where
     .map_with(move |lit, e| {
         Expr::Literal(lit).into_id(Location {
             span: get_span(e.span()),
-            path: ctx.file_path,
+            path: ctx.file_path.clone(),
         })
     })
     .labelled("literal")
@@ -219,7 +225,7 @@ where
     ident_parser().map_with(move |s, e| {
         Expr::Var(s).into_id(Location {
             span: get_span(e.span()),
-            path: ctx.file_path,
+            path: ctx.file_path.clone(),
         })
     })
 }
@@ -250,7 +256,7 @@ where
                 id: sym,
                 ty: Type::Unknown.into_id_with_location(Location {
                     span: get_span(e.span()),
-                    path: ctx.file_path,
+                    path: ctx.file_path.clone(),
                 }),
                 default_value: None,
             },
@@ -328,7 +334,7 @@ where
                 pat,
                 Type::Unknown.into_id_with_location(Location {
                     span: get_span(e.span()),
-                    path: ctx.file_path,
+                    path: ctx.file_path.clone(),
                 }),
             ),
         })
@@ -373,6 +379,7 @@ where
     I: ValueInput<'src, Token = Token, Span = SimpleSpan>,
 {
     let ctx = ctx.clone();
+    let path = ctx.file_path.clone();
     let dot = apply // this boxing is necessary for windows CI environment
         .foldl(
             just(Token::Dot).ignore_then(dot_field()).repeated(),
@@ -381,7 +388,7 @@ where
 
                 let loc = Location {
                     span,
-                    path: ctx.file_path,
+                    path: path.clone(),
                 };
                 match rhs {
                     DotField::Ident(name) => Expr::FieldAccess(lhs, name).into_id(loc),
@@ -390,7 +397,7 @@ where
             },
         )
         .labelled("dot");
-
+    let path = ctx.file_path.clone();
     let unary = one_of([Token::Op(Op::Minus), Token::BackQuote, Token::Dollar])
         .map_with(|token, e| (token, get_span(e.span())))
         .repeated()
@@ -398,7 +405,7 @@ where
             let rhs_span = rhs.to_span();
             let loc = Location {
                 span: op_span.start..rhs_span.end,
-                path: ctx.file_path,
+                path: path.clone(),
             };
             match op {
                 Token::BackQuote => Expr::Bracket(rhs).into_id(loc.clone()),
@@ -447,6 +454,7 @@ where
         optoken(Op::At),
     ];
     ops.into_iter().fold(unary.boxed(), move |prec, op| {
+        let path = ctx.file_path.clone();
         prec.clone()
             .foldl(
                 op.then_ignore(just(Token::LineBreak).repeated())
@@ -457,7 +465,7 @@ where
                     let span = x.to_span().start..y.to_span().end;
                     let loc = Location {
                         span,
-                        path: ctx.file_path,
+                        path: path.clone(),
                     };
                     Expr::BinOp(x, (op, opspan), y).into_id(loc)
                 },
@@ -484,6 +492,7 @@ pub(super) fn atom_parser<'src, I>(
 where
     I: ValueInput<'src, Token = Token, Span = SimpleSpan>,
 {
+    let path = ctx.file_path.clone();
     let lambda = lvar_parser_typed(ctx.clone())
         .separated_by(just(Token::Comma))
         .collect::<Vec<_>>()
@@ -500,15 +509,17 @@ where
         .map_with(move |((ids, r_type), body), e| {
             Expr::Lambda(ids, r_type, body).into_id(Location {
                 span: get_span(e.span()),
-                path: ctx.file_path,
+                path: path.clone(),
             })
         })
         .labelled("lambda");
+    let path = ctx.file_path.clone();
+    let path2 = ctx.file_path.clone();
     let macro_expand = select! { Token::MacroExpand(s) => Expr::Var(s) }
         .map_with(move |v, e| {
             v.into_id(Location {
                 span: get_span(e.span()),
-                path: ctx.file_path,
+                path: path.clone(),
             })
         })
         .then_ignore(just(Token::ParenBegin))
@@ -522,22 +533,22 @@ where
         .map_with(move |(id, then), e| {
             let loc = Location {
                 span: get_span(e.span()),
-                path: ctx.file_path,
+                path: path2.clone(),
             };
             Expr::MacroExpand(id, then).into_id(loc.clone())
         })
         .labelled("macroexpand");
-
+    let path = ctx.file_path.clone();
     let tuple = items_parser(expr.clone(), false)
         .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
         .map_with(move |items, e| {
             Expr::Tuple(items).into_id(Location {
                 span: get_span(e.span()),
-                path: ctx.file_path,
+                path: path.clone(),
             })
         })
         .labelled("tuple");
-
+    let path = ctx.file_path.clone();
     let array_literal = items_parser(expr.clone(), true)
         .delimited_by(just(Token::ArrayBegin), just(Token::ArrayEnd))
         .map_with(move |items, e| {
@@ -545,12 +556,13 @@ where
             // For now, we create a special AST node type for array literals
             let loc = Location {
                 span: get_span(e.span()),
-                path: ctx.file_path,
+                path: path.clone(),
             };
             Expr::ArrayLiteral(items).into_id(loc)
         })
         .labelled("array_literal");
-
+    let path = ctx.file_path.clone();
+    let path2 = ctx.file_path.clone();
     // Combined parser for record literals and record updates
     let record_parser = choice((
         // Record update syntax: { expr <- field1 = value1, field2 = value2 }
@@ -569,7 +581,7 @@ where
                 fields.sort_by(|a, b| a.name.cmp(&b.name));
                 let loc = Location {
                     span: get_span(e.span()),
-                    path: ctx.file_path,
+                    path: path.clone(),
                 };
                 Expr::RecordUpdate(record, fields).into_id(loc)
             })
@@ -586,7 +598,7 @@ where
                 fields.sort_by(|a, b| a.name.cmp(&b.name));
                 let loc = Location {
                     span: get_span(e.span()),
-                    path: ctx.file_path,
+                    path: path2.clone(),
                 };
                 if is_imcomplete.is_some() {
                     log::trace!("is imcomplete record literal");
@@ -598,13 +610,14 @@ where
             .labelled("record_literal"),
     ))
     .labelled("record_parser");
+    let path = ctx.file_path.clone();
     let parenexpr = expr
         .clone()
         .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
         .map_with(move |e, e_s| {
             Expr::Paren(e).into_id(Location {
                 span: get_span(e_s.span()),
-                path: ctx.file_path,
+                path: path.clone(),
             })
         })
         .labelled("paren_expr");
@@ -629,6 +642,7 @@ fn expr_parser<'src, I>(
 where
     I: ValueInput<'src, Token = Token, Span = SimpleSpan>,
 {
+    let path = ctx.file_path.clone();
     recursive(|expr| {
         enum FoldItem {
             Args(Vec<ExprNodeId>),
@@ -647,7 +661,7 @@ where
             let span = f_span.start..args_span.end;
             let loc = Location {
                 span,
-                path: ctx.file_path,
+                path: path.clone(),
             };
             match item {
                 FoldItem::Args(args) => Expr::Apply(f, args).into_id(loc),
@@ -716,7 +730,7 @@ where
         .labelled("letrec");
     let assign = expr
         .clone()
-        .validate(|v, e, emitter| match v.to_expr() {
+        .validate(|v, _e, emitter| match v.to_expr() {
             Expr::Var(_) | Expr::FieldAccess(_, _) | Expr::ArrayAccess(_, _) => v,
             _ => {
                 emitter.emit(Rich::custom(
@@ -740,7 +754,7 @@ where
                 t,
                 Location {
                     span: span.start()..span.end(),
-                    path: ctx.file_path,
+                    path: ctx.file_path.clone(),
                 },
             )
         })
@@ -786,7 +800,7 @@ where
             let rhs_span = rhs.to_span();
             let loc = Location {
                 span: merge_span(op_span, rhs_span),
-                path: ctx3.file_path,
+                path: ctx3.file_path.clone(),
             };
             match op {
                 Token::BackQuote => Expr::Bracket(rhs).into_id(loc.clone()),
@@ -806,6 +820,7 @@ where
         let expr = expr_parser(expr_group.clone(), ctx.clone());
 
         let block = block_parser(expr_group.clone(), ctx.clone());
+        let path = ctx.file_path.clone();
         //todo: should be recursive(to paranthes be not needed)
         let if_ = just(Token::If)
             .ignore_then(
@@ -824,11 +839,11 @@ where
             .map_with(move |((cond, then), opt_else), e| {
                 Expr::If(cond, then, opt_else).into_id(Location {
                     span: get_span(e.span()),
-                    path: ctx.file_path,
+                    path: path.clone(),
                 })
             })
             .labelled("if");
-
+        let ctx = ctx.clone();
         block
             .or(if_)
             // .or(expr_statement_parser(expr_group.clone(), expr_group))
@@ -866,7 +881,7 @@ where
                 ProgramStatement::StageDeclaration { stage },
                 Location {
                     span: get_span(e.span()),
-                    path: ctx.file_path,
+                    path: ctx.file_path.clone(),
                 },
             )
         })
@@ -884,6 +899,7 @@ where
         lvar_parser_typed_with_default(ctx.clone(), exprgroup.clone()).try_map(|ty, span| {
             TypedId::try_from(ty).map_err(|err| Rich::custom(span, err.to_string()))
         });
+    let path = ctx.file_path.clone();
 
     let fnparams = lvar
         .clone()
@@ -891,14 +907,17 @@ where
         .collect()
         .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd))
         .map_with(move |params, e| {
-            let loc = Location {
-                span: get_span(e.span()),
-                path: ctx.file_path,
-            };
-            (params, loc)
+            (
+                params,
+                Location {
+                    span: get_span(e.span()),
+                    path: path.clone(),
+                },
+            )
         })
         .labelled("fnparams");
-
+    let path = ctx.file_path.clone();
+    let path2 = ctx.file_path.clone();
     let function_s = just(Token::Function)
         .ignore_then(ident_parser().clone().validate(|ident, e, emitter| {
             if let Err(e) = validate_reserved_ident(ident, e.span()) {
@@ -925,16 +944,12 @@ where
                     move |span| {
                         Expr::Error.into_id(Location {
                             span: get_span(span),
-                            path: ctx.file_path,
+                            path: path.clone(),
                         })
                     },
                 ))),
         )
         .map_with(move |(((name, args), return_type), body), e| {
-            let loc = Location {
-                span: get_span(e.span()),
-                path: ctx.file_path,
-            };
             (
                 ProgramStatement::FnDefinition {
                     name,
@@ -942,10 +957,14 @@ where
                     return_type,
                     body,
                 },
-                loc,
+                Location {
+                    span: get_span(e.span()),
+                    path: path2.clone(),
+                },
             )
         })
         .labelled("function decl");
+    let path = ctx.file_path.clone();
 
     let global_stmt = statement_parser(exprgroup.clone(), ctx.clone())
         .map(|(s, span)| (ProgramStatement::GlobalStatement(s), span));
@@ -954,10 +973,10 @@ where
             select! {Token::Str(s) => s.to_symbol()}
                 .delimited_by(just(Token::ParenBegin), just(Token::ParenEnd)),
         )
-        .map_with(move |path, e| {
+        .map_with(move |path_sym, e| {
             (
-                ProgramStatement::Import(path),
-                Location::new(get_span(e.span()), ctx.file_path),
+                ProgramStatement::Import(path_sym),
+                Location::new(get_span(e.span()), path.clone()),
             )
         });
     let stage = top_stage_parser(ctx.clone());
@@ -1026,12 +1045,12 @@ where
     I: ValueInput<'src, Token = Token, Span = SimpleSpan>,
 {
     let ctx = ParseContext {
-        file_path: current_file.map_or("".to_symbol(), |p| p.to_string_lossy().to_symbol()),
+        file_path: current_file.unwrap_or_default(),
     };
     toplevel_parser(ctx)
 }
 
-pub(crate) fn add_global_context(ast: ExprNodeId, file_path: Symbol) -> ExprNodeId {
+pub(crate) fn add_global_context(ast: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
     let span = ast.to_span();
     let loc = Location {
         span: span.clone(),
@@ -1058,11 +1077,7 @@ pub fn lex(
     let lex_errs = lex_errs.into_iter().map(|e| -> Box<dyn ReportableError> {
         Box::new(error::ParseError::<char>::new(
             e,
-            current_file
-                .clone()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_symbol(),
+            current_file.clone().unwrap_or_default(),
         ))
     });
     (tokens, lex_errs.collect())
@@ -1071,7 +1086,7 @@ pub(super) fn convert_parse_errors<'src>(
     errs: &[Rich<'src, Token>],
 ) -> impl Iterator<Item = Box<dyn ReportableError>> {
     errs.iter().map(move |e| -> Box<dyn ReportableError> {
-        Box::new(error::ParseError::new(e.clone(), Symbol::default()))
+        Box::new(error::ParseError::new(e.clone(), Default::default()))
     })
 }
 
@@ -1112,10 +1127,7 @@ pub fn parse_to_expr(
     if prog.statements.is_empty() {
         return (Expr::Error.into_id_without_span(), errs);
     }
-    let (expr, mut new_errs) = expr_from_program(
-        prog,
-        current_file.map_or("".to_symbol(), |p| p.to_string_lossy().to_symbol()),
-    );
+    let (expr, mut new_errs) = expr_from_program(prog, current_file.unwrap_or_default());
     errs.append(&mut new_errs);
     (expr, errs)
 }

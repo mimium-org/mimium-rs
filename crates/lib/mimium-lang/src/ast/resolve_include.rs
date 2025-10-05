@@ -1,6 +1,7 @@
+use std::path::PathBuf;
+
 use crate::ast::program::Program;
 use crate::compiler::parser::parse;
-use crate::interner::ToSymbol;
 use crate::utils::error::{ReportableError, SimpleError};
 use crate::utils::fileloader;
 use crate::utils::metadata::{Location, Span};
@@ -19,7 +20,7 @@ pub(super) fn resolve_include(
 ) -> (Program, Vec<Box<dyn ReportableError>>) {
     let loc = Location {
         span: span.clone(),
-        path: mmm_filepath.to_symbol(),
+        path: PathBuf::from(mmm_filepath),
     };
     let res = fileloader::load_mmmlibfile(mmm_filepath, target_path)
         .map_err(|e| make_vec_error(e, loc.clone()));

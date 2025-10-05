@@ -2,9 +2,11 @@
 use crate::{
     compiler::IoChannelInfo,
     interner::{Symbol, TypeNodeId},
-    types::TypeSize,
+    types::{PType, RecordTypeField, Type, TypeSize},
 };
-use std::{cell::OnceCell, sync::Arc};
+use std::{cell::OnceCell, path::PathBuf, sync::Arc};
+// Import StateTreeSkeleton for function state information
+use state_tree::tree::{SizedType, StateTreeSkeleton};
 
 pub mod print;
 
@@ -66,8 +68,8 @@ pub enum Instruction {
     GetUpValue(u64, TypeNodeId),
     SetUpValue(u64, VPtr, TypeNodeId),
     //internal state: feed and delay
-    PushStateOffset(Vec<StateSize>),
-    PopStateOffset(Vec<StateSize>),
+    PushStateOffset(u64),
+    PopStateOffset(u64),
     //load internal state to register(destination)
     GetState(TypeNodeId),
 
@@ -137,6 +139,38 @@ pub enum Instruction {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Block(pub Vec<(VPtr, Instruction)>);
 
+impl Block {
+    pub fn get_total_stateskeleton(
+        &self,
+        functions: &[Function],
+    ) -> Vec<StateTreeSkeleton<StateType>> {
+        let mut children = vec![];
+        for (_v, instr) in &self.0 {
+            match instr {
+                Instruction::Delay(len, _, _) => {
+                    children.push(Box::new(StateTreeSkeleton::Delay { len: *len }))
+                }
+                Instruction::Mem(_) => {
+                    children.push(Box::new(StateTreeSkeleton::Mem(StateType(1))))
+                }
+                Instruction::ReturnFeed(_, ty) => {
+                    children.push(Box::new(StateTreeSkeleton::Feed(StateType::from(*ty))))
+                }
+                Instruction::Call(v, _, _) => {
+                    if let Value::Function(idx) = **v {
+                        let func = &functions[idx];
+                        if func.is_stateful() {
+                            children.push(Box::new(func.state_skeleton.clone()))
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        children.into_iter().map(|e| *e).collect()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpIndex {
     Local(usize),   // index of local variables in upper functions
@@ -151,6 +185,31 @@ pub struct OpenUpValue {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct StateType(pub u64);
+impl state_tree::tree::SizedType for StateType {
+    fn word_size(&self) -> u64 {
+        self.0
+    }
+}
+impl From<TypeNodeId> for StateType {
+    fn from(t: TypeNodeId) -> Self {
+        match t.to_type() {
+            Type::Primitive(PType::Unit) => StateType(0),
+            Type::Primitive(PType::Numeric) | Type::Function { .. } => StateType(1),
+            Type::Record(fields) => StateType(
+                fields
+                    .iter()
+                    .map(|RecordTypeField { ty, .. }| ty.word_size())
+                    .sum(),
+            ),
+            Type::Tuple(elems) => StateType(elems.iter().map(|ty| ty.word_size()).sum()),
+            Type::Array(_elem_ty) => StateType(1),
+            _ => todo!(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Function {
     pub index: usize,
     pub label: Symbol,
@@ -160,13 +219,8 @@ pub struct Function {
     pub upindexes: Vec<Arc<Value>>,
     pub upperfn_i: Option<usize>,
     pub body: Vec<Block>,
-    pub state_sizes: Vec<StateSize>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct StateSize {
-    pub size: u64,
-    pub ty: TypeNodeId,
+    /// StateTree skeleton information for this function's state layout
+    pub state_skeleton: StateTreeSkeleton<StateType>,
 }
 
 impl Function {
@@ -175,8 +229,10 @@ impl Function {
         name: Symbol,
         args: &[Argument],
         // argtypes: &[TypeNodeId],
+        state_skeleton: Vec<StateTreeSkeleton<StateType>>,
         upperfn_i: Option<usize>,
     ) -> Self {
+        let state_boxed = state_skeleton.into_iter().map(Box::new).collect();
         Self {
             index,
             label: name,
@@ -186,7 +242,7 @@ impl Function {
             upindexes: vec![],
             upperfn_i,
             body: vec![Block::default()],
-            state_sizes: vec![],
+            state_skeleton: StateTreeSkeleton::FnCall(state_boxed),
         }
     }
     pub fn add_new_basicblock(&mut self) -> usize {
@@ -205,16 +261,30 @@ impl Function {
                 self.upindexes.len() - 1
             })
     }
+    pub fn push_state_skeleton(&mut self, skeleton: StateTreeSkeleton<StateType>) {
+        if let StateTreeSkeleton::FnCall(children) = &mut self.state_skeleton {
+            children.push(Box::new(skeleton))
+        } else {
+            panic!("State skeleton for function must be FnCall type");
+        }
+    }
+    pub fn is_stateful(&self) -> bool {
+        if let StateTreeSkeleton::FnCall(children) = &self.state_skeleton {
+            !children.is_empty()
+        } else {
+            panic!("State skeleton for function must be FnCall type");
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Mir {
     pub functions: Vec<Function>,
-    pub file_path: Option<Symbol>,
+    pub file_path: Option<PathBuf>,
 }
 
 impl Mir {
-    pub fn new(file_path: Option<Symbol>) -> Self {
+    pub fn new(file_path: Option<PathBuf>) -> Self {
         Self {
             file_path,
             ..Default::default()
@@ -237,5 +307,24 @@ impl Mir {
                     .and_then(|t| t.to_type().get_iochannel_count());
                 input.and_then(|input| output.map(|output| IoChannelInfo { input, output }))
             })
+    }
+
+    /// Get the StateTreeSkeleton for a specific function by name
+    pub fn get_function_state_skeleton(
+        &self,
+        function_name: &str,
+    ) -> Option<&StateTreeSkeleton<StateType>> {
+        self.functions.iter().find_map(|f| {
+            if f.label.as_str() == function_name {
+                Some(&f.state_skeleton)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Get the StateTreeSkeleton for the dsp function (commonly used for audio processing)
+    pub fn get_dsp_state_skeleton(&self) -> Option<&StateTreeSkeleton<StateType>> {
+        self.get_function_state_skeleton("dsp")
     }
 }

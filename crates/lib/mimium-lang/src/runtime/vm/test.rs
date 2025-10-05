@@ -150,9 +150,9 @@ fn closuretest() {
         ..Default::default()
     };
     let global_fn_table = vec![
-        ("main".to_symbol(), main_f),
-        ("makecounter".to_symbol(), makecounter_f),
-        ("inner".to_symbol(), inner_f),
+        ("main".to_string(), main_f),
+        ("makecounter".to_string(), makecounter_f),
+        ("inner".to_string(), inner_f),
     ];
 
     // machine.install_extern_fn("lib_printi".to_string(), lib_printi);
@@ -160,7 +160,7 @@ fn closuretest() {
     let builtins = default_plugin.get_ext_closures().into_iter();
     let ext_fun_table = plugin::get_extfun_types(&[default_plugin])
         .filter(|ExtFunTypeInfo { stage, .. }| stage.is_available_in_vm())
-        .map(|ExtFunTypeInfo { name, ty, .. }| (name, ty))
+        .map(|ExtFunTypeInfo { name, ty, .. }| (name.to_string(), ty))
         .collect();
     let prog = Program {
         global_fn_table,
@@ -191,7 +191,7 @@ fn rust_closure_test() {
         ..Default::default()
     };
     let fns = vec![main_f];
-    let fnames = vec!["main".to_symbol()];
+    let fnames = vec!["main".to_string()];
     let global_fn_table = fnames.into_iter().zip(fns).collect::<Vec<_>>();
     // let mut count = 0;
     let cls = Rc::new(RefCell::new(|m: &mut Machine| -> ReturnCode {
@@ -207,8 +207,8 @@ fn rust_closure_test() {
     let prog = Program {
         global_fn_table,
         ext_fun_table: vec![
-            ("lib_printi".to_symbol(), unknownt),
-            ("rustclosure".to_symbol(), unknownt),
+            ("lib_printi".to_string(), unknownt),
+            ("rustclosure".to_string(), unknownt),
         ],
         ..Default::default()
     };
@@ -259,12 +259,12 @@ fn prep_closure_gc_program(is_closed: bool) -> Machine {
         constants: vec![1], //13,7, makecounter, print_f
         ..Default::default()
     };
-    let global_fn_table = vec![("main".to_symbol(), main_f), ("cls".to_symbol(), cls_f)];
+    let global_fn_table = vec![("main".to_string(), main_f), ("cls".to_string(), cls_f)];
     let default_plugin = plugin::get_builtin_fns_as_plugins();
     let builtins = default_plugin.get_ext_closures().into_iter();
     let ext_fun_table = plugin::get_extfun_types(&[default_plugin])
         .filter(|ExtFunTypeInfo { stage, .. }| stage.is_available_in_vm())
-        .map(|ExtFunTypeInfo { name, ty, .. }| (name, ty))
+        .map(|ExtFunTypeInfo { name, ty, .. }| (name.to_string(), ty))
         .collect();
     let prog = Program {
         global_fn_table,
@@ -316,7 +316,7 @@ fn prep_array_program() -> Program {
         constants: vec![],
         ..Default::default()
     };
-    let global_fn_table = vec![("main".to_symbol(), main_f)];
+    let global_fn_table = vec![("main".to_string(), main_f)];
     Program {
         global_fn_table,
         ext_fun_table: vec![],

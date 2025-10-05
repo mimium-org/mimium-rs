@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::interner::{Symbol, TypeNodeId};
-use crate::mir::{self, Mir, StateSize};
+use crate::mir::{self, Mir};
 use crate::runtime::vm::bytecode::{ConstPos, GlobalPos, Reg};
+use crate::runtime::vm::program::WordSize;
 use crate::runtime::vm::{self, StateOffset};
 use crate::types::{PType, RecordTypeField, Type, TypeSize};
 use crate::utils::half_float::HFloat;
@@ -92,7 +93,7 @@ pub struct ByteCodeGenerator {
     vregister: VStack,
     varray: Vec<Arc<mir::Value>>,
     fnmap: HashMap<Symbol, usize>,
-    globals: Vec<Arc<mir::Value>>,
+    globals: HashMap<Arc<mir::Value>, usize>, //index to Program.global_vals
     program: vm::Program,
 }
 
@@ -153,13 +154,7 @@ impl ByteCodeGenerator {
             }
         }
     }
-    pub fn calc_state_size<T: AsRef<[StateSize]>>(state_sizes: T) -> u64 {
-        state_sizes
-            .as_ref()
-            .iter()
-            .map(|x| x.size * Self::word_size_for_type(x.ty) as u64)
-            .sum()
-    }
+
     fn get_binop(&mut self, v1: Arc<mir::Value>, v2: Arc<mir::Value>) -> (Reg, Reg) {
         let r1 = self.find(&v1);
         let r2 = self.find(&v2);
@@ -198,28 +193,34 @@ impl ByteCodeGenerator {
     fn get_destination(&mut self, dst: Arc<mir::Value>, size: TypeSize) -> Reg {
         self.vregister.push_stack(&dst, size as _)
     }
-    fn get_or_insert_global(&mut self, gv: Arc<mir::Value>) -> GlobalPos {
-        match self.globals.iter().position(|v| gv == *v) {
-            Some(idx) => idx as GlobalPos,
+    fn get_or_insert_global(&mut self, gv: Arc<mir::Value>, ty: TypeNodeId) -> GlobalPos {
+        match self.globals.get(&gv) {
+            Some(idx) => *idx as GlobalPos,
             None => {
-                self.globals.push(gv.clone());
-                let idx = (self.globals.len() - 1) as GlobalPos;
-                self.program.global_vals.push(idx as u64);
-                idx
+                let size = Self::word_size_for_type(ty) as usize;
+                let idx = if size == 0 && self.program.global_vals.is_empty() {
+                    0
+                } else {
+                    self.program.global_vals.len() + size - 1
+                };
+                self.globals.insert(gv.clone(), idx);
+                let size = WordSize(size as _);
+                self.program.global_vals.push(size);
+                idx as GlobalPos
             }
         }
     }
     fn find(&mut self, v: &Arc<mir::Value>) -> Reg {
         self.vregister
             .find(v)
-            .or_else(|| self.globals.iter().position(|gv| v == gv).map(|v| v as Reg))
+            .or_else(|| self.globals.get(v).map(|&v| v as Reg))
             .or_else(|| self.varray.iter().position(|av| v == av).map(|v| v as Reg))
             .expect(format!("value {v} not found").as_str())
     }
     fn find_keep(&mut self, v: &Arc<mir::Value>) -> Reg {
         self.vregister
             .find_keep(v)
-            .or_else(|| self.globals.iter().position(|gv| v == gv).map(|v| v as Reg))
+            .or_else(|| self.globals.get(v).map(|&v| v as Reg))
             .expect(format!("value {v} not found").as_str())
     }
     fn find_upvalue(&self, upval: &Arc<mir::Value>) -> Reg {
@@ -260,9 +261,9 @@ impl ByteCodeGenerator {
         self.program
             .ext_fun_table
             .iter()
-            .position(|(name, _ty)| *name == label)
+            .position(|(name, _ty)| name.as_str() == label.as_str())
             .unwrap_or_else(|| {
-                self.program.ext_fun_table.push((label, ty));
+                self.program.ext_fun_table.push((label.to_string(), ty));
                 self.program.ext_fun_table.len() - 1
             }) as ConstPos
     }
@@ -351,7 +352,7 @@ impl ByteCodeGenerator {
                 }
             }
             mir::Instruction::String(s) => {
-                let pos = self.program.add_new_str(s);
+                let pos = self.program.add_new_str(s.to_string());
                 let cpos = funcproto.add_new_constant(pos as u64);
                 Some(VmInstruction::MoveConst(
                     self.get_destination(dst, 1),
@@ -385,7 +386,7 @@ impl ByteCodeGenerator {
             }
             mir::Instruction::GetGlobal(v, ty) => {
                 let dst = self.get_destination(dst, Self::word_size_for_type(ty));
-                let idx = self.get_or_insert_global(v.clone());
+                let idx = self.get_or_insert_global(v.clone(), ty);
                 Some(VmInstruction::GetGlobal(
                     dst,
                     idx,
@@ -393,7 +394,7 @@ impl ByteCodeGenerator {
                 ))
             }
             mir::Instruction::SetGlobal(v, src, ty) => {
-                let idx = self.get_or_insert_global(v.clone());
+                let idx = self.get_or_insert_global(v.clone(), ty);
                 let s = self.find(&src);
                 Some(VmInstruction::SetGlobal(
                     idx,
@@ -537,13 +538,11 @@ impl ByteCodeGenerator {
                 ))
             }
             mir::Instruction::PushStateOffset(v) => {
-                let state_size = StateOffset::try_from(Self::calc_state_size(v))
-                    .expect("too much large state offset.");
+                let state_size = StateOffset::try_from(v).expect("too much large state offset.");
                 Some(VmInstruction::PushStatePos(state_size))
             }
             mir::Instruction::PopStateOffset(v) => {
-                let state_size = StateOffset::try_from(Self::calc_state_size(v))
-                    .expect("too much large state offset.");
+                let state_size = StateOffset::try_from(v).expect("too much large state offset.");
                 Some(VmInstruction::PopStatePos(state_size))
             }
             mir::Instruction::GetState(ty) => {
@@ -755,9 +754,8 @@ impl ByteCodeGenerator {
         mirfunc: &mir::Function,
         fidx: usize,
         config: Config,
-    ) -> (Symbol, vm::FuncProto) {
+    ) -> (String, vm::FuncProto) {
         log::trace!("generating function {}", mirfunc.label.0);
-        let state_size = Self::calc_state_size(&mirfunc.state_sizes);
         let mut func = vm::FuncProto {
             nparam: mirfunc.args.len(),
             nret: Self::word_size_for_type(
@@ -766,7 +764,7 @@ impl ByteCodeGenerator {
                     .get()
                     .expect("return type not inferred correctly"),
             ) as _,
-            state_size,
+            state_skeleton: mirfunc.state_skeleton.clone(), // Transfer state skeleton from MIR
             ..Default::default()
         };
         self.vregister.0.push(VRegister::default());
@@ -791,7 +789,7 @@ impl ByteCodeGenerator {
                 func.bytecodes.push(i);
             }
         });
-        (mirfunc.label, func)
+        (mirfunc.label.to_string(), func)
     }
     pub fn generate(&mut self, mir: Mir, config: Config) -> vm::Program {
         self.program.global_fn_table = mir
@@ -803,10 +801,11 @@ impl ByteCodeGenerator {
                 self.generate_funcproto(func, i, config)
             })
             .collect();
-        self.program.file_path = mir.file_path;
+        self.program.file_path = mir.file_path.clone();
         self.program.iochannels = mir.get_dsp_iochannels();
         log::debug!("iochannels: {:?}", self.program.iochannels.unwrap());
         let _io = self.program.iochannels.unwrap();
+        self.program.dsp_index = self.program.get_fun_index("dsp");
         self.program.clone()
     }
 }
@@ -819,8 +818,8 @@ fn remove_redundunt_mov(program: vm::Program) -> vm::Program {
         let mut removeconst_idx = std::collections::HashMap::<usize, VmInstruction>::new();
 
         for (i, pair) in f.bytecodes.windows(2).enumerate() {
-            match pair {
-                &[
+            match *pair {
+                [
                     VmInstruction::Move(dst, src),
                     VmInstruction::Move(dst2, src2),
                 ] if dst == src2 && src == dst2 =>
@@ -829,14 +828,14 @@ fn remove_redundunt_mov(program: vm::Program) -> vm::Program {
                     remove_idx.insert(i);
                     remove_idx.insert(i + 1);
                 }
-                &[
+                [
                     VmInstruction::Move(dst, src),
                     VmInstruction::Move(dst2, src2),
                 ] if dst == src2 => {
                     reduce_idx.insert(i, VmInstruction::Move(dst2, src));
                     remove_idx.insert(i + 1);
                 }
-                &[
+                [
                     VmInstruction::MoveConst(dst, src),
                     VmInstruction::Move(dst2, src2),
                 ] if dst == src2 => {
@@ -875,8 +874,8 @@ pub fn gen_bytecode(mir: mir::Mir, config: Config) -> vm::Program {
 #[cfg(test)]
 mod test {
 
-    use crate::{compiler::IoChannelInfo, interner::ToSymbol};
-
+    use crate::compiler::IoChannelInfo;
+    use crate::interner::ToSymbol;
     #[test]
     fn build() {
         use super::*;
@@ -893,7 +892,13 @@ mod test {
         let mut src = mir::Mir::default();
         let arg = mir::Argument("hoge".to_symbol(), numeric!());
         let argv = Arc::new(mir::Value::Argument(0));
-        let mut func = mir::Function::new(0, "dsp".to_symbol(), &[arg.clone()], None);
+        let mut func = mir::Function::new(
+            0,
+            "dsp".to_symbol(),
+            std::slice::from_ref(&arg),
+            vec![],
+            None,
+        );
         func.return_type.get_or_init(|| numeric!());
         let mut block = mir::Block::default();
         let resint = Arc::new(mir::Value::Register(1));
@@ -927,7 +932,8 @@ mod test {
             VmInstruction::AddF(1, 0, 1),
             VmInstruction::Return(1, 1),
         ];
-        answer.global_fn_table.push(("dsp".to_symbol(), main));
+        answer.global_fn_table.push(("dsp".to_string(), main));
+        answer.dsp_index = Some(0);
         assert_eq!(res, answer);
     }
 }

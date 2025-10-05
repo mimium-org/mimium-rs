@@ -1,27 +1,6 @@
-use crate::{compiler::bytecodegen::ByteCodeGenerator, format_vec};
+use crate::format_vec;
 
 use super::*;
-
-fn display_state_sizes<T: AsRef<[StateSize]>>(x: T) -> String {
-    let x_ref = x.as_ref();
-
-    // it's a bit weird to use a function defined for bytecode to display an
-    // MIR, but this is for the sake of debugging.
-    let x_calculated = ByteCodeGenerator::calc_state_size(x_ref);
-
-    let x_str = x_ref
-        .iter()
-        .map(|x| {
-            if x.size == 1 {
-                x.ty.to_type().to_string()
-            } else {
-                format!("({}*{})", x.ty.to_type(), x.size)
-            }
-        })
-        .collect::<Vec<String>>();
-
-    format!("{x_calculated}(=[{}])", x_str.join(","))
-}
 
 impl std::fmt::Display for Mir {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -39,7 +18,7 @@ impl std::fmt::Display for Mir {
             if let Some(upper_i) = fun.upperfn_i {
                 let _ = write!(f, "upper:{upper_i}");
             }
-            let _ = write!(f, " state_size: {}", display_state_sizes(&fun.state_sizes));
+            let _ = write!(f, " states: {:?}", fun.state_skeleton);
             for (i, block) in fun.body.iter().enumerate() {
                 let _ = write!(f, "\n  block {i}\n");
                 for (v, insts) in block.0.iter() {
@@ -139,10 +118,10 @@ impl std::fmt::Display for Instruction {
                 write!(f, "setglobal {} {} {}", *dst, *src, ty.to_type())
             }
             Instruction::PushStateOffset(v) => {
-                write!(f, "pushstateidx {}", display_state_sizes(v))
+                write!(f, "pushstateidx {v}")
             }
             Instruction::PopStateOffset(v) => {
-                write!(f, "popstateidx  {}", display_state_sizes(v))
+                write!(f, "popstateidx  {v}")
             }
             Instruction::GetState(ty) => write!(f, "getstate {}", ty.to_type()),
             Instruction::JmpIf(cond, tbb, ebb, pbb) => write!(f, "jmpif {cond} {tbb} {ebb} {pbb}"),

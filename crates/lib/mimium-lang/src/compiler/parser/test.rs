@@ -15,7 +15,7 @@ macro_rules! test_string {
                 $ans
             );
         } else {
-            utils::error::report(&$src, "".to_symbol(), &errs);
+            utils::error::report(&$src, PathBuf::from("/"), &errs);
             panic!();
         }
     };
@@ -38,7 +38,7 @@ where
 {
     use chumsky::prelude::*;
     let ctx = ParseContext {
-        file_path: "/".to_symbol(),
+        file_path: PathBuf::from("/"),
     };
     recursive(|e| expr_parser(e, ctx))
 }
@@ -53,7 +53,7 @@ fn test_expr_string(src: &str, expr: ExprNodeId) {
         );
     } else {
         let errs = convert_parse_errors(&errs).collect_vec();
-        utils::error::report(src, "".to_symbol(), &errs);
+        utils::error::report(src, PathBuf::from("/"), &errs);
         panic!();
     }
 }
@@ -62,7 +62,7 @@ fn test_expr_string(src: &str, expr: ExprNodeId) {
 fn loc(span: Span) -> Location {
     Location {
         span,
-        path: "/".to_symbol(),
+        path: PathBuf::from("/"),
     }
 }
 #[test]
@@ -651,7 +651,7 @@ fn test_err_builtin_redefine() {
 
     let err_ans: Box<dyn ReportableError> = Box::new(error::ParseError::<Token> {
         content: msg,
-        file: "/".to_symbol(),
+        file: PathBuf::from("/"),
     });
     assert_eq!(err[0].to_string(), err_ans.to_string())
 }
@@ -684,7 +684,7 @@ fn codetype() {
     let (tokens, errs) = lex(src, None);
     assert!(errs.is_empty());
     let (ty, errs2) = super::type_parser(ParseContext {
-        file_path: "/".to_symbol(),
+        file_path: PathBuf::from("/"),
     })
     .parse(Stream::from_iter(tokens.unwrap()).map((src.len()..src.len()).into(), |(t, s)| (t, s)))
     .into_output_errors();

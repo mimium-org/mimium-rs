@@ -1,9 +1,11 @@
 use std::{collections::HashMap, path::PathBuf};
 
-use mimium_audiodriver::{backends::local_buffer::LocalBufferDriver, driver::Driver};
+use mimium_audiodriver::{
+    backends::local_buffer::LocalBufferDriver,
+    driver::{Driver, RuntimeData},
+};
 use mimium_lang::{
     Config, ExecContext,
-    interner::{Symbol, ToSymbol},
     plugin::Plugin,
     runtime::{self, vm},
     utils::{
@@ -17,7 +19,7 @@ pub fn run_bytecode_test(
     machine: &mut vm::Machine,
     n: usize,
 ) -> Result<&[f64], Vec<Box<dyn ReportableError>>> {
-    let retcode = machine.execute_entry(&"dsp".to_symbol());
+    let retcode = machine.execute_entry("dsp");
     if retcode >= 0 {
         Ok(vm::Machine::get_as_array::<f64>(machine.get_top_n(n)))
     } else {
@@ -42,7 +44,7 @@ pub fn run_bytecode_test_multiple(
     for i in 0..times {
         let res = run_bytecode_test(machine, n)?;
         ret.extend_from_slice(res);
-        println!("time:{}, res: {:?}", i, res)
+        println!("time:{i}, res: {res:?}")
     }
     Ok(ret)
 }
@@ -58,7 +60,7 @@ pub fn run_source_with_plugins(
     let audiodriverplug: Box<dyn Plugin> = Box::new(driver.get_as_plugin());
     let mut ctx = ExecContext::new(
         plugins.chain([audiodriverplug]),
-        path.map(|s| s.to_symbol()),
+        path.map(PathBuf::from),
         Config::default(),
     );
     if with_scheduler {
@@ -66,7 +68,11 @@ pub fn run_source_with_plugins(
     }
     ctx.prepare_machine(src).unwrap();
     let _ = ctx.run_main();
-    driver.init(ctx, None);
+    let runtimedata = {
+        let ctxmut: &mut ExecContext = &mut ctx;
+        RuntimeData::try_from(ctxmut).unwrap()
+    };
+    driver.init(runtimedata, None);
     driver.play();
     Ok(driver.get_generated_samples().to_vec())
 }
@@ -83,7 +89,7 @@ pub fn run_source_test(
     src: &str,
     times: u64,
     stereo: bool,
-    path: Option<Symbol>,
+    path: Option<PathBuf>,
 ) -> Result<Vec<f64>, Vec<Box<dyn ReportableError>>> {
     let mut ctx = ExecContext::new([].into_iter(), path, Config::default());
 
@@ -109,7 +115,7 @@ pub fn run_file_with_plugins(
     match res {
         Ok(res) => Some(res),
         Err(errs) => {
-            report(&src, file.to_string_lossy().to_symbol(), &errs);
+            report(&src, file, &errs);
             None
         }
     }
@@ -119,12 +125,11 @@ pub fn run_file_with_scheduler(path: &'static str, times: u64) -> Option<Vec<f64
 }
 pub fn run_file_test(path: &'static str, times: u64, stereo: bool) -> Option<Vec<f64>> {
     let (file, src) = load_src(path);
-    let path_sym = file.to_string_lossy().to_symbol();
-    let res = run_source_test(&src, times, stereo, Some(path_sym));
+    let res = run_source_test(&src, times, stereo, Some(file));
     match res {
         Ok(res) => Some(res),
         Err(errs) => {
-            report(&src, path_sym, &errs);
+            report(&src, path.into(), &errs);
             None
         }
     }
@@ -132,8 +137,7 @@ pub fn run_file_test(path: &'static str, times: u64, stereo: bool) -> Option<Vec
 
 pub fn run_error_test(path: &'static str, stereo: bool) -> Vec<Box<dyn ReportableError>> {
     let (file, src) = load_src(path);
-    let path_sym = file.to_string_lossy().to_symbol();
-    let res = run_source_test(&src, 1, stereo, Some(path_sym));
+    let res = run_source_test(&src, 1, stereo, Some(file));
     match res {
         Ok(_res) => {
             panic!("this test should emit errors")
@@ -169,7 +173,7 @@ pub fn load_src(path: &'static str) -> (PathBuf, String) {
         path
     );
 
-    println!("{}", file);
+    println!("{file}");
     let src = fileloader::load(&file).expect("failed to load file");
     (PathBuf::from(file), src)
 }
@@ -185,11 +189,7 @@ pub fn run_file_test_stereo(path: &'static str, times: u64) -> Option<Vec<f64>> 
 pub fn test_state_sizes<T: IntoIterator<Item = (&'static str, u64)>>(path: &'static str, ans: T) {
     let state_sizes: HashMap<&str, u64> = HashMap::from_iter(ans);
     let (file, src) = load_src(path);
-    let mut ctx = ExecContext::new(
-        [].into_iter(),
-        Some(file.to_str().unwrap().to_symbol()),
-        Config::default(),
-    );
+    let mut ctx = ExecContext::new([].into_iter(), Some(file), Config::default());
     ctx.prepare_machine(&src).unwrap();
     let bytecode = ctx.take_vm().expect("failed to emit bytecode").prog;
     // let bytecode = match ctx.compiler.emit_bytecode(&src) {
@@ -207,7 +207,7 @@ pub fn test_state_sizes<T: IntoIterator<Item = (&'static str, u64)>>(path: &'sta
             continue;
         }
 
-        let actual = proto.state_size;
+        let actual = proto.state_skeleton.total_size();
         match state_sizes.get(fn_name) {
             Some(&expected) => {
                 assert_eq!(

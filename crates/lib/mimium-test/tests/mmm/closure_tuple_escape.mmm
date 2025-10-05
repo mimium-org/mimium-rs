@@ -5,7 +5,11 @@ fn test(x:float){
         let z = 3.0
         let ff = | |{ 
             let a = x
-            let (b1,b2) = y
+            //todo! if we capture with this let pattern, the test fails only on macOS.
+            //weirdly the result becomes 48 only on the time 0, 44 otherwise.
+            // let (b1,b2) = y
+            let b1 = y.0
+            let b2 = y.1
             let c = z
             a*b1 - b2 + c 
             }

@@ -14,6 +14,11 @@ serde = { version = "1.0", features = ["derive"] }
 env_logger = "0.11.5"
 ropey = "1.5.0"
 mimium-lang = { workspace = true }
-mimium-cli = { workspace = true }
+# these plugins are needed for obtaining type information of default plugins
+mimium-midi = { workspace = true }
+mimium-scheduler = { workspace = true }
+mimium-guitools = { workspace = true }
+mimium-symphonia = { workspace = true }
+
 dashmap = "6.1.0"
-log = "0.4.28"
+log = { workspace = true }
