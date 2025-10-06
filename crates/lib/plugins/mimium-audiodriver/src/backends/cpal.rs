@@ -5,10 +5,10 @@ use crate::driver::{Driver, RuntimeData, SampleRate};
 use crate::runtime_fn;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{self, BufferSize, StreamConfig};
-use mimium_lang::ExecContext;
+
 use mimium_lang::compiler::IoChannelInfo;
 use mimium_lang::log;
-use mimium_lang::plugin::{DynSystemPlugin, ExtClsInfo};
+use mimium_lang::plugin::ExtClsInfo;
 
 use mimium_lang::runtime::{Time, vm};
 use ringbuf::traits::{Consumer, Producer, Split};

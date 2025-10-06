@@ -263,7 +263,6 @@ impl FileRunner {
                     }
                 });
 
-                // match runner.exec_ctx.prepare_machine_resume(&new_content) {
             }
             Err(e) => {
                 log::error!(

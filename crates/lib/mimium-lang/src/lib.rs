@@ -149,18 +149,7 @@ impl ExecContext {
         self.prepare_machine_with_bytecode(prog);
         Ok(())
     }
-    pub fn prepare_machine_resume(
-        &mut self,
-        src: &str,
-    ) -> Result<vm::Program, Vec<Box<dyn ReportableError>>> {
-        if self.compiler.is_none() {
-            self.prepare_compiler();
-        }
 
-        let prog = self.compiler.as_ref().unwrap().emit_bytecode(src)?;
-
-        Ok(prog)
-    }
     /// Build a VM from the given bytecode [`Program`].
     pub fn prepare_machine_with_bytecode(&mut self, prog: Program) {
         let cls =

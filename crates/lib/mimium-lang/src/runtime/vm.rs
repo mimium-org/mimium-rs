@@ -399,11 +399,12 @@ impl Machine {
             debug_stacktype: vec![RawValType::Int; 255],
         };
         //expect there are no change changes in external function use for now
+
         new_vm.ext_fun_table = self.ext_fun_table.clone();
         new_vm.ext_cls_table = self.ext_cls_table.clone();
         new_vm.global_vals = self.global_vals.clone();
         new_vm.arrays = self.arrays.clone();
-        new_vm.fn_map = self.fn_map.clone();
+
         let new_state = state_tree::update_state_storage(
             &self.global_states.rawdata,
             self.prog
@@ -428,6 +429,7 @@ impl Machine {
                 log::error!("Failed to migrate global state: {e}");
             }
         }
+        new_vm.link_functions();
         new_vm.execute_main();
         new_vm
     }
