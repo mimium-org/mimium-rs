@@ -217,6 +217,7 @@ pub enum Value {
     Fixpoint(Symbol, ExprNodeId),
     Code(ExprNodeId),
     ExternalFn(ExtFunction),
+    Store(Rc<RefCell<Value>>),
 }
 impl From<&Box<dyn MacroFunction>> for Value {
     fn from(macro_fn: &Box<dyn MacroFunction>) -> Self {
@@ -308,6 +309,10 @@ impl TryInto<ExprNodeId> for Value {
             }
             Value::Unit => Ok(Expr::Block(None).into_id_without_span()),
             Value::ErrorV(e) => Ok(e),
+            Value::Store(store) => {
+                // Dereference the Store and convert the inner value
+                store.borrow().clone().try_into()
+            }
         }
     }
 }
@@ -424,9 +429,25 @@ impl GeneralInterpreter for StageInterpreter {
                     e2.map_or(Value::Unit, |e| self.eval(ctx, e))
                 }
                 Expr::Assign(target, e) => {
-                    let _target_val = self.eval(ctx, target);
-                    let _new_val = self.eval(ctx, e);
-                    panic!("assignment cannot be used in macro expansion currently")
+                    // Evaluate the new value
+                    let new_val = self.eval(ctx, e);
+
+                    // Get the target variable name
+                    if let Expr::Var(name) = target.to_expr() {
+                        // Look up the Store in the environment
+                        match ctx.env.lookup_cls(&name) {
+                            LookupRes::Local((Value::Store(store), _))
+                            | LookupRes::UpValue(_, (Value::Store(store), _))
+                            | LookupRes::Global((Value::Store(store), _)) => {
+                                // Update the Store's contents
+                                *store.borrow_mut() = new_val;
+                                Value::Unit
+                            }
+                            _ => panic!("Assignment target must be a Store-bound variable"),
+                        }
+                    } else {
+                        panic!("Assignment target must be a variable")
+                    }
                 }
                 Expr::Escape(_e) => {
                     panic!("escape expression cannot be evaluated in stage 0")
@@ -447,6 +468,116 @@ impl GeneralInterpreter for StageInterpreter {
 
     fn get_empty_val(&self) -> Self::Value {
         Value::Unit
+    }
+
+    fn eval(&mut self, ctx: &mut Context<Self::Value>, expr: ExprNodeId) -> Self::Value {
+        match expr.to_expr() {
+            Expr::Var(name) => match ctx.env.lookup_cls(&name) {
+                LookupRes::Local((val, bounded_stage)) if ctx.stage == *bounded_stage => {
+                    // Dereference Store values when looking up variables
+                    match val {
+                        Value::Store(store) => store.borrow().clone(),
+                        _ => val.clone(),
+                    }
+                }
+                LookupRes::UpValue(_, (val, bounded_stage)) if ctx.stage == *bounded_stage => {
+                    // Dereference Store values when looking up variables
+                    match val {
+                        Value::Store(store) => store.borrow().clone(),
+                        _ => val.clone(),
+                    }
+                }
+                LookupRes::Global((val, bounded_stage))
+                    if ctx.stage == *bounded_stage || *bounded_stage == EvalStage::Persistent =>
+                {
+                    // Dereference Store values when looking up variables
+                    match val {
+                        Value::Store(store) => store.borrow().clone(),
+                        _ => val.clone(),
+                    }
+                }
+                LookupRes::None => panic!("Variable {name} not found"),
+                LookupRes::Local((_, bounded_stage))
+                | LookupRes::UpValue(_, (_, bounded_stage))
+                | LookupRes::Global((_, bounded_stage)) => {
+                    panic!(
+                        "Variable {name} found, but stage mismatch: expected {:?}, found {:?}",
+                        ctx.stage, bounded_stage
+                    )
+                }
+            },
+            Expr::Let(
+                TypedPattern {
+                    pat: Pattern::Single(name),
+                    ..
+                },
+                e,
+                body,
+            ) => {
+                let v = self.eval(ctx, e);
+                log::trace!("letting {} at stage: {}", name, ctx.stage);
+                let empty = self.get_empty_val();
+                // Wrap the value in a Store to allow mutable assignment
+                let store = Value::Store(Rc::new(RefCell::new(v)));
+                body.map_or(empty, |e| self.eval_in_new_env(&[(name, store)], ctx, e))
+            }
+            _ => {
+                // For all other expressions, delegate to the default implementation
+                // This calls the GeneralInterpreter::eval which will call interpret_expr
+                // We need to use a trick here to call the default implementation
+                match expr.to_expr() {
+                    Expr::Var(_) | Expr::Let(_, _, _) => unreachable!(),
+                    Expr::LetRec(typed_id, e, body) => {
+                        let fixpoint = ValueTrait::make_fixpoint(typed_id.id, e);
+                        log::trace!(
+                            "Creating fixpoint for {}, stage: {}",
+                            typed_id.id,
+                            ctx.stage
+                        );
+                        let res = self.eval_in_new_env(&[(typed_id.id, fixpoint)], ctx, e);
+
+                        let empty = self.get_empty_val();
+                        body.map_or(empty, |e| {
+                            self.eval_in_new_env(&[(typed_id.id, res)], ctx, e)
+                        })
+                    }
+                    Expr::Lambda(names, _, body) => {
+                        let names = names.iter().map(|name| name.id).collect_vec();
+                        ValueTrait::make_closure(body, names, ctx.env.clone())
+                    }
+                    Expr::Apply(f, a) => {
+                        let fv = self.eval(ctx, f);
+                        let args = a
+                            .clone()
+                            .into_iter()
+                            .map(|arg| {
+                                (
+                                    self.eval(ctx, arg),
+                                    Type::Unknown.into_id_with_location(arg.to_location()),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        if let Some(ext_fn) = fv.clone().get_as_external_fn() {
+                            ext_fn.borrow()(args.as_slice())
+                        } else if let Some((c_env, names, body)) = fv.clone().get_as_closure() {
+                            log::trace!("entering closure app with names: {:?}", names);
+                            let binds = names.into_iter().zip(args).collect_vec();
+                            let new_ctx = Context {
+                                env: c_env,
+                                stage: ctx.stage,
+                            };
+                            self.eval_with_closure_env(binds.as_slice(), new_ctx, body)
+                        } else if let Some((_, e)) = fv.get_as_fixpoint() {
+                            let new_app = Expr::Apply(e, a.clone()).into_id(expr.to_location());
+                            self.eval(ctx, new_app)
+                        } else {
+                            panic!("apply to non-fuctional type")
+                        }
+                    }
+                    _ => self.interpret_expr(ctx, expr),
+                }
+            }
+        }
     }
 }
 

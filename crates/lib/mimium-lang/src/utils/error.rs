@@ -104,19 +104,21 @@ pub fn report(src: &str, path: PathBuf, errs: &[Box<dyn ReportableError + '_>]) 
         // let a_span = (src.source(), span);color
         let rawlabels = e.get_labels();
         let labels = rawlabels.iter().map(|(loc, message)| {
-            let span = (path.clone(),loc.span.clone());
+            let span = (path.clone(), loc.span.clone());
             Label::new(span)
                 .with_message(message)
                 .with_color(colors.next())
         });
-        let span = (path.clone(),rawlabels[0].0.span.clone());
+        let span = (path.clone(), rawlabels[0].0.span.clone());
         let builder = Report::build(ReportKind::Error, span)
             .with_message(e.get_message())
             .with_labels(labels)
             .finish();
         if let Ok(mut cache) = FILE_BUCKET.lock() {
             let mut cache: &mut FileCache = &mut cache;
-            cache.storage.insert(path.clone(), Source::from(src.to_string()));
+            cache
+                .storage
+                .insert(path.clone(), Source::from(src.to_string()));
             builder.eprint(&mut cache).unwrap();
         }
     }
