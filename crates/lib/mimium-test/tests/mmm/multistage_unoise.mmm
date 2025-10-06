@@ -1,0 +1,32 @@
+#stage(macro)
+let RANDMAX	= 2147483647.0
+fn urand_counter()->()->`float{
+    let x = -1
+    | | {
+        x = x+1
+        lift_f(x)
+    }
+}
+let global_seed = urand_counter()
+#stage(main)
+//linear congruence
+fn gen_rand(seed){
+     (self*48271.0) % (2.0^31.0 -1.0)+seed
+}
+fn gen_noise(seed){
+    gen_rand(seed)/$(lift_f(RANDMAX))
+}
+fn noise(){
+    gen_noise(1.0)
+}
+#stage(macro)
+fn unoise(){
+    `gen_noise($(global_seed()))
+}
+
+#stage(main)
+fn dsp(){
+    let l = global_seed!()
+    let r = global_seed!()
+    (l,r)
+}

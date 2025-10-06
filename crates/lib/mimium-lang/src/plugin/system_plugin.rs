@@ -18,7 +18,8 @@ use crate::{
 use std::{
     any::Any,
     cell::{RefCell, UnsafeCell},
-    rc::Rc, sync::Arc,
+    rc::Rc,
+    sync::Arc,
 };
 pub type SystemPluginFnType<T> = fn(&mut T, &mut Machine) -> ReturnCode;
 pub type SystemPluginMacroType<T> = fn(&mut T, &[(Value, TypeNodeId)]) -> Value;
@@ -156,4 +157,3 @@ where
         }
     }
 }
-

@@ -42,6 +42,16 @@ pub trait GeneralInterpreter {
     type Value: Clone + ValueTrait + std::fmt::Debug;
     fn interpret_expr(&mut self, ctx: &mut Context<Self::Value>, expr: ExprNodeId) -> Self::Value;
     fn get_empty_val(&self) -> Self::Value;
+
+    /// Helper method to dereference Store values. Override this for types that support Store.
+    fn deref_store(&self, val: &Self::Value) -> Self::Value {
+        val.clone()
+    }
+
+    /// Helper method to wrap values in Store. Override this for types that support Store.
+    fn wrap_store(&self, val: Self::Value) -> Self::Value {
+        val
+    }
     fn eval_in_new_env(
         &mut self,
         binds: &[(Symbol, Self::Value)],
@@ -84,15 +94,15 @@ pub trait GeneralInterpreter {
         match expr.to_expr() {
             Expr::Var(name) => match ctx.env.lookup_cls(&name) {
                 LookupRes::Local((val, bounded_stage)) if ctx.stage == *bounded_stage => {
-                    val.clone()
+                    self.deref_store(val)
                 }
                 LookupRes::UpValue(_, (val, bounded_stage)) if ctx.stage == *bounded_stage => {
-                    val.clone()
+                    self.deref_store(val)
                 }
                 LookupRes::Global((val, bounded_stage))
                     if ctx.stage == *bounded_stage || *bounded_stage == EvalStage::Persistent =>
                 {
-                    val.clone()
+                    self.deref_store(val)
                 }
                 LookupRes::None => panic!("Variable {name} not found"),
                 LookupRes::Local((_, bounded_stage))
@@ -115,7 +125,10 @@ pub trait GeneralInterpreter {
                 let v = self.eval(ctx, e);
                 log::trace!("letting {} at stage: {}", name, ctx.stage);
                 let empty = self.get_empty_val();
-                body.map_or(empty, |e| self.eval_in_new_env(&[(name, v)], ctx, e))
+                let wrapped_v = self.wrap_store(v);
+                body.map_or(empty, |e| {
+                    self.eval_in_new_env(&[(name, wrapped_v)], ctx, e)
+                })
             }
             Expr::Let(_, _, _) => {
                 panic!("Let with multiple patterns should be destructed before evaluation")
@@ -154,7 +167,7 @@ pub trait GeneralInterpreter {
                 if let Some(ext_fn) = fv.clone().get_as_external_fn() {
                     ext_fn.borrow()(args.as_slice())
                 } else if let Some((c_env, names, body)) = fv.clone().get_as_closure() {
-                    log::trace!("entering closure app with names: {:?}", names);
+                    log::trace!("entering closure app with names: {names:?}");
                     let binds = names.into_iter().zip(args).collect_vec();
                     let new_ctx = Context {
                         env: c_env,
@@ -217,6 +230,7 @@ pub enum Value {
     Fixpoint(Symbol, ExprNodeId),
     Code(ExprNodeId),
     ExternalFn(ExtFunction),
+    Store(Rc<RefCell<Value>>),
 }
 impl From<&Box<dyn MacroFunction>> for Value {
     fn from(macro_fn: &Box<dyn MacroFunction>) -> Self {
@@ -308,6 +322,10 @@ impl TryInto<ExprNodeId> for Value {
             }
             Value::Unit => Ok(Expr::Block(None).into_id_without_span()),
             Value::ErrorV(e) => Ok(e),
+            Value::Store(store) => {
+                // Dereference the Store and convert the inner value
+                store.borrow().clone().try_into()
+            }
         }
     }
 }
@@ -317,6 +335,70 @@ pub struct StageInterpreter {}
 
 impl MultiStageInterpreter for StageInterpreter {
     type Value = Value;
+}
+
+impl StageInterpreter {
+    /// Evaluate an address expression to get a mutable reference to a Store.
+    /// Handles Var, FieldAccess, ArrayAccess, and Proj recursively.
+    fn eval_address(&mut self, ctx: &mut Context<Value>, expr: ExprNodeId) -> Rc<RefCell<Value>> {
+        match expr.to_expr() {
+            Expr::Var(name) => {
+                // Look up the Store in the environment
+                match ctx.env.lookup_cls(&name) {
+                    LookupRes::Local((Value::Store(store), _))
+                    | LookupRes::UpValue(_, (Value::Store(store), _))
+                    | LookupRes::Global((Value::Store(store), _)) => store.clone(),
+                    _ => panic!("Assignment target must be a Store-bound variable: {name}"),
+                }
+            }
+            Expr::FieldAccess(base, field) => {
+                let base_store = self.eval_address(ctx, base);
+                let base_val = base_store.borrow();
+                match &*base_val {
+                    Value::Record(fields) => fields
+                        .iter()
+                        .filter_map(|(name, v)| match (name, v) {
+                            (n, Value::Store(s)) if *n == field => Some(s.clone()),
+                            _ => None,
+                        })
+                        .next()
+                        .unwrap_or_else(|| panic!("Field {field} not found in record")),
+                    _ => panic!("Field access on non-record type"),
+                }
+            }
+            Expr::ArrayAccess(base, idx) => {
+                let base_store = self.eval_address(ctx, base);
+                let idx_val = self.eval(ctx, idx);
+                let base_val = base_store.borrow();
+                match (&*base_val, idx_val) {
+                    (Value::Array(elements), Value::Number(i)) => {
+                        if let Some(Value::Store(store)) = elements.get(i as usize) {
+                            store.clone()
+                        } else {
+                            log::error!("Array index {i} out of bounds or non-store was found");
+                            Rc::new(RefCell::new(Value::Number(0.0)))
+                        }
+                    }
+                    _ => panic!("Invalid value type detected. Possible bug in type checking."),
+                }
+            }
+            Expr::Proj(base, idx) => {
+                let base_store = self.eval_address(ctx, base);
+                let base_val = base_store.borrow();
+                match &*base_val {
+                    Value::Tuple(elements) => {
+                        if let Some(Value::Store(store)) = elements.get(idx as usize) {
+                            store.clone()
+                        } else {
+                            panic!("Tuple index {idx} out of bounds or non-store was found");
+                        }
+                    }
+                    _ => panic!("Projection on non-tuple type"),
+                }
+            }
+            _ => panic!("Invalid assignment target expression"),
+        }
+    }
 }
 
 impl GeneralInterpreter for StageInterpreter {
@@ -424,9 +506,13 @@ impl GeneralInterpreter for StageInterpreter {
                     e2.map_or(Value::Unit, |e| self.eval(ctx, e))
                 }
                 Expr::Assign(target, e) => {
-                    let _target_val = self.eval(ctx, target);
-                    let _new_val = self.eval(ctx, e);
-                    panic!("assignment cannot be used in macro expansion currently")
+                    // Evaluate the new value
+                    let new_val = self.eval(ctx, e);
+
+                    // Get the Store for the target
+                    let store = self.eval_address(ctx, target);
+                    *store.borrow_mut() = new_val;
+                    Value::Unit
                 }
                 Expr::Escape(_e) => {
                     panic!("escape expression cannot be evaluated in stage 0")
@@ -447,6 +533,17 @@ impl GeneralInterpreter for StageInterpreter {
 
     fn get_empty_val(&self) -> Self::Value {
         Value::Unit
+    }
+
+    fn deref_store(&self, val: &Self::Value) -> Self::Value {
+        match val {
+            Value::Store(store) => store.borrow().clone(),
+            _ => val.clone(),
+        }
+    }
+
+    fn wrap_store(&self, val: Self::Value) -> Self::Value {
+        Value::Store(Rc::new(RefCell::new(val)))
     }
 }
 

@@ -51,22 +51,18 @@ impl AsyncCompilerService {
         while let Ok(request) = self.input.recv() {
             let response = match request.option.mode {
                 RunMode::EmitAst => {
-                    let ast = emit_ast(
-                        &request.source,
-                        Some(request.path.clone()),
-                    );
+                    let ast = emit_ast(&request.source, Some(request.path.clone()));
                     ast.map(Response::Ast)
                         .map_err(|errs| errs.into_iter().map(RichError::from).collect())
                 }
                 RunMode::EmitMir => {
                     todo!()
                 }
-                RunMode::EmitByteCode | RunMode::NativeAudio => {
-                    self.compiler
-                        .emit_bytecode(&request.source)
-                        .map(Response::ByteCode)
-                        .map_err(|errs| errs.into_iter().map(RichError::from).collect())
-                }
+                RunMode::EmitByteCode | RunMode::NativeAudio => self
+                    .compiler
+                    .emit_bytecode(&request.source)
+                    .map(Response::ByteCode)
+                    .map_err(|errs| errs.into_iter().map(RichError::from).collect()),
                 _ => {
                     todo!()
                 }

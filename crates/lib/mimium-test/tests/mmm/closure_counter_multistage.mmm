@@ -1,0 +1,15 @@
+#stage(macro)
+fn makecounter(){
+  let x = 0.0
+  | | {
+  x = x+1.0
+  x
+}
+}
+let counter = makecounter()
+#stage(main)
+fn dsp(){
+ let l = $(counter() |> lift_f)
+ let r = $(counter() |> lift_f)
+ (l,r)
+}
