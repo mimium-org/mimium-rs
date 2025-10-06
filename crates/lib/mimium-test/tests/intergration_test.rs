@@ -275,6 +275,13 @@ fn closure_counter_tuple() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn closure_counter_multistage() {
+    let res = run_file_test_stereo("closure_counter_multistage.mmm", 1).unwrap();
+    let ans = vec![1.0, 2.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn test_tuple_global() {
     let res = run_file_test_mono("tuple_global.mmm", 5).unwrap();
     let ans = vec![100.0, 100.0, 100.0, 100.0, 100.0];
@@ -286,7 +293,6 @@ fn test_tuple_global2() {
     let ans = vec![100.0, 100.0, 100.0, 100.0, 100.0];
     assert_eq!(res, ans);
 }
-
 
 #[wasm_bindgen_test(unsupported = test)]
 fn hof_state() {

@@ -262,7 +262,6 @@ impl FileRunner {
                         report(&new_content, self.fullpath.clone(), &errs);
                     }
                 });
-
             }
             Err(e) => {
                 log::error!(

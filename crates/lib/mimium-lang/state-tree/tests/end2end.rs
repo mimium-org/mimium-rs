@@ -1,10 +1,5 @@
 use state_tree::{
-    tree::{
-        SizedType,
-        StateTree,
-        StateTreeSkeleton,
-        serialize_tree_untagged,
-    },
+    tree::{SizedType, StateTree, StateTreeSkeleton, serialize_tree_untagged},
     update_state_storage,
 };
 
@@ -73,9 +68,7 @@ fn test_update_state_storage_nested_child_insertion() {
         writeidx: 22,
         data: vec![1, 2],
     };
-    let mem_left = StateTree::Mem {
-        data: vec![8, 9],
-    };
+    let mem_left = StateTree::Mem { data: vec![8, 9] };
     let feed_existing = StateTree::Feed { data: vec![77] };
     let mem_right = StateTree::Mem {
         data: vec![5, 6, 7],
@@ -88,26 +81,22 @@ fn test_update_state_storage_nested_child_insertion() {
         mem_right.clone(),
     ])]);
 
-    let old_skeleton = StateTreeSkeleton::FnCall(vec![boxed(
-        StateTreeSkeleton::FnCall(vec![
-            boxed(StateTreeSkeleton::Delay { len: 2 }),
-            boxed(StateTreeSkeleton::Mem(DummyType(2))),
-            boxed(StateTreeSkeleton::Feed(DummyType(1))),
-            boxed(StateTreeSkeleton::Mem(DummyType(3))),
-        ]),
-    )]);
+    let old_skeleton = StateTreeSkeleton::FnCall(vec![boxed(StateTreeSkeleton::FnCall(vec![
+        boxed(StateTreeSkeleton::Delay { len: 2 }),
+        boxed(StateTreeSkeleton::Mem(DummyType(2))),
+        boxed(StateTreeSkeleton::Feed(DummyType(1))),
+        boxed(StateTreeSkeleton::Mem(DummyType(3))),
+    ]))]);
 
     let flat_input = serialize_tree_untagged(old_tree.clone());
 
-    let new_skeleton = StateTreeSkeleton::FnCall(vec![boxed(
-        StateTreeSkeleton::FnCall(vec![
-            boxed(StateTreeSkeleton::Mem(DummyType(2))),
-            boxed(StateTreeSkeleton::Feed(DummyType(2))),
-            boxed(StateTreeSkeleton::Delay { len: 2 }),
-            boxed(StateTreeSkeleton::Feed(DummyType(1))),
-            boxed(StateTreeSkeleton::Mem(DummyType(3))),
-        ]),
-    )]);
+    let new_skeleton = StateTreeSkeleton::FnCall(vec![boxed(StateTreeSkeleton::FnCall(vec![
+        boxed(StateTreeSkeleton::Mem(DummyType(2))),
+        boxed(StateTreeSkeleton::Feed(DummyType(2))),
+        boxed(StateTreeSkeleton::Delay { len: 2 }),
+        boxed(StateTreeSkeleton::Feed(DummyType(1))),
+        boxed(StateTreeSkeleton::Mem(DummyType(3))),
+    ]))]);
 
     let updated = update_state_storage(&flat_input, old_skeleton, new_skeleton)
         .expect("update_state_storage should succeed")
@@ -123,8 +112,6 @@ fn test_update_state_storage_nested_child_insertion() {
 
     let expected_flat = serialize_tree_untagged(expected_tree);
     assert_eq!(updated, expected_flat);
-    let expected_flat = vec![
-        8, 9, 0, 0, 21, 22, 1, 2, 77, 5, 6, 7
-    ];
+    let expected_flat = vec![8, 9, 0, 0, 21, 22, 1, 2, 77, 5, 6, 7];
     assert_eq!(updated, expected_flat);
 }

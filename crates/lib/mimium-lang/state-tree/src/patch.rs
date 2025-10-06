@@ -7,7 +7,6 @@ pub struct CopyFromPatch {
     pub old_path: Vec<usize>,
 }
 
-
 /// パッチを新しい木に適用する
 ///
 /// # Arguments
@@ -31,23 +30,25 @@ pub fn apply_patches(new_tree: &mut StateTree, old_tree: &StateTree, patches: &[
         // ここでは、その前提に基づいてデータをコピーする
         match (source_node, dest_node) {
             (
-                StateTree::Delay { readidx: r_src, writeidx: w_src, data: d_src },
-                StateTree::Delay { readidx: r_dest, writeidx: w_dest, data: d_dest },
+                StateTree::Delay {
+                    readidx: r_src,
+                    writeidx: w_src,
+                    data: d_src,
+                },
+                StateTree::Delay {
+                    readidx: r_dest,
+                    writeidx: w_dest,
+                    data: d_dest,
+                },
             ) => {
                 *r_dest = *r_src;
                 *w_dest = *w_src;
                 d_dest.copy_from_slice(d_src);
             }
-            (
-                StateTree::Mem { data: d_src },
-                StateTree::Mem { data: d_dest },
-            ) => {
+            (StateTree::Mem { data: d_src }, StateTree::Mem { data: d_dest }) => {
                 d_dest.copy_from_slice(d_src);
             }
-            (
-                StateTree::Feed { data: d_src },
-                StateTree::Feed { data: d_dest },
-            ) => {
+            (StateTree::Feed { data: d_src }, StateTree::Feed { data: d_dest }) => {
                 d_dest.copy_from_slice(d_src);
             }
             // FnCallはデータを持たないので何もしない
@@ -57,4 +58,3 @@ pub fn apply_patches(new_tree: &mut StateTree, old_tree: &StateTree, patches: &[
         }
     }
 }
-
