@@ -167,7 +167,7 @@ pub trait GeneralInterpreter {
                 if let Some(ext_fn) = fv.clone().get_as_external_fn() {
                     ext_fn.borrow()(args.as_slice())
                 } else if let Some((c_env, names, body)) = fv.clone().get_as_closure() {
-                    log::trace!("entering closure app with names: {:?}", names);
+                    log::trace!("entering closure app with names: {names:?}");
                     let binds = names.into_iter().zip(args).collect_vec();
                     let new_ctx = Context {
                         env: c_env,
@@ -348,25 +348,21 @@ impl StageInterpreter {
                     LookupRes::Local((Value::Store(store), _))
                     | LookupRes::UpValue(_, (Value::Store(store), _))
                     | LookupRes::Global((Value::Store(store), _)) => store.clone(),
-                    _ => panic!("Assignment target must be a Store-bound variable: {}", name),
+                    _ => panic!("Assignment target must be a Store-bound variable: {name}"),
                 }
             }
             Expr::FieldAccess(base, field) => {
                 let base_store = self.eval_address(ctx, base);
                 let base_val = base_store.borrow();
                 match &*base_val {
-                    Value::Record(fields) => {
-                        for (f, v) in fields {
-                            if f == &field {
-                                if let Value::Store(store) = v {
-                                    return store.clone();
-                                } else {
-                                    panic!("Field {} is not a Store", field);
-                                }
-                            }
-                        }
-                        panic!("Field {} not found in record", field);
-                    }
+                    Value::Record(fields) => fields
+                        .iter()
+                        .filter_map(|(name, v)| match (name, v) {
+                            (n, Value::Store(s)) if *n == field => Some(s.clone()),
+                            _ => None,
+                        })
+                        .next()
+                        .unwrap_or_else(|| panic!("Field {field} not found in record")),
                     _ => panic!("Field access on non-record type"),
                 }
             }
@@ -374,24 +370,16 @@ impl StageInterpreter {
                 let base_store = self.eval_address(ctx, base);
                 let idx_val = self.eval(ctx, idx);
                 let base_val = base_store.borrow();
-                match &*base_val {
-                    Value::Array(elements) => {
-                        if let Value::Number(i) = idx_val {
-                            let index = i as usize;
-                            if index < elements.len() {
-                                if let Value::Store(store) = &elements[index] {
-                                    return store.clone();
-                                } else {
-                                    panic!("Array element at index {} is not a Store", index);
-                                }
-                            } else {
-                                panic!("Array index {} out of bounds", index);
-                            }
+                match (&*base_val, idx_val) {
+                    (Value::Array(elements), Value::Number(i)) => {
+                        if let Some(Value::Store(store)) = elements.get(i as usize) {
+                            store.clone()
                         } else {
-                            panic!("Array index must be a number");
+                            log::error!("Array index {i} out of bounds or non-store was found");
+                            Rc::new(RefCell::new(Value::Number(0.0)))
                         }
                     }
-                    _ => panic!("Array access on non-array type"),
+                    _ => panic!("Invalid value type detected. Possible bug in type checking."),
                 }
             }
             Expr::Proj(base, idx) => {
@@ -399,15 +387,10 @@ impl StageInterpreter {
                 let base_val = base_store.borrow();
                 match &*base_val {
                     Value::Tuple(elements) => {
-                        let index = idx as usize;
-                        if index < elements.len() {
-                            if let Value::Store(store) = &elements[index] {
-                                return store.clone();
-                            } else {
-                                panic!("Tuple element at index {} is not a Store", index);
-                            }
+                        if let Some(Value::Store(store)) = elements.get(idx as usize) {
+                            store.clone()
                         } else {
-                            panic!("Tuple index {} out of bounds", index);
+                            panic!("Tuple index {idx} out of bounds or non-store was found");
                         }
                     }
                     _ => panic!("Projection on non-tuple type"),
