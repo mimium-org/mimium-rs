@@ -1,5 +1,7 @@
 # Document for Developers
 
+mimium compiler & runtimes are developed with Rust language.
+
 ## Prepare Development Environment
 
 On windows, you need to install git and Visual Studio.
@@ -41,6 +43,24 @@ Open `mimium-rs.code-workspace` with VSCode. The workspace contains recommended 
 - CodeLLDB (Better debugger)
 - Even better TOML(Better language support for Cargo.toml)
 
+## Repository structure
+
+- `crates/lib/mimium-lang` the main repository of the development.
+- `crates/lib/mimium-test` repository for integration tests. 
+- `crates/lib/mimium-web` Wrapper API for webassembly.
+- `crates/lib/plugins` Builtin-plugins for mimium
+  - `mimium-scheduler` core scheduling functionalities for `@` operator.
+  - `mimium-midi` simple rmidi binding
+  - `mimium-symphonia` Sampler implememntation using symphonia decoder
+  - `mimium-guitools` GUI application tools for `Slider` and `Probe` macro
+- `crates/bin/mimium-bintools` Wrapping 3 binary crates to distribute in one folder
+ - `crates/bin/mimium-cli` A main frontend of mimium compiler.
+ - `crates/bin/mimium-fmt` A code formatter(experimental, not compatible with handling code trivia such as comments)
+ - `crates/bin/mimium-language-server` A language server for IDE, compatible with semantic highlighting and error reporting.
+- `examples` basic examples of mimium codes.
+- `lib` core mimium libraries that will be bundled with main binaries.
+
+
 ## How to Run & Debug
 
 You can run built `mimium-cli` by running `cargo run -- targetfile.mmm`. Note that you need to be in `mimium-cli` directory.
@@ -50,6 +70,8 @@ Note that the binary with debug configuration is slow, you may hear the glitch n
 You can also debug the binary with LLDB from the debug menu on the left sidebar of VSCode. It has several config options but mostly you use "Debug executable 'mimium-CLI'". You can change target `.mmm` file and optional arguments by modifying the line of `"args": ["mimium-cli/examples/sinewave.mmm"].`.
 
 (Make sure not committing this change.)
+
+You can emit abstract syntax tree (lisp style) with `--emit-ast` option, Mid-level intermediate representation with `--emit-mir`, Bytecodes for VM with `--emit-bytecode`. These are also useful for debugging.
 
 
 ## How to bump release (for the core maintainer)

@@ -1,18 +1,12 @@
 
 # Roadmap
 
-## For version 3
+## For version 4
 
-- [x] Array Type
-- [ ] Record Type(https://github.com/mimium-org/mimium-rs/issues/99)
- - [x] Parser and Type Inference
- - [x] Parameter Pack
- - [ ] Default Parameter System
+- [ ] Variant Type
+- [ ] Row Polymorphism
+- [ ] Module System with Stage System
 - [ ] More stable support for web platform
-- [x] Multi-stage computation (Hygienic Macro)
-- [ ] Generics
-- [ ] Module System
-- [ ] Package Manager
 
 ## Further & Other Plans
 
@@ -24,6 +18,20 @@
 ---
 
 ## Finished Topics
+
+## For version 3
+
+- [x] Array Type
+- [x] Record Type(https://github.com/mimium-org/mimium-rs/issues/99)
+ - [x] Parser and Type Inference
+ - [x] Parameter Pack
+ - [x] Default Parameter System
+~~- [ ] More stable support for web platform~~
+- [x] Multi-stage computation (Hygienic Macro)
+- ~~[ ] Generics~~
+- ~~[ ] Module System~~
+- ~~[ ] Package Manager~~
+- [x] Live Coding feature
 
 ### For version 2 (Rust re-implementation)
 

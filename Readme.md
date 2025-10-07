@@ -28,8 +28,12 @@ fn dsp(){
 }
 ```
 
+## Unique Features
+
+### Functional Approach
+
 A special keyword `self` can be used in function, which is a last return value of the function.
-This enables an easy and clean expression of feedback connection of signal chain.
+This enables an easy and clean expression of feedback connection of signal chain as a function pipe.
 
 ```rust
 fn lpf(input,fb){    
@@ -37,29 +41,45 @@ fn lpf(input,fb){
 }
 ```
 
-Also, the language design is based on the call by value lambda calculus, so the higher-order functions are supported to express generative signal graph like replicatiing multiple oscillators.
+Also, the language design is based on the call by value lambda calculus with multi-stage computation and the higher-order functions are supported to express generative signal graph like replicatiing multiple oscillators.
 
 ```rust
-fn replicate(n,gen){
+//Sequentially connected oscillators
+#stage(macro)
+fn cascade(n,gen){
     if (n>0.0){
-        let c = replicate(n - 1.0,gen)
-        let g = gen()
-        |x,rate| g(x,rate) + c(x+100.0,rate+0.1)
+        let multiplier = 1.0-(1.0/(n*3)) |> lift_f
+        `|rate| rate + ($gen)(rate/3)* 0.5 * rate* $multiplier  
+                |> cascade!(n - 1.0 ,gen) 
     }else{
-        |x,rate|  0
+        `|rate| ($gen)(rate)
     }
+}
+#stage(main)
+let osc = ...
+fn dsp(){
+    let out =  50 |> cascade!(1000.0,`osc) 
+    (out,out)
 }
 ```
 
 mimium is a statically typed language but the most of type annotations can be omitted by the type inference system. If you are interested in the theoritical background of mimium, see [the paper about mimium](https://matsuuratomoya.com/en/research/lambdammm-ifc-2024/).
 
-This repository is for a mimium *version 2*, all the code base is rewritten in Rust while the original was in C++, and semantics of the language was re-designed. The codes are still very under development.
+### Live Coding
+
+mimium can describe digital signal processing algorithm from very low-level, like Faust. Moreover, mimium can update source code without audio interruption, which enables **full-scratch dsp livecoding** performance.
+
+### Extensibility
+
+mimium's VM design is inspired by Lua, that can be easily embedded on Rust application through the plugin system. External functions(closures) defined in Rust can be easily called from mimium.
 
 ## Installation
 
-An easy way to start mimium is using [Visual Studio Code Extension](https://github.com/mimium-org/mimium-language). You can run opening `.mmm` file from the command palette.
+The easiest way to start mimium is using [Visual Studio Code Extension](https://github.com/mimium-org/mimium-language). The extention will automatically download CLI tool `mimium-cli` and language server (support for syntactic highlight and error reporting) when installed.
 
-Also you can download the latest CLI tool [mimium-cli](https://github.com/tomoyanonymous/mimium-rs/releases) from GitHub Release.
+You can run `.mmm` file from the command palette.
+
+Also you can download the latest CLI tool [mimium-cli](https://github.com/tomoyanonymous/mimium-rs/releases) from GitHub Release through shell script.
 
 ## Development
 
