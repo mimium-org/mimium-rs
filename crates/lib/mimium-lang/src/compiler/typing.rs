@@ -10,7 +10,9 @@ use itertools::Itertools;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex, RwLock};
 
 mod unification;
 use unification::{Error as UnificationError, Relation, unify_types};
@@ -90,7 +92,7 @@ impl ReportableError for Error {
                 format!("Index access for non-tuple variable.")
             }
             Error::VariableNotFound(symbol, _) => {
-                format!("Variable {symbol} not found in this scope")
+                format!("Variable \"{symbol}\" not found in this scope")
             }
             Error::StageMismatch {
                 variable,
@@ -117,7 +119,7 @@ impl ReportableError for Error {
                 format!("Field access for non-record variable.")
             }
             Error::FieldNotExist { field, .. } => {
-                format!("Field `{field}` does not exist in the record type")
+                format!("Field \"{field}\" does not exist in the record type")
             }
             Error::IncompatibleKeyInRecord { .. } => {
                 format!("Record type has incompatible keys.",)
@@ -182,7 +184,7 @@ impl ReportableError for Error {
                 vec![(
                     location.clone(),
                     format!(
-                        "Variable {variable} defined in stage {} cannot be accessed from stage {}",
+                        "Variable \"{variable}\" defined in stage {} cannot be accessed from stage {}",
                         found_stage.format_for_error(),
                         expected_stage.format_for_error()
                     ),
@@ -195,7 +197,7 @@ impl ReportableError for Error {
                 vec![(
                     loc.clone(),
                     format!(
-                        "Duplicate keys `{}` found in record type",
+                        "Duplicate keys \"{}\" found in record type",
                         key.iter()
                             .map(|s| s.to_string())
                             .collect::<Vec<_>>()
@@ -224,7 +226,7 @@ impl ReportableError for Error {
             Error::FieldNotExist { field, loc, et } => vec![(
                 loc.clone(),
                 format!(
-                    "Field `{}` does not exist in the type {}",
+                    "Field \"{}\" does not exist in the type {}",
                     field,
                     et.to_type().to_string_for_error()
                 ),
@@ -250,7 +252,7 @@ impl ReportableError for Error {
                     (
                         rloc.clone(),
                         format!(
-                            "but the record here contains{}",
+                            "but the record here contains {}",
                             right
                                 .iter()
                                 .map(|(key, ty)| format!(
@@ -291,12 +293,12 @@ pub struct InferContext {
     instantiated_map: BTreeMap<TypeSchemeId, TypeNodeId>, //from type scheme to typevar
     generalize_map: BTreeMap<IntermediateId, TypeSchemeId>,
     result_memo: BTreeMap<ExprKey, TypeNodeId>,
-    file_path: Symbol,
+    file_path: PathBuf,
     pub env: Environment<(TypeNodeId, EvalStage)>,
     pub errors: Vec<Error>,
 }
 impl InferContext {
-    fn new(builtins: &[(Symbol, TypeNodeId)], file_path: Symbol) -> Self {
+    fn new(builtins: &[(Symbol, TypeNodeId)], file_path: PathBuf) -> Self {
         let mut res = Self {
             interm_idx: Default::default(),
             typescheme_idx: Default::default(),
@@ -395,7 +397,7 @@ impl InferContext {
     }
 
     fn gen_intermediate_type_with_location(&mut self, loc: Location) -> TypeNodeId {
-        let res = Type::Intermediate(Rc::new(RefCell::new(TypeVar::new(
+        let res = Type::Intermediate(Arc::new(RwLock::new(TypeVar::new(
             self.interm_idx,
             self.level,
         ))))
@@ -410,7 +412,7 @@ impl InferContext {
         }
     }
     fn convert_unify_error(&self, e: UnificationError) -> Error {
-        let gen_loc = |span| Location::new(span, self.file_path);
+        let gen_loc = |span| Location::new(span, self.file_path.clone());
         match e {
             UnificationError::TypeMismatch { left, right } => Error::TypeMismatch {
                 left: (left, gen_loc(left.to_span())),
@@ -450,8 +452,8 @@ impl InferContext {
         match (rel1, rel2) {
             (Ok(Relation::Identical), Ok(Relation::Identical)) => Ok(()),
             (Ok(_), Ok(_)) => Err(vec![Error::TypeMismatch {
-                left: (t1, Location::new(t1.to_span(), self.file_path)),
-                right: (t2, Location::new(t2.to_span(), self.file_path)),
+                left: (t1, Location::new(t1.to_span(), self.file_path.clone())),
+                right: (t2, Location::new(t2.to_span(), self.file_path.clone())),
             }]),
             (Err(e1), Err(e2)) => Err(e1.into_iter().chain(e2).collect()),
             (Err(e), _) | (_, Err(e)) => Err(e),
@@ -460,7 +462,7 @@ impl InferContext {
     pub fn substitute_type(t: TypeNodeId) -> TypeNodeId {
         match t.to_type() {
             Type::Intermediate(cell) => {
-                let TypeVar { parent, .. } = &cell.borrow() as &TypeVar;
+                let TypeVar { parent, .. } = &*cell.read().unwrap() as &TypeVar;
                 match parent {
                     Some(p) => Self::substitute_type(*p),
                     None => Type::Unknown.into_id_with_location(t.to_loc()),
@@ -485,7 +487,7 @@ impl InferContext {
     fn generalize(&mut self, t: TypeNodeId) -> TypeNodeId {
         match t.to_type() {
             Type::Intermediate(tvar) => {
-                let &TypeVar { level, var, .. } = &tvar.borrow() as _;
+                let &TypeVar { level, var, .. } = &*tvar.read().unwrap() as &TypeVar;
                 if level > self.level {
                     self.get_typescheme(var, t.to_loc())
                 } else {
@@ -671,7 +673,7 @@ impl InferContext {
                 match tup.to_type() {
                     Type::Tuple(vec) => vec_to_ans(&vec),
                     Type::Intermediate(tv) => {
-                        let tv = tv.borrow();
+                        let tv = tv.read().unwrap();
                         if let Some(parent) = tv.parent {
                             match parent.to_type() {
                                 Type::Tuple(vec) => vec_to_ans(&vec),
@@ -709,6 +711,11 @@ impl InferContext {
                     Ok(Type::Record(kts).into_id_with_location(loc))
                 }
             }
+            Expr::RecordUpdate(_, _) => {
+                // RecordUpdate should never reach type inference as it gets expanded
+                // to Block/Let/Assign expressions during syntax sugar conversion in convert_pronoun.rs
+                unreachable!("RecordUpdate should be expanded before type inference")
+            }
             Expr::FieldAccess(expr, field) => {
                 let et = self.infer_type_unwrapping(*expr);
                 log::trace!("field access {} : {}", field, et.to_type());
@@ -734,7 +741,7 @@ impl InferContext {
                 match et.to_type() {
                     Type::Record(fields) => fields_to_ans(&fields),
                     Type::Intermediate(tv) => {
-                        let tv = tv.borrow();
+                        let tv = tv.read().unwrap();
                         if let Some(parent) = tv.parent {
                             match parent.to_type() {
                                 Type::Record(fields) => fields_to_ans(&fields),
@@ -763,7 +770,7 @@ impl InferContext {
             Expr::Lambda(p, rtype, body) => {
                 self.env.extend();
                 let dup = p.iter().duplicates_by(|id| id.id).map(|id| {
-                    let loc = Location::new(id.to_span(), self.file_path);
+                    let loc = Location::new(id.to_span(), self.file_path.clone());
                     (id.id, loc)
                 });
                 if dup.clone().count() > 0 {
@@ -823,17 +830,42 @@ impl InferContext {
                 }
             }
             Expr::Assign(assignee, expr) => {
-                let name = match assignee.to_expr() {
-                    Expr::Var(v) => v,
+                match assignee.to_expr() {
+                    Expr::Var(name) => {
+                        let assignee_t =
+                            self.unwrap_result(self.lookup(name, loc).map_err(|e| vec![e]));
+                        let e_t = self.infer_type_unwrapping(*expr);
+                        let _rel = self.unify_types(assignee_t, e_t)?;
+                        Ok(unit!())
+                    }
+                    Expr::FieldAccess(record, field_name) => {
+                        // Handle field assignment: record.field = value
+                        let record_type = self.infer_type_unwrapping(record);
+                        let value_type = self.infer_type_unwrapping(*expr);
+                        let tmptype = Type::Record(vec![RecordTypeField {
+                            key: field_name,
+                            ty: value_type,
+                            has_default: false,
+                        }])
+                        .into_id();
+                        if self.unify_types(record_type, tmptype)? == Relation::Supertype {
+                            unreachable!(
+                                "record field access for an empty record will not likely to happen."
+                            )
+                        };
+                        Ok(value_type)
+                    }
                     Expr::ArrayAccess(_, _) => {
                         unimplemented!("Assignment to array is not implemented yet.")
                     }
-                    _ => unreachable!(),
-                };
-                let assignee_t = self.unwrap_result(self.lookup(name, loc).map_err(|e| vec![e]));
-                let e_t = self.infer_type_unwrapping(*expr);
-                let rel = self.unify_types(assignee_t, e_t)?;
-                Ok(unit!())
+                    _ => {
+                        // This should be caught by parser, but add a generic error just in case
+                        Err(vec![Error::VariableNotFound(
+                            "invalid_assignment_target".to_symbol(),
+                            loc.clone(),
+                        )])
+                    }
+                }
             }
             Expr::Then(e, then) => {
                 let _ = self.infer_type(*e)?;
@@ -841,7 +873,7 @@ impl InferContext {
             }
             Expr::Var(name) => {
                 let res = self.unwrap_result(self.lookup(*name, loc).map_err(|e| vec![e]));
-                log::trace!("{} {} /level{}", name.as_str(), res.to_type(), self.level);
+                // log::trace!("{} {} /level{}", name.as_str(), res.to_type(), self.level);
                 Ok(self.instantiate(res))
             }
             Expr::Apply(fun, callee) => {
@@ -853,7 +885,7 @@ impl InferContext {
                     _ => {
                         let at_vec = self.infer_vec(callee.as_slice())?;
                         let span = callee[0].to_span().start..callee.last().unwrap().to_span().end;
-                        let loc = Location::new(span, self.file_path);
+                        let loc = Location::new(span, self.file_path.clone());
                         Type::Tuple(at_vec).into_id_with_location(loc)
                     }
                 };
@@ -897,7 +929,7 @@ impl InferContext {
                 },
             ),
             Expr::Escape(e) => {
-                let loc_e = Location::new(e.to_span(), self.file_path);
+                let loc_e = Location::new(e.to_span(), self.file_path.clone());
                 // Decrease stage for escape expression
                 self.stage = self.stage.decrement();
                 log::trace!("Unstaging escape expression, stage => {:?}", self.stage);
@@ -912,7 +944,7 @@ impl InferContext {
                 Ok(intermediate)
             }
             Expr::Bracket(e) => {
-                let loc_e = Location::new(e.to_span(), self.file_path);
+                let loc_e = Location::new(e.to_span(), self.file_path.clone());
                 // Increase stage for bracket expression
                 self.stage = self.stage.increment();
                 log::trace!("Staging bracket expression, stage => {:?}", self.stage);
@@ -932,7 +964,8 @@ impl InferContext {
             Ok(t) => t,
             Err(err) => {
                 self.errors.extend(err);
-                Type::Failure.into_id_with_location(Location::new(e.to_span(), self.file_path))
+                Type::Failure
+                    .into_id_with_location(Location::new(e.to_span(), self.file_path.clone()))
             }
         }
     }
@@ -941,9 +974,9 @@ impl InferContext {
 pub fn infer_root(
     e: ExprNodeId,
     builtin_types: &[(Symbol, TypeNodeId)],
-    file_path: Symbol,
+    file_path: PathBuf,
 ) -> InferContext {
-    let mut ctx = InferContext::new(builtin_types, file_path);
+    let mut ctx = InferContext::new(builtin_types, file_path.clone());
     let _t = ctx
         .infer_type(e)
         .unwrap_or(Type::Failure.into_id_with_location(e.to_location()));
@@ -959,11 +992,11 @@ mod tests {
     use crate::utils::metadata::{Location, Span};
 
     fn create_test_context() -> InferContext {
-        InferContext::new(&[], "test".to_symbol())
+        InferContext::new(&[], PathBuf::from("test"))
     }
 
     fn create_test_location() -> Location {
-        Location::new(Span { start: 0, end: 0 }, "test".to_symbol())
+        Location::new(Span { start: 0, end: 0 }, PathBuf::from("test"))
     }
 
     #[test]

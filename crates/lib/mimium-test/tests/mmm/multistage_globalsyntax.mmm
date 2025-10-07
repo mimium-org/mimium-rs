@@ -1,0 +1,20 @@
+#stage(macro)
+fn genpower(n:float){
+    letrec aux = |n:float,x| {
+        if (n>1){
+            `{ $x * $(aux(n-1,x)) }
+        }else{
+            x
+        }
+    }
+    `{|x:float| $(aux(n,`x))}
+}
+let x = 3
+#stage(main)
+let y = 2
+// you can now write main code as if it is in global level
+
+fn dsp() {
+   genpower!(x)(y)// should be 8
+}
+

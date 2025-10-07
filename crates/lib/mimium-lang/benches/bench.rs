@@ -19,7 +19,7 @@ mod tests {
         let mut machine = ctx.take_vm().expect("vm not prepared");
         let idx = machine
             .prog
-            .get_fun_index(&"dsp".to_symbol())
+            .get_fun_index("dsp")
             .expect("function not found");
         b.iter(move || {
             for _i in 0..times {

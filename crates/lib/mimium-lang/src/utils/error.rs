@@ -1,4 +1,9 @@
-use std::ops::Range;
+use std::{
+    collections::HashMap,
+    ops::Range,
+    path::PathBuf,
+    sync::{LazyLock, Mutex},
+};
 
 use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
 
@@ -41,42 +46,81 @@ impl ReportableError for SimpleError {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct RichError {
+    pub message: String,
+    pub labels: Vec<(Location, String)>,
+}
+impl std::fmt::Display for RichError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+impl std::error::Error for RichError {}
+impl ReportableError for RichError {
+    fn get_message(&self) -> String {
+        self.message.clone()
+    }
+    fn get_labels(&self) -> Vec<(Location, String)> {
+        self.labels.clone()
+    }
+}
+impl From<Box<dyn ReportableError + '_>> for RichError {
+    fn from(e: Box<dyn ReportableError + '_>) -> Self {
+        Self {
+            message: e.get_message(),
+            labels: e.get_labels(),
+        }
+    }
+}
+
 struct FileCache {
-    src: ariadne::Source<Symbol>,
+    pub storage: HashMap<PathBuf, ariadne::Source<String>>,
 }
 
-impl ariadne::Cache<usize> for FileCache {
-    type Storage = Symbol;
+impl ariadne::Cache<PathBuf> for FileCache {
+    type Storage = String;
 
-    fn fetch(&mut self, _id: &usize) -> Result<&Source<Self::Storage>, impl std::fmt::Debug> {
-        Ok::<&ariadne::Source<Symbol>, String>(&self.src)
+    fn fetch(&mut self, id: &PathBuf) -> Result<&Source<Self::Storage>, impl std::fmt::Debug> {
+        self.storage
+            .get(id)
+            .ok_or_else(|| format!("File not found: {}", id.display()))
     }
 
-    fn display<'a>(&self, id: &'a usize) -> Option<impl std::fmt::Display + 'a> {
-        Some(Box::new(id.to_string()))
+    fn display<'a>(&self, id: &'a PathBuf) -> Option<impl std::fmt::Display + 'a> {
+        Some(id.display())
     }
 }
 
-pub fn report(src: &str, path: Symbol, errs: &[Box<dyn ReportableError + '_>]) {
+static FILE_BUCKET: LazyLock<Mutex<FileCache>> = LazyLock::new(|| {
+    Mutex::new(FileCache {
+        storage: HashMap::new(),
+    })
+});
+
+pub fn report(src: &str, path: PathBuf, errs: &[Box<dyn ReportableError + '_>]) {
     let mut colors = ColorGenerator::new();
     for e in errs {
         // let a_span = (src.source(), span);color
         let rawlabels = e.get_labels();
         let labels = rawlabels.iter().map(|(loc, message)| {
-            let span = (path.0, loc.span.clone());
+            let span = (path.clone(), loc.span.clone());
             Label::new(span)
                 .with_message(message)
                 .with_color(colors.next())
         });
-        let span: (usize, Range<usize>) = (path.0, rawlabels[0].0.span.clone());
+        let span = (path.clone(), rawlabels[0].0.span.clone());
         let builder = Report::build(ReportKind::Error, span)
             .with_message(e.get_message())
             .with_labels(labels)
             .finish();
-        let cache = FileCache {
-            src: ariadne::Source::from(src.to_symbol()),
-        };
-        builder.eprint(cache).unwrap();
+        if let Ok(mut cache) = FILE_BUCKET.lock() {
+            let mut cache: &mut FileCache = &mut cache;
+            cache
+                .storage
+                .insert(path.clone(), Source::from(src.to_string()));
+            builder.eprint(&mut cache).unwrap();
+        }
     }
 }
 

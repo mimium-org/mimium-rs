@@ -70,6 +70,7 @@ where
         .collect()
         .map(|s: String| match s.as_str() {
             "->" => Token::Arrow,
+            "<-" => Token::LeftArrow,
             "|" => Token::LambdaArgBeginEnd,
             "+" => Token::Op(Op::Sum),
             "-" => Token::Op(Op::Minus),
@@ -98,12 +99,13 @@ where
     let separator = choice((
         double_dot,
         single_dot,
-        one_of(",.:;`$").map(|c| match c {
+        one_of(",.:;`$#").map(|c| match c {
             ',' => Token::Comma,
             ':' => Token::Colon,
             ';' => Token::SemiColon,
             '`' => Token::BackQuote,
             '$' => Token::Dollar,
+            '#' => Token::Sharp,
             _ => Token::Ident(c.to_string().to_symbol()),
         }),
     ));
@@ -128,6 +130,8 @@ where
             "string" => Token::StringType,
             "struct" => Token::StructType,
             "include" => Token::Include,
+            "stage" => Token::StageKwd,
+            "main" => Token::Main,
             "_" => Token::PlaceHolder,
             _ => Token::Ident(ident.to_symbol()),
         });
@@ -351,6 +355,28 @@ another line
             assert_eq!(tok, ans);
         } else {
             panic!("failed to parse macro expand");
+        }
+    }
+    #[test]
+    fn test_leftarrow() {
+        let src = "a <- b";
+        let (res, errs) = lexer().parse(src).into_output_errors();
+        assert!(errs.is_empty());
+        let res = res.map(|tokens| {
+            tokens
+                .iter()
+                .map(|(t, s)| (t.clone(), s.start()..s.end()))
+                .collect::<Vec<_>>()
+        });
+        let ans = vec![
+            (Token::Ident("a".to_symbol()), 0..1),
+            (Token::LeftArrow, 2..4),
+            (Token::Ident("b".to_symbol()), 5..6),
+        ];
+        if let Some(tok) = res {
+            assert_eq!(tok, ans);
+        } else {
+            panic!("failed to parse left arrow");
         }
     }
 }

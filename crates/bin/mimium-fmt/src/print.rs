@@ -227,6 +227,25 @@ mod expr {
                     .group()
                     .braces()
             }
+            Expr::RecordUpdate(record, fields) => {
+                let record_doc = pretty(record, allocator);
+                let field_docs = fields
+                    .into_iter()
+                    .map(|f| {
+                        allocator
+                            .text(f.name)
+                            .append(allocator.text(" = "))
+                            .append(pretty(f.expr, allocator))
+                            .group()
+                    })
+                    .collect::<Vec<_>>();
+
+                record_doc
+                    .append(allocator.text(" <- "))
+                    .append(allocator.intersperse(field_docs, breakable_comma(allocator)))
+                    .group()
+                    .braces()
+            }
 
             Expr::FieldAccess(expr_node_id, symbol) => {
                 let expr_doc = pretty(expr_node_id, allocator);
@@ -426,8 +445,10 @@ mod statement {
                 name_doc.append(allocator.text(" = ")).append(body_doc)
             }
             Statement::Single(expr) => expr::pretty(expr, allocator),
-
             Statement::Error => allocator.text("error"),
+            Statement::DeclareStage(stage_kind) => allocator
+                .text(format!("#stage({stage_kind})"))
+                .append(allocator.softline()),
         }
     }
 }
@@ -489,6 +510,9 @@ pub mod program {
                 allocator.text("///").append(allocator.text(symbol))
             }
             ProgramStatement::Error => allocator.text("error"),
+            ProgramStatement::StageDeclaration { stage } => allocator
+                .text(format!("#stage({stage})"))
+                .append(allocator.softline()),
         });
         allocator.intersperse(stmt_docs, "\n")
     }

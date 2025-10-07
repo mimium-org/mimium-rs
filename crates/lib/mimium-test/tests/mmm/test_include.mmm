@@ -1,4 +1,4 @@
-include("test_include_target.mmm")
+include("./test_include_target.mmm")
 fn dsp(){
     hoge()
 }

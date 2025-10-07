@@ -2,7 +2,6 @@ pub mod bytecodegen;
 pub(crate) mod intrinsics;
 pub mod mirgen;
 pub mod parser;
-pub(crate) mod pattern_destructor;
 pub mod typing;
 use crate::plugin::{ExtFunTypeInfo, MacroFunction};
 
@@ -133,17 +132,16 @@ use crate::{
 };
 pub fn emit_ast(
     src: &str,
-    filepath: Option<Symbol>,
+    path: Option<PathBuf>,
 ) -> Result<ExprNodeId, Vec<Box<dyn ReportableError>>> {
-    let path = filepath.map(|sym| PathBuf::from(sym.to_string()));
-    let (ast, errs) = parser::parse_to_expr(src, path);
+    let (ast, errs) = parser::parse_to_expr(src, path.clone());
     if errs.is_empty() {
-        let ast = parser::add_global_context(ast, filepath.unwrap_or_default());
+        let ast = parser::add_global_context(ast, path.clone().unwrap_or_default());
         let (ast, _errs) =
-            mirgen::convert_pronoun::convert_pronoun(ast, filepath.unwrap_or_default());
+            mirgen::convert_pronoun::convert_pronoun(ast, path.clone().unwrap_or_default());
         Ok(recursecheck::convert_recurse(
             ast,
-            filepath.unwrap_or_default(),
+            path.clone().unwrap_or_default(),
         ))
     } else {
         Err(errs)
@@ -158,9 +156,11 @@ pub struct Config {
 pub struct Context {
     ext_fns: Vec<ExtFunTypeInfo>,
     macros: Vec<Box<dyn MacroFunction>>,
-    file_path: Option<Symbol>,
+    file_path: Option<PathBuf>,
     config: Config,
 }
+// Compiler implements Send because MacroFunction may modify system plugins but it will never conflict with VM execution
+unsafe impl Send for Context {}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct IoChannelInfo {
@@ -172,7 +172,7 @@ impl Context {
     pub fn new(
         ext_fns: impl IntoIterator<Item = ExtFunTypeInfo>,
         macros: impl IntoIterator<Item = Box<dyn MacroFunction>>,
-        file_path: Option<Symbol>,
+        file_path: Option<PathBuf>,
         config: Config,
     ) -> Self {
         Self {
@@ -191,10 +191,15 @@ impl Context {
             .collect()
     }
     pub fn emit_mir(&self, src: &str) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
-        let path = self.file_path.map(|sym| PathBuf::from(sym.to_string()));
+        let path = self.file_path.clone();
         let (ast, mut parse_errs) = parser::parse_to_expr(src, path);
         // let ast = parser::add_global_context(ast, self.file_path.unwrap_or_default());
-        let mir = mirgen::compile(ast, &self.get_ext_typeinfos(), &self.macros, self.file_path);
+        let mir = mirgen::compile(
+            ast,
+            self.get_ext_typeinfos().as_slice(),
+            &self.macros,
+            self.file_path.clone(),
+        );
         if parse_errs.is_empty() {
             mir
         } else {
@@ -235,11 +240,13 @@ mod test {
 
     use super::*;
     fn get_source() -> &'static str {
+        //type annotation input:float is not necessary ideally
+        // but we have to for now for because of subtyping issue
         r#"
 fn counter(){
     self + 1
 }
-fn dsp(input){
+fn dsp(input:float){
     let res = input + counter()
     (0,res)
 }

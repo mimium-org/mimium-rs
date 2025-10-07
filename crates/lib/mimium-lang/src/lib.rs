@@ -13,20 +13,21 @@ pub mod runtime;
 
 pub mod plugin;
 
+use std::path::PathBuf;
+
+use crate::plugin::{MachineFunction, MacroFunction};
 use compiler::IoChannelInfo;
-use interner::Symbol;
 pub use log;
 use plugin::{DynSystemPlugin, ExtFunTypeInfo, Plugin, SystemPlugin};
 use runtime::vm::{self, Program, ReturnCode};
 use utils::error::ReportableError;
 
-#[cfg(not(target_arch = "wasm32"))]
-use mimalloc::MiMalloc;
+// #[cfg(not(target_arch = "wasm32"))]
+// use mimalloc::MiMalloc;
 
-use crate::plugin::{MachineFunction, MacroFunction};
-#[cfg(not(target_arch = "wasm32"))]
-#[global_allocator]
-static GLOBAL: MiMalloc = MiMalloc;
+// #[cfg(not(target_arch = "wasm32"))]
+// #[global_allocator]
+// static GLOBAL: MiMalloc = MiMalloc;
 
 /// Configuration for the compiler and runtime.
 #[derive(Debug, Clone, Copy, Default)]
@@ -46,7 +47,7 @@ pub struct ExecContext {
     vm: Option<runtime::vm::Machine>,
     plugins: Vec<Box<dyn Plugin>>,
     sys_plugins: Vec<DynSystemPlugin>,
-    path: Option<Symbol>,
+    path: Option<PathBuf>,
     config: Config,
 }
 
@@ -55,7 +56,7 @@ impl ExecContext {
     /// Create a new execution context with the given plugins and configuration.
     pub fn new(
         plugins: impl Iterator<Item = Box<dyn Plugin>>,
-        path: Option<Symbol>,
+        path: Option<PathBuf>,
         config: Config,
     ) -> Self {
         let plugins = plugins
@@ -75,7 +76,10 @@ impl ExecContext {
     pub fn add_plugin<T: Plugin + 'static>(&mut self, plug: T) {
         self.plugins.push(Box::new(plug))
     }
-    pub fn get_system_plugins(&self) -> impl Iterator<Item = &DynSystemPlugin> {
+    pub fn get_plugins(&self) -> impl ExactSizeIterator<Item = &Box<dyn Plugin>> {
+        self.plugins.iter()
+    }
+    pub fn get_system_plugins(&self) -> impl ExactSizeIterator<Item = &DynSystemPlugin> {
         self.sys_plugins.iter()
     }
     //todo: make it to builder pattern
@@ -86,6 +90,9 @@ impl ExecContext {
     }
     pub fn get_compiler(&self) -> Option<&compiler::Context> {
         self.compiler.as_ref()
+    }
+    pub fn take_compiler(&mut self) -> Option<compiler::Context> {
+        self.compiler.take()
     }
     pub fn take_vm(&mut self) -> Option<runtime::vm::Machine> {
         self.vm.take()
@@ -128,7 +135,7 @@ impl ExecContext {
         self.compiler = Some(compiler::Context::new(
             self.get_extfun_types(),
             macroinfos,
-            self.path,
+            self.path.clone(),
             self.config.compiler,
         ));
     }
@@ -142,6 +149,7 @@ impl ExecContext {
         self.prepare_machine_with_bytecode(prog);
         Ok(())
     }
+
     /// Build a VM from the given bytecode [`Program`].
     pub fn prepare_machine_with_bytecode(&mut self, prog: Program) {
         let cls =
@@ -154,17 +162,7 @@ impl ExecContext {
         let vm = vm::Machine::new(prog, [].into_iter(), cls);
         self.vm = Some(vm);
     }
-    pub fn try_get_main_loop(&mut self) -> Option<Box<dyn FnOnce()>> {
-        let mut mainloops = self.sys_plugins.iter_mut().filter_map(|p| {
-            let p = unsafe { p.inner.get().as_mut().unwrap_unchecked() };
-            p.try_get_main_loop()
-        });
-        let res = mainloops.next();
-        if mainloops.next().is_some() {
-            log::warn!("more than 2 main loops in system plugins found")
-        }
-        res
-    }
+
     pub fn get_iochannel_count(&self) -> Option<IoChannelInfo> {
         self.vm.as_ref().and_then(|vm| vm.prog.iochannels)
     }
@@ -186,6 +184,17 @@ impl ExecContext {
         } else {
             0
         }
+    }
+    pub fn try_get_main_loop(&mut self) -> Option<Box<dyn FnOnce()>> {
+        let mut mainloops = self.sys_plugins.iter_mut().filter_map(|p| {
+            let p = unsafe { p.inner.get().as_mut().unwrap_unchecked() };
+            p.try_get_main_loop()
+        });
+        let res = mainloops.next();
+        if mainloops.next().is_some() {
+            log::warn!("more than 2 main loops in system plugins found")
+        }
+        res
     }
 }
 //todo: remove

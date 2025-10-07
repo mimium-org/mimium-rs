@@ -1,0 +1,5 @@
+let a = (40,60)
+let (b,c) = a
+fn dsp(){
+   b+c
+}

@@ -1,13 +1,7 @@
 include("noise.mmm")
-fn noise(){
-    gen_noise(27642.0)
-}
-fn noise2(){
-    gen_noise(12345.0)
-}
-
+#stage(main)
 fn dsp(){
-    let l = noise()*2.0-1.0
-    let r = noise2()*2.0-1.0
+    let l = unoise!()*2.0-1.0
+    let r = unoise!()*2.0-1.0
     (l,r)
 }

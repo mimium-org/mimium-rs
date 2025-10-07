@@ -14,6 +14,7 @@ use crate::{
     compiler::bytecodegen::ByteCodeGenerator,
     interner::Symbol,
     plugin::{ExtClsInfo, ExtClsType, ExtFunInfo, ExtFunType, MachineFunction},
+    runtime::vm::program::WordSize,
     types::{Type, TypeSize},
 };
 pub type RawVal = u64;
@@ -159,7 +160,7 @@ impl Closure {
             .map(|ov| upv_map.get_or_insert(*ov))
             .collect::<Vec<_>>();
         let mut state_storage = StateStorage::default();
-        state_storage.resize(fnproto.state_size as usize);
+        state_storage.resize(fnproto.state_skeleton.total_size() as usize);
         Self {
             fn_proto_pos: fn_i,
             upvalues,
@@ -206,6 +207,7 @@ enum RawValType {
     // UInt,
 }
 
+#[derive(Clone, Copy)]
 enum ExtFnIdx {
     Fun(usize),
     Cls(usize),
@@ -377,6 +379,59 @@ impl Machine {
         });
         res.link_functions();
         res
+    }
+    /// Create a new VM instance with the new program, preserving the current state as possible.
+    pub fn new_resume(&self, prog: Program) -> Self {
+        let mut new_vm = Self {
+            prog,
+            stack: vec![],
+            base_pointer: 0,
+            closures: Default::default(),
+            ext_fun_table: vec![],
+            ext_cls_table: vec![],
+            fn_map: HashMap::new(),
+            // cls_map: HashMap::new(),
+            arrays: ArrayStorage::default(),
+            global_states: Default::default(),
+            states_stack: Default::default(),
+            delaysizes_pos_stack: vec![0],
+            global_vals: vec![],
+            debug_stacktype: vec![RawValType::Int; 255],
+        };
+        //expect there are no change changes in external function use for now
+
+        new_vm.ext_fun_table = self.ext_fun_table.clone();
+        new_vm.ext_cls_table = self.ext_cls_table.clone();
+        new_vm.global_vals = self.global_vals.clone();
+        new_vm.arrays = self.arrays.clone();
+
+        let new_state = state_tree::update_state_storage(
+            &self.global_states.rawdata,
+            self.prog
+                .get_dsp_state_skeleton()
+                .cloned()
+                .expect("dsp function not found"),
+            new_vm
+                .prog
+                .get_dsp_state_skeleton()
+                .cloned()
+                .expect("dsp function not found"),
+        );
+        match new_state {
+            Ok(Some(s)) => {
+                new_vm.global_states.rawdata = s;
+            }
+            Ok(None) => {
+                log::info!("No state structure change detected. Just copies buffer");
+                new_vm.global_states.rawdata = self.global_states.rawdata.clone();
+            }
+            Err(e) => {
+                log::error!("Failed to migrate global state: {e}");
+            }
+        }
+        new_vm.link_functions();
+        new_vm.execute_main();
+        new_vm
     }
     pub fn clear_stack(&mut self) {
         self.stack.fill(0);
@@ -553,7 +608,7 @@ impl Machine {
     pub fn wrap_extern_cls(&mut self, extcls: ExtClsInfo) -> ClosureIdx {
         let ExtClsInfo { name, fun, ty } = extcls;
 
-        self.prog.ext_fun_table.push((name, ty));
+        self.prog.ext_fun_table.push((name.to_string(), ty));
         let prog_funid = self.prog.ext_fun_table.len() - 1;
         self.ext_cls_table.push((name, fun));
         let vm_clsid = self.ext_cls_table.len() - 1;
@@ -588,7 +643,7 @@ impl Machine {
             constants: vec![prog_funid as _],
             ..Default::default()
         };
-        self.prog.global_fn_table.push((name, newfunc));
+        self.prog.global_fn_table.push((name.to_string(), newfunc));
         let fn_i = self.prog.global_fn_table.len() - 1;
         let mut cls = Closure::new(
             &self.prog,
@@ -989,7 +1044,13 @@ impl Machine {
 
     fn link_functions(&mut self) {
         //link external functions
-        self.global_vals = self.prog.global_vals.clone();
+        let global_mem_size = self
+            .prog
+            .global_vals
+            .iter()
+            .map(|WordSize(size)| *size as usize)
+            .sum();
+        self.global_vals = vec![0; global_mem_size];
         self.prog
             .ext_fun_table
             .iter_mut()
@@ -999,14 +1060,14 @@ impl Machine {
                     .ext_fun_table
                     .iter()
                     .enumerate()
-                    .find(|(_j, (fname, _fn))| name == fname)
+                    .find(|(_j, (fname, _fn))| name == fname.as_str())
                 {
                     let _ = self.fn_map.insert(i, ExtFnIdx::Fun(j));
                 } else if let Some((j, _)) = self
                     .ext_cls_table
                     .iter()
                     .enumerate()
-                    .find(|(_j, (fname, _fn))| name == fname)
+                    .find(|(_j, (fname, _fn))| name == fname.as_str())
                 {
                     let _ = self.fn_map.insert(i, ExtFnIdx::Cls(j));
                 } else {
@@ -1017,7 +1078,8 @@ impl Machine {
     pub fn execute_idx(&mut self, idx: usize) -> ReturnCode {
         let (_name, func) = &self.prog.global_fn_table[idx];
         if !func.bytecodes.is_empty() {
-            self.global_states.resize(func.state_size as usize);
+            self.global_states
+                .resize(func.state_skeleton.total_size() as usize);
             // 0 is always base pointer to the main function
             if !self.stack.is_empty() {
                 self.stack[0] = 0;
@@ -1028,7 +1090,7 @@ impl Machine {
             0
         }
     }
-    pub fn execute_entry(&mut self, entry: &Symbol) -> ReturnCode {
+    pub fn execute_entry(&mut self, entry: &str) -> ReturnCode {
         if let Some(idx) = self.prog.get_fun_index(entry) {
             self.execute_idx(idx)
         } else {
@@ -1036,9 +1098,6 @@ impl Machine {
         }
     }
     pub fn execute_main(&mut self) -> ReturnCode {
-        //internal function table 0 is always mimium_main
-        self.global_states
-            .resize(self.prog.global_fn_table[0].1.state_size as usize);
         // 0 is always base pointer to the main function
         self.base_pointer += 1;
         self.execute(0, None)

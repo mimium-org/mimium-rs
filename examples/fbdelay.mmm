@@ -1,3 +1,4 @@
+#stage(main)
 include ("osc.mmm")
 fn osc(freq){
   sinwave(freq,0.0)
@@ -10,9 +11,9 @@ fn fbdelay(input,time,fb,mix){
 }
 
 fn dsp(){
-      let f = phasor(1.0)*3000.0+50.0
-
+    let f = phasor(0.2)*4000.0+50.0
     let sig = amosc(f,1.0)
-    fbdelay(sig,40000.0,0.9,0.5)
+    fbdelay(sig,20000.0,0.9,0.5) |> Probe!("test")
+     
 }
 

@@ -51,6 +51,7 @@ pub enum Token {
     Function,    //"fn"
     Macro,       //"macro"
     Arrow,       // ->
+    LeftArrow,   // <-
     PlaceHolder, // _
 
     If,
@@ -59,6 +60,9 @@ pub enum Token {
     // Type,
     // Alias,
     Include,
+    Sharp,    // "#"
+    StageKwd, // "stage"
+    Main,     // "main"
 
     LineBreak,
 
@@ -99,6 +103,7 @@ impl fmt::Display for Token {
             Token::Function => write!(f, "fn"),
             Token::Macro => write!(f, "macro"),
             Token::Arrow => write!(f, "->"),
+            Token::LeftArrow => write!(f, "<-"),
             Token::PlaceHolder => write!(f, "_"),
             Token::If => write!(f, "if"),
             Token::Else => write!(f, "else"),
@@ -107,6 +112,9 @@ impl fmt::Display for Token {
             Token::Comment(_) => write!(f, "comment"),
             Token::BackQuote => write!(f, "`"),
             Token::Dollar => write!(f, "$"),
+            Token::StageKwd => write!(f, "stage"),
+            Token::Main => write!(f, "main"),
+            Token::Sharp => write!(f, "#"),
         }
     }
 }

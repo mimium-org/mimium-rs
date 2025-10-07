@@ -1,4 +1,5 @@
-fn genpower(n:float){
+${
+    let genpower = |n:float|{
     letrec aux = |n1:float,x| {
         if (n1>0){
            `{$( aux(n1-1,x)) * $x }
@@ -7,8 +8,9 @@ fn genpower(n:float){
         }
     }
     `{|x:float| $(aux(n,`x)) }
-}
+   }
 
 `{ 
     let dsp = | | 2 |> $(genpower(5)) 
+}
 }

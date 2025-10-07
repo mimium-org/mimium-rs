@@ -11,6 +11,21 @@ use crate::utils::miniprint::MiniPrint;
 use std::fmt::{self};
 pub type Time = i64;
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum StageKind {
+    Persistent = -1,
+    Macro = 0,
+    Main,
+}
+impl std::fmt::Display for StageKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StageKind::Persistent => write!(f, "persistent"),
+            StageKind::Macro => write!(f, "macro"),
+            StageKind::Main => write!(f, "main"),
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Hash)]
 pub enum Literal {
     String(Symbol),
@@ -55,7 +70,8 @@ pub enum Expr {
     ArrayLiteral(Vec<ExprNodeId>),   // Array literal [e1, e2, ..., en]
     RecordLiteral(Vec<RecordField>), // Complete record literal {field1 = expr1, field2 = expr2, ...}
     ImcompleteRecord(Vec<RecordField>), // Incomplete record literal with default values {field1 = expr1, ..}
-    FieldAccess(ExprNodeId, Symbol),    // Record field access: record.field
+    RecordUpdate(ExprNodeId, Vec<RecordField>), // Record update syntax: { record <- field1 = expr1, field2 = expr2, ... }
+    FieldAccess(ExprNodeId, Symbol),            // Record field access: record.field
     Apply(ExprNodeId, Vec<ExprNodeId>),
 
     MacroExpand(ExprNodeId, Vec<ExprNodeId>), // syntax sugar: hoge!(a,b) => ${hoge(a,b)}
@@ -75,6 +91,67 @@ pub enum Expr {
     Escape(ExprNodeId),
 
     Error,
+}
+
+impl ExprNodeId {
+    pub fn wrap_to_staged_expr(self) -> Self {
+        // TODO: what if more escape is used than minimum level??
+
+        // let min_level = self.get_min_stage_rec(0);
+        // let res = if min_level < 0 {
+        //     std::iter::repeat_n((), -min_level as usize).fold(self, |wrapped, _level| {
+        //         Expr::Bracket(wrapped).into_id_without_span()
+        //     })
+        // } else {
+        //     self
+        // };
+        //we have to wrap one more time because if there are no macro-related expression, that means stage-1(runtime) code.
+        Expr::Bracket(self).into_id_without_span()
+    }
+    fn get_min_stage_rec(self, current_level: i32) -> i32 {
+        let conv = move |e: &Self| e.get_min_stage_rec(current_level);
+        let conv2 = move |e1: &Self, e2: &Self| {
+            e1.get_min_stage_rec(current_level)
+                .min(e2.get_min_stage_rec(current_level))
+        };
+        let conv_opt = move |e: &Option<Self>| {
+            e.as_ref()
+                .map_or(current_level, |e| e.get_min_stage_rec(current_level))
+        };
+        let convvec = move |es: &[Self]| es.iter().map(conv).min().unwrap_or(current_level);
+        let convfields = move |fs: &[RecordField]| {
+            fs.iter()
+                .map(|f| f.expr.get_min_stage_rec(current_level))
+                .min()
+                .unwrap_or(current_level)
+        };
+        match self.to_expr() {
+            Expr::Bracket(e) => e.get_min_stage_rec(current_level + 1),
+            Expr::Escape(e) => e.get_min_stage_rec(current_level - 1),
+            Expr::MacroExpand(e, args) => conv(&e).min(convvec(&args)) - 1,
+            Expr::Proj(e, _)
+            | Expr::FieldAccess(e, _)
+            | Expr::UniOp(_, e)
+            | Expr::Paren(e)
+            | Expr::Lambda(_, _, e)
+            | Expr::Feed(_, e) => conv(&e),
+            Expr::ArrayAccess(e1, e2) | Expr::BinOp(e1, _, e2) | Expr::Assign(e1, e2) => {
+                conv2(&e1, &e2)
+            }
+            Expr::Block(e) => conv_opt(&e),
+            Expr::Tuple(es) | Expr::ArrayLiteral(es) => convvec(&es),
+
+            Expr::RecordLiteral(fields) | Expr::ImcompleteRecord(fields) => convfields(&fields),
+            Expr::RecordUpdate(e1, fields) => conv(&e1).min(convfields(&fields)),
+            Expr::Apply(e, args) => conv(&e).min(convvec(&args)),
+            Expr::Then(e1, e2) | Expr::Let(_, e1, e2) | Expr::LetRec(_, e1, e2) => {
+                conv(&e1).min(conv_opt(&e2))
+            }
+            Expr::If(cond, then, orelse) => conv(&cond).min(conv(&then)).min(conv_opt(&orelse)),
+
+            _ => current_level,
+        }
+    }
 }
 
 impl fmt::Display for Literal {
@@ -176,6 +253,18 @@ impl MiniPrint for Expr {
                     .collect::<Vec<String>>()
                     .join(", ");
                 format!("(incomplete-record {{{}, ..}})", fields_str)
+            }
+            Expr::RecordUpdate(record, fields) => {
+                let fields_str = fields
+                    .iter()
+                    .map(|f| f.simple_print())
+                    .collect::<Vec<String>>()
+                    .join(", ");
+                format!(
+                    "(record-update {} {{{}}})",
+                    record.simple_print(),
+                    fields_str
+                )
             }
             Expr::FieldAccess(record, field) => {
                 format!("(field-access {} {})", record.simple_print(), field)

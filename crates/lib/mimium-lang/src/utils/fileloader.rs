@@ -90,17 +90,16 @@ fn get_parent_dir(current_file: &str) -> Result<PathBuf, Error> {
 /// Used for resolving include.
 /// If the filename is given it searches ~/.mimium/lib first. If not found, tries to find in relative path.
 /// If the relative path is given explicitly, do not find in standard library path.
-
 pub fn load_mmmlibfile(current_file_or_dir: &str, path: &str) -> Result<(String, PathBuf), Error> {
     let path = std::path::Path::new(path);
     let search_default_lib = !(path.is_absolute() || path.starts_with("."));
     if let (true, Some(stdlibpath)) = (search_default_lib, get_default_library_path()) {
         let cpath = stdlibpath.join(path).canonicalize();
-        if let Ok(cpath) = cpath {
-            if let Ok(content) = load(&cpath.to_string_lossy()) {
-                return Ok((content, cpath));
-                // if not found in the stdlib, continue to find in a relative path.
-            }
+        if let Ok(cpath) = cpath
+            && let Ok(content) = load(&cpath.to_string_lossy())
+        {
+            return Ok((content, cpath));
+            // if not found in the stdlib, continue to find in a relative path.
         }
     };
     let cpath = get_canonical_path(current_file_or_dir, &path.to_string_lossy())?;

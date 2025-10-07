@@ -72,9 +72,9 @@ impl MidiPlugin {
     /// Until this function is called, MIDI plugin tries to the default device.
     pub fn set_midi_port(&mut self, vm: &mut vm::Machine) -> vm::ReturnCode {
         let idx = vm.get_stack(0);
-        let pname = vm.prog.strings[idx as usize];
+        let pname = vm.prog.strings[idx as usize].clone();
 
-        self.port_name = Some(pname.to_string());
+        self.port_name = Some(pname);
         0
     }
     /// This function is exposed to mimium as "bind_midi_note_mono".

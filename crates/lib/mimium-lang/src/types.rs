@@ -1,4 +1,7 @@
-use std::{cell::RefCell, fmt, rc::Rc};
+use std::{
+    fmt,
+    sync::{Arc, RwLock},
+};
 
 use crate::{
     format_vec,
@@ -79,7 +82,7 @@ impl From<TypedId> for RecordTypeField {
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TypeSchemeId(pub u64);
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum Type {
     Primitive(PType),
     //aggregate types
@@ -95,13 +98,38 @@ pub enum Type {
     Ref(TypeNodeId),
     //(experimental) code-type for multi-stage computation that will be evaluated on the next stage
     Code(TypeNodeId),
-    Intermediate(Rc<RefCell<TypeVar>>),
+    Intermediate(Arc<RwLock<TypeVar>>),
     TypeScheme(TypeSchemeId),
     /// Any type is the top level, it can be unified with anything.
     Any,
     /// Failure type: it is bottom type that can be unified to any type and return bottom type.
     Failure,
     Unknown,
+}
+impl PartialEq for Type {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Type::Intermediate(a), Type::Intermediate(b)) => {
+                let a = a.read().unwrap();
+                let b = b.read().unwrap();
+                a.var == b.var
+            }
+            (Type::Primitive(a), Type::Primitive(b)) => a == b,
+            (Type::Array(a), Type::Array(b)) => a == b,
+            (Type::Tuple(a), Type::Tuple(b)) => a == b,
+            (Type::Record(a), Type::Record(b)) => a == b,
+            (Type::Function { arg: a1, ret: a2 }, Type::Function { arg: b1, ret: b2 }) => {
+                a1 == b1 && a2 == b2
+            }
+            (Type::Ref(a), Type::Ref(b)) => a == b,
+            (Type::Code(a), Type::Code(b)) => a == b,
+            (Type::TypeScheme(a), Type::TypeScheme(b)) => a == b,
+            (Type::Any, Type::Any) => true,
+            (Type::Failure, Type::Failure) => true,
+            (Type::Unknown, Type::Unknown) => true,
+            _ => false,
+        }
+    }
 }
 
 // currently, this refers to the number of registers
@@ -123,8 +151,17 @@ impl Type {
     pub fn is_function(&self) -> bool {
         matches!(self, Type::Function { arg: _, ret: _ })
     }
-
-    pub fn is_intermediate(&self) -> Option<Rc<RefCell<TypeVar>>> {
+    pub fn contains_code(&self) -> bool {
+        match self {
+            Type::Code(_) => true,
+            Type::Tuple(t) => t.iter().any(|t| t.to_type().contains_code()),
+            Type::Record(t) => t
+                .iter()
+                .any(|RecordTypeField { ty, .. }| ty.to_type().contains_code()),
+            _ => false,
+        }
+    }
+    pub fn is_intermediate(&self) -> Option<Arc<RwLock<TypeVar>>> {
         match self {
             Type::Intermediate(tvar) => Some(tvar.clone()),
             _ => None,
@@ -227,7 +264,7 @@ impl TypeNodeId {
     pub fn get_root(&self) -> TypeNodeId {
         match self.to_type() {
             Type::Intermediate(cell) => {
-                let tv = cell.borrow_mut();
+                let tv = cell.read().unwrap();
                 tv.parent.map_or(*self, |t| t.get_root())
             }
             _ => *self,
@@ -330,7 +367,7 @@ impl fmt::Display for Type {
 
             Type::Code(c) => write!(f, "<{}>", c.to_type()),
             Type::Intermediate(id) => {
-                write!(f, "{}", id.borrow())
+                write!(f, "{}", id.read().unwrap())
             }
             Type::TypeScheme(id) => {
                 write!(f, "g({})", id.0)

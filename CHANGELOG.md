@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## v3.0.0
+
+### Added feature
+
+- Added Live State Updating feature, which enables live coding on mimium. When you save the mimium file that you're running on, the compiler automatically renew instances without audio interruption.(#159)
+- Added a global stage decalaration syntax `#stage(main) / #stage(macro)`.(#154)
+- Now a destructive assignment in stage 0 evaluation is allowed. With this feature, standard library function `unoise` is newly implemented with this manner.(#162)
+- Added record update syntax `{rec_var <- field1 = 100, field2 = 200}`(#158)
+
+### Breaking changes
+
+- `gen_sampler_mono` was replaced with `Sampler_mono!("file_path")` macro.(#161)
+- `make_probe` function was replaced with `Probe("name")` macro.(#156)
+
 ## v2.4.2
 
 - Fixed language server crashes

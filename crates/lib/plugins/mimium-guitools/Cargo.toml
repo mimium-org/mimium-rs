@@ -19,6 +19,5 @@ eframe = { version = "0.29.1", default-features = false, features = [
     "glow",          # Use the glow rendering backend. Alternative: "wgpu".
     "persistence",   # Enable restoring app state when restarting the app.
 ] }
-ringbuf = "0.4.7"
-atomic_float = "1.1.0"
-
+ringbuf = { workspace = true }
+atomic_float = { workspace = true }

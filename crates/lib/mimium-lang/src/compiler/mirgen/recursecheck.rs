@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 ///remove redundunt letrec definition and convert them to plain let
 use crate::{
     ast::{Expr, RecordField},
@@ -41,6 +43,9 @@ fn try_find_recurse(e_s: ExprNodeId, name: Symbol) -> bool {
         Expr::ImcompleteRecord(record_fields) => {
             record_fields.iter().any(|f| try_find_recurse(f.expr, name))
         }
+        Expr::RecordUpdate(record, fields) => {
+            try_find_recurse(record, name) || fields.iter().any(|f| try_find_recurse(f.expr, name))
+        }
         Expr::FieldAccess(record, _field) => try_find_recurse(record, name),
         Expr::BinOp(_, _, _) => unreachable!(),
         Expr::UniOp(_, _) => unreachable!(),
@@ -50,11 +55,11 @@ fn try_find_recurse(e_s: ExprNodeId, name: Symbol) -> bool {
     }
 }
 
-pub fn convert_recurse(e_s: ExprNodeId, file_path: Symbol) -> ExprNodeId {
-    let convert = |v: ExprNodeId| convert_recurse(v, file_path);
+pub fn convert_recurse(e_s: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
+    let convert = |v: ExprNodeId| convert_recurse(v, file_path.clone());
     let convert_vec = |v: Vec<_>| {
         v.into_iter()
-            .map(|e| convert_recurse(e, file_path))
+            .map(|e| convert_recurse(e, file_path.clone()))
             .collect()
     };
     let span = e_s.to_span();
@@ -104,6 +109,16 @@ pub fn convert_recurse(e_s: ExprNodeId, file_path: Symbol) -> ExprNodeId {
                 })
                 .collect(),
         ),
+        Expr::RecordUpdate(record, fields) => Expr::RecordUpdate(
+            convert(record),
+            fields
+                .iter()
+                .map(|f| RecordField {
+                    name: f.name,
+                    expr: convert(f.expr),
+                })
+                .collect(),
+        ),
         Expr::FieldAccess(record, field) => Expr::FieldAccess(convert(record), field),
         Expr::BinOp(_, _, _) => unreachable!(),
         Expr::UniOp(_, _) => unreachable!(),
@@ -113,7 +128,7 @@ pub fn convert_recurse(e_s: ExprNodeId, file_path: Symbol) -> ExprNodeId {
     };
     let loc = Location {
         span,
-        path: file_path,
+        path: file_path.clone(),
     };
     res.into_id(loc)
 }
@@ -124,9 +139,7 @@ mod test {
     use crate::{
         app,
         ast::{Expr, Literal},
-        ifexpr,
-        interner::ToSymbol,
-        lambda, let_, letrec, number,
+        ifexpr, lambda, let_, letrec, number,
         pattern::TypedId,
         var,
     };
@@ -164,6 +177,6 @@ mod test {
             None
         );
 
-        assert_eq!(convert_recurse(sample, "/".to_symbol()), ans)
+        assert_eq!(convert_recurse(sample, PathBuf::from("/")), ans)
     }
 }

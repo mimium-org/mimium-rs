@@ -2,6 +2,7 @@
 
 members = [
     "crates/lib/mimium-lang",
+    "crates/lib/mimium-lang/state-tree",
     "crates/lib/mimium-web",
     "crates/lib/mimium-test",
     "crates/lib/plugins/mimium-audiodriver",
@@ -27,6 +28,7 @@ authors = ["Tomoya Matsuura <me@matsuuratomoya.com>"]
 
 [workspace.dependencies]
 mimium-lang = { path = "crates/lib/mimium-lang", version = "2.4.2-alpha" }
+state-tree = { path = "crates/lib/mimium-lang/state-tree", version = "2.4.2-alpha" }
 mimium-test = { path = "crates/lib/mimium-test" }
 mimium-web = { path = "crates/lib/mimium-web", version = "2.4.2-alpha" }
 mimium-audiodriver = { path = "crates/lib/plugins/mimium-audiodriver", version = "2.4.2-alpha" }
@@ -41,6 +43,12 @@ mimium-language-server = { path = "crates/bin/mimium-language-server", version =
 itertools = "0.13.0"
 wasm-bindgen = "0.2.93"
 wasm-bindgen-test = "0.3"
+ringbuf = "0.4.7"
+atomic_float = "1.1.0"
+log = "0.4.28"
+colog = "1.3.0"
+
+
 
 # do not add git tag for each crates on release.
 [workspace.metadata.release]

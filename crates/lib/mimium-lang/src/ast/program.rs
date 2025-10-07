@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use super::resolve_include::resolve_include;
 use super::statement::Statement;
 use crate::ast::Expr;
@@ -8,6 +10,8 @@ use crate::types::{RecordTypeField, Type};
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::{Location, Span};
 
+use super::StageKind;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProgramStatement {
     FnDefinition {
@@ -15,6 +19,9 @@ pub enum ProgramStatement {
         args: (Vec<TypedId>, Location),
         return_type: Option<TypeNodeId>,
         body: ExprNodeId,
+    },
+    StageDeclaration {
+        stage: StageKind,
     },
     GlobalStatement(Statement),
     Import(Symbol),
@@ -29,7 +36,7 @@ pub struct Program {
 }
 fn stmts_from_program(
     program: Program,
-    file_path: Symbol,
+    file_path: PathBuf,
     errs: &mut Vec<Box<dyn ReportableError>>,
 ) -> Vec<(Statement, Location)> {
     program
@@ -42,7 +49,7 @@ fn stmts_from_program(
                 return_type,
                 body,
             } => {
-                let loc = Location::new(span, file_path);
+                let loc = Location::new(span, file_path.clone());
                 let argloc = args.1.clone();
                 let argsty = args
                     .clone()
@@ -64,29 +71,34 @@ fn stmts_from_program(
                 )])
             }
             ProgramStatement::GlobalStatement(statement) => {
-                Some(vec![(statement, Location::new(span, file_path))])
+                Some(vec![(statement, Location::new(span, file_path.clone()))])
             }
             ProgramStatement::Comment(_) | ProgramStatement::DocComment(_) => None,
             ProgramStatement::Import(filename) => {
                 let (imported_program, mut new_errs) =
-                    resolve_include(file_path.as_str(), filename.as_str(), span.clone());
+                    resolve_include(file_path.to_str().unwrap(), filename.as_str(), span.clone());
                 errs.append(&mut new_errs);
-                let res = stmts_from_program(imported_program, file_path, errs);
+                let res = stmts_from_program(imported_program, file_path.clone(), errs);
                 Some(res)
             }
-            ProgramStatement::Error => {
-                Some(vec![(Statement::Error, Location::new(span, file_path))])
-            }
+            ProgramStatement::StageDeclaration { stage } => Some(vec![(
+                Statement::DeclareStage(stage),
+                Location::new(span, file_path.clone()),
+            )]),
+            ProgramStatement::Error => Some(vec![(
+                Statement::Error,
+                Location::new(span, file_path.clone()),
+            )]),
         })
         .flatten()
         .collect()
 }
 pub(crate) fn expr_from_program(
     program: Program,
-    file_path: Symbol,
+    file_path: PathBuf,
 ) -> (ExprNodeId, Vec<Box<dyn ReportableError>>) {
     let mut errs = vec![];
-    let stmts = stmts_from_program(program, file_path, &mut errs);
+    let stmts = stmts_from_program(program, file_path.clone(), &mut errs);
 
     let res = into_then_expr(stmts.as_slice()).unwrap_or(Expr::Error.into_id_without_span());
 

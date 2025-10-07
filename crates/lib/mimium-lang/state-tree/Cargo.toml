@@ -1,0 +1,11 @@
+[package]
+name = "state-tree"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+repository.workspace = true
+description = "Utility for keeping internal states of signal between 2 compiled source codes"
+[dependencies]
+itertools.workspace = true
+
+log = { workspace = true }

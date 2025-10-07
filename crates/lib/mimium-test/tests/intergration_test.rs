@@ -1,3 +1,4 @@
+use mimium_audiodriver::driver::{Driver, RuntimeData};
 use mimium_lang::{interner::ToSymbol, utils::error::report};
 use mimium_test::*;
 use wasm_bindgen_test::*;
@@ -18,7 +19,7 @@ fn dsp(){{
             assert_eq!(res, ans, "expr: {expr}");
         }
         Err(errs) => {
-            report(&src, "(from template)".to_symbol(), &errs);
+            report(&src, "(from template)".into(), &errs);
             panic!("invalid syntax");
         }
     }
@@ -274,6 +275,26 @@ fn closure_counter_tuple() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn closure_counter_multistage() {
+    let res = run_file_test_stereo("closure_counter_multistage.mmm", 1).unwrap();
+    let ans = vec![1.0, 2.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn test_tuple_global() {
+    let res = run_file_test_mono("tuple_global.mmm", 5).unwrap();
+    let ans = vec![100.0, 100.0, 100.0, 100.0, 100.0];
+    assert_eq!(res, ans);
+}
+#[wasm_bindgen_test(unsupported = test)]
+fn test_tuple_global2() {
+    let res = run_file_test_mono("tuple_global2.mmm", 5).unwrap();
+    let ans = vec![100.0, 100.0, 100.0, 100.0, 100.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn hof_state() {
     let res = run_file_test_mono("hof_state.mmm", 10).unwrap();
     let ans = vec![
@@ -448,7 +469,7 @@ fn block_local_scope_fail() {
     assert!(
         res[0]
             .get_message()
-            .contains("Variable local1 not found in this scope")
+            .contains("Variable \"local1\" not found in this scope")
     )
 }
 
@@ -505,6 +526,28 @@ fn record_pattern_capture() {
     let ans = vec![300.0]; // v1 + v2
     assert_eq!(res, ans);
 }
+
+#[test]
+fn record_assign_field() {
+    let res = run_file_test_mono("record_assign_field.mmm", 1).unwrap();
+    let ans = vec![20.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn record_update() {
+    let res = run_file_test_mono("record_update.mmm", 1).unwrap();
+    let ans = vec![6000.0]; // 4000.0 + 2000.0
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn record_update_immutable() {
+    let res = run_file_test_mono("record_update_immutable.mmm", 1).unwrap();
+    let ans = vec![10.0]; // 0.0 + 10.0 - original record unchanged
+    assert_eq!(res, ans);
+}
+
 #[test]
 fn parameter_pack_tuple() {
     let res = run_file_test_mono("parameter_pack_tuple.mmm", 1).unwrap();
@@ -558,5 +601,54 @@ fn multistage() {
 fn multistage_macro() {
     let res = run_file_test_mono("multistage_macro.mmm", 1).unwrap();
     let ans = vec![8.0];
+    assert_eq!(res, ans);
+}
+#[test]
+fn multistage_globalsyntax() {
+    let res = run_file_test_mono("multistage_globalsyntax.mmm", 1).unwrap();
+    let ans = vec![8.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn multistage_lift() {
+    let res = run_file_test_mono("multistage_lift.mmm", 1).unwrap();
+    let ans = vec![8.0];
+    assert_eq!(res, ans);
+}
+#[test]
+fn multistage_explicit_type() {
+    let res = run_file_test_mono("multistage_explicit_type.mmm", 1).unwrap();
+    let ans = vec![32.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn probe_macro() {
+    let (_, src) = load_src("probe_macro.mmm");
+
+    // Create a custom execution with the guitools plugin
+    let mut driver = mimium_audiodriver::backends::local_buffer::LocalBufferDriver::new(1);
+    let audiodriverplug: Box<dyn mimium_lang::plugin::Plugin> = Box::new(driver.get_as_plugin());
+    let mut ctx = mimium_lang::ExecContext::new(
+        [audiodriverplug].into_iter(),
+        None,
+        mimium_lang::Config::default(),
+    );
+
+    // Add the guitools system plugin
+    ctx.add_system_plugin(mimium_guitools::GuiToolPlugin::default());
+
+    ctx.prepare_machine(&src).unwrap();
+    let _ = ctx.run_main();
+    let runtimedata = {
+        let ctxmut: &mut mimium_lang::ExecContext = &mut ctx;
+        RuntimeData::try_from(ctxmut).unwrap()
+    };
+    driver.init(runtimedata, None);
+    driver.play();
+    let res = driver.get_generated_samples().to_vec();
+
+    let ans = vec![42.0]; // Probe should pass through the value
     assert_eq!(res, ans);
 }

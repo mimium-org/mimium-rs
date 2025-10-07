@@ -1,5 +1,7 @@
+use std::path::PathBuf;
+
 use mimium_audiodriver::backends::local_buffer::LocalBufferDriver;
-use mimium_audiodriver::driver::Driver;
+use mimium_audiodriver::driver::{Driver, RuntimeData};
 use mimium_lang::ExecContext;
 use mimium_lang::interner::ToSymbol;
 use mimium_lang::log;
@@ -60,11 +62,15 @@ impl Context {
         ctx.add_plugin(driver.get_as_plugin());
 
         if let Err(e) = ctx.prepare_machine(src.as_str()) {
-            report(&src, "".to_symbol(), &e);
+            report(&src, PathBuf::from("/"), &e);
         }
         ctx.run_main();
+        let runtimedata = {
+            let ctxmut: &mut ExecContext = &mut ctx;
+            RuntimeData::try_from(ctxmut).unwrap()
+        };
         let iochannels = driver.init(
-            ctx,
+            runtimedata,
             Some(mimium_audiodriver::driver::SampleRate::from(
                 self.config.sample_rate as u32,
             )),

@@ -3,19 +3,19 @@ fn osc(freq){
   sinwave(freq,0.0)
 }
 
-fn cascade(n,gen:()->(float)->float){
+fn cascade(n,gen){
     let g = gen()
-    if (n>0.0){
+    if (n>0){
         let c = cascade(n - 1.0 ,gen)
-        |rate| rate + g(rate/2.0)* 0.5* rate*(1.0-(1.0/(n*2.0))) |> c 
+        let multiplier = 1.0-(1.0/(n*2.0))
+        |rate| { rate + g(rate/2.0)* 0.5 * rate * multiplier |> c } 
     }else{
         |rate| g(rate) 
     }
 }
-let n =20.0
-let myosc = cascade(n, | | osc);
-
+let myosc = cascade(20, | | osc);
 fn dsp(){
-    let r = myosc(200.0)
+    let f = 200
+    let r = f |> myosc
     (r,r)
 }

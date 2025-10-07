@@ -19,6 +19,7 @@ use std::{
     any::Any,
     cell::{RefCell, UnsafeCell},
     rc::Rc,
+    sync::Arc,
 };
 pub type SystemPluginFnType<T> = fn(&mut T, &mut Machine) -> ReturnCode;
 pub type SystemPluginMacroType<T> = fn(&mut T, &[(Value, TypeNodeId)]) -> Value;
@@ -89,7 +90,7 @@ pub trait SystemPlugin {
 #[derive(Clone)]
 /// A dynamically dispatched plugin wrapped in reference-counted storage.
 pub struct DynSystemPlugin {
-    pub inner: Rc<UnsafeCell<dyn SystemPlugin>>,
+    pub inner: Arc<UnsafeCell<dyn SystemPlugin>>,
     pub clsinfos: Vec<ExtClsInfo>,
     pub macroinfos: Vec<MacroInfo>,
 }
@@ -104,7 +105,7 @@ where
 {
     fn from(plugin: T) -> Self {
         let ifs = plugin.gen_interfaces();
-        let inner = Rc::new(UnsafeCell::new(plugin));
+        let inner = Arc::new(UnsafeCell::new(plugin));
         let macroinfos = ifs
             .iter()
             .filter(|&SysPluginSignature { stage, .. }| matches!(stage, EvalStage::Stage(0)))

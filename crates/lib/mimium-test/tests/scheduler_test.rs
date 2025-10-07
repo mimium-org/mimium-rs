@@ -1,4 +1,7 @@
-use mimium_audiodriver::{backends::local_buffer::LocalBufferDriver, driver::Driver};
+use mimium_audiodriver::{
+    backends::local_buffer::LocalBufferDriver,
+    driver::{Driver, RuntimeData},
+};
 use mimium_lang::{ExecContext, plugin::Plugin};
 use mimium_test::*;
 use wasm_bindgen_test::*;
@@ -50,7 +53,11 @@ fn prep_gc_test_machine(times: usize, src: &str) -> LocalBufferDriver {
     ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
     let _ = ctx.prepare_machine(src);
     let _ = ctx.run_main();
-    driver.init(ctx, None);
+    let runtimedata = {
+        let ctxmut: &mut ExecContext = &mut ctx;
+        RuntimeData::try_from(ctxmut).unwrap()
+    };
+    driver.init(runtimedata, None);
     driver
 }
 //check if the number of closure does not change over times.

@@ -5,10 +5,11 @@
 
 use std::{
     borrow::Cow,
-    cell::RefCell,
     collections::BTreeMap,
     fmt::{self, Display},
     hash::Hash,
+    path::PathBuf,
+    sync::{LazyLock, Mutex},
 };
 
 use slotmap::SlotMap;
@@ -17,7 +18,7 @@ use string_interner::{StringInterner, backend::StringBackend};
 use crate::{
     ast::Expr,
     dummy_span,
-    types::{RecordTypeField, Type},
+    types::{PType, RecordTypeField, Type},
     utils::metadata::{Location, Span},
 };
 slotmap::new_key_type! {
@@ -66,11 +67,19 @@ impl SessionGlobals {
     //
     // cf. https://github.com/tomoyanonymous/mimium-rs/pull/27#issuecomment-2306226748
     pub fn get_expr(&self, expr_id: ExprNodeId) -> Expr {
-        unsafe { self.expr_storage.get_unchecked(expr_id.0) }.clone()
+        if cfg!(test) {
+            self.expr_storage.get(expr_id.0).unwrap().clone()
+        } else {
+            unsafe { self.expr_storage.get_unchecked(expr_id.0) }.clone()
+        }
     }
 
     pub fn get_type(&self, type_id: TypeNodeId) -> Type {
-        unsafe { self.type_storage.get_unchecked(type_id.0) }.clone()
+        if cfg!(test) {
+            self.type_storage.get(type_id.0).unwrap().clone()
+        } else {
+            unsafe { self.type_storage.get_unchecked(type_id.0) }.clone()
+        }
     }
 
     pub fn get_span<T: ToNodeId>(&self, node_id: T) -> Option<&Location> {
@@ -78,20 +87,24 @@ impl SessionGlobals {
     }
 }
 
-thread_local!(static SESSION_GLOBALS: RefCell<SessionGlobals> =  RefCell::new(
-    SessionGlobals {
+static SESSION_GLOBALS: LazyLock<Mutex<SessionGlobals>> = LazyLock::new(|| {
+    Mutex::new(SessionGlobals {
         symbol_interner: StringInterner::new(),
         expr_storage: SlotMap::with_key(),
         type_storage: SlotMap::with_key(),
-        loc_storage: BTreeMap::new()
-    }
-));
+        loc_storage: BTreeMap::new(),
+    })
+});
 
 pub fn with_session_globals<R, F>(f: F) -> R
 where
     F: FnOnce(&mut SessionGlobals) -> R,
 {
-    SESSION_GLOBALS.with_borrow_mut(f)
+    if let Ok(mut guard) = SESSION_GLOBALS.lock() {
+        f(&mut *guard)
+    } else {
+        panic!("Failed to acquire lock on SESSION_GLOBALS");
+    }
 }
 
 #[derive(Default, Copy, Clone, PartialEq, Hash, Eq, PartialOrd, Ord)]
@@ -196,6 +209,29 @@ impl Hash for TypeNodeId {
     }
 }
 
+impl state_tree::tree::SizedType for TypeNodeId {
+    fn word_size(&self) -> u64 {
+        match self.to_type() {
+            Type::Primitive(PType::Unit) => 0,
+            Type::Primitive(PType::String) => 1,
+            Type::Primitive(_) => 1,
+            Type::Array(_) => 1, //array is represented as a pointer to the special storage
+            Type::Tuple(types) => types.iter().map(|t| t.word_size()).sum(),
+            Type::Record(types) => types
+                .iter()
+                .map(|RecordTypeField { ty, .. }| ty.word_size())
+                .sum(),
+            Type::Function { arg: _, ret: _ } => 1,
+            Type::Ref(_) => 1,
+            Type::Code(_) => todo!(),
+            _ => {
+                //todo: this may contain intermediate types
+                1
+            }
+        }
+    }
+}
+
 impl ExprNodeId {
     pub fn to_expr(&self) -> Expr {
         with_session_globals(|session_globals| session_globals.get_expr(*self))
@@ -212,7 +248,7 @@ impl ExprNodeId {
             Some(loc) => loc.clone(),
             None => Location {
                 span: dummy_span!(),
-                path: "".to_symbol(),
+                path: PathBuf::new(),
             },
         })
     }
@@ -230,7 +266,7 @@ impl TypeNodeId {
         })
     }
     pub fn to_loc(&self) -> Location {
-        let dummy_path = "".to_symbol();
+        let dummy_path = PathBuf::new();
         with_session_globals(|session_globals| match session_globals.get_span(*self) {
             Some(loc) => loc.clone(),
             None => Location {

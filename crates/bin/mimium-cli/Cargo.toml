@@ -23,4 +23,6 @@ mimium-midi = { workspace = true }
 mimium-symphonia = { workspace = true }
 mimium-scheduler = { workspace = true }
 mimium-guitools = { workspace = true }
-colog = "1.3.0"
+colog = { workspace = true }
+ringbuf = { workspace = true }
+notify = "8.2.0"
