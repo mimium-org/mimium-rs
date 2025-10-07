@@ -28,6 +28,7 @@ authors = ["Tomoya Matsuura <me@matsuuratomoya.com>"]
 
 [workspace.dependencies]
 mimium-lang = { path = "crates/lib/mimium-lang", version = "2.4.2-alpha" }
+state-tree = { path = "crates/lib/mimium-lang/state-tree", version = "2.4.2-alpha" }
 mimium-test = { path = "crates/lib/mimium-test" }
 mimium-web = { path = "crates/lib/mimium-web", version = "2.4.2-alpha" }
 mimium-audiodriver = { path = "crates/lib/plugins/mimium-audiodriver", version = "2.4.2-alpha" }

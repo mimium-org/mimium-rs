@@ -2960,7 +2960,7 @@ dependencies = [
 
 [[package]]
 name = "state-tree"
-version = "0.1.0"
+version = "2.4.2-alpha"
 dependencies = [
  "itertools",
  "log",

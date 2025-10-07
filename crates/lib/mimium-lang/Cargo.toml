@@ -15,13 +15,13 @@ chumsky = { version = "0.11", features = ["lexical-numbers"] }
 ariadne = "0.5"
 string-interner = "0.17.0"
 slotmap = "1.0.7"
-log = {workspace = true}
-colog = {workspace = true}
+log = { workspace = true }
+colog = { workspace = true }
 half = "2.4.1"
 intx = "0.1.0"
 itertools.workspace = true
 wasm-bindgen.workspace = true
-state-tree = { path = "./state-tree" }
+state-tree = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 homedir = { version = "0.3.4" }
 mimalloc = { version = "0.1.43" }
