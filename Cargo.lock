@@ -1871,7 +1871,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-audiodriver"
-version = "2.4.2-alpha"
+version = "3.0.0-alpha"
 dependencies = [
  "cpal",
  "mimium-lang",
@@ -1881,7 +1881,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-bintools"
-version = "2.4.2-alpha"
+version = "3.0.0-alpha"
 dependencies = [
  "mimium-cli",
  "mimium-fmt",
@@ -1891,7 +1891,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-cli"
-version = "2.4.2-alpha"
+version = "3.0.0-alpha"
 dependencies = [
  "clap",
  "colog",
@@ -1907,7 +1907,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-fmt"
-version = "2.4.2-alpha"
+version = "3.0.0-alpha"
 dependencies = [
  "clap",
  "mimium-lang",
@@ -1916,7 +1916,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-guitools"
-version = "2.4.2-alpha"
+version = "3.0.0-alpha"
 dependencies = [
  "atomic_float",
  "eframe",
@@ -1928,7 +1928,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-lang"
-version = "2.4.2-alpha"
+version = "3.0.0-alpha"
 dependencies = [
  "ariadne",
  "chumsky",
@@ -1948,7 +1948,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-language-server"
-version = "2.4.2-alpha"
+version = "3.0.0-alpha"
 dependencies = [
  "dashmap 6.1.0",
  "env_logger",
@@ -1967,7 +1967,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-midi"
-version = "2.4.2-alpha"
+version = "3.0.0-alpha"
 dependencies = [
  "atomic_float",
  "midir",
@@ -1978,7 +1978,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-scheduler"
-version = "2.4.2-alpha"
+version = "3.0.0-alpha"
 dependencies = [
  "mimium-lang",
  "mimium-test",
@@ -1986,7 +1986,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-symphonia"
-version = "2.4.2-alpha"
+version = "3.0.0-alpha"
 dependencies = [
  "mimium-audiodriver",
  "mimium-lang",
@@ -1996,7 +1996,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-test"
-version = "2.4.2-alpha"
+version = "3.0.0-alpha"
 dependencies = [
  "mimium-audiodriver",
  "mimium-guitools",
@@ -2007,7 +2007,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-web"
-version = "2.4.2-alpha"
+version = "3.0.0-alpha"
 dependencies = [
  "console_error_panic_hook",
  "itertools",
@@ -2960,7 +2960,7 @@ dependencies = [
 
 [[package]]
 name = "state-tree"
-version = "2.4.2-alpha"
+version = "3.0.0-alpha"
 dependencies = [
  "itertools",
  "log",
