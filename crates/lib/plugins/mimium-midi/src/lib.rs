@@ -6,13 +6,15 @@
 use atomic_float::AtomicF64;
 use midir::{MidiInput, MidiInputConnection, MidiInputPort};
 use mimium_lang::{
+    ast::{Expr, Literal},
     function,
-    interner::ToSymbol,
+    interner::{ToSymbol, TypeNodeId},
+    interpreter::Value,
     log, numeric,
-    plugin::{ExtClsInfo, SysPluginSignature, SystemPlugin, SystemPluginFnType},
+    plugin::{ExtClsInfo, SysPluginSignature, SystemPlugin, SystemPluginFnType, SystemPluginMacroType},
     runtime::vm,
     string_t, tuple,
-    types::{PType, Type},
+    types::{PType, RecordTypeField, Type},
     unit,
 };
 use std::{
@@ -44,9 +46,14 @@ pub struct MidiPlugin {
     port_name: Option<String>,
     note_callbacks: Option<NoteCallBacks>,
     connection: Option<MidiInputConnection<NoteCallBacks>>,
+    // New fields for macro-based MIDI note handling
+    midi_note_cells: Vec<Arc<(AtomicF64, AtomicF64)>>,
+    midi_note_channels: Vec<u8>,
 }
 
 impl MidiPlugin {
+    const GET_MIDI_NOTE: &'static str = "__get_midi_note";
+
     pub fn try_new() -> Option<Self> {
         let input_res = MidiInput::new("mimium midi plugin");
         match input_res {
@@ -56,6 +63,8 @@ impl MidiPlugin {
                 port_name: None,
                 note_callbacks: Some(Default::default()),
                 connection: None,
+                midi_note_cells: Vec::new(),
+                midi_note_channels: Vec::new(),
             }),
             Err(_e) => None,
         }
@@ -110,6 +119,76 @@ impl MidiPlugin {
         ));
         vm.set_stack(0, vm::Machine::to_value(rcls));
         1
+    }
+
+    /// Macro function for midi_note_mono! that generates unique IDs and returns runtime code
+    /// Arguments: channel:float[0-15], default_note:float[0-127], default_velocity:float[0-127]
+    /// Returns: Code that evaluates to a record {pitch:float, velocity:float}
+    pub fn midi_note_mono_macro(&mut self, v: &[(Value, TypeNodeId)]) -> Value {
+        if v.len() != 3 {
+            log::error!("midi_note_mono! expects 3 arguments (channel, default_note, default_velocity)");
+            return Value::Number(0.0);
+        }
+
+        let (ch, default_note, default_vel) = match (v[0].0.clone(), v[1].0.clone(), v[2].0.clone()) {
+            (Value::Number(ch), Value::Number(note), Value::Number(vel)) => (ch, note, vel),
+            _ => {
+                log::error!("midi_note_mono! arguments must be numbers");
+                return Value::Number(0.0);
+            }
+        };
+
+        // Create a new cell for this MIDI note instance
+        let cell = Arc::new((AtomicF64::new(default_note), AtomicF64::new(default_vel)));
+        let uid = self.midi_note_cells.len();
+        self.midi_note_cells.push(cell.clone());
+        self.midi_note_channels.push(ch as u8);
+
+        // Register the callback
+        let cell_c = cell.clone();
+        self.add_note_callback(
+            ch as u8,
+            Arc::new(move |note, vel| {
+                cell_c.0.store(note, Ordering::Relaxed);
+                cell_c.1.store(vel, Ordering::Relaxed);
+            }),
+        );
+
+        // Generate code that calls __get_midi_note(uid)
+        Value::Code(
+            Expr::Apply(
+                Expr::Var(Self::GET_MIDI_NOTE.to_symbol()).into_id_without_span(),
+                vec![
+                    Expr::Literal(Literal::Float(uid.to_string().to_symbol()))
+                        .into_id_without_span(),
+                ],
+            )
+            .into_id_without_span(),
+        )
+    }
+
+    /// Runtime function to get MIDI note values by UID
+    /// Arguments: uid:float (index into midi_note_cells)
+    /// Returns: record {pitch:float, velocity:float}
+    pub fn get_midi_note(&mut self, vm: &mut vm::Machine) -> vm::ReturnCode {
+        let uid = vm::Machine::get_as::<f64>(vm.get_stack(0)) as usize;
+
+        match self.midi_note_cells.get(uid) {
+            Some(cell) => {
+                let pitch = cell.0.load(Ordering::Relaxed);
+                let velocity = cell.1.load(Ordering::Relaxed);
+                // Return as a tuple for now (records are represented as tuples in the VM)
+                vm.set_stack(0, vm::Machine::to_value(pitch));
+                vm.set_stack(1, vm::Machine::to_value(velocity));
+                2
+            }
+            None => {
+                log::error!("Invalid MIDI note UID: {}", uid);
+                vm.set_stack(0, vm::Machine::to_value(0.0));
+                vm.set_stack(1, vm::Machine::to_value(0.0));
+                2
+            }
+        }
     }
 }
 
@@ -177,15 +256,42 @@ impl SystemPlugin for MidiPlugin {
     }
 
     fn gen_interfaces(&self) -> Vec<SysPluginSignature> {
+        // Legacy bind_midi_note_mono (returns closure that returns tuple)
         let ty = function!(
             vec![numeric!(), numeric!(), numeric!()],
             function!(vec![], tuple!(numeric!(), numeric!()))
         );
         let fun: SystemPluginFnType<Self> = Self::bind_midi_note_mono;
         let bindnote = SysPluginSignature::new("bind_midi_note_mono", fun, ty);
+        
+        // set_midi_port function
         let ty = function!(vec![string_t!()], unit!());
         let fun: SystemPluginFnType<Self> = Self::set_midi_port;
         let setport = SysPluginSignature::new("set_midi_port", fun, ty);
-        vec![setport, bindnote]
+
+        // New midi_note_mono! macro (returns code that evaluates to record)
+        let midi_note_macro_f: SystemPluginMacroType<Self> = Self::midi_note_mono_macro;
+        let record_ty = Type::Record(vec![
+            RecordTypeField::new("pitch".to_symbol(), numeric!(), false),
+            RecordTypeField::new("velocity".to_symbol(), numeric!(), false),
+        ]).into_id();
+        let midi_note_macro = SysPluginSignature::new_macro(
+            "midi_note_mono",
+            midi_note_macro_f,
+            function!(
+                vec![numeric!(), numeric!(), numeric!()],
+                Type::Code(record_ty).into_id()
+            ),
+        );
+
+        // Runtime function __get_midi_note (returns record)
+        let get_midi_note_f: SystemPluginFnType<Self> = Self::get_midi_note;
+        let get_midi_note = SysPluginSignature::new(
+            Self::GET_MIDI_NOTE,
+            get_midi_note_f,
+            function!(vec![numeric!()], record_ty),
+        );
+
+        vec![setport, bindnote, midi_note_macro, get_midi_note]
     }
 }

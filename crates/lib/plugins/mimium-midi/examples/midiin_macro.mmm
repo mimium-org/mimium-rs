@@ -1,0 +1,26 @@
+// Example using the new midi_note_mono! macro
+let pi = 3.14159265359
+let sr = 48000.0
+
+fn sec2samp(sec){
+    sec*48000.0
+}
+
+fn phasor(freq){
+  (self + freq/sr)%1.0
+}
+
+fn osc(freq){
+  sin(phasor(freq)*pi*2.0)
+}
+
+fn midi_to_hz(note){
+    440.0* (2.0 ^((note-69.0)/12.0))
+}
+
+fn dsp(){
+    let note_data = midi_note_mono!(0,69,127);
+    let sig = note_data.pitch |> midi_to_hz |> osc 
+    let r = sig * (note_data.velocity /127.0);
+    (r,r)
+}
