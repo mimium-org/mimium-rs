@@ -433,7 +433,7 @@ fn hof_typefail() {
     //check false positive
     let res = run_error_test("hof_typefail.mmm", false);
     //todo! check error types
-    assert_eq!(res.len(), 3);
+    assert_eq!(res.len(), 1);
 }
 
 #[wasm_bindgen_test(unsupported = test)]

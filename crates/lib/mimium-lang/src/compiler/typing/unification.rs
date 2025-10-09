@@ -412,8 +412,8 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
         (_t, Type::Record(v)) if v.len() == 1 => unify_types(t1, v.first().unwrap().ty)?,
         (Type::Record(v), _t) if v.len() == 1 => unify_types(v.first().unwrap().ty, t2)?,
 
-        (Type::Failure, _t) | (_t, Type::Any) => Relation::Subtype,
-        (Type::Any, _t) | (_t, Type::Failure) => Relation::Supertype,
+        (Type::Failure, _t) | (_t, Type::Any) => Relation::Identical,
+        (Type::Any, _t) | (_t, Type::Failure) => Relation::Identical,
 
         (Type::Code(p1), Type::Code(p2)) => unify_types(*p1, *p2)?,
         (_p1, _p2) => {
