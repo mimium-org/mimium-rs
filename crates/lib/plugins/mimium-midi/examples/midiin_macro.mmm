@@ -15,12 +15,13 @@ fn osc(freq){
 }
 
 fn midi_to_hz(note){
-    440.0* (2.0 ^((note-69.0)/12.0))
+    880.0* (2.0 ^((note-69.0)/12.0))
 }
+let _ = set_midi_port("from Max 1")
 
 fn dsp(){
-    let note_data = midi_note_mono!(0,69,127);
+    let note_data = midi_note_mono!(0,69,0);
     let sig = note_data.pitch |> midi_to_hz |> osc 
-    let r = sig * (note_data.velocity /127.0);
+    let r = sig * (note_data.velocity /127.0) |> Probe!("test")
     (r,r)
 }
