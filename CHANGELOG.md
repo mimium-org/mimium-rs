@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v3.0.1
+
+## Fixed bug
+
+- Fixed crush when 0-input deivce is used (#167 by @karnpapon)
+
 ## v3.0.0
 
 ### Added feature
