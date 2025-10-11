@@ -64,9 +64,10 @@ fn synth(note, vel){
     let gain = vel / 127.0
     sig * gain
 }
-let ch0 = bind_midi_note_mono(0.0, 69.0,
-    0.0)
-let probe = make_probe("sig")
+let ch0 =
+    midi_note_mono!(0.0, 69.0, 0.0)
+let probe =
+    make_probe("sig")
 fn dsp(){
     let l = probe(ch0() |> synth)
     (l, l)

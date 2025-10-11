@@ -111,9 +111,7 @@ fn synth(note,
     sig * gain
 }
 let ch0 =
-    bind_midi_note_mono(0.0,
-    69.0,
-    0.0)
+    midi_note_mono!(0.0, 69.0, 0.0)
 let probe =
     make_probe("sig")
 fn dsp(){
