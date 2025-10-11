@@ -99,7 +99,7 @@ impl NativeAudioData {
         self.buffer.pop_slice(local);
         for (o, s) in dst
             .chunks_mut(h_ochannels)
-            .zip(local.chunks(self.iochannels.input as usize))
+            .zip(local.chunks(self.iochannels.output as usize))
         {
             self.vmdata
                 .vm
