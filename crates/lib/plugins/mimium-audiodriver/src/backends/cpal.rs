@@ -13,6 +13,8 @@ use mimium_lang::plugin::ExtClsInfo;
 use mimium_lang::runtime::{Time, vm};
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
+pub(crate) const DEFAULT_BUFFER_SIZE: usize = 4096;
+
 pub struct NativeDriver {
     sr: SampleRate,
     hardware_ichannels: usize,
@@ -42,7 +44,7 @@ impl NativeDriver {
 
 impl Default for NativeDriver {
     fn default() -> Self {
-        Self::new(4096)
+        Self::new(DEFAULT_BUFFER_SIZE)
     }
 }
 
@@ -72,7 +74,7 @@ impl NativeAudioData {
         //todo: split as trait interface method
         let vmdata = runtime_data;
         let dsp_ochannels = vmdata.get_dsp_fn().nret;
-        let localbuffer: Vec<f64> = vec![0.0f64; 4096 * h_ochannels];
+        let localbuffer: Vec<f64> = vec![0.0f64; DEFAULT_BUFFER_SIZE * h_ochannels];
         Self {
             vmdata,
             dsp_ochannels,
@@ -131,7 +133,7 @@ impl NativeAudioReceiver {
     pub fn new(dsp_ichannels: usize, buffer: HeapProd<f64>) -> Self {
         Self {
             dsp_ichannels,
-            localbuffer: vec![0f64; 4096 * dsp_ichannels],
+            localbuffer: vec![0f64; DEFAULT_BUFFER_SIZE * dsp_ichannels],
             buffer,
             count: 0,
         }

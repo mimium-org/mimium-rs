@@ -6,7 +6,7 @@ pub mod runtime_fn;
 pub fn load_default_runtime() -> Box<dyn driver::Driver<Sample = f64>> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        crate::backends::cpal::native_driver(4096)
+        crate::backends::cpal::native_driver(backends::cpal::DEFAULT_BUFFER_SIZE)
     }
     #[cfg(target_arch = "wasm32")]
     {
