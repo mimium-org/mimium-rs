@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v3.0.1
+
+## Fixed bug
+
+- Fixed crush when 0-input deivce is used (#167 by @karnpapon)
+
 ## v3.0.0
 
 ### Added feature
@@ -8,11 +14,15 @@
 - Added a global stage decalaration syntax `#stage(main) / #stage(macro)`.(#154)
 - Now a destructive assignment in stage 0 evaluation is allowed. With this feature, standard library function `unoise` is newly implemented with this manner.(#162)
 - Added record update syntax `{rec_var <- field1 = 100, field2 = 200}`(#158)
+- Multichannel audio hardware is supported(#165 by @karnpapon) and processing microphone input is now available. (#166)
+
 
 ### Breaking changes
 
 - `gen_sampler_mono` was replaced with `Sampler_mono!("file_path")` macro.(#161)
-- `make_probe` function was replaced with `Probe("name")` macro.(#156)
+- `make_probe` function was replaced with `Probe!("name")` macro.(#156)
+- `bind_midi_note_mono` function was replaced with `midi_note_mono!` macro(#163)
+
 
 ## v2.4.2
 

@@ -103,18 +103,23 @@ pub struct RuntimeData {
     pub dsp_i: usize,
 }
 impl RuntimeData {
-    pub fn new(vm: vm::Machine, sys_plugins: Vec<DynSystemPlugin>) -> Self {
+    pub fn new(mut vm: vm::Machine, sys_plugins: Vec<DynSystemPlugin>) -> Self {
         //todo:error handling
         let dsp_i = vm.prog.get_fun_index("dsp").unwrap_or(0);
+        if let Some(IoChannelInfo { input, .. }) = vm.prog.iochannels {
+            vm.set_stack_range(0, &vec![0u64; input as usize]);
+        }
         Self {
             vm,
             sys_plugins,
             dsp_i,
         }
     }
-    pub fn new_resume(&self, new_prog: Program) -> Self {
+    pub fn new_resume(&mut self, new_prog: Program) -> Self {
+        if let Some(IoChannelInfo { input, .. }) = self.vm.prog.iochannels {
+            self.vm.set_stack_range(0, &vec![0u64; input as usize]);
+        }
         let dsp_i = self.vm.prog.get_fun_index("dsp").unwrap_or(0);
-
         Self {
             vm: self.vm.new_resume(new_prog),
             sys_plugins: self.sys_plugins.clone(),
@@ -153,7 +158,7 @@ impl RuntimeData {
 
 impl TryFrom<&mut ExecContext> for RuntimeData {
     fn try_from(ctx: &mut ExecContext) -> Result<Self, Self::Error> {
-        let vm = ctx.take_vm().ok_or(SimpleError {
+        let mut vm = ctx.take_vm().ok_or(SimpleError {
             message: "Failed to take VM".into(),
             span: Location {
                 span: 0..0,
@@ -161,6 +166,9 @@ impl TryFrom<&mut ExecContext> for RuntimeData {
             },
         })?;
         let dsp_i = vm.prog.get_fun_index("dsp").unwrap_or(0);
+        if let Some(IoChannelInfo { input, .. }) = vm.prog.iochannels {
+            vm.set_stack_range(0, &vec![0u64; input as usize]);
+        }
         let sys_plugins = ctx.get_system_plugins().cloned().collect();
         Ok(Self {
             vm,

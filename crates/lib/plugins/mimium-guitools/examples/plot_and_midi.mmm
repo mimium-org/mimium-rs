@@ -47,13 +47,13 @@ fn myadsr(gate){
 fn synth(note,vel){
     let sig = note |> midi_to_hz |> osc 
     let gain = vel /127.0;
-    sig *  gain * ${ Slider("volume",1.0,0.0,1.0) }
+    sig *  gain * Slider!("volume",1.0,0.0,1.0)
 }
 
-let ch0  = bind_midi_note_mono(0.0,69.0,0.0);
+let ch0  = midi_note_mono!(0.0,69.0,0.0);
 
-let probe = make_probe("sig")
+
 fn dsp(){
-    let l = probe(ch0() |> synth)
+    let l = ch0() |> synth |> Probe!("sig")
     (l,l)
 }

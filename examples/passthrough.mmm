@@ -1,0 +1,11 @@
+
+#stage(main)
+fn fbdelay(input,time,fb,mix){
+    input*mix + (1.0-mix) * delay(40001.0,(input+self*fb),time)
+}
+
+fn dsp(input:float){
+    let l = fbdelay(input,10000,0.9,0.9) |> Probe!("L")
+    let r = fbdelay(input,15000,0.9,0.9) |> Probe!("R")
+    (l,r)
+}

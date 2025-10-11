@@ -5,7 +5,6 @@ fn midi_to_hz(note){
     440.0*(2.0^ ((note-69.0)/12.0) )
 }
 // let _ = set_midi_port("from Max 1")
-let boundval = bind_midi_note_mono(0.0,69.0,127.0);
 
 fn osc(freq){
    saw(freq,0.0)
@@ -20,7 +19,7 @@ fn my_synth(note,vel,cutoff_base,fenv_depth){
     lowpass(sig,cutfreq,5.0)*gain_env
 }
 fn dsp(){
-    let (note,vel) = boundval();
-    let r = my_synth(note,vel,400,3000) |> Probe!("out")
+    let note = midi_note_mono!(0.0,69.0,127.0)
+    let r = my_synth(note.pitch,note.velocity,400,3000) |> Probe!("out")
     (r,r)
 }
