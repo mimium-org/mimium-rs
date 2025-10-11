@@ -137,6 +137,11 @@ impl NativeAudioReceiver {
         }
     }
     pub fn receive_data(&mut self, data: &[f32], h_ichannels: usize) {
+        let required_size = data.len() / h_ichannels * self.dsp_ichannels;
+        if self.localbuffer.len() < required_size {
+            self.localbuffer.resize(required_size, 0.0);
+        }
+        
         for (ic, buf) in data
             .chunks(h_ichannels)
             .zip(self.localbuffer.chunks_mut(self.dsp_ichannels))
@@ -155,11 +160,16 @@ impl NativeAudioReceiver {
                     buf[1] = ic[0] as f64;
                 }
                 (_, _) => {
-                    todo!()
+                    let num_channels_to_copy = ic.len().min(buf.len());
+                    for i in 0..num_channels_to_copy {
+                        buf[i] = ic[i] as f64;
+                    }
+                    // fill the remaining with 0.0
+                    buf[num_channels_to_copy..].fill(0.0);
                 }
             }
         }
-        let local = &self.localbuffer.as_slice()[..data.len()];
+        let local = &self.localbuffer.as_slice()[..required_size];
 
         self.buffer.push_slice(local);
         self.count += (data.len() / h_ichannels) as u64;
