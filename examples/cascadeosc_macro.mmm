@@ -36,7 +36,7 @@ fn dsp(){
     // let time_l =100
     let f = 100
     let f = Slider!("freq",100,1,200) + osc(0.2)*50 +5
-    let r =  (f |> cascade!(1000.0,`osc))*0.3 ;
+    let r =  (f |> cascade!(5,`osc))*0.3 ;
     let l = fbdelay(r,20400+time_l,0.99,0.7)
              |> Probe!("L")
     let r = fbdelay(r,20000+time_r,0.99,0.7)
