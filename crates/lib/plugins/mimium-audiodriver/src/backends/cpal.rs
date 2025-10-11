@@ -55,7 +55,7 @@ pub fn native_driver(buffer_size: usize) -> Box<dyn Driver<Sample = f64>> {
 //Runtime data, which will be created and immidiately send to audio thread.
 struct NativeAudioData {
     pub vmdata: RuntimeData,
-    dsp_ochannels: usize,
+    iochannels: IoChannelInfo,
     buffer: HeapCons<f64>,
     localbuffer: Vec<f64>,
     count: Arc<AtomicU64>,
@@ -73,11 +73,14 @@ impl NativeAudioData {
     ) -> Self {
         //todo: split as trait interface method
         let vmdata = runtime_data;
-        let dsp_ochannels = vmdata.get_dsp_fn().nret;
+        let iochannels = vmdata.vm.prog.iochannels.unwrap_or(IoChannelInfo {
+            input: 0,
+            output: 0,
+        });
         let localbuffer: Vec<f64> = vec![0.0f64; DEFAULT_BUFFER_SIZE * h_ochannels];
         Self {
             vmdata,
-            dsp_ochannels,
+            iochannels,
 
             buffer,
             localbuffer,
@@ -94,15 +97,22 @@ impl NativeAudioData {
 
         let local = &mut self.localbuffer.as_mut_slice()[..len];
         self.buffer.pop_slice(local);
-        for (o, _s) in dst.chunks_mut(h_ochannels).zip(local.chunks(h_ochannels)) {
+        for (o, s) in dst
+            .chunks_mut(h_ochannels)
+            .zip(local.chunks(self.iochannels.input as usize))
+        {
+            self.vmdata
+                .vm
+                .set_stack_range(0, unsafe { std::mem::transmute::<&[f64], &[u64]>(s) });
             let _rc = self
                 .vmdata
                 .run_dsp(Time(self.count.load(Ordering::Relaxed)));
-            let res =
-                vm::Machine::get_as_array::<f64>(self.vmdata.vm.get_top_n(self.dsp_ochannels));
+            let res = vm::Machine::get_as_array::<f64>(
+                self.vmdata.vm.get_top_n(self.iochannels.output as _),
+            );
             self.count.fetch_add(1, Ordering::Relaxed);
             o.fill(0.0);
-            match (h_ochannels, self.dsp_ochannels) {
+            match (h_ochannels, self.iochannels.output as usize) {
                 (2, 1) => {
                     o[0] = res[0] as f32;
                     o[1] = res[0] as f32;
@@ -139,42 +149,44 @@ impl NativeAudioReceiver {
         }
     }
     pub fn receive_data(&mut self, data: &[f32], h_ichannels: usize) {
+        debug_assert_eq!(data.len() / h_ichannels, DEFAULT_BUFFER_SIZE);
         let required_size = data.len() / h_ichannels * self.dsp_ichannels;
-        if self.localbuffer.len() < required_size {
-            self.localbuffer.resize(required_size, 0.0);
-        }
-        
-        for (ic, buf) in data
-            .chunks(h_ichannels)
-            .zip(self.localbuffer.chunks_mut(self.dsp_ichannels))
-        {
-            match (h_ichannels, self.dsp_ichannels) {
-                (i1, i2) if i1 == i2 => {
-                    for i in 0..i1 {
-                        buf[i] = ic[i] as f64;
+        debug_assert_eq!(required_size, DEFAULT_BUFFER_SIZE * self.dsp_ichannels);
+
+        if self.dsp_ichannels > 0 {
+            for (input_channel, dsp_channel) in data
+                .chunks(h_ichannels)
+                .zip(self.localbuffer.chunks_mut(self.dsp_ichannels))
+            {
+                match (h_ichannels, self.dsp_ichannels) {
+                    (i1, i2) if i1 == i2 => {
+                        dsp_channel
+                            .iter_mut()
+                            .zip(input_channel.iter().copied())
+                            .for_each(|(d, s)| *d = s as f64);
                     }
-                }
-                (2, 1) => {
-                    buf[0] = ic[0] as f64; //copy lch
-                }
-                (1, 2) => {
-                    buf[0] = ic[0] as f64;
-                    buf[1] = ic[0] as f64;
-                }
-                (_, _) => {
-                    let num_channels_to_copy = ic.len().min(buf.len());
-                    for i in 0..num_channels_to_copy {
-                        buf[i] = ic[i] as f64;
+                    (2, 1) => {
+                        dsp_channel[0] = input_channel[0] as f64; //copy lch
                     }
-                    // fill the remaining with 0.0
-                    buf[num_channels_to_copy..].fill(0.0);
+                    (1, 2) => {
+                        dsp_channel[0] = input_channel[0] as f64;
+                        dsp_channel[1] = input_channel[0] as f64;
+                    }
+                    (_, _) => {
+                        let num_channels_to_copy = input_channel.len().min(dsp_channel.len());
+                        for i in 0..num_channels_to_copy {
+                            dsp_channel[i] = input_channel[i] as f64;
+                        }
+                        // fill the remaining with 0.0
+                        dsp_channel[num_channels_to_copy..].fill(0.0);
+                    }
                 }
             }
-        }
-        let local = &self.localbuffer.as_slice()[..required_size];
+            let local = &self.localbuffer.as_slice()[..required_size];
 
-        self.buffer.push_slice(local);
-        self.count += (data.len() / h_ichannels) as u64;
+            self.buffer.push_slice(local);
+            self.count += (data.len() / h_ichannels) as u64;
+        }
     }
 }
 impl NativeDriver {
@@ -242,13 +254,10 @@ impl Driver for NativeDriver {
         sample_rate: Option<SampleRate>,
     ) -> Option<IoChannelInfo> {
         let host = cpal::default_host();
-        //todo
-        let iochannels = Some(IoChannelInfo {
-            input: 0,
-            output: 2,
-        });
-        // let ichannels = iochannels.map_or(0, |io| io.input) as _;
-        let ochannels: usize = iochannels.map_or(0, |io| io.output) as _;
+
+        let iochannels = runtime_data.vm.prog.iochannels;
+        let ichannels = iochannels.map_or(0, |io| io.input) as usize;
+        let ochannels = iochannels.map_or(0, |io| io.output) as usize;
 
         let (prod, cons) = HeapRb::<Self::Sample>::new(ochannels * self.buffer_size).split();
 
@@ -257,11 +266,12 @@ impl Driver for NativeDriver {
             let mut iconfig = Self::init_iconfig(&idevice, sample_rate.clone());
             iconfig.buffer_size = BufferSize::Fixed((self.buffer_size) as u32);
             log::info!(
-                "input device: {} buffer size:{:?}",
+                "input device: {} channel: {} ,buffer size:{:?}",
                 idevice.name().unwrap_or_default(),
+                ichannels,
                 iconfig.buffer_size
             );
-            let mut receiver = NativeAudioReceiver::new(ochannels, prod);
+            let mut receiver = NativeAudioReceiver::new(ichannels, prod);
             self.hardware_ichannels = iconfig.channels as usize;
             let h_ichannels = self.hardware_ichannels;
             let in_stream = idevice.build_input_stream(
