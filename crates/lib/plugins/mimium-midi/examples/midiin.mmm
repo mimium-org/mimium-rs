@@ -39,30 +39,30 @@ fn osc(freq){
 fn midi_to_hz(note){
     440.0*  (2.0 ^((note-69.0)/12.0))
 }
-let ch0  = bind_midi_note_mono( 0.0,69.0,0.0);
-let ch1  = bind_midi_note_mono( 1.0,69.0,0.0);
-let ch2  = bind_midi_note_mono( 2.0,69.0,0.0);
-let ch3  = bind_midi_note_mono( 3.0,69.0,0.0);
-let ch4  = bind_midi_note_mono( 4.0,69.0,0.0);
-let ch5  = bind_midi_note_mono( 5.0,69.0,0.0);
-let ch6  = bind_midi_note_mono( 6.0,69.0,0.0);
-let ch7  = bind_midi_note_mono( 7.0,69.0,0.0);
-let ch8  = bind_midi_note_mono( 8.0,69.0,0.0);
-let ch9  = bind_midi_note_mono( 9.0,69.0,0.0);
-let ch10 = bind_midi_note_mono(10.0,69.0,0.0);
-let ch11 = bind_midi_note_mono(11.0,69.0,0.0);
-let ch12 = bind_midi_note_mono(12.0,69.0,0.0);
-let ch13 = bind_midi_note_mono(13.0,69.0,0.0);
-let ch14 = bind_midi_note_mono(14.0,69.0,0.0);
-let ch15 = bind_midi_note_mono(15.0,69.0,0.0);
+let ch0  = midi_note_mono!( 0.0,69.0,0.0);
+let ch1  = midi_note_mono!( 1.0,69.0,0.0);
+let ch2  = midi_note_mono!( 2.0,69.0,0.0);
+let ch3  = midi_note_mono!( 3.0,69.0,0.0);
+let ch4  = midi_note_mono!( 4.0,69.0,0.0);
+let ch5  = midi_note_mono!( 5.0,69.0,0.0);
+let ch6  = midi_note_mono!( 6.0,69.0,0.0);
+let ch7  = midi_note_mono!( 7.0,69.0,0.0);
+let ch8  = midi_note_mono!( 8.0,69.0,0.0);
+let ch9  = midi_note_mono!( 9.0,69.0,0.0);
+let ch10 = midi_note_mono!(10.0,69.0,0.0);
+let ch11 = midi_note_mono!(11.0,69.0,0.0);
+let ch12 = midi_note_mono!(12.0,69.0,0.0);
+let ch13 = midi_note_mono!(13.0,69.0,0.0);
+let ch14 = midi_note_mono!(14.0,69.0,0.0);
+let ch15 = midi_note_mono!(15.0,69.0,0.0);
 
 fn myadsr(gate){
     adsr(0.01,0.1,1.0,2.0,gate) *get_gain(gate)
 }
 fn synth(midiv){
-    let (note,vel) = midiv
-    let sig = note |> midi_to_hz |> osc 
-    let gain = vel /127.0;
+    let note = midiv
+    let sig = note.pitch |> midi_to_hz |> osc 
+    let gain = note.velocity /127.0;
     sig * ( gain |> myadsr )
 }
 

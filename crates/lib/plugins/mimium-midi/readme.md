@@ -32,17 +32,3 @@ fn dsp(){
     (r,r)
 }
 ```
-
-## Legacy API (Deprecated)
-
-The old `bind_midi_note_mono` function is still available for backward compatibility:
-
-```mimium
-let boundval = bind_midi_note_mono(0.0,69.0,127.0);
-fn dsp(){
-    let (note,vel) = boundval();
-    let sig = note |> midi_to_hz |> osc 
-    let r = sig * (vel /127.0);
-    (r,r)
-}
-```

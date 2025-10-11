@@ -11,17 +11,14 @@ use mimium_lang::{
     interner::{ToSymbol, TypeNodeId},
     interpreter::Value,
     log, numeric,
-    plugin::{
-        ExtClsInfo, SysPluginSignature, SystemPlugin, SystemPluginFnType, SystemPluginMacroType,
-    },
+    plugin::{SysPluginSignature, SystemPlugin, SystemPluginFnType, SystemPluginMacroType},
     runtime::vm,
-    string_t, tuple,
+    string_t,
     types::{PType, RecordTypeField, Type},
     unit,
 };
 use std::{
-    cell::{OnceCell, RefCell},
-    rc::Rc,
+    cell::OnceCell,
     sync::{Arc, atomic::Ordering},
 };
 use wmidi::MidiMessage;
@@ -93,42 +90,6 @@ impl MidiPlugin {
         self.port_name = Some(pname);
         0
     }
-    /// DEPRECATED: Use `midi_note_mono!` instead.
-    /// This function is exposed to mimium as "bind_midi_note_mono".
-    /// Arguments: channel:float[0-15], default_note:float[0-127], default:velocity[0-127]
-    /// Return value: Closure(()->(float,float))
-    /// If none of the midi device are connected, the returned closure just returns default value continuously.
-    pub fn bind_midi_note_mono(&mut self, vm: &mut vm::Machine) -> vm::ReturnCode {
-        let ch = vm::Machine::get_as::<f64>(vm.get_stack(0));
-        let default_note = vm::Machine::get_as::<f64>(vm.get_stack(1));
-        let default_vel = vm::Machine::get_as::<f64>(vm.get_stack(2));
-
-        let cell = Arc::new((AtomicF64::new(default_note), AtomicF64::new(default_vel)));
-        let cell_c = cell.clone();
-        self.add_note_callback(
-            ch as u8,
-            Arc::new(move |note, vel| {
-                cell_c.0.store(note, Ordering::Relaxed);
-                cell_c.1.store(vel, Ordering::Relaxed);
-            }),
-        );
-        let cls = move |vm: &mut vm::Machine| -> vm::ReturnCode {
-            let note = cell.0.load(Ordering::Relaxed);
-            let vel = cell.1.load(Ordering::Relaxed);
-            vm.set_stack(0, vm::Machine::to_value(note));
-            vm.set_stack(1, vm::Machine::to_value(vel));
-            2
-        };
-        let ty = function!(vec![], tuple!(numeric!(), numeric!()));
-        let rcls = vm.wrap_extern_cls(ExtClsInfo::new(
-            "get_midi_val".to_symbol(),
-            ty,
-            Rc::new(RefCell::new(cls)),
-        ));
-        vm.set_stack(0, vm::Machine::to_value(rcls));
-        1
-    }
-
     /// Macro function for midi_note_mono! that generates unique IDs and returns runtime code
     /// Arguments: channel:float[0-15], default_note:float[0-127], default_velocity:float[0-127]
     /// Returns: Code that evaluates to a record {pitch:float, velocity:float}
@@ -151,7 +112,7 @@ impl MidiPlugin {
                 return zero;
             }
         };
-        let (uid,cell) = if let Some((uid, cell)) = self
+        let (uid, cell) = if let Some((uid, cell)) = self
             .midi_note_cells
             .iter()
             .enumerate()
@@ -284,14 +245,6 @@ impl SystemPlugin for MidiPlugin {
     }
 
     fn gen_interfaces(&self) -> Vec<SysPluginSignature> {
-        // Legacy bind_midi_note_mono (returns closure that returns tuple)
-        let ty = function!(
-            vec![numeric!(), numeric!(), numeric!()],
-            function!(vec![], tuple!(numeric!(), numeric!()))
-        );
-        let fun: SystemPluginFnType<Self> = Self::bind_midi_note_mono;
-        let bindnote = SysPluginSignature::new("bind_midi_note_mono", fun, ty);
-
         // set_midi_port function
         let ty = function!(vec![string_t!()], unit!());
         let fun: SystemPluginFnType<Self> = Self::set_midi_port;
@@ -321,6 +274,6 @@ impl SystemPlugin for MidiPlugin {
             function!(vec![numeric!()], record_ty),
         );
 
-        vec![setport, bindnote, midi_note_macro, get_midi_note]
+        vec![setport, midi_note_macro, get_midi_note]
     }
 }

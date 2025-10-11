@@ -44,7 +44,7 @@ fn lpf(input,fb){
 Also, the language design is based on the call by value lambda calculus with multi-stage computation and the higher-order functions are supported to express generative signal graph like replicatiing multiple oscillators.
 
 ```rust
-//Sequentially connected oscillators
+//10 Sequentially connected oscillators
 #stage(macro)
 fn cascade(n,gen){
     if (n>0.0){
@@ -58,7 +58,7 @@ fn cascade(n,gen){
 #stage(main)
 let osc = ...
 fn dsp(){
-    let out =  50 |> cascade!(1000.0,`osc) 
+    let out =  50 |> cascade!(10,`osc) 
     (out,out)
 }
 ```
