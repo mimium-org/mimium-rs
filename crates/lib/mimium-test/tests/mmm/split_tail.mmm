@@ -1,11 +1,6 @@
-include("core.mmm")
-
 #stage(macro)
 fn test_split(){
-   let result = [1,2,3,4] |> split_tail
-   let rest = result.0
-   let tail = result.1
-  `([$( rest[0] |> lift_f),$( rest[1] |> lift_f),$( rest[2] |> lift_f)],$( tail |> lift_f))
+   `{[1,2,3,4] |> split_tail}
 }
 #stage(main)
 fn dsp(){
