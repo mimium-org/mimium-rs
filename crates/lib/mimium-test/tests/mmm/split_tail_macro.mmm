@@ -1,0 +1,11 @@
+#stage(macro)
+fn test_split(){
+   let result = [1,2,3,4] |> split_tail
+   let tail = result.1
+  tail |> lift_f
+}
+#stage(main)
+fn dsp(){
+  let tail  = test_split!()
+  tail //answer should be 4
+}
