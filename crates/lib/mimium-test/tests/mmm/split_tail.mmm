@@ -1,0 +1,14 @@
+include("core.mmm")
+
+#stage(macro)
+fn test_split(){
+   let result = [1,2,3,4] |> split_tail
+   let rest = result.0
+   let tail = result.1
+  `([$( rest[0] |> lift_f),$( rest[1] |> lift_f),$( rest[2] |> lift_f)],$( tail |> lift_f))
+}
+#stage(main)
+fn dsp(){
+  let (rest,tail) = test_split!()
+  (rest[0] + rest[1] + rest[2]) *tail //answer should be 24
+}

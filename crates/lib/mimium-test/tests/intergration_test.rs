@@ -73,6 +73,13 @@ fn array_length() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn split_tail() {
+    let res = run_file_test_mono("split_tail.mmm", 1).unwrap();
+    let ans = vec![24.0]; // (1+2+3)*4 = 6*4 = 24
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn recursion() {
     let res = run_file_test_mono("recursion.mmm", 1).unwrap();
     let ans = vec![5.0];

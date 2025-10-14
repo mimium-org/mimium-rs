@@ -23,3 +23,10 @@ fn dbtolinear(x){
 fn linear2db(g) {
     20.0*log10(g)
 }
+
+#stage(macro)
+fn split_tail(arr){
+    let rest = [arr[0], arr[1], arr[2]]
+    let tail = arr[3]
+    (rest, tail)
+}
