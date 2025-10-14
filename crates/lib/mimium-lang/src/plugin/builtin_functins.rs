@@ -92,6 +92,8 @@ mod split_tail {
     fn machine_function(
         machine: &mut crate::runtime::vm::Machine,
     ) -> crate::runtime::vm::ReturnCode {
+        log::warn!("split_tail used at runtime may cause memory leaks. Consider using it at macro stage (stage 0) instead.");
+        
         let arr_idx = machine.get_stack(0);
         let array = machine.arrays.get_array(arr_idx);
         let len = array.get_length_array();
@@ -176,6 +178,8 @@ mod split_head {
     fn machine_function(
         machine: &mut crate::runtime::vm::Machine,
     ) -> crate::runtime::vm::ReturnCode {
+        log::warn!("split_head used at runtime may cause memory leaks. Consider using it at macro stage (stage 0) instead.");
+        
         let arr_idx = machine.get_stack(0);
         let array = machine.arrays.get_array(arr_idx);
         let len = array.get_length_array();
