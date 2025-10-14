@@ -161,6 +161,89 @@ mod split_tail {
         }
     }
 }
+
+mod split_head {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::CommonFunction;
+    use crate::types::TypeSchemeId;
+    use crate::{
+        function,
+        types::{PType, Type},
+    };
+
+    fn machine_function(
+        machine: &mut crate::runtime::vm::Machine,
+    ) -> crate::runtime::vm::ReturnCode {
+        let arr_idx = machine.get_stack(0);
+        let array = machine.arrays.get_array(arr_idx);
+        let len = array.get_length_array();
+        
+        if len == 0 {
+            panic!("Cannot split_head on empty array");
+        }
+        
+        let elem_size = array.get_elem_word_size();
+        
+        // Get the first element (head)
+        let head = array.get_data()[0];
+        
+        // Create new array for rest (all elements except first)
+        let rest_len = len - 1;
+        let rest_arr_idx = machine.arrays.alloc_array(rest_len, elem_size);
+        
+        // Copy all elements except the first one
+        // Need to do this in two steps to avoid borrow conflicts
+        let copy_len = (rest_len * elem_size) as usize;
+        let start_offset = elem_size as usize;
+        let src_slice: Vec<u64> = machine.arrays.get_array(arr_idx).get_data()[start_offset..start_offset + copy_len].to_vec();
+        let rest_data = machine.arrays.get_array_mut(rest_arr_idx).get_data_mut();
+        rest_data[..copy_len].copy_from_slice(&src_slice);
+        
+        // Allocate tuple on stack to return (head, rest_array)
+        // Stack layout: [head, rest_array_idx]
+        machine.set_stack(0, head);
+        machine.set_stack(1, rest_arr_idx);
+        
+        2 // Return 2 values (tuple)
+    }
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 1);
+        let arr = &args[0].0;
+        match arr {
+            Value::Array(array) => {
+                let len = array.len();
+                if len == 0 {
+                    panic!("Cannot split_head on empty array");
+                }
+                
+                // Split into head (first element) and rest (all but first)
+                let head = array[0].clone();
+                let rest: Vec<Value> = array[1..].to_vec();
+                
+                // Return as tuple (head, rest)
+                Value::Tuple(vec![head, Value::Array(rest)])
+            }
+            _ => panic!("Invalid argument types for function split_head"),
+        }
+    }
+
+    pub(super) fn signature() -> CommonFunction {
+        let array_type = Type::Array(Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id()).into_id();
+        let elem_type = Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id();
+        CommonFunction {
+            name: "split_head".to_symbol(),
+            ty: function!(
+                vec![array_type],
+                Type::Tuple(vec![elem_type, array_type]).into_id()
+            ),
+            macro_fun: macro_function,
+            fun: machine_function,
+        }
+    }
+}
 macro_rules! declare_f1f_common {
     ($name:ident, $f:expr) => {
         mod $name {
@@ -322,6 +405,7 @@ fn generate_builtin_functions() -> impl ExactSizeIterator<Item = CommonFunction>
         pow::signature(),
         length_array::signature(),
         split_tail::signature(),
+        split_head::signature(),
         probe::signature(),
         probeln::signature(),
     ]

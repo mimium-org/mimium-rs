@@ -1,0 +1,11 @@
+#stage(macro)
+fn test_split(){
+   let result = [1,2,3,4] |> split_head
+   let head = result.0
+  head |> lift_f
+}
+#stage(main)
+fn dsp(){
+  let head  = test_split!()
+  head //answer should be 1
+}
