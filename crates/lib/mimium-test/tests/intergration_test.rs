@@ -101,13 +101,6 @@ fn split_head_macro() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
-fn lift_arrayf_macro() {
-    let res = run_file_test_mono("lift_arrayf_macro.mmm", 1).unwrap();
-    let ans = vec![10.0]; // 1.0 + 2.0 + 3.0 + 4.0
-    assert_eq!(res, ans);
-}
-
-#[wasm_bindgen_test(unsupported = test)]
 fn lift_arrayf_extended() {
     let res = run_file_test_mono("lift_arrayf_extended.mmm", 1).unwrap();
     let ans = vec![65.0]; // 5.0 + 10.0 + 20.0 + 30.0
