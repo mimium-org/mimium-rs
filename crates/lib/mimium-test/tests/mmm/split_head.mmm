@@ -1,0 +1,9 @@
+#stage(macro)
+fn test_split(){
+   `{[1,2,3,4] |> split_head}
+}
+#stage(main)
+fn dsp(){
+  let (head,rest) = test_split!()
+  head * (rest[0] + rest[1] + rest[2]) //answer should be 9 (1*(2+3+4))
+}

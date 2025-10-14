@@ -73,6 +73,34 @@ fn array_length() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn split_tail() {
+    let res = run_file_test_mono("split_tail.mmm", 1).unwrap();
+    let ans = vec![24.0]; // (1+2+3)*4 = 6*4 = 24
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn split_tail_macro() {
+    let res = run_file_test_mono("split_tail_macro.mmm", 1).unwrap();
+    let ans = vec![4.0]; // tail element of [1,2,3,4]
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn split_head() {
+    let res = run_file_test_mono("split_head.mmm", 1).unwrap();
+    let ans = vec![9.0]; // 1*(2+3+4) = 1*9 = 9
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn split_head_macro() {
+    let res = run_file_test_mono("split_head_macro.mmm", 1).unwrap();
+    let ans = vec![1.0]; // head element of [1,2,3,4]
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn recursion() {
     let res = run_file_test_mono("recursion.mmm", 1).unwrap();
     let ans = vec![5.0];
