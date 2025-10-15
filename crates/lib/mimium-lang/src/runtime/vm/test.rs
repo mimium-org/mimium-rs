@@ -1,11 +1,12 @@
 use super::*;
 use crate::{
     interner::ToSymbol,
-    mir::OpenUpValue,
+    mir::{OpenUpValue, StateType},
     plugin::{self, ExtFunTypeInfo},
     types::Type,
     utils::half_float::HFloat,
 };
+use state_tree::tree::StateTreeSkeleton;
 
 #[test]
 fn ensure_closurekey_size() {
@@ -332,4 +333,58 @@ fn array_init() {
     let res = machine.get_top_n(1)[0];
     //open closure should be released.
     assert_eq!(Machine::get_as::<f64>(res), 20.0);
+}
+
+#[test]
+fn test_self_nested_block_allocation() {
+    // for "self" keyword in nested block scope
+    // This test ensures global state is properly allocated when functions using self
+    // are called within nested blocks (eg. local scopes).
+
+    let test_local_scope_self_insts = vec![
+        Instruction::GetState(0, 1),
+        Instruction::Return(0, 1),
+    ];
+    
+    let test_local_scope_self_f = FuncProto {
+        nparam: 0,
+        nret: 1,
+        bytecodes: test_local_scope_self_insts,
+        constants: vec![],
+        state_skeleton: StateTreeSkeleton::FnCall(vec![Box::new(StateTreeSkeleton::Feed(StateType(1)))]), 
+        ..Default::default()
+    };
+    
+    let main_insts = vec![
+        Instruction::MoveConst(0, 0),     
+        Instruction::Call(0, 0, 1),      
+        Instruction::Return(0, 1),       
+    ];
+    
+    let main_f = FuncProto {
+        nparam: 0,
+        nret: 1,
+        bytecodes: main_insts,
+        constants: vec![1u64], 
+        state_skeleton: StateTreeSkeleton::FnCall(vec![]),
+        ..Default::default()
+    };
+    
+    let global_fn_table = vec![
+        ("main".to_string(), main_f),
+        ("test_local_scope_self".to_string(), test_local_scope_self_f),
+    ];
+    
+    let prog = Program {
+        global_fn_table,
+        ext_fun_table: vec![],
+        ..Default::default()
+    };
+    
+    let mut machine = Machine::new(prog, [].into_iter(), [].into_iter());
+    
+    machine.execute_main();
+    let output = machine.get_top_n(1)[0];
+    assert_eq!(Machine::get_as::<f64>(output), 0.0);
+    assert!(!machine.global_states.rawdata.is_empty());
 }

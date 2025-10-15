@@ -771,6 +771,16 @@ impl Machine {
                 }
                 Instruction::Call(func, nargs, nret_req) => {
                     let pos_of_f = Self::get_as::<usize>(self.get_stack(func as i64));
+                    let func_proto = self.get_fnproto(pos_of_f);
+                    
+                    let required_state_size = func_proto.state_skeleton.total_size() as usize;
+                    if required_state_size > 0 && self.states_stack.0.is_empty() {
+                        let needs_resize = self.global_states.rawdata.len() < required_state_size;
+                        if needs_resize {
+                            self.global_states.resize(required_state_size);
+                        }
+                    }
+                    
                     self.call_function(func, nargs, nret_req, move |machine| {
                         machine.execute(pos_of_f, None)
                     });
