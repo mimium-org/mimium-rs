@@ -1128,7 +1128,10 @@ impl Context {
             Expr::Then(body, then) => {
                 let (_, _, states) = self.eval_expr(*body);
                 match then {
-                    Some(t) => self.eval_expr(*t),
+                    Some(t) => {
+                        let (r, t, s) = self.eval_expr(*t);
+                        (r, t, [states, s].concat())
+                    }
                     None => (Arc::new(Value::None), unit!(), states),
                 }
             }
