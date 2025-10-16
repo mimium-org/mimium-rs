@@ -103,7 +103,7 @@ impl Context {
         }));
     }
     #[wasm_bindgen]
-    pub fn recompile(&mut self,src:String){
+    pub fn recompile(&mut self, src: String) {
         let mut ctx = get_default_context();
         let driver = LocalBufferDriver::new(self.config.buffer_size as usize);
         ctx.add_plugin(driver.get_as_plugin());
@@ -113,12 +113,11 @@ impl Context {
             }
             Ok(()) => {
                 ctx.run_main();
-                let prog = ctx.take_vm().unwrap().prog;                
+                let prog = ctx.take_vm().unwrap().prog;
                 self.config.input_channels = prog.iochannels.map_or(0, |io| io.input);
                 self.config.output_channels = prog.iochannels.map_or(0, |io| io.output);
                 self.swap_channel.as_mut().unwrap().send(prog).unwrap();
             }
-            
         }
     }
     #[wasm_bindgen]
