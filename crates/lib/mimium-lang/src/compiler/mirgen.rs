@@ -174,7 +174,6 @@ impl Context {
     ) -> (Option<Instruction>, Vec<StateSkeleton>) {
         debug_assert_eq!(args.len(), 1);
         let a0 = args[0].0.clone();
-        let a0_ty = args[0].1;
         match label.as_str() {
             intrinsics::NEG => (Some(Instruction::NegF(a0)), vec![]),
             intrinsics::SQRT => (Some(Instruction::SqrtF(a0)), vec![]),
@@ -583,8 +582,9 @@ impl Context {
         let target_fn = &self.program.functions[idx as usize];
         let is_stateful = target_fn.is_stateful();
         let child_skeleton = target_fn.state_skeleton.clone();
-
-        self.consume_and_insert_pushoffset();
+        if is_stateful {
+            self.consume_and_insert_pushoffset();
+        }
 
         let f = self.push_inst(Instruction::Uinteger(idx));
 
@@ -1151,6 +1151,27 @@ impl Context {
                 //insert else block
                 let else_bidx = self.get_ctxdata().current_bb + 1;
                 let (e, _, state_e) = self.eval_block(*else_);
+                let then_size = state_t.iter().map(|s| s.total_size()).sum::<u64>();
+                let else_size = state_e.iter().map(|s| s.total_size()).sum::<u64>();
+                let branch_state = match then_size.cmp(&else_size) {
+                    std::cmp::Ordering::Greater => {
+                        let elseb = self.get_current_fn().body.get_mut(else_bidx).unwrap();
+                        elseb.0.push((
+                            Arc::new(Value::None),
+                            Instruction::PushStateOffset(then_size - else_size),
+                        ));
+                        state_t.clone()
+                    }
+                    std::cmp::Ordering::Less => {
+                        let thenb = self.get_current_fn().body.get_mut(then_bidx).unwrap();
+                        thenb.0.push((
+                            Arc::new(Value::None),
+                            Instruction::PushStateOffset(else_size - then_size),
+                        ));
+                        state_e.clone()
+                    }
+                    std::cmp::Ordering::Equal => state_t.clone(),
+                };
                 //insert return block
                 self.add_new_basicblock();
                 let res = self.push_inst(Instruction::Phi(t, e));
@@ -1174,7 +1195,7 @@ impl Context {
                     _ => panic!("the last block should be Jmp"),
                 }
 
-                (res, ty, [state_c, state_t, state_e].concat())
+                (res, ty, [state_c, branch_state].concat())
             }
             Expr::Bracket(_) | Expr::Escape(_) | Expr::MacroExpand(_, _) => {
                 unreachable!("Macro code should be expanded before mirgen")

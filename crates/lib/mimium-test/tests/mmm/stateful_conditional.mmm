@@ -1,0 +1,18 @@
+fn some_self_fun() {
+  self + 1.0
+}
+fn foo() {
+  self+2.0
+}
+fn bar(){
+  let s = some_self_fun()
+  if (0) {
+    2.0
+  } else {
+    foo()
+  }
+}
+
+fn dsp(){
+  bar() //will return 2,4,6,8...
+}

@@ -381,6 +381,13 @@ fn fb_and_stateful_call() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn stateful_conditional() {
+    let res = run_file_test_mono("stateful_conditional.mmm", 10).unwrap();
+    let ans = vec![2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn delay() {
     let res = run_file_test_mono("delay.mmm", 10).unwrap();
     let ans = vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
