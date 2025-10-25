@@ -431,7 +431,11 @@ where
         let path = ctx.file_path.clone();
         chumsky::pratt::infix(
             associativity,
-            ops_parser.map_with(|op, e| (op, get_span(e.span()))),
+            just(Token::LineBreak)
+                .repeated()
+                .ignore_then(ops_parser)
+                .then_ignore(just(Token::LineBreak).repeated())
+                .map_with(move |op, e| (op, get_span(e.span()))),
             move |l: ExprNodeId, (op, opspan), r, _extra| {
                 let span = l.to_span().start..r.to_span().end;
                 let loc = Location {
@@ -453,7 +457,7 @@ where
 
     // precedence: high -> low
     let binary_pratt = (
-        create_infix(optoken(Op::Exponent), Associativity::Right(7)),
+        create_infix(optoken(Op::Exponent), Associativity::Right(8)),
         create_infix(
             choice((
                 optoken(Op::Product),
