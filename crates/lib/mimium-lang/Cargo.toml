@@ -11,7 +11,7 @@ readme.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-chumsky = { version = "0.11", features = ["lexical-numbers"] }
+chumsky = { version = "0.11", features = ["lexical-numbers", "pratt"] }
 ariadne = "0.5"
 string-interner = "0.17.0"
 slotmap = "1.0.7"
