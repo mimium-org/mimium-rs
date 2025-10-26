@@ -447,14 +447,6 @@ where
         )
         .boxed()
     };
-    // allow pipe opertor to absorb linebreaks so that it can be also used at
-    // the head of the line.
-    let pipe = just(Token::LineBreak)
-        .repeated()
-        .collect::<Vec<_>>()
-        .ignore_then(just(Token::Op(Op::Pipe)))
-        .to(Op::Pipe)
-        .boxed();
 
     // precedence: high -> low
     let binary_pratt = (
@@ -489,7 +481,7 @@ where
         create_infix(optoken(Op::And), Associativity::Left(3)),
         create_infix(optoken(Op::Or), Associativity::Left(2)),
         create_infix(optoken(Op::At), Associativity::Left(1)),
-        create_infix(pipe, Associativity::Left(0)),
+        create_infix(optoken(Op::Pipe), Associativity::Left(0)),
     );
     apply.pratt((dot_pratt, unary_pratt, binary_pratt))
 }
