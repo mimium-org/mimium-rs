@@ -8,7 +8,7 @@ use crate::utils::metadata::*;
 use std::path::PathBuf;
 
 use chumsky::input::{MapExtra, Stream, ValueInput};
-use chumsky::pratt::Associativity;
+use chumsky::pratt::{Associativity, Operator};
 use chumsky::{Parser, prelude::*};
 mod token;
 pub use token::Token;
@@ -445,6 +445,7 @@ where
                 Expr::BinOp(l, (op, opspan), r).into_id(loc)
             },
         )
+        .boxed()
     };
     // allow pipe opertor to absorb linebreaks so that it can be also used at
     // the head of the line.
