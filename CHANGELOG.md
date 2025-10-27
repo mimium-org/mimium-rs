@@ -1,8 +1,21 @@
 # CHANGELOG
 
+## v3.1.0
+
+### Fixed bug
+
+
+- Fixed wrong operator precedence and associativity for product operator (#172 by @karnpapon)
+- Fixed that Then expression does not generate correct statesize in mirgen and causes crash(#171)
+
+### Added feature
+
+- Added primitive array operation like `split_tail` and `lift_arrayf` for future library implementation(experimental, #168, #169)
+
+
 ## v3.0.1
 
-## Fixed bug
+### Fixed bug
 
 - Fixed crush when 0-input deivce is used (#167 by @karnpapon)
 
