@@ -77,6 +77,15 @@ impl ArrayHeap {
     pub fn get_length_array(&self) -> u64 {
         self.data.len() as u64 / self.elem_word_size
     }
+    pub fn get_elem_word_size(&self) -> u64 {
+        self.elem_word_size
+    }
+    pub fn get_data(&self) -> &[RawVal] {
+        &self.data
+    }
+    pub fn get_data_mut(&mut self) -> &mut [RawVal] {
+        &mut self.data
+    }
 }
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ArrayStorage {

@@ -186,6 +186,39 @@ fn test_at() {
     .into_id(loc(0..11));
     test_string!("foo@1.0^2.0", ans2);
 }
+
+#[test]
+fn test_precedence() {
+    let ans = Expr::BinOp(
+        Expr::Literal(Literal::Float("3.0".to_symbol())).into_id(loc(0..3)),
+        (Op::Minus, 3..4),
+        Expr::BinOp(
+            Expr::Literal(Literal::Float("2.0".to_symbol())).into_id(loc(4..7)),
+            (Op::Product, 7..8),
+            Expr::Literal(Literal::Float("1.0".to_symbol())).into_id(loc(8..11)),
+        )
+        .into_id(loc(4..11)),
+    )
+    .into_id(loc(0..11));
+    test_string!("3.0-2.0*1.0", ans);
+}
+
+#[test]
+fn test_right_associative() {
+    let ans = Expr::BinOp(
+        Expr::Literal(Literal::Float("2.0".to_symbol())).into_id(loc(0..3)),
+        (Op::Exponent, 3..4),
+        Expr::BinOp(
+            Expr::Literal(Literal::Float("3.0".to_symbol())).into_id(loc(4..7)),
+            (Op::Exponent, 7..8),
+            Expr::Literal(Literal::Float("4.0".to_symbol())).into_id(loc(8..11)),
+        )
+        .into_id(loc(4..11)),
+    )
+    .into_id(loc(0..11));
+
+    test_string!("2.0^3.0^4.0", ans);
+}
 #[test]
 fn test_var() {
     let ans = Expr::Var("hoge".to_symbol()).into_id(loc(0..4));

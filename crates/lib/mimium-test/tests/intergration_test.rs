@@ -73,6 +73,41 @@ fn array_length() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn split_tail() {
+    let res = run_file_test_mono("split_tail.mmm", 1).unwrap();
+    let ans = vec![24.0]; // (1+2+3)*4 = 6*4 = 24
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn split_tail_macro() {
+    let res = run_file_test_mono("split_tail_macro.mmm", 1).unwrap();
+    let ans = vec![4.0]; // tail element of [1,2,3,4]
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn split_head() {
+    let res = run_file_test_mono("split_head.mmm", 1).unwrap();
+    let ans = vec![9.0]; // 1*(2+3+4) = 1*9 = 9
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn split_head_macro() {
+    let res = run_file_test_mono("split_head_macro.mmm", 1).unwrap();
+    let ans = vec![1.0]; // head element of [1,2,3,4]
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn lift_arrayf_extended() {
+    let res = run_file_test_mono("lift_arrayf_extended.mmm", 1).unwrap();
+    let ans = vec![65.0]; // 5.0 + 10.0 + 20.0 + 30.0
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn recursion() {
     let res = run_file_test_mono("recursion.mmm", 1).unwrap();
     let ans = vec![5.0];
@@ -377,6 +412,13 @@ fn fb_mem3_state_size() {
 fn fb_and_stateful_call() {
     let res = run_file_test_mono("fb_and_stateful_call.mmm", 10).unwrap();
     let ans = vec![1.0, 3.0, 6.0, 10.0, 15.0, 21.0, 28.0, 36.0, 45.0, 55.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn stateful_conditional() {
+    let res = run_file_test_mono("stateful_conditional.mmm", 10).unwrap();
+    let ans = vec![2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0];
     assert_eq!(res, ans);
 }
 

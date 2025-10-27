@@ -1,0 +1,15 @@
+#stage(macro)
+fn test_single(){
+   let arr = [5.0]
+   arr |> lift_arrayf
+}
+fn test_multiple(){
+   let arr = [10.0, 20.0, 30.0]
+   arr |> lift_arrayf
+}
+#stage(main)
+fn dsp(){
+  let single = test_single!()
+  let multiple = test_multiple!()
+  single[0] + multiple[0] + multiple[1] + multiple[2] // answer should be 5.0 + 10.0 + 20.0 + 30.0 = 65.0
+}

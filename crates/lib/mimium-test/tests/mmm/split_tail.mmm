@@ -1,0 +1,9 @@
+#stage(macro)
+fn test_split(){
+   `{[1,2,3,4] |> split_tail}
+}
+#stage(main)
+fn dsp(){
+  let (rest,tail) = test_split!()
+  (rest[0] + rest[1] + rest[2]) *tail //answer should be 24
+}
