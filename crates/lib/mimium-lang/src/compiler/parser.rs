@@ -7,7 +7,8 @@ use crate::utils::error::ReportableError;
 use crate::utils::metadata::*;
 use std::path::PathBuf;
 
-use chumsky::input::{Stream, ValueInput};
+use chumsky::input::{MapExtra, Stream, ValueInput};
+use chumsky::pratt::{Associativity, Operator};
 use chumsky::{Parser, prelude::*};
 mod token;
 pub use token::Token;
@@ -380,28 +381,32 @@ where
 {
     let ctx = ctx.clone();
     let path = ctx.file_path.clone();
-    let dot = apply // this boxing is necessary for windows CI environment
-        .foldl(
-            just(Token::Dot).ignore_then(dot_field()).repeated(),
-            move |lhs, (rhs, rspan)| {
-                let span = lhs.to_span().start..rspan.end;
+    let dot_prec = 10;
+    let dot_parser = just(Token::Dot).ignore_then(dot_field());
+    let dot_pratt = chumsky::pratt::postfix(dot_prec, dot_parser, {
+        move |lhs: ExprNodeId,
+              (rhs, rspan): (DotField, Span),
+              _extra: &mut MapExtra<'_, '_, I, ParseError<'_>>| {
+            let span = lhs.to_span().start..rspan.end;
+            let loc = Location {
+                span,
+                path: path.clone(),
+            };
+            match rhs {
+                DotField::Ident(name) => Expr::FieldAccess(lhs, name).into_id(loc),
+                DotField::Index(idx) => Expr::Proj(lhs, idx).into_id(loc),
+            }
+        }
+    });
 
-                let loc = Location {
-                    span,
-                    path: path.clone(),
-                };
-                match rhs {
-                    DotField::Ident(name) => Expr::FieldAccess(lhs, name).into_id(loc),
-                    DotField::Index(idx) => Expr::Proj(lhs, idx).into_id(loc),
-                }
-            },
-        )
-        .labelled("dot");
     let path = ctx.file_path.clone();
-    let unary = one_of([Token::Op(Op::Minus), Token::BackQuote, Token::Dollar])
-        .map_with(|token, e| (token, get_span(e.span())))
-        .repeated()
-        .foldr(dot, move |(op, op_span), rhs| {
+    let unary_ops = [Token::Op(Op::Minus), Token::BackQuote, Token::Dollar];
+    let unary_prec = 9;
+    let unary_parser = one_of(unary_ops).map_with(|token, e| (token, get_span(e.span())));
+    let unary_pratt = chumsky::pratt::prefix(unary_prec, unary_parser, {
+        move |(op, op_span): (Token, Span),
+              rhs: ExprNodeId,
+              _extra: &mut MapExtra<'_, '_, I, ParseError<'_>>| {
             let rhs_span = rhs.to_span();
             let loc = Location {
                 span: op_span.start..rhs_span.end,
@@ -413,65 +418,72 @@ where
                 Token::Op(Op::Minus) => Expr::UniOp((Op::Minus, op_span), rhs).into_id(loc),
                 _ => unreachable!("Unexpected unary operator: {:?}", op),
             }
-        })
-        .labelled("unary");
+        }
+    });
+
     let optoken = move |target: Op| {
         select! {
             Token::Op(o) if o == target => o,
         }
         .boxed()
     };
-    // allow pipe opertor to absorb linebreaks so that it can be also used at
-    // the head of the line.
-    let pipe = just(Token::LineBreak)
-        .repeated()
-        .collect::<Vec<_>>()
-        .ignore_then(just(Token::Op(Op::Pipe)))
-        .to(Op::Pipe)
-        .boxed();
-    //defining binary operators in order of precedence.
-    // The order of precedence is from the lowest to the highest.
-    let ops = [
-        optoken(Op::Exponent),
-        choice((
-            optoken(Op::Product),
-            optoken(Op::Divide),
-            optoken(Op::Modulo),
-        ))
-        .boxed(),
-        optoken(Op::Sum).or(optoken(Op::Minus)).boxed(),
-        optoken(Op::Equal).or(optoken(Op::NotEqual)).boxed(),
-        optoken(Op::And),
-        optoken(Op::Or),
-        choice((
-            optoken(Op::LessThan),
-            optoken(Op::LessEqual),
-            optoken(Op::GreaterThan),
-            optoken(Op::GreaterEqual),
-        ))
-        .boxed(),
-        pipe,
-        optoken(Op::At),
-    ];
-    ops.into_iter().fold(unary.boxed(), move |prec, op| {
+    let create_infix = |ops_parser: Boxed<'src, 'src, _, Op, _>, associativity| {
         let path = ctx.file_path.clone();
-        prec.clone()
-            .foldl(
-                op.then_ignore(just(Token::LineBreak).repeated())
-                    .map_with(move |op, e| (op, get_span(e.span())))
-                    .then(prec)
-                    .repeated(),
-                move |x, ((op, opspan), y)| {
-                    let span = x.to_span().start..y.to_span().end;
-                    let loc = Location {
-                        span,
-                        path: path.clone(),
-                    };
-                    Expr::BinOp(x, (op, opspan), y).into_id(loc)
-                },
-            )
-            .boxed()
-    })
+        chumsky::pratt::infix(
+            associativity,
+            just(Token::LineBreak)
+                .repeated()
+                .ignore_then(ops_parser)
+                .then_ignore(just(Token::LineBreak).repeated())
+                .map_with(move |op, e| (op, get_span(e.span()))),
+            move |l: ExprNodeId, (op, opspan), r, _extra| {
+                let span = l.to_span().start..r.to_span().end;
+                let loc = Location {
+                    span,
+                    path: path.clone(),
+                };
+                Expr::BinOp(l, (op, opspan), r).into_id(loc)
+            },
+        )
+        .boxed()
+    };
+
+    // precedence: high -> low
+    let binary_pratt = (
+        create_infix(optoken(Op::Exponent), Associativity::Right(8)),
+        create_infix(
+            choice((
+                optoken(Op::Product),
+                optoken(Op::Divide),
+                optoken(Op::Modulo),
+            ))
+            .boxed(),
+            Associativity::Left(7),
+        ),
+        create_infix(
+            choice((optoken(Op::Sum), optoken(Op::Minus))).boxed(),
+            Associativity::Left(6),
+        ),
+        create_infix(
+            choice((
+                optoken(Op::LessThan),
+                optoken(Op::LessEqual),
+                optoken(Op::GreaterThan),
+                optoken(Op::GreaterEqual),
+            ))
+            .boxed(),
+            Associativity::Left(5),
+        ),
+        create_infix(
+            choice((optoken(Op::Equal), optoken(Op::NotEqual))).boxed(),
+            Associativity::Left(4),
+        ),
+        create_infix(optoken(Op::And), Associativity::Left(3)),
+        create_infix(optoken(Op::Or), Associativity::Left(2)),
+        create_infix(optoken(Op::At), Associativity::Left(1)),
+        create_infix(optoken(Op::Pipe), Associativity::Left(0)),
+    );
+    apply.pratt((dot_pratt, unary_pratt, binary_pratt))
 }
 fn record_fields<'src, I, P>(expr: P) -> impl Parser<'src, I, RecordField, ParseError<'src>> + Clone
 where
