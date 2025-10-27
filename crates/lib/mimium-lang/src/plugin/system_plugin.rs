@@ -71,19 +71,25 @@ impl SysPluginSignature {
 /// The default implementations of the callback methods do nothing. Plugins can
 /// override these to perform setup in [`on_init`], teardown in [`after_main`],
 /// or per-sample processing in [`on_sample`].
-pub trait SystemPlugin {
+pub trait SystemPlugin{
+    fn generate_audioworker(&mut self) -> Option<Arc<dyn SystemPluginAudioWorker>> {
+        None
+    }
     fn on_init(&mut self, _machine: &mut Machine) -> ReturnCode {
         0
     }
     fn after_main(&mut self, _machine: &mut Machine) -> ReturnCode {
         0
     }
-    fn on_sample(&mut self, _time: Time, _machine: &mut Machine) -> ReturnCode {
-        0
-    }
     fn gen_interfaces(&self) -> Vec<SysPluginSignature>;
     fn try_get_main_loop(&mut self) -> Option<Box<dyn FnOnce()>> {
         None
+    }
+}
+
+pub trait SystemPluginAudioWorker{
+    fn on_sample(&mut self, _time: Time, _machine: &mut Machine) -> ReturnCode {
+        0
     }
 }
 
