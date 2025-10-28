@@ -82,6 +82,9 @@ impl ExecContext {
     pub fn get_system_plugins(&self) -> impl ExactSizeIterator<Item = &DynSystemPlugin> {
         self.sys_plugins.iter()
     }
+    pub fn get_system_plugins_mut(&mut self) -> impl ExactSizeIterator<Item = &mut DynSystemPlugin> {
+        self.sys_plugins.iter_mut()
+    }
     //todo: make it to builder pattern
     pub fn add_system_plugin<T: SystemPlugin + 'static>(&mut self, plug: T) {
         let plugin_dyn = DynSystemPlugin::from(plug);

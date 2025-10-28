@@ -13,7 +13,8 @@ pub use builtin_functins::get_builtin_fns_as_plugins;
 use std::{cell::RefCell, rc::Rc};
 
 pub use system_plugin::{
-    DynSystemPlugin, SysPluginSignature, SystemPlugin, SystemPluginFnType, SystemPluginMacroType,
+    DynSystemPlugin, SysPluginSignature, SystemPlugin, SystemPluginAudioWorker, SystemPluginFnType,
+    SystemPluginMacroType,
 };
 
 use crate::{

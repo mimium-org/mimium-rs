@@ -72,13 +72,13 @@ impl SysPluginSignature {
 /// override these to perform setup in [`on_init`], teardown in [`after_main`],
 /// or per-sample processing in [`on_sample`].
 pub trait SystemPlugin {
+    fn generate_audioworker(&mut self) -> Option<Box<dyn SystemPluginAudioWorker>> {
+        None
+    }
     fn on_init(&mut self, _machine: &mut Machine) -> ReturnCode {
         0
     }
     fn after_main(&mut self, _machine: &mut Machine) -> ReturnCode {
-        0
-    }
-    fn on_sample(&mut self, _time: Time, _machine: &mut Machine) -> ReturnCode {
         0
     }
     fn gen_interfaces(&self) -> Vec<SysPluginSignature>;
@@ -87,12 +87,25 @@ pub trait SystemPlugin {
     }
 }
 
-#[derive(Clone)]
+pub trait SystemPluginAudioWorker {
+    fn on_sample(&mut self, _time: Time, _machine: &mut Machine) -> ReturnCode {
+        0
+    }
+    fn gen_interfaces(&self) -> Vec<SysPluginSignature>;
+}
+
 /// A dynamically dispatched plugin wrapped in reference-counted storage.
 pub struct DynSystemPlugin {
     pub inner: Arc<UnsafeCell<dyn SystemPlugin>>,
+    audioworker: Option<Box<dyn SystemPluginAudioWorker>>,
     pub clsinfos: Vec<ExtClsInfo>,
     pub macroinfos: Vec<MacroInfo>,
+}
+
+impl DynSystemPlugin{
+    pub fn take_audioworker(&mut self) -> Option<Box<dyn SystemPluginAudioWorker>> {
+        self.audioworker.take()
+    }
 }
 /// Convert a plugin into the VM-facing representation.
 ///
@@ -103,7 +116,9 @@ impl<T> From<T> for DynSystemPlugin
 where
     T: SystemPlugin + Sized + 'static,
 {
-    fn from(plugin: T) -> Self {
+    fn from(mut plugin: T) -> Self {
+        let mut audioworker = plugin.generate_audioworker();
+
         let ifs = plugin.gen_interfaces();
         let inner = Arc::new(UnsafeCell::new(plugin));
         let macroinfos = ifs
@@ -131,6 +146,13 @@ where
             .collect();
         let clsinfos = ifs
             .into_iter()
+            .chain(
+                audioworker
+                    .as_mut()
+                    .map(|worker| worker.gen_interfaces())
+                    .into_iter()
+                    .flatten(),
+            )
             .filter(|SysPluginSignature { stage, .. }| matches!(stage, EvalStage::Stage(1)))
             .map(|SysPluginSignature { name, fun, ty, .. }| {
                 let inner = inner.clone();
@@ -149,11 +171,12 @@ where
                 ExtClsInfo::new(name.to_symbol(), ty, fun)
             })
             .collect();
-
         DynSystemPlugin {
             inner,
+            audioworker,
             clsinfos,
             macroinfos,
         }
     }
 }
+
