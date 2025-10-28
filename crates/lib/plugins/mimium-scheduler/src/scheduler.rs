@@ -59,9 +59,15 @@ impl SchedulerAudioWorker {
 
 impl SystemPluginAudioWorker for SchedulerAudioWorker {
     fn on_sample(&mut self, time: Time, machine: &mut Machine) -> ReturnCode {
-        self.receiver.try_recv().into_iter().for_each(|task| {
+        while let Ok(task) = self.receiver.try_recv() {
+            if task.when <= self.cur_time {
+                panic!(
+                    "Scheduled time {:?} must be in the future (current time: {:?})",
+                    task.when, self.cur_time
+                );
+            }
             self.tasks.push(Reverse(task));
-        });
+        }
         self.set_cur_time(time);
         while let Some(task_cls) = self.pop_task(time) {
             let closure = machine.get_closure(task_cls);
