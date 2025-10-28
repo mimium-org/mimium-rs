@@ -1,6 +1,12 @@
-use std::{cmp::Reverse, collections::BinaryHeap};
+use std::{cmp::Reverse, collections::BinaryHeap, sync::mpsc};
 
-use mimium_lang::runtime::{Time, vm::ClosureIdx};
+use mimium_lang::{
+    plugin::SystemPluginAudioWorker,
+    runtime::{
+        Time,
+        vm::{self, ClosureIdx, Machine, ReturnCode},
+    },
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Scheduled task to be executed at a specific time.
@@ -18,41 +24,24 @@ impl Ord for Task {
         self.when.cmp(&other.when)
     }
 }
-/// Trait representing a scheduling strategy.
-pub trait SchedulerInterface {
-    fn new() -> Self
-    where
-        Self: Sized;
-    fn schedule_at(&mut self, time: Time, task: ClosureIdx);
-    fn pop_task(&mut self, now: Time) -> Option<ClosureIdx>;
-    fn set_cur_time(&mut self, time: Time);
-}
 
 /// Scheduler that checks for ready tasks on every sample and executes them.
-#[derive(Clone)]
-pub struct SyncScheduler {
-    tasks: BinaryHeap<Reverse<Task>>,
+pub struct SimpleScheduler {
+    sender: mpsc::Sender<Task>,
+    audio_worker: Option<SchedulerAudioWorker>,
+}
+impl SimpleScheduler {
+    pub fn take_audio_worker(&mut self) -> Option<SchedulerAudioWorker> {
+        self.audio_worker.take()
+    }
+}
+pub struct SchedulerAudioWorker {
     cur_time: Time,
+    tasks: BinaryHeap<Reverse<Task>>,
+    receiver: mpsc::Receiver<Task>,
 }
 
-impl SchedulerInterface for SyncScheduler {
-    fn new() -> Self {
-        Self {
-            tasks: Default::default(),
-            cur_time: Time(0),
-        }
-    }
-    fn schedule_at(&mut self, when: Time, cls: ClosureIdx) {
-        if when <= self.cur_time {
-            // TODO: ideally, this should not stop runtime.
-            panic!(
-                "A task must be scheduled in future (current time: {}, schedule: {})",
-                self.cur_time.0, when.0
-            )
-        }
-        self.tasks.push(Reverse(Task { when, cls }));
-    }
-
+impl SchedulerAudioWorker {
     fn pop_task(&mut self, now: Time) -> Option<ClosureIdx> {
         match self.tasks.peek() {
             Some(Reverse(Task { when, cls })) if *when <= now => {
@@ -63,32 +52,51 @@ impl SchedulerInterface for SyncScheduler {
             _ => None,
         }
     }
-
     fn set_cur_time(&mut self, time: Time) {
-        self.cur_time = time
+        self.cur_time = time;
     }
 }
 
-#[derive(Clone)]
-pub struct DummyScheduler;
-impl SchedulerInterface for DummyScheduler {
-    fn new() -> Self
-    where
-        Self: Sized,
-    {
-        Self
+impl SystemPluginAudioWorker for SchedulerAudioWorker {
+    fn on_sample(&mut self, time: Time, machine: &mut Machine) -> ReturnCode {
+        self.receiver.try_recv().into_iter().for_each(|task| {
+            self.tasks.push(Reverse(task));
+        });
+        self.set_cur_time(time);
+        while let Some(task_cls) = self.pop_task(time) {
+            let closure = machine.get_closure(task_cls);
+            machine.execute(closure.fn_proto_pos, Some(task_cls));
+            vm::drop_closure(&mut machine.closures, task_cls);
+        }
+
+        0
     }
 
-    fn schedule_at(&mut self, _time: Time, _task: ClosureIdx) {
-        // do nothing
+    fn gen_interfaces(&self) -> Vec<mimium_lang::plugin::SysPluginSignature> {
+        vec![]
     }
-
-    fn pop_task(&mut self, _now: Time) -> Option<ClosureIdx> {
-        // do nothing
-        None
+}
+impl Default for SimpleScheduler {
+    fn default() -> Self {
+        let (sender, receiver) = mpsc::channel();
+        Self {
+            sender,
+            audio_worker: Some(SchedulerAudioWorker {
+                cur_time: Time(0),
+                tasks: BinaryHeap::new(),
+                receiver,
+            }),
+        }
     }
-
-    fn set_cur_time(&mut self, _time: Time) {
-        // do nothing
+}
+impl SimpleScheduler {
+    fn schedule_at_inner(&mut self, when: Time, cls: ClosureIdx) {
+        self.sender.send(Task { when, cls }).unwrap();
+    }
+    pub fn schedule_at(&mut self, machine: &mut Machine) -> ReturnCode {
+        let when = Machine::get_as::<f64>(machine.get_stack(0)) as u64;
+        let closure_idx = Machine::get_as::<ClosureIdx>(machine.get_stack(1));
+        self.schedule_at_inner(Time(when), closure_idx);
+        0
     }
 }
