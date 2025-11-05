@@ -1,10 +1,10 @@
 use crate::tree::StateTree;
 
 /// A patch to be applied to a Empty StateTree from old tree.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub struct CopyFromPatch {
-    pub new_path: Vec<usize>,
     pub old_path: Vec<usize>,
+    pub new_path: Vec<usize>,
 }
 
 /// パッチを新しい木に適用する

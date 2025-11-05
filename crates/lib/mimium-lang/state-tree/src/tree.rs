@@ -118,6 +118,23 @@ impl StateTree {
         }
         Some(current)
     }
+
+    /// StateTree から StateTreeSkeleton への変換（データを除いた構造のみ）
+    pub fn to_skeleton(&self) -> StateTreeSkeleton<u64> {
+        match self {
+            StateTree::Delay { data, .. } => StateTreeSkeleton::Delay {
+                len: data.len() as u64,
+            },
+            StateTree::Mem { data } => StateTreeSkeleton::Mem(data.len() as u64),
+            StateTree::Feed { data } => StateTreeSkeleton::Feed(data.len() as u64),
+            StateTree::FnCall(children) => StateTreeSkeleton::FnCall(
+                children
+                    .iter()
+                    .map(|child| Box::new(child.to_skeleton()))
+                    .collect(),
+            ),
+        }
+    }
 }
 
 pub fn serialize_tree_untagged(tree: StateTree) -> Vec<u64> {
@@ -136,6 +153,18 @@ pub fn serialize_tree_untagged(tree: StateTree) -> Vec<u64> {
 
 pub trait SizedType: std::fmt::Debug {
     fn word_size(&self) -> u64;
+}
+
+impl SizedType for u64 {
+    fn word_size(&self) -> u64 {
+        *self
+    }
+}
+
+impl SizedType for usize {
+    fn word_size(&self) -> u64 {
+        *self as u64
+    }
 }
 
 /// This data represents just a memory layout on a flat array, do not own actual data.

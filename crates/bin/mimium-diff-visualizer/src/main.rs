@@ -4,246 +4,146 @@ use mimium_lang::ExecContext;
 use state_tree::patch::CopyFromPatch;
 use state_tree::tree::{StateTree, StateTreeSkeleton};
 use state_tree::tree_diff::take_diff;
-use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 
 /// A simplified representation of a memory region in the StateTree.
 #[derive(Debug, Clone)]
-struct MemRegion {
-    path: Vec<usize>,
-    group_path: Vec<usize>,
-    len: usize,
-    label: String,
-    is_group: bool,
+enum MemRegion {
+    Leaf {
+        label: String,
+    },
+    Group {
+        label: String,
+        children: Vec<MemRegion>,
+    },
 }
-fn get_tree_len(tree: &StateTree) -> usize {
-    match tree {
-        StateTree::Delay { data, .. } => data.len(),
-        StateTree::Mem { data } => data.len(),
-        StateTree::Feed { data } => data.len(),
-        StateTree::FnCall(children) => children.iter().map(get_tree_len).sum(),
-    }
-}
-/// Builds a memory map by traversing the StateTree in pre-order.
-fn build_memory_map(root: &StateTree) -> Vec<MemRegion> {
-    let mut regions = Vec::new();
-    let mut offset = 0usize;
-
-    fn walk(
-        node: &StateTree,
-        path: &mut Vec<usize>,
-        group_path: &mut Vec<usize>,
-        offset: &mut usize,
-        regions: &mut Vec<MemRegion>,
-    ) {
+/// Builds a hierarchical memory map by traversing the StateTree.
+fn build_memory_map(root: &StateTree) -> MemRegion {
+    fn build_region(node: &StateTree, label_prefix: &str) -> MemRegion {
         match node {
-            StateTree::Delay { data, .. } => {
-                let len = data.len();
-                regions.push(MemRegion {
-                    path: path.clone(),
-                    group_path: group_path.clone(),
-                    len,
-                    label: format!("Delay@{} (len={})", *offset, len),
-                    is_group: false,
-                });
-                *offset += len;
-            }
-            StateTree::Mem { data } => {
-                let len = data.len();
-                regions.push(MemRegion {
-                    path: path.clone(),
-                    group_path: group_path.clone(),
-                    len,
-                    label: format!("Mem@{} (len={})", *offset, len),
-                    is_group: false,
-                });
-                *offset += len;
-            }
-            StateTree::Feed { data } => {
-                let len = data.len();
-                regions.push(MemRegion {
-                    path: path.clone(),
-                    group_path: group_path.clone(),
-                    len,
-                    label: format!("Feed@{} (len={})", *offset, len),
-                    is_group: false,
-                });
-                *offset += len;
-            }
+            StateTree::Delay { data, .. } => MemRegion::Leaf {
+                label: format!("{label_prefix}Delay(len={})", data.len()),
+            },
+            StateTree::Mem { data } => MemRegion::Leaf {
+                label: format!("{label_prefix}Mem(len={})", data.len()),
+            },
+            StateTree::Feed { data } => MemRegion::Leaf {
+                label: format!("{label_prefix}Feed(len={})", data.len()),
+            },
             StateTree::FnCall(children) => {
-                // When entering a FnCall, update the group_path to the current path
-                let prev_group_path = group_path.clone();
-                *group_path = path.clone();
-
-                for (i, child) in children.iter().enumerate() {
-                    path.push(i);
-                    walk(child, path, group_path, offset, regions);
-                    path.pop();
+                let child_regions = children
+                    .iter()
+                    .enumerate()
+                    .map(|(i, child)| build_region(child, &format!("{label_prefix}[{i}].")))
+                    .collect();
+                MemRegion::Group {
+                    label: format!("{label_prefix}FnCall"),
+                    children: child_regions,
                 }
-                let len = children.iter().map(get_tree_len).sum();
-                regions.push(MemRegion {
-                    path: group_path.clone(),
-                    group_path: group_path.clone(),
-                    len,
-                    label: format!("FnCall@{} (len={})", *offset, len),
-                    is_group: true,
-                });
-                // Restore the previous group_path when exiting the FnCall
-                *group_path = prev_group_path;
             }
         }
     }
 
-    let mut path = Vec::new();
-    let mut group_path = Vec::new();
-    walk(root, &mut path, &mut group_path, &mut offset, &mut regions);
-    regions
+    build_region(root, "")
 }
 
-fn generate_subgraph(prefix: &str, regions: &[MemRegion], current_group_path: &[usize]) -> String {
-    let mut out = String::new();
-    let mut direct_children_indices = Vec::new();
-    let mut nested_subgroups = BTreeMap::new();
+/// Generate Mermaid subgraph representation for a MemRegion
+fn region_to_mermaid(region: &MemRegion, prefix: &str, indent: usize) -> String {
+    let indent_str = "  ".repeat(indent);
+    match region {
+        MemRegion::Leaf { label } => {
+            format!("{indent_str}{prefix}[\"{label}\"]\n")
+        }
+        MemRegion::Group { label, children } => {
+            let mut out = String::new();
+            out.push_str(&format!("{indent_str}subgraph {prefix} [\"{label}\"]\n"));
+            out.push_str(&format!("{}direction TB\n", "  ".repeat(indent + 1)));
 
-    // Collect all regions that belong to the current group or its subgroups
-    for (i, region) in regions.iter().enumerate() {
-        // Check if the region's group_path starts with the current_group_path
-        if region.group_path.len() >= current_group_path.len()
-            && region.group_path[..current_group_path.len()] == current_group_path[..]
-        {
-            // If the region's group_path is exactly the same, it's a direct child memory region
-            if region.group_path.len() == current_group_path.len() && !region.is_group {
-                direct_children_indices.push(i);
+            for (i, child) in children.iter().enumerate() {
+                let child_prefix = format!("{prefix}_{i}");
+                out.push_str(&region_to_mermaid(child, &child_prefix, indent + 1));
             }
-            // If the region's group_path is longer, it belongs to a nested subgroup
-            else if region.group_path.len() > current_group_path.len() {
-                let next_group_segment = region.group_path[current_group_path.len()];
-                let mut next_group_path = current_group_path.to_vec();
-                next_group_path.push(next_group_segment);
-                nested_subgroups.insert(next_group_path, true);
-            }
+
+            out.push_str(&format!("{indent_str}end\n"));
+            out
         }
     }
+}
 
-    // Render direct memory regions (Delay, Mem, Feed)
-    for &idx in &direct_children_indices {
-        let node_id = format!("{prefix}mem{idx}");
-        out.push_str(&format!("    {}[\"{}\"]\n", node_id, regions[idx].label));
+/// Find a node in the region tree by path
+fn find_node_by_path<'a>(region: &'a MemRegion, path: &[usize]) -> Option<&'a MemRegion> {
+    if path.is_empty() {
+        return Some(region);
     }
 
-    // Render nested subgroups (FnCalls)
-    for subgroup_path in nested_subgroups.keys() {
-        let subgroup_id = format!(
-            "{prefix}{}",
-            subgroup_path
-                .iter()
+    match region {
+        MemRegion::Leaf { .. } => None,
+        MemRegion::Group { children, .. } => {
+            let first = path[0];
+            children
+                .get(first)
+                .and_then(|child| find_node_by_path(child, &path[1..]))
+        }
+    }
+}
+
+/// Generate a node ID from a path
+fn path_to_id(prefix: &str, path: &[usize]) -> String {
+    if path.is_empty() {
+        prefix.to_string()
+    } else {
+        format!(
+            "{}_{}",
+            prefix,
+            path.iter()
                 .map(|i| i.to_string())
                 .collect::<Vec<_>>()
                 .join("_")
-        );
-        out.push_str(&format!(
-            "  subgraph {subgroup_id} [\"FnCall {subgroup_path:?}\"]\n  direction TB\n"
-        ));
-        out.push_str(&generate_subgraph(prefix, regions, subgroup_path));
-        out.push_str("  end\n");
+        )
     }
-
-    out
 }
 
 /// Converts the patches to a Mermaid flowchart string.
 fn patches_to_mermaid(
-    old_map: &[MemRegion],
-    new_map: &[MemRegion],
-    patches: &[CopyFromPatch],
+    old_map: &MemRegion,
+    new_map: &MemRegion,
+    patches: impl Iterator<Item = CopyFromPatch>,
 ) -> String {
-    let mut by_old_path: BTreeMap<Vec<usize>, &MemRegion> = BTreeMap::new();
-    for r in old_map {
-        by_old_path.insert(r.path.clone(), r);
-    }
-    let mut by_new_path: BTreeMap<Vec<usize>, &MemRegion> = BTreeMap::new();
-    for r in new_map {
-        by_new_path.insert(r.path.clone(), r);
-    }
-
     let mut out = String::new();
     out.push_str("flowchart LR\n");
 
-    eprintln!("\nOld memory map:");
-    for (i, region) in old_map.iter().enumerate() {
-        eprintln!(
-            "  [{}] path: {:?}, group_path: {:?}, label: {}",
-            i, region.path, region.group_path, region.label
-        );
-    }
-    eprintln!("\nNew memory map:");
-    for (i, region) in new_map.iter().enumerate() {
-        eprintln!(
-            "  [{}] path: {:?}, group_path: {:?}, label: {}",
-            i, region.path, region.group_path, region.label
-        );
-    }
-
     out.push_str("  subgraph OldMemory\n");
-    out.push_str(&generate_subgraph("O", old_map, &[]));
+    out.push_str("  direction TB\n");
+    out.push_str(&region_to_mermaid(old_map, "O", 2));
     out.push_str("  end\n");
 
     out.push_str("  subgraph NewMemory\n");
-    out.push_str(&generate_subgraph("N", new_map, &[]));
+    out.push_str("  direction TB\n");
+    out.push_str(&region_to_mermaid(new_map, "N", 2));
     out.push_str("  end\n\n");
 
     for p in patches {
-        if let (Some(src), Some(dst)) = (by_old_path.get(&p.old_path), by_new_path.get(&p.new_path))
-        {
-            match (
-                old_map.iter().find(|x| x.path == src.path),
-                new_map.iter().find(|x| x.path == dst.path),
-            ) {
-                (Some(src_region), Some(dst_region))
-                    if !src_region.is_group && !dst_region.is_group =>
-                {
-                    out.push_str(&format!(
-                        "  Omem{} -->|copy {}| Nmem{}\n",
-                        src_region
-                            .path
-                            .iter()
-                            .map(|i| i.to_string())
-                            .collect::<Vec<_>>()
-                            .join("_"),
-                        src_region.len,
-                        dst_region
-                            .path
-                            .iter()
-                            .map(|i| i.to_string())
-                            .collect::<Vec<_>>()
-                            .join("_")
-                    ));
-                }
-                (Some(src_region), Some(dst_region)) => {
-                    out.push_str(&format!(
-                        "  O{} -->|copy {}| N{}\n",
-                        src_region
-                            .path
-                            .iter()
-                            .map(|i| i.to_string())
-                            .collect::<Vec<_>>()
-                            .join("_"),
-                        src_region.len,
-                        dst_region
-                            .path
-                            .iter()
-                            .map(|i| i.to_string())
-                            .collect::<Vec<_>>()
-                            .join("_")
-                    ));
-                }
-                _ => {
-                    out.push_str(&format!(
-                        "  %% missing mapping for {:?} -> {:?}\n",
-                        p.old_path, p.new_path
-                    ));
-                }
+        let old_node = find_node_by_path(old_map, &p.old_path);
+        let new_node = find_node_by_path(new_map, &p.new_path);
+
+        match (old_node, new_node) {
+            (Some(MemRegion::Leaf { .. }), Some(MemRegion::Leaf { .. })) => {
+                let old_id = path_to_id("O", &p.old_path);
+                let new_id = path_to_id("N", &p.new_path);
+                out.push_str(&format!("  {old_id} -->|copy| {new_id}\n"));
+            }
+            (Some(_), Some(_)) => {
+                // Both are groups - still generate a link
+                let old_id = path_to_id("O", &p.old_path);
+                let new_id = path_to_id("N", &p.new_path);
+                out.push_str(&format!("  {old_id} -.->|copy| {new_id}\n"));
+            }
+            _ => {
+                out.push_str(&format!(
+                    "  %% missing mapping for {:?} -> {:?}\n",
+                    p.old_path, p.new_path
+                ));
             }
         }
     }
@@ -280,13 +180,20 @@ fn main() -> Result<()> {
 
     let old_state_skeleton = get_state_tree_from_file(old_file)?;
     let new_state_skeleton = get_state_tree_from_file(new_file)?;
+    let patches = take_diff(&old_state_skeleton, &new_state_skeleton);
     let old_tree = StateTree::from(old_state_skeleton);
     let new_tree = StateTree::from(new_state_skeleton);
-    let patches = take_diff(&old_tree, &new_tree);
-    eprintln!("Computed patches:\n{patches:?}");
+    eprintln!(
+        "Computed patches:\n{}",
+        patches
+            .iter()
+            .map(|p| format!("{p:?}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
     let old_map = build_memory_map(&old_tree);
     let new_map = build_memory_map(&new_tree);
-    let mermaid = patches_to_mermaid(&old_map, &new_map, &patches);
+    let mermaid = patches_to_mermaid(&old_map, &new_map, patches.into_iter());
 
     println!("{mermaid}");
 
