@@ -1,169 +1,170 @@
 # state-tree
 
-状態ツリーユーティリティライブラリ。異なる2つのコンパイルされたソースコード間でDSP（デジタルシグナルプロセッシング）の内部状態を保持・管理するための機能を提供します。
+A state tree utility library that provides functionality for preserving and managing internal DSP (Digital Signal Processing) state between two different compiled source codes.
 
-## 概要
+## Overview
 
-mimiumでは、ホットリロード機能を実現するために、コンパイルしたコードの状態（遅延線バッファ、メモリ値、フィードバック値など）を、新しくコンパイルされたコードに引き継ぐ必要があります。このクレートは、古い状態ツリーから新しい状態ツリーへ効率的にデータを移行するための仕組みを提供します。
+In mimium, to implement hot-reload functionality, it's necessary to transfer the state of compiled code (delay line buffers, memory values, feedback values, etc.) to newly compiled code. This crate provides a mechanism for efficiently migrating data from an old state tree to a new state tree.
 
-## 主要な機能
+## Key Features
 
-### 1. 状態ツリーの表現 (`tree` module)
+### 1. State Tree Representation (`tree` module)
 
-**StateTree** - DSPの内部状態を階層的に表現するデータ構造
+**StateTree** - A data structure for hierarchically representing DSP internal state
 
-- **Delay**: 遅延線を表現（読み込みインデックス、書き込みインデックス、バッファデータ）
-- **Mem**: メモリノード（値のリスト）
-- **Feed**: フィードバック値（制御信号など）
-- **FnCall**: 複数の子ノードを持つ関数呼び出しノード
+- **Delay**: Represents delay lines (read index, write index, buffer data)
+- **Mem**: Memory nodes (list of values)
+- **Feed**: Feedback values (control signals, etc.)
+- **FnCall**: Function call nodes with multiple child nodes
 
-**StateTreeSkeleton** - 状態ツリーの「構造」を型安全に表現
+**StateTreeSkeleton** - Type-safe representation of state tree "structure"
 
-- 実際の値ではなく、各ノードのサイズ情報のみを保持
-- 新しいコード構造がどうなるかの定義に使用
-- ジェネリック型 `T: SizedType` で各ノードのサイズ計算方法を指定
+- Holds only size information for each node, not actual values
+- Used to define what the new code structure will look like
+- Generic type `T: SizedType` specifies how to calculate size for each node
 
-### 2. 差分検出 (`tree_diff` module)
+### 2. Diff Detection (`tree_diff` module)
 
-**take_diff** - 古いツリーと新しいツリーの差分を検出
+**take_diff** - Detects differences between old and new trees
 
-差分検出アルゴリズム:
-- **Longest Common Subsequence (LCS)** アルゴリズムを使用してノード間の対応関係を検出
-- ノードが「同じ種類」かつ「同じサイズ」であることを確認して対応付け
-- 挿入・削除・共有ノードを識別
+Diff detection algorithm:
+- Uses **Longest Common Subsequence (LCS)** algorithm to detect correspondence between nodes
+- Matches nodes by verifying they are the "same type" and "same size"
+- Identifies inserted, deleted, and shared nodes
 
-検出結果は `CopyFromPatch` のリストとして返される
+Detection results are returned as a list of `CopyFromPatch`
 
-### 3. パッチ適用 (`patch` module)
+### 3. Patch Application (`patch` module)
 
-**CopyFromPatch** - 古いツリーから新しいツリーへのデータコピー指示
+**CopyFromPatch** - Instructions for copying data from old tree to new tree
 
-- `old_path`: 古いツリー内のノード位置を示すパス（インデックス配列）
-- `new_path`: 新しいツリー内のノード位置を示すパス（インデックス配列）
+- `old_path`: Path (array of indices) indicating node position in the old tree
+- `new_path`: Path (array of indices) indicating node position in the new tree
 
-**apply_patches** - パッチを適用して新しいツリーに古いデータを転送
+**apply_patches** - Applies patches to transfer old data to the new tree
 
-- 古いツリーから新しいツリーへ対応するノードのデータをコピー
-- Delay の readidx/writeidx、Mem/Feed のデータを適切にコピー
+- Copies data from corresponding nodes in the old tree to the new tree
+- Appropriately copies Delay's readidx/writeidx and Mem/Feed data
 
-### 4. 状態ストレージ更新 (`lib.rs`)
+### 4. State Storage Update (`lib.rs`)
 
-**update_state_storage** - 統合的な更新関数
+**update_state_storage** - Integrated update function
 
 ```rust
 pub fn update_state_storage<T: SizedType + PartialEq>(
-    old: &[u64],                              // 古い状態の フラット化されたバイナリ表現
-    old_state_skeleton: StateTreeSkeleton<T>, // 古い構造
-    new_state_skeleton: StateTreeSkeleton<T>, // 新しい構造
+    old: &[u64],                              // Flattened binary representation of old state
+    old_state_skeleton: StateTreeSkeleton<T>, // Old structure
+    new_state_skeleton: StateTreeSkeleton<T>, // New structure
 ) -> Result<Option<Vec<u64>>, Box<dyn std::error::Error>>
 ```
 
-処理フロー:
-1. 古いバイナリデータを古い構造でデシリアライズ
-2. 新しい構造で空のツリーを作成
-3. 差分を検出（`take_diff`）
-4. パッチを適用（`apply_patches`）
-5. 新しいツリーをバイナリにシリアライズして返す
+Processing flow:
+1. Deserialize old binary data with old structure
+2. Create an empty tree with new structure
+3. Detect differences (`take_diff`)
+4. Apply patches (`apply_patches`)
+5. Serialize the new tree to binary and return
 
-構造に変更がない場合は `None` を返す（最適化）
+Returns `None` if the structure hasn't changed (optimization)
 
-## 使用例
+## Usage Examples
 
-### 基本的な使い方
+### Basic Usage
 
 ```rust
 use state_tree::{update_state_storage, tree::*};
 
-// 古い状態をバイナリで保持
+// Hold old state in binary
 let old_state_bytes: Vec<u64> = vec![/* ... */];
 
-// 古いコンパイル結果から得られた構造
+// Structure obtained from old compilation result
 let old_skeleton = StateTreeSkeleton::FnCall(vec![
     Box::new(StateTreeSkeleton::Delay { len: 2 }),
     Box::new(StateTreeSkeleton::Mem(SizeInfo { size: 100 })),
 ]);
 
-// 新しくコンパイルされたコードの構造
+// Structure of newly compiled code
 let new_skeleton = StateTreeSkeleton::FnCall(vec![
-    Box::new(StateTreeSkeleton::Mem(SizeInfo { size: 100 })),  // 順序が変更
+    Box::new(StateTreeSkeleton::Mem(SizeInfo { size: 100 })),  // Order changed
     Box::new(StateTreeSkeleton::Delay { len: 2 }),
-    Box::new(StateTreeSkeleton::Feed(SizeInfo { size: 1 })),   // 新規追加
+    Box::new(StateTreeSkeleton::Feed(SizeInfo { size: 1 })),   // Newly added
 ]);
 
-// 状態を新しい構造に適応させる
+// Adapt state to new structure
 match update_state_storage(&old_state_bytes, &old_skeleton, &new_skeleton) {
     Ok(Some(new_state_bytes)) => {
-        // 新しい構造に適応した状態を使用
+        // Use state adapted to new structure
     }
     Ok(None) => {
-        // 構造が変わらない場合
+        // Structure hasn't changed
     }
     Err(e) => {
-        // エラー処理
+        // Error handling
     }
 }
 ```
 
-## 実装のポイント
+## Implementation Details
 
-### シリアライズ/デシリアライズ
+### Serialization/Deserialization
 
-- `serialize_tree_untagged`: StateTreeを `Vec<u64>` に平坦化
-  - タグ情報を含まない（skeleton で構造情報を別管理）
-  - 効率的なメモリ使用
+- `serialize_tree_untagged`: Flattens StateTree to `Vec<u64>`
+  - Does not include tag information (structure information managed separately by skeleton)
+  - Efficient memory usage
 
-- `deserialize_tree_untagged`: skeleton を使って `Vec<u64>` をStateTreeに復元
+- `deserialize_tree_untagged`: Restores `Vec<u64>` to StateTree using skeleton
 
-### ノード対応付けの戦略
+### Node Matching Strategy
 
-LCS アルゴリズムを用いることで:
-- ノードの並び替えに対応
-- ノードの挿入・削除を自動検出
-- 対応するノード間のデータ転送を最小化
+By using the LCS algorithm:
+- Handles node reordering
+- Automatically detects node insertion/deletion
+- Minimizes data transfer between corresponding nodes
 
-### パス指定
+### Path Specification
 
-各ノードへのアクセスはパス（インデックスの配列）で指定:
+Access to each node is specified by path (array of indices):
 ```
-old_path: [2, 1, 0]  // [2]番目の子 → その[1]番目の子 → その[0]番目の子
+old_path: [2, 1, 0]  // Child [2] → its child [1] → its child [0]
 ```
 
-## テスト
+## Testing
 
-### ユニットテスト (`tests/diff.rs`)
+### Unit Tests (`tests/diff.rs`)
 
-- 単純な差分検出
-- ノードの挿入・削除
-- LCS アルゴリズムの正確性
+- Simple diff detection
+- Node insertion/deletion
+- LCS algorithm correctness
 
-### 統合テスト (`tests/end2end.rs`)
+### Integration Tests (`tests/end2end.rs`)
 
-- ノードの並び替え
-- 複雑な構造変更
-- シリアライズ/デシリアライズと差分適用の統合動作
+- Node reordering
+- Complex structure changes
+- Integration of serialization/deserialization and diff application
 
-## 設計上の考慮
+## Design Considerations
 
-### パフォーマンス
+### Performance
 
-- LCS アルゴリズムは $O(mn)$ の時間計算量（m, n はノード数）
-- 実際のDSP構造は通常ノード数が少ないため実用的
+- LCS algorithm has $O(mn)$ time complexity (m, n are node counts)
+- Practical for actual DSP structures which typically have few nodes
 
-### 型安全性
+### Type Safety
 
-- `SizedType` トレイトで各ノードのサイズ計算を汎用化
-- skeleton を型で表現することで、実行時の型不一致エラーを減らす
+- `SizedType` trait generalizes size calculation for each node
+- Representing skeleton as types reduces runtime type mismatch errors
 
-### エラーハンドリング
+### Error Handling
 
-- デシリアライズ失敗時は `Result` で返す
-- patch 適用時は無効なパスが指定されるとパニック（debug_assert での検証）
+- Returns `Result` on deserialization failure
+- Panics on invalid path specification during patch application (validated with debug_assert)
 
-## 関連するmodule
+## Related Modules
 
-- **crates/lib/mimium-lang**: メインのlang クレート。言語処理の一部で state-tree を使用
-- **plugins/mimium-scheduler**: スケジューリング機能で状態管理が必要
+- **crates/lib/mimium-lang**: Main lang crate. Uses state-tree as part of language processing
+- **plugins/mimium-scheduler**: Requires state management for scheduling functionality
 
-## ライセンス
+## License
 
-ワークスペースの共通ライセンスに従う
+Follows the common license of the workspace
+Ï
