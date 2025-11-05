@@ -100,14 +100,6 @@ fn test_update_state_storage_nested_child_insertion() {
         .expect("update_state_storage should succeed")
         .expect("structural changes should generate patches");
 
-    let expected_tree = StateTree::FnCall(vec![StateTree::FnCall(vec![
-        mem_left,
-        StateTree::Feed { data: vec![0, 0] },
-        delay_node,
-        feed_existing,
-        mem_right,
-    ])]);
-
     let expected_flat = vec![8, 9, 0, 0, 0, 0, 0, 0, 77, 5, 6, 7];
     assert_eq!(updated, expected_flat);
 }
