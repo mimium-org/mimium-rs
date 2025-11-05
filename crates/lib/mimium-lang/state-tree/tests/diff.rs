@@ -141,3 +141,4 @@ fn test_apply_with_structural_changes() {
 
     assert_eq!(new_tree, expected_tree);
 }
+
