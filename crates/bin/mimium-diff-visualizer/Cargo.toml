@@ -1,0 +1,13 @@
+[package]
+name = "mimium-diff-visualizer"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mimium-diff-visualizer"
+path = "src/main.rs"
+
+[dependencies]
+mimium-lang = { path = "../../lib/mimium-lang" }
+state-tree = { path = "../../lib/mimium-lang/state-tree" }
+anyhow = "1.0"

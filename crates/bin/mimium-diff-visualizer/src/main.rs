@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
-use mimium_lang::ExecContext;
 use mimium_lang::mir::StateType;
+use mimium_lang::ExecContext;
 use state_tree::patch::CopyFromPatch;
 use state_tree::tree::{StateTree, StateTreeSkeleton};
 use state_tree::tree_diff::take_diff;
@@ -15,8 +15,16 @@ struct MemRegion {
     group_path: Vec<usize>,
     len: usize,
     label: String,
+    is_group: bool,
 }
-
+fn get_tree_len(tree: &StateTree) -> usize {
+    match tree {
+        StateTree::Delay { data, .. } => data.len(),
+        StateTree::Mem { data } => data.len(),
+        StateTree::Feed { data } => data.len(),
+        StateTree::FnCall(children) => children.iter().map(get_tree_len).sum(),
+    }
+}
 /// Builds a memory map by traversing the StateTree in pre-order.
 fn build_memory_map(root: &StateTree) -> Vec<MemRegion> {
     let mut regions = Vec::new();
@@ -37,6 +45,7 @@ fn build_memory_map(root: &StateTree) -> Vec<MemRegion> {
                     group_path: group_path.clone(),
                     len,
                     label: format!("Delay@{} (len={})", *offset, len),
+                    is_group: false,
                 });
                 *offset += len;
             }
@@ -47,6 +56,7 @@ fn build_memory_map(root: &StateTree) -> Vec<MemRegion> {
                     group_path: group_path.clone(),
                     len,
                     label: format!("Mem@{} (len={})", *offset, len),
+                    is_group: false,
                 });
                 *offset += len;
             }
@@ -57,6 +67,7 @@ fn build_memory_map(root: &StateTree) -> Vec<MemRegion> {
                     group_path: group_path.clone(),
                     len,
                     label: format!("Feed@{} (len={})", *offset, len),
+                    is_group: false,
                 });
                 *offset += len;
             }
@@ -64,13 +75,20 @@ fn build_memory_map(root: &StateTree) -> Vec<MemRegion> {
                 // When entering a FnCall, update the group_path to the current path
                 let prev_group_path = group_path.clone();
                 *group_path = path.clone();
-                
+
                 for (i, child) in children.iter().enumerate() {
                     path.push(i);
                     walk(child, path, group_path, offset, regions);
                     path.pop();
                 }
-                
+                let len = children.iter().map(get_tree_len).sum();
+                regions.push(MemRegion {
+                    path: group_path.clone(),
+                    group_path: group_path.clone(),
+                    len,
+                    label: format!("FnCall@{} (len={})", *offset, len),
+                    is_group: true,
+                });
                 // Restore the previous group_path when exiting the FnCall
                 *group_path = prev_group_path;
             }
@@ -83,11 +101,7 @@ fn build_memory_map(root: &StateTree) -> Vec<MemRegion> {
     regions
 }
 
-fn generate_subgraph(
-    prefix: &str,
-    regions: &[MemRegion],
-    current_group_path: &[usize],
-) -> String {
+fn generate_subgraph(prefix: &str, regions: &[MemRegion], current_group_path: &[usize]) -> String {
     let mut out = String::new();
     let mut direct_children_indices = Vec::new();
     let mut nested_subgroups = BTreeMap::new();
@@ -99,7 +113,7 @@ fn generate_subgraph(
             && region.group_path[..current_group_path.len()] == current_group_path[..]
         {
             // If the region's group_path is exactly the same, it's a direct child memory region
-            if region.group_path.len() == current_group_path.len() {
+            if region.group_path.len() == current_group_path.len() && !region.is_group {
                 direct_children_indices.push(i);
             }
             // If the region's group_path is longer, it belongs to a nested subgroup
@@ -114,18 +128,14 @@ fn generate_subgraph(
 
     // Render direct memory regions (Delay, Mem, Feed)
     for &idx in &direct_children_indices {
-        let node_id = format!("{}mem{}", prefix, idx);
-        out.push_str(&format!(
-            "    {}[\"{}\"]\n",
-            node_id, regions[idx].label
-        ));
+        let node_id = format!("{prefix}mem{idx}");
+        out.push_str(&format!("    {}[\"{}\"]\n", node_id, regions[idx].label));
     }
 
     // Render nested subgroups (FnCalls)
-    for (subgroup_path, _) in &nested_subgroups {
+    for subgroup_path in nested_subgroups.keys() {
         let subgroup_id = format!(
-            "{}{}",
-            prefix,
+            "{prefix}{}",
             subgroup_path
                 .iter()
                 .map(|i| i.to_string())
@@ -133,13 +143,9 @@ fn generate_subgraph(
                 .join("_")
         );
         out.push_str(&format!(
-            "  subgraph {subgroup_id} [\"FnCall {subgroup_path:?}\"]\n"
+            "  subgraph {subgroup_id} [\"FnCall {subgroup_path:?}\"]\n  direction TB\n"
         ));
-        out.push_str(&generate_subgraph(
-            prefix,
-            regions,
-            subgroup_path,
-        ));
+        out.push_str(&generate_subgraph(prefix, regions, subgroup_path));
         out.push_str("  end\n");
     }
 
@@ -166,11 +172,17 @@ fn patches_to_mermaid(
 
     eprintln!("\nOld memory map:");
     for (i, region) in old_map.iter().enumerate() {
-        eprintln!("  [{}] path: {:?}, group_path: {:?}, label: {}", i, region.path, region.group_path, region.label);
+        eprintln!(
+            "  [{}] path: {:?}, group_path: {:?}, label: {}",
+            i, region.path, region.group_path, region.label
+        );
     }
     eprintln!("\nNew memory map:");
     for (i, region) in new_map.iter().enumerate() {
-        eprintln!("  [{}] path: {:?}, group_path: {:?}, label: {}", i, region.path, region.group_path, region.label);
+        eprintln!(
+            "  [{}] path: {:?}, group_path: {:?}, label: {}",
+            i, region.path, region.group_path, region.label
+        );
     }
 
     out.push_str("  subgraph OldMemory\n");
@@ -184,26 +196,59 @@ fn patches_to_mermaid(
     for p in patches {
         if let (Some(src), Some(dst)) = (by_old_path.get(&p.old_path), by_new_path.get(&p.new_path))
         {
-            if let (Some(src_idx), Some(dst_idx)) = (
-                old_map.iter().position(|x| x.path == src.path),
-                new_map.iter().position(|x| x.path == dst.path),
+            match (
+                old_map.iter().find(|x| x.path == src.path),
+                new_map.iter().find(|x| x.path == dst.path),
             ) {
-                out.push_str(&format!(
-                    "  Omem{src_idx} -->|copy {}| Nmem{dst_idx}\n",
-                    src.len
-                ));
+                (Some(src_region), Some(dst_region))
+                    if !src_region.is_group && !dst_region.is_group =>
+                {
+                    out.push_str(&format!(
+                        "  Omem{} -->|copy {}| Nmem{}\n",
+                        src_region
+                            .path
+                            .iter()
+                            .map(|i| i.to_string())
+                            .collect::<Vec<_>>()
+                            .join("_"),
+                        src_region.len,
+                        dst_region
+                            .path
+                            .iter()
+                            .map(|i| i.to_string())
+                            .collect::<Vec<_>>()
+                            .join("_")
+                    ));
+                }
+                (Some(src_region), Some(dst_region)) => {
+                    out.push_str(&format!(
+                        "  O{} -->|copy {}| N{}\n",
+                        src_region
+                            .path
+                            .iter()
+                            .map(|i| i.to_string())
+                            .collect::<Vec<_>>()
+                            .join("_"),
+                        src_region.len,
+                        dst_region
+                            .path
+                            .iter()
+                            .map(|i| i.to_string())
+                            .collect::<Vec<_>>()
+                            .join("_")
+                    ));
+                }
+                _ => {
+                    out.push_str(&format!(
+                        "  %% missing mapping for {:?} -> {:?}\n",
+                        p.old_path, p.new_path
+                    ));
+                }
             }
-        } else {
-            out.push_str(&format!(
-                "  %% missing mapping for {:?} -> {:?}\n",
-                p.old_path, p.new_path
-            ));
         }
     }
-
     out
 }
-
 /// Compiles a mimium file and returns its StateTree.
 fn get_state_tree_from_file(file_path: &str) -> Result<StateTreeSkeleton<StateType>> {
     let source = fs::read_to_string(file_path)?;
