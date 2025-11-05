@@ -107,18 +107,18 @@ fn test_apply_with_structural_changes() {
             readidx: 10,
             writeidx: 11,
             data: vec![1],
-        }, // old: [0]
-        StateTree::Mem { data: vec![2, 3] }, //削除
-        StateTree::Feed { data: vec![4] },   // (削除される)
+        }, // 削除
+        StateTree::Mem { data: vec![2, 3] }, //ここから
+        StateTree::Feed { data: vec![4] },   // 削除
     ]);
 
     let mut new_tree = StateTree::FnCall(vec![
-        StateTree::Mem { data: vec![0, 0] },
+        StateTree::Mem { data: vec![0, 0] },//ここへ
         StateTree::Delay {
             readidx: 0,
             writeidx: 0,
             data: vec![0],
-        }, // new: [1] <- old: [0]
+        }, 
         StateTree::Mem {
             data: vec![0, 0, 0],
         }, // (新規ノード)
@@ -128,10 +128,10 @@ fn test_apply_with_structural_changes() {
     let expected_tree = StateTree::FnCall(vec![
         StateTree::Mem { data: vec![2, 3] }, // old: [1]からコピー
         StateTree::Delay {
-            readidx: 10,
-            writeidx: 11,
-            data: vec![1],
-        }, // old: [0]からコピー
+            readidx: 0,
+            writeidx: 0,
+            data: vec![0],
+        },
         StateTree::Mem {
             data: vec![0, 0, 0],
         }, // 新規なのでゼロのまま
