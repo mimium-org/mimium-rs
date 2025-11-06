@@ -90,7 +90,7 @@ impl NativeAudioData {
     }
     pub fn process(&mut self, dst: &mut [f32], h_ochannels: usize) {
         if let Ok(swap) = self.swap_channel.try_recv() {
-            self.vmdata.vm = self.vmdata.vm.new_resume(swap);
+            self.vmdata = self.vmdata.new_resume(swap);
         }
         // let len = dst.len().min(self.localbuffer.len());
         let len = dst.len();

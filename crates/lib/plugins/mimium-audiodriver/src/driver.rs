@@ -119,7 +119,7 @@ impl RuntimeData {
         if let Some(IoChannelInfo { input, .. }) = self.vm.prog.iochannels {
             self.vm.set_stack_range(0, &vec![0u64; input as usize]);
         }
-        let dsp_i = self.vm.prog.get_fun_index("dsp").unwrap_or(0);
+        let dsp_i = new_prog.get_fun_index("dsp").unwrap_or(0);
         Self {
             vm: self.vm.new_resume(new_prog),
             sys_plugins: self.sys_plugins.clone(),
