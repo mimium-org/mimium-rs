@@ -429,6 +429,40 @@ declare_f1f_common!(probeln, |x: f64| {
     x
 });
 
+mod prepend {
+    use super::*;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::types::{Type, TypeSchemeId};
+    use crate::{function, interner::TypeNodeId};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 2);
+        let (elem, _) = &args[0];
+        let (arr, _) = &args[1];
+        match (elem, arr) {
+            (elem, Value::Array(array)) => {
+                let mut new_vec = vec![elem.clone()];
+                new_vec.extend_from_slice(array);
+                Value::Array(new_vec)
+            }
+            _ => panic!("Invalid argument types for function prepend"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        let ty_var = Type::TypeScheme(TypeSchemeId(0)).into_id();
+        MacroInfo {
+            name: "prepend".to_symbol(),
+            ty: function!(
+                vec![ty_var, Type::Array(ty_var).into_id()],
+                Type::Array(ty_var).into_id()
+            ),
+            fun: std::rc::Rc::new(std::cell::RefCell::new(macro_function)),
+        }
+    }
+}
+
 /// Main function to expose the definitions of built-in functions.
 fn generate_builtin_functions() -> impl ExactSizeIterator<Item = CommonFunction> {
     [
@@ -469,7 +503,12 @@ fn generate_builtin_functions() -> impl ExactSizeIterator<Item = CommonFunction>
     .into_iter()
 }
 fn generate_default_macros() -> impl ExactSizeIterator<Item = MacroInfo> {
-    vec![lift_f::signature(), lift_arrayf::signature()].into_iter()
+    vec![
+        lift_f::signature(),
+        prepend::signature(),
+        lift_arrayf::signature(),
+    ]
+    .into_iter()
 }
 pub fn get_builtin_fns_as_plugins() -> Box<dyn Plugin> {
     let commonfns = generate_builtin_functions().collect();

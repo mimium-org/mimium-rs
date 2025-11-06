@@ -15,8 +15,7 @@ use std::{
 use mimium_lang::{
     ExecContext,
     compiler::IoChannelInfo,
-    interner::ToSymbol,
-    plugin::{DynSystemPlugin, ExtClsInfo, InstantPlugin},
+    plugin::{DynSystemPlugin, ExtClsInfo, InstantPlugin, SystemPluginAudioWorker},
     runtime::{
         Time,
         vm::{self, FuncProto, Program, ReturnCode},
@@ -99,32 +98,32 @@ pub trait Driver {
 /// Objects required to execute a compiled program.
 pub struct RuntimeData {
     pub vm: vm::Machine,
-    pub sys_plugins: Vec<DynSystemPlugin>,
+    pub sys_plugin_workers: Vec<Box<dyn SystemPluginAudioWorker>>,
     pub dsp_i: usize,
 }
 impl RuntimeData {
-    pub fn new(mut vm: vm::Machine, sys_plugins: Vec<DynSystemPlugin>) -> Self {
+    pub fn new(mut vm: vm::Machine, sys_plugins: &mut [DynSystemPlugin]) -> Self {
         //todo:error handling
         let dsp_i = vm.prog.get_fun_index("dsp").unwrap_or(0);
         if let Some(IoChannelInfo { input, .. }) = vm.prog.iochannels {
             vm.set_stack_range(0, &vec![0u64; input as usize]);
         }
+        let sys_plugin_workers = sys_plugins
+            .iter_mut()
+            .filter_map(|p| p.take_audioworker())
+            .collect();
         Self {
             vm,
-            sys_plugins,
+            sys_plugin_workers,
             dsp_i,
         }
     }
-    pub fn new_resume(&mut self, new_prog: Program) -> Self {
+    pub fn resume_with_program(&mut self, new_prog: Program) {
         if let Some(IoChannelInfo { input, .. }) = self.vm.prog.iochannels {
             self.vm.set_stack_range(0, &vec![0u64; input as usize]);
         }
-        let dsp_i = self.vm.prog.get_fun_index("dsp").unwrap_or(0);
-        Self {
-            vm: self.vm.new_resume(new_prog),
-            sys_plugins: self.sys_plugins.clone(),
-            dsp_i,
-        }
+        self.dsp_i = new_prog.get_fun_index("dsp").unwrap_or(0);
+        self.vm = self.vm.new_resume(new_prog);
     }
     // /// warn: Currently duplicated with ExecContext::run_main.
     // /// only LocalBufferDriver uses this function.
@@ -147,11 +146,11 @@ impl RuntimeData {
     }
     /// Execute the compiled `dsp` function for one sample.
     pub fn run_dsp(&mut self, time: Time) -> ReturnCode {
-        self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
-            //todo: encapsulate unsafety within SystemPlugin functionality
-            let p = unsafe { plug.inner.get().as_mut().unwrap_unchecked() };
-            let _ = p.on_sample(time, &mut self.vm);
-        });
+        self.sys_plugin_workers.iter_mut().for_each(
+            |plug: &mut Box<dyn SystemPluginAudioWorker>| {
+                let _ = plug.on_sample(time, &mut self.vm);
+            },
+        );
         self.vm.execute_idx(self.dsp_i)
     }
 }
@@ -169,10 +168,13 @@ impl TryFrom<&mut ExecContext> for RuntimeData {
         if let Some(IoChannelInfo { input, .. }) = vm.prog.iochannels {
             vm.set_stack_range(0, &vec![0u64; input as usize]);
         }
-        let sys_plugins = ctx.get_system_plugins().cloned().collect();
+        let sys_plugin_workers = ctx
+            .get_system_plugins_mut()
+            .flat_map(|p| p.take_audioworker())
+            .collect();
         Ok(Self {
             vm,
-            sys_plugins,
+            sys_plugin_workers,
             dsp_i,
         })
     }

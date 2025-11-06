@@ -10,11 +10,10 @@ fn osc(freq){
 fn midi_to_hz(note){
     440.0* (2.0 ^((note-69.0)/12.0))
 }
-
 fn dsp(){
-    let note =  midi_note_mono!(0.0,69.0,127.0);
+    let note = midi_note_mono!(0.0,69.0,127.0);
     let sig = note.pitch |> midi_to_hz |> osc 
-    let r = sig * (note.velocity /127.0) |> Probe!("gain")
-            |> Probe!("out");
+    let gain = (note.velocity /127.0) |> Probe!("gain")
+    let r = sig * gain |> Probe!("out")
     (r,r)
 }

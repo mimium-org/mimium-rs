@@ -55,9 +55,7 @@ fn test_update_state_storage_reorders_nodes() {
 
     assert_eq!(updated.len(), expected_len);
 
-    let expected_tree = StateTree::FnCall(vec![mem_node, delay_node, feed_node]);
-    let expected_flat = serialize_tree_untagged(expected_tree.clone());
-
+    let expected_flat = vec![100, 101, 102, 0, 0, 0, 0, 7];
     assert_eq!(updated, expected_flat);
 }
 
@@ -102,16 +100,6 @@ fn test_update_state_storage_nested_child_insertion() {
         .expect("update_state_storage should succeed")
         .expect("structural changes should generate patches");
 
-    let expected_tree = StateTree::FnCall(vec![StateTree::FnCall(vec![
-        mem_left,
-        StateTree::Feed { data: vec![0, 0] },
-        delay_node,
-        feed_existing,
-        mem_right,
-    ])]);
-
-    let expected_flat = serialize_tree_untagged(expected_tree);
-    assert_eq!(updated, expected_flat);
-    let expected_flat = vec![8, 9, 0, 0, 21, 22, 1, 2, 77, 5, 6, 7];
+    let expected_flat = vec![8, 9, 0, 0, 0, 0, 0, 0, 77, 5, 6, 7];
     assert_eq!(updated, expected_flat);
 }

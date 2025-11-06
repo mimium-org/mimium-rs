@@ -1,0 +1,103 @@
+#stage(main)
+// //damp should be 0-1
+// fn _damp_filter(x,damp){
+//     let damp_scaled = 0.4;
+//     onepole(x,damp*damp_scaled)
+// }
+// //roomsize should be 0-1
+// fn _lp_fb_comb(input,time,damp,roomsize){
+//     let room_scaled = roomsize*0.28 + 0.7
+//     let sum = input+ room_scaled* _damp_filter(self,damp)
+//     delay(1800,input,time)
+// }
+// fn _lfc_bank(input,damp,roomsize){
+//     _lp_fb_comb(input,1557,damp,roomsize) + 
+//     _lp_fb_comb(input,1617,damp,roomsize) + 
+//     _lp_fb_comb(input,1491,damp,roomsize) + 
+//     _lp_fb_comb(input,1422,damp,roomsize) + 
+//     _lp_fb_comb(input,1277,damp,roomsize) + 
+//     _lp_fb_comb(input,1356,damp,roomsize) + 
+//     _lp_fb_comb(input,1188,damp,roomsize) +
+//     _lp_fb_comb(input,1116,damp,roomsize) 
+// }
+
+
+fn allpass2(input,gain,N){
+    let allpass_delay = |input,gain,N|{ 
+        let (_ffpath,fbpath) = self
+        let delsig = input+fbpath*gain
+        (delsig, delay(2000,delsig,N))
+    }
+    let (ff_path,fb_path) = allpass_delay(input + self*gain ,gain, N)
+    ff_path+fb_path
+}
+fn gain_tr60(time_sec,rev_time){
+    10^(-3*time_sec/rev_time)
+}
+fn comb_fb(input:float,gain:float,time_samps:float){
+  delay(2000,input+self*gain,time_samps)
+}
+#stage(macro)
+fn embed_time(line_time,filter:`(float,float,float)->float){
+    `|input,rev_time| {
+        let time = $(line_time|>lift_f)
+        let gain = gain_tr60(time, rev_time)
+        (input,gain,time) |> $filter
+    }
+}
+fn comb_fb_for_rev(line_time:float){
+    embed_time(line_time,`comb_fb)
+}
+fn allpass_rev(line_time:float){
+    embed_time(line_time,`allpass2)
+}
+fn map(fun,array:[float]){
+    let (head,rest) = array |> split_head
+    prepend(fun(head),map(fun,rest))
+}
+fn foldl(array,init, folder){
+    let (head_f,rest) = array |> split_head
+    if ((rest |> length_array) > 1){
+        let restf = foldl(rest,folder)
+        folder(head_f , rest) 
+    }else{
+        init
+    }
+}
+fn parallel_filters(filters:[`(float)->float]){
+    if ((filters |> length_array) == 0){
+        `|input,rev_time| input
+    }else{
+        foldl(filters,`|input,rev_time| 0, |head,rest| `|input,rev_time| ((input,rev_time) |> $head) + ((input,rev_time) |> $rest) )
+    }
+}
+fn seq_filters(filters:[`(float)->float]){
+    if ((filters |> length_array) == 0){
+        `|input,rev_time| input
+    }else{
+        foldl(filters,`|input,rev_time| input, |head,rest| `|input,rev_time| (input,rev_time) |> $head |> $rest)
+    }
+}
+fn jcrev_wet(){
+    let comb_times_ms = [39.85,36.10,33.27,30.15]
+    let combs = comb_times_ms 
+                |> map(|x| {x*48000/1000.0 
+                            |> comb_fb_for_rev},_)
+
+    let allpass_ms = [5.0,1.7]
+    let allpasses = allpass_ms
+                     |> map(|x| {x*48000 /1000.0 
+                                  |> allpass_rev},_)
+    let com_par = parallel_filters(combs)
+    let all_par = seq_filters(allpasses)
+    `|input,rev_time| {
+        let com_out = (input,rev_time) |> $com_par
+        (com_out,rev_time) |> $all_par
+     }
+}
+
+#stage(main)
+fn dsp(){
+  let src = 1.0
+  jcrev_wet!()(src,2.0)
+}
