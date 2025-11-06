@@ -1,0 +1,8 @@
+fn twodelay(x,y){
+    (delay(1000,x,1.0),delay(2000,y,2.0))
+}
+fn dsp(){
+    let (x1,y1) = twodelay(1.0,2.0)
+    let (x2,y2) = twodelay(3.0,4.0)
+    (x1+x2,y1+y2)
+}

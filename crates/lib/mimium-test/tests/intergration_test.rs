@@ -694,3 +694,10 @@ fn probe_macro() {
     let ans = vec![42.0]; // Probe should pass through the value
     assert_eq!(res, ans);
 }
+
+#[wasm_bindgen_test(unsupported = test)]
+fn twodelay() {
+    let res = run_file_test_stereo("twodelay.mmm", 5).unwrap();
+    let ans = vec![0.0, 0.0, 4.0, 0.0, 4.0, 6.0, 4.0, 6.0, 4.0, 6.0];
+    assert_eq!(res, ans);
+}
