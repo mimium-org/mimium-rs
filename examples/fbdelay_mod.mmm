@@ -4,18 +4,17 @@ fn osc(freq){
   sinwave(freq,0.0)
 }
 fn amosc(freq,rate){
-  (1.0- phasor(rate))
+  osc(freq)*(1.0- phasor(rate))
 }
 fn fbdelay(input,time,fb,mix){
     input*mix + (1.0-mix) * delay(40001.0,(input+self*fb),time)
 }
-fn dummy(){
-  0.0
-}
+
 fn dsp(){
     let f = phasor(0.2)*4000.0+50.0
     let sig = amosc(f,1.0)
+    let l = fbdelay(sig,20010,0.9,0.5)
     let r = fbdelay(sig,20000.0,0.9,0.5)
-    (r,r)
+    (l,r)
 }
 

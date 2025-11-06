@@ -17,13 +17,15 @@ pub fn update_state_storage<T: SizedType + PartialEq>(
     let target_tree = deserialize_tree_untagged(old, &old_state_skeleton)
         .ok_or("Failed to deserialize old state tree")?;
     let totalsize = new_state_skeleton.total_size();
+    let patches = tree_diff::take_diff(&old_state_skeleton, &new_state_skeleton)
+        .into_iter()
+        .collect::<Vec<_>>();
     let mut new_tree = StateTree::from(new_state_skeleton);
-    let patches = tree_diff::take_diff(&target_tree, &new_tree);
 
     for patch in &patches {
         log::debug!("Patch: {patch:?}");
     }
-    patch::apply_patches(&mut new_tree, &target_tree, &patches);
+    patch::apply_patches(&mut new_tree, &target_tree, patches.as_slice());
 
     let res = serialize_tree_untagged(new_tree);
     debug_assert_eq!(res.len(), totalsize as usize);

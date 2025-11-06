@@ -12,6 +12,7 @@ members = [
     "crates/lib/plugins/mimium-guitools",
     "crates/bin/mimium-cli",
     "crates/bin/mimium-fmt",
+    "crates/bin/mimium-diff-visualizer",
     "crates/bin/mimium-language-server",
     "crates/bin/mimium-bintools",
 ]
@@ -47,7 +48,6 @@ ringbuf = "0.4.7"
 atomic_float = "1.1.0"
 log = "0.4.28"
 colog = "1.3.0"
-
 
 
 # do not add git tag for each crates on release.

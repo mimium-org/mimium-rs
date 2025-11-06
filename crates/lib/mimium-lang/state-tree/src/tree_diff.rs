@@ -1,23 +1,14 @@
+use std::collections::HashSet;
+
 use crate::patch::CopyFromPatch;
-use crate::tree::StateTree;
+use crate::tree::{SizedType, StateTreeSkeleton};
 
-pub fn take_diff(old_tree: &StateTree, new_tree: &StateTree) -> Vec<CopyFromPatch> {
-    let mut patches = Vec::new();
-    build_patches_recursive(old_tree, new_tree, Vec::new(), Vec::new(), &mut patches);
-    patches
-}
-
-/// 2つのノードが「同じ種類」であるかを判定する
-fn nodes_match(old: &StateTree, new: &StateTree) -> bool {
-    match (old, new) {
-        (StateTree::Delay { data: d1, .. }, StateTree::Delay { data: d2, .. }) => {
-            d1.len() == d2.len()
-        }
-        (StateTree::Mem { data: d1 }, StateTree::Mem { data: d2 }) => d1.len() == d2.len(),
-        (StateTree::Feed { data: d1 }, StateTree::Feed { data: d2 }) => d1.len() == d2.len(),
-        (StateTree::FnCall(_), StateTree::FnCall(_)) => true,
-        _ => false,
-    }
+pub fn take_diff<T: SizedType>(
+    old_skeleton: &StateTreeSkeleton<T>,
+    new_skeleton: &StateTreeSkeleton<T>,
+) -> HashSet<CopyFromPatch> {
+    let patchset = build_patches_recursive(old_skeleton, new_skeleton, vec![], vec![]);
+    patchset.into_iter().collect()
 }
 
 /// LCSアルゴリズムの結果を表すEnum
@@ -31,42 +22,59 @@ pub enum DiffResult {
     Insert { new_index: usize },
 }
 
-/// 2つのスライスを比較し、LCSの結果を返す
-/// `compare`クロージャで要素の比較方法を指定する
-pub fn lcs_by<T>(old: &[T], new: &[T], compare: impl Fn(&T, &T) -> bool) -> Vec<DiffResult> {
+/// 2つのスライスを比較し、スコアに基づいて最適なマッチングを返す
+/// `score_fn`クロージャでマッチスコア（0.0～1.0）を計算する
+pub fn lcs_by_score<T>(
+    old: &[T],
+    new: &[T],
+    mut score_fn: impl FnMut(&T, &T) -> f64,
+) -> Vec<DiffResult> {
     let old_len = old.len();
     let new_len = new.len();
 
-    // DPテーブルを作成
-    let mut dp = vec![vec![0; new_len + 1]; old_len + 1];
+    // DP テーブル: dp[i][j] = 累積スコア
+    let mut dp = vec![vec![0.0; new_len + 1]; old_len + 1];
+
     for i in 1..=old_len {
         for j in 1..=new_len {
-            if compare(&old[i - 1], &new[j - 1]) {
-                dp[i][j] = dp[i - 1][j - 1] + 1;
+            let score = score_fn(&old[i - 1], &new[j - 1]);
+
+            if score > 0.0 {
+                // マッチした場合: 対角線の値 + マッチスコア
+                dp[i][j] = (dp[i - 1][j - 1] + score).max(dp[i - 1][j].max(dp[i][j - 1]));
             } else {
+                // マッチしなかった場合: 最大値を取る
                 dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]);
             }
         }
     }
-
-    // DPテーブルをバックトラックして差分情報を復元
+    // バックトラックして結果を復元
     let mut results = Vec::new();
     let (mut i, mut j) = (old_len, new_len);
+
     while i > 0 || j > 0 {
-        if i > 0 && j > 0 && compare(&old[i - 1], &new[j - 1]) {
-            // Common
-            results.push(DiffResult::Common {
-                old_index: i - 1,
-                new_index: j - 1,
-            });
-            i -= 1;
-            j -= 1;
-        } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
-            // Insert
+        if i > 0 && j > 0 {
+            let score = score_fn(&old[i - 1], &new[j - 1]);
+
+            if score > 0.0 {
+                // マッチしている可能性が高い
+                results.push(DiffResult::Common {
+                    old_index: i - 1,
+                    new_index: j - 1,
+                });
+                i -= 1;
+                j -= 1;
+            } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
+                results.push(DiffResult::Insert { new_index: j - 1 });
+                j -= 1;
+            } else if i > 0 {
+                results.push(DiffResult::Delete { old_index: i - 1 });
+                i -= 1;
+            }
+        } else if j > 0 {
             results.push(DiffResult::Insert { new_index: j - 1 });
             j -= 1;
         } else if i > 0 {
-            // Delete
             results.push(DiffResult::Delete { old_index: i - 1 });
             i -= 1;
         }
@@ -76,80 +84,91 @@ pub fn lcs_by<T>(old: &[T], new: &[T], compare: impl Fn(&T, &T) -> bool) -> Vec<
     results
 }
 
-fn build_patches_recursive(
-    old_node: &StateTree,
-    new_node: &StateTree,
+fn nodes_match<T: SizedType>(old: &StateTreeSkeleton<T>, new: &StateTreeSkeleton<T>) -> bool {
+    match (old, new) {
+        (StateTreeSkeleton::Delay { len: len1 }, StateTreeSkeleton::Delay { len: len2 }) => {
+            len1 == len2
+        }
+        (StateTreeSkeleton::Mem(t1), StateTreeSkeleton::Mem(t2)) => {
+            t1.word_size() == t2.word_size()
+        }
+        (StateTreeSkeleton::Feed(t1), StateTreeSkeleton::Feed(t2)) => {
+            t1.word_size() == t2.word_size()
+        }
+        (StateTreeSkeleton::FnCall(c1), StateTreeSkeleton::FnCall(c2)) => {
+            c1.len() == c2.len() && c1.iter().zip(c2.iter()).all(|(a, b)| nodes_match(a, b))
+        }
+        _ => false,
+    }
+}
+
+fn build_patches_recursive<T: SizedType>(
+    old_node: &StateTreeSkeleton<T>,
+    new_node: &StateTreeSkeleton<T>,
     old_path: Vec<usize>,
     new_path: Vec<usize>,
-    patches: &mut Vec<CopyFromPatch>,
-) {
-    if !nodes_match(old_node, new_node) {
-        return;
+) -> HashSet<CopyFromPatch> {
+    // ノードが完全に一致する場合は、単一のパッチを返す
+    if nodes_match(old_node, new_node) {
+        return [CopyFromPatch { old_path, new_path }].into_iter().collect();
     }
 
-    if !matches!(new_node, StateTree::FnCall(_)) {
-        patches.push(CopyFromPatch { old_path, new_path });
-        return;
-    }
-
-    if let (StateTree::FnCall(old_children), StateTree::FnCall(new_children)) = (old_node, new_node)
-    {
-        // 自作のlcs_by関数を使用
-        let lcs_results = lcs_by(old_children, new_children, nodes_match);
-
-        let mut unmatched_old = Vec::new();
-        let mut unmatched_new = Vec::new();
-
-        for result in &lcs_results {
-            match *result {
-                DiffResult::Common {
-                    old_index,
-                    new_index,
-                } => {
-                    let old_child = &old_children[old_index];
-                    let new_child = &new_children[new_index];
-
-                    let mut next_old_path = old_path.clone();
-                    next_old_path.push(old_index);
-                    let mut next_new_path = new_path.clone();
-                    next_new_path.push(new_index);
-
-                    build_patches_recursive(
+    match (old_node, new_node) {
+        (StateTreeSkeleton::FnCall(old_children), StateTreeSkeleton::FnCall(new_children)) => {
+            // 最初に全ての子ノードのパッチを計算（スコア計算の副作用を避けるため）
+            let mut child_patches_map = Vec::new();
+            for (old_idx, old_child) in old_children.iter().enumerate() {
+                for (new_idx, new_child) in new_children.iter().enumerate() {
+                    let child_old_path = [old_path.clone(), vec![old_idx]].concat();
+                    let child_new_path = [new_path.clone(), vec![new_idx]].concat();
+                    let patches = build_patches_recursive(
                         old_child,
                         new_child,
-                        next_old_path,
-                        next_new_path,
-                        patches,
+                        child_old_path,
+                        child_new_path,
                     );
-                }
-                DiffResult::Delete { old_index } => {
-                    unmatched_old.push(old_index);
-                }
-                DiffResult::Insert { new_index } => {
-                    unmatched_new.push(new_index);
+                    let score = if patches.is_empty() {
+                        0.0
+                    } else {
+                        patches.len() as f64
+                    };
+                    child_patches_map.push(((old_idx, new_idx), patches, score));
                 }
             }
-        }
 
-        for new_index in unmatched_new {
-            if let Some(position) = unmatched_old.iter().position(|&old_index| {
-                nodes_match(&old_children[old_index], &new_children[new_index])
-            }) {
-                let old_index = unmatched_old.remove(position);
+            // LCSでマッチングを見つける
+            let old_c_with_id: Vec<_> = old_children.iter().enumerate().collect();
+            let new_c_with_id: Vec<_> = new_children.iter().enumerate().collect();
 
-                let mut next_old_path = old_path.clone();
-                next_old_path.push(old_index);
-                let mut next_new_path = new_path.clone();
-                next_new_path.push(new_index);
+            let lcs_results = lcs_by_score(
+                &old_c_with_id,
+                &new_c_with_id,
+                |(oid, _old), (nid, _new)| {
+                    child_patches_map
+                        .iter()
+                        .find(|((o, n), _, _)| o == oid && n == nid)
+                        .map(|(_, _, score)| *score)
+                        .unwrap_or(0.0)
+                },
+            );
 
-                build_patches_recursive(
-                    &old_children[old_index],
-                    &new_children[new_index],
-                    next_old_path,
-                    next_new_path,
-                    patches,
-                );
+            // LCS結果に基づいてパッチを収集
+            let mut c_patches = HashSet::new();
+            for result in &lcs_results {
+                if let DiffResult::Common {
+                    old_index,
+                    new_index,
+                } = result
+                    && let Some((_, patches, _)) = child_patches_map
+                        .iter()
+                        .find(|((o, n), _, _)| o == old_index && n == new_index)
+                {
+                    c_patches.extend(patches.iter().cloned());
+                }
             }
+
+            c_patches
         }
+        _ => HashSet::new(),
     }
 }
