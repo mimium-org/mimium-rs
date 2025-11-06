@@ -1913,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-diff-visualizer"
-version = "0.1.0"
+version = "3.1.0"
 dependencies = [
  "anyhow",
  "mimium-lang",
