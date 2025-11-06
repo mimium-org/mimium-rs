@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## v3.1.1
+
+### Fixed bug
+
+- Fixed crash in live coding when new function is added or some functions are deleted caused by that the wrong index to dsp function is referred (#176 by @karnpapon)
+- Improved system plugin cross thread safety and live state update stability (#173 #175)
+
+
 ## v3.1.0
 
 ### Fixed bug
