@@ -7,6 +7,8 @@ repository.workspace = true
 authors.workspace = true
 description = "visualizer for mimium live upstate algorithm explanation"
 
+[package.metadata.dist]
+dist = false
 
 [[bin]]
 name = "mimium-diff-visualizer"
