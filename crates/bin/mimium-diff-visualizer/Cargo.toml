@@ -1,13 +1,20 @@
 [package]
 name = "mimium-diff-visualizer"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "visualizer for mimium live upstate algorithm explanation"
+
+[package.metadata.dist]
+dist = false
 
 [[bin]]
 name = "mimium-diff-visualizer"
 path = "src/main.rs"
 
 [dependencies]
-mimium-lang = { path = "../../lib/mimium-lang" }
-state-tree = { path = "../../lib/mimium-lang/state-tree" }
+mimium-lang = { workspace = true }
+state-tree = { workspace = true }
 anyhow = "1.0"

@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: "Release version number (You must write CHANGELOG.md before running this action. Also this action must be done only in main branch.)"
+        description: "Release version number without prefix 'v' (You must write CHANGELOG.md before running this action. Also this action must be done only in main branch.)"
         required: true
         type: string
       skip-cargo-release:
