@@ -1877,7 +1877,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-audiodriver"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "cpal",
  "mimium-lang",
@@ -1887,7 +1887,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-bintools"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "mimium-cli",
  "mimium-fmt",
@@ -1897,7 +1897,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-cli"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "clap",
  "colog",
@@ -1913,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-diff-visualizer"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "anyhow",
  "mimium-lang",
@@ -1922,7 +1922,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-fmt"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "clap",
  "mimium-lang",
@@ -1931,7 +1931,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-guitools"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "atomic_float",
  "eframe",
@@ -1943,7 +1943,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-lang"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "ariadne",
  "chumsky",
@@ -1963,7 +1963,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-language-server"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "dashmap 6.1.0",
  "env_logger",
@@ -1982,7 +1982,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-midi"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "atomic_float",
  "midir",
@@ -1993,7 +1993,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-scheduler"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "mimium-lang",
  "mimium-test",
@@ -2001,7 +2001,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-symphonia"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "mimium-audiodriver",
  "mimium-lang",
@@ -2011,7 +2011,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-test"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "mimium-audiodriver",
  "mimium-guitools",
@@ -2022,7 +2022,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-web"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "console_error_panic_hook",
  "itertools",
@@ -2975,7 +2975,7 @@ dependencies = [
 
 [[package]]
 name = "state-tree"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "itertools",
  "log",
