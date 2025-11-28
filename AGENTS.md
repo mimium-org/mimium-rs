@@ -31,6 +31,8 @@ The language implements its own virtual machine (VM) and instruction set to exec
 
 - Write documentation comments `///` as possible for public API and the top of the file.
 
+- Write comments in English even if you asked in different languages.
+
 ## Test Strategy
 
 - If you are running on Linux, you need to install `libasound2-dev` from apt to compile codes.
