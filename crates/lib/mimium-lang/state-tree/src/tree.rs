@@ -188,6 +188,43 @@ impl<T: SizedType> StateTreeSkeleton<T> {
                 .sum(),
         }
     }
+
+    /// Convert a path (position in the tree) to an address (offset) in a flat array.
+    /// 
+    /// # Arguments
+    /// * `path` - Path in the tree. Empty means root, [0] is the first child, [0, 1] is the second child of the first child.
+    /// 
+    /// # Returns
+    /// Returns the start address of the node pointed to by the path and the size of that node.
+    /// Returns None if the path is invalid.
+    pub fn path_to_address(&self, path: &[usize]) -> Option<(usize, usize)> {
+        if path.is_empty() {
+            // Root node case
+            return Some((0, self.total_size() as usize));
+        }
+
+        match self {
+            StateTreeSkeleton::FnCall(children) => {
+                let child_idx = path[0];
+                if child_idx >= children.len() {
+                    return None;
+                }
+
+                // Calculate offset to the child node
+                let offset: u64 = children
+                    .iter()
+                    .take(child_idx)
+                    .map(|child| child.total_size())
+                    .sum();
+
+                // Recursively resolve the path within the child node
+                let (child_offset, size) = children[child_idx].path_to_address(&path[1..])?;
+                Some((offset as usize + child_offset, size))
+            }
+            // Error if path remains on a leaf node
+            _ => None,
+        }
+    }
 }
 impl<T: SizedType> PartialEq for StateTreeSkeleton<T> {
     fn eq(&self, other: &Self) -> bool {

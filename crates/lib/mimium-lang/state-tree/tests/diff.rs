@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use state_tree::{
     patch::{CopyFromPatch, apply_patches},
-    tree::{StateTree, StateTreeSkeleton},
+    tree::{StateTree, StateTreeSkeleton, serialize_tree_untagged, deserialize_tree_untagged},
     tree_diff::take_diff,
 };
 
@@ -28,11 +28,13 @@ fn test_simple_diff() {
     };
 
     let patches = take_diff_from_trees(&old_tree, &new_tree);
+    // Delay全体のサイズは readidx(1) + writeidx(1) + data(2) = 4
     assert_eq!(
         patches,
         [CopyFromPatch {
-            old_path: vec![],
-            new_path: vec![]
+            src_addr: 0,
+            dst_addr: 0,
+            size: 4,
         }]
         .into_iter()
         .collect()
@@ -46,17 +48,17 @@ fn test_node_insertion() {
             readidx: 1,
             writeidx: 1,
             data: vec![1],
-        }, // path: [0]
-        StateTree::Mem { data: vec![3] }, // path: [1]
+        }, // Delayサイズ: 2 + 1 = 3, addr: 0
+        StateTree::Mem { data: vec![3] }, // Memサイズ: 1, addr: 3
     ]);
     let new_tree = StateTree::FnCall(vec![
         StateTree::Delay {
             readidx: 0,
             writeidx: 0,
             data: vec![0],
-        }, // path: [0]
-        StateTree::Feed { data: vec![0] }, // (新規) path: [1]
-        StateTree::Mem { data: vec![0] },  // path: [2]
+        }, // Delayサイズ: 3, addr: 0
+        StateTree::Feed { data: vec![0] }, // Feedサイズ: 1, addr: 3 (新規)
+        StateTree::Mem { data: vec![0] },  // Memサイズ: 1, addr: 4
     ]);
 
     let patches = take_diff_from_trees(&old_tree, &new_tree);
@@ -65,12 +67,14 @@ fn test_node_insertion() {
         patches,
         [
             CopyFromPatch {
-                old_path: vec![0],
-                new_path: vec![0]
+                src_addr: 0,
+                dst_addr: 0,
+                size: 3,
             },
             CopyFromPatch {
-                old_path: vec![1],
-                new_path: vec![2]
+                src_addr: 3,
+                dst_addr: 4,
+                size: 1,
             },
         ]
         .into_iter()
@@ -86,18 +90,21 @@ fn test_apply_simple_patch() {
         writeidx: 84,
         data: vec![1, 2, 3],
     };
-    let mut new_tree = StateTree::Delay {
+    let new_tree = StateTree::Delay {
         readidx: 0,
         writeidx: 0,
         data: vec![0, 0, 0],
     };
+    
+    let old_storage = serialize_tree_untagged(old_tree.clone());
+    let mut new_storage = serialize_tree_untagged(new_tree.clone());
 
     let patches = take_diff_from_trees(&old_tree, &new_tree)
         .into_iter()
         .collect::<Vec<_>>();
-    apply_patches(&mut new_tree, &old_tree, patches.as_slice());
+    apply_patches(&mut new_storage, &old_storage, patches.as_slice());
 
-    assert_eq!(new_tree, old_tree);
+    assert_eq!(new_storage, old_storage);
 }
 
 #[test]
@@ -107,26 +114,26 @@ fn test_apply_with_structural_changes() {
             readidx: 10,
             writeidx: 11,
             data: vec![1],
-        }, // 削除
-        StateTree::Mem { data: vec![2, 3] }, //ここから
-        StateTree::Feed { data: vec![4] },   // 削除
+        }, // Delayサイズ: 3, addr: 0
+        StateTree::Mem { data: vec![2, 3] }, // Memサイズ: 2, addr: 3
+        StateTree::Feed { data: vec![4] },   // Feedサイズ: 1, addr: 5
     ]);
 
-    let mut new_tree = StateTree::FnCall(vec![
-        StateTree::Mem { data: vec![0, 0] },//ここへ
+    let new_tree = StateTree::FnCall(vec![
+        StateTree::Mem { data: vec![0, 0] }, // Memサイズ: 2, addr: 0
         StateTree::Delay {
             readidx: 0,
             writeidx: 0,
             data: vec![0],
-        }, 
+        }, // Delayサイズ: 3, addr: 2
         StateTree::Mem {
             data: vec![0, 0, 0],
-        }, // (新規ノード)
+        }, // Memサイズ: 3, addr: 5 (新規ノード)
     ]);
 
     // 期待される最終状態
     let expected_tree = StateTree::FnCall(vec![
-        StateTree::Mem { data: vec![2, 3] }, // old: [1]からコピー
+        StateTree::Mem { data: vec![2, 3] }, // old: addr 3からコピー
         StateTree::Delay {
             readidx: 0,
             writeidx: 0,
@@ -137,70 +144,85 @@ fn test_apply_with_structural_changes() {
         }, // 新規なのでゼロのまま
     ]);
 
+    let old_storage = serialize_tree_untagged(old_tree.clone());
+    let mut new_storage = serialize_tree_untagged(new_tree.clone());
+    
     let patches = take_diff_from_trees(&old_tree, &new_tree);
     assert_eq!(
         patches,
         [CopyFromPatch {
-            old_path: vec![1],
-            new_path: vec![0]
+            src_addr: 3,
+            dst_addr: 0,
+            size: 2,
         }]
         .into_iter()
         .collect()
     );
     apply_patches(
-        &mut new_tree,
-        &old_tree,
+        &mut new_storage,
+        &old_storage,
         &patches.into_iter().collect::<Vec<_>>(),
     );
 
-    assert_eq!(new_tree, expected_tree);
+    let result_tree = deserialize_tree_untagged(&new_storage, &new_tree.to_skeleton())
+        .expect("Failed to deserialize result tree");
+    assert_eq!(result_tree, expected_tree);
 }
 type Skeleton = StateTreeSkeleton<usize>;
 #[test]
 fn test_complex() {
     //structure taken from examples/fbdelay.mmm
     let old_tree = Skeleton::FnCall(vec![
-        Box::new(Skeleton::FnCall(vec![Box::new(Skeleton::Feed(1))])),
+        Box::new(Skeleton::FnCall(vec![Box::new(Skeleton::Feed(1))])), // Feed(1), addr: 0, size: 1
         Box::new(Skeleton::FnCall(vec![Box::new(Skeleton::FnCall(vec![
-            Box::new(Skeleton::Feed(1)),
+            Box::new(Skeleton::Feed(1)), // Feed(1), addr: 1, size: 1
         ]))])),
         Box::new(Skeleton::FnCall(vec![
-            Box::new(Skeleton::Delay { len: 4 }),
-            Box::new(Skeleton::Feed(1)),
+            Box::new(Skeleton::Delay { len: 4 }), // Delay, addr: 2, size: 6 (2 + 4)
+            Box::new(Skeleton::Feed(1)),           // Feed(1), addr: 8, size: 1
         ])),
     ]);
+    // 旧構造の合計サイズ: 1 + 1 + 6 + 1 = 9
+    
     let new_tree = Skeleton::FnCall(vec![
-        Box::new(Skeleton::FnCall(vec![Box::new(Skeleton::Feed(1))])), // new node
+        Box::new(Skeleton::FnCall(vec![Box::new(Skeleton::Feed(1))])), // Feed(1), addr: 0, size: 1
         Box::new(Skeleton::FnCall(vec![
-            Box::new(Skeleton::FnCall(vec![Box::new(Skeleton::Feed(1))])), // new node
-            //new node
+            Box::new(Skeleton::FnCall(vec![Box::new(Skeleton::Feed(1))])), // Feed(1), addr: 1, size: 1
             Box::new(Skeleton::FnCall(vec![Box::new(Skeleton::FnCall(vec![
-                Box::new(Skeleton::FnCall(vec![Box::new(Skeleton::Feed(1))])),
+                Box::new(Skeleton::FnCall(vec![Box::new(Skeleton::Feed(1))])), // Feed(1), addr: 2, size: 1
             ]))])),
         ])),
         Box::new(Skeleton::FnCall(vec![
-            Box::new(Skeleton::Delay { len: 4 }),
-            Box::new(Skeleton::Feed(1)),
+            Box::new(Skeleton::Delay { len: 4 }), // Delay, addr: 3, size: 6
+            Box::new(Skeleton::Feed(1)),           // Feed(1), addr: 9, size: 1
         ])),
         Box::new(Skeleton::FnCall(vec![
-            //new node
-            Box::new(Skeleton::Delay { len: 4 }),
-            Box::new(Skeleton::Feed(1)),
+            Box::new(Skeleton::Delay { len: 4 }), // Delay, addr: 10, size: 6
+            Box::new(Skeleton::Feed(1)),           // Feed(1), addr: 16, size: 1
         ])),
     ]);
+    
     let patches = take_diff(&old_tree, &new_tree);
+    
+    // 期待されるパッチ:
+    // 1. old[1, 0] (old addr: 1, size: 1) -> new[1, 0] (new addr: 1, size: 1)
+    // 2. old[0] (old addr: 0, size: 1) -> new[0] (new addr: 0, size: 1)
+    // 3. old[2] (old addr: 2, size: 7) -> new[3] (new addr: 10, size: 7)
     let answer = [
         CopyFromPatch {
-            old_path: vec![1, 0],
-            new_path: vec![1, 0],
+            src_addr: 1,
+            dst_addr: 1,
+            size: 1,
         },
         CopyFromPatch {
-            old_path: vec![0],
-            new_path: vec![0],
+            src_addr: 0,
+            dst_addr: 0,
+            size: 1,
         },
         CopyFromPatch {
-            old_path: vec![2],
-            new_path: vec![3],
+            src_addr: 2,
+            dst_addr: 10,
+            size: 7,
         },
     ]
     .into_iter()
