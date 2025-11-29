@@ -2,150 +2,191 @@ use anyhow::{anyhow, Result};
 use mimium_lang::mir::StateType;
 use mimium_lang::ExecContext;
 use state_tree::patch::CopyFromPatch;
-use state_tree::tree::{StateTree, StateTreeSkeleton};
+use state_tree::tree::StateTreeSkeleton;
 use state_tree::tree_diff::take_diff;
 use std::env;
 use std::fs;
 
-/// A simplified representation of a memory region in the StateTree.
+/// A memory block representation with address and size information.
 #[derive(Debug, Clone)]
-enum MemRegion {
-    Leaf {
-        label: String,
-    },
-    Group {
-        label: String,
-        children: Vec<MemRegion>,
-    },
+struct MemBlock {
+    addr: usize,
+    size: usize,
+    label: String,
+    path: Vec<usize>,
+    node_type: String,
 }
-/// Builds a hierarchical memory map by traversing the StateTree.
-fn build_memory_map(root: &StateTree) -> MemRegion {
-    fn build_region(node: &StateTree, label_prefix: &str) -> MemRegion {
-        match node {
-            StateTree::Delay { data, .. } => MemRegion::Leaf {
-                label: format!("{label_prefix}Delay(len={})", data.len()),
-            },
-            StateTree::Mem { data } => MemRegion::Leaf {
-                label: format!("{label_prefix}Mem(len={})", data.len()),
-            },
-            StateTree::Feed { data } => MemRegion::Leaf {
-                label: format!("{label_prefix}Feed(len={})", data.len()),
-            },
-            StateTree::FnCall(children) => {
-                let child_regions = children
-                    .iter()
-                    .enumerate()
-                    .map(|(i, child)| build_region(child, &format!("{label_prefix}[{i}].")))
-                    .collect();
-                MemRegion::Group {
-                    label: format!("{label_prefix}FnCall"),
-                    children: child_regions,
+
+/// Builds a flat list of memory blocks from StateTreeSkeleton.
+fn build_memory_blocks(skeleton: &StateTreeSkeleton<StateType>) -> Vec<MemBlock> {
+    fn traverse(
+        skeleton: &StateTreeSkeleton<StateType>,
+        path: &[usize],
+        root_skeleton: &StateTreeSkeleton<StateType>,
+        blocks: &mut Vec<MemBlock>,
+    ) {
+        let (addr, size) = root_skeleton
+            .path_to_address(path)
+            .expect("Invalid path during traversal");
+
+        let path_str = if path.is_empty() {
+            "root".to_string()
+        } else {
+            format!(
+                "[{}]",
+                path.iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+
+        match skeleton {
+            StateTreeSkeleton::Delay { len } => {
+                blocks.push(MemBlock {
+                    addr,
+                    size,
+                    label: format!("{path_str} Delay(len={len})"),
+                    path: path.to_vec(),
+                    node_type: "Delay".to_string(),
+                });
+            }
+            StateTreeSkeleton::Mem(_) => {
+                blocks.push(MemBlock {
+                    addr,
+                    size,
+                    label: format!("{path_str} Mem(size={size})"),
+                    path: path.to_vec(),
+                    node_type: "Mem".to_string(),
+                });
+            }
+            StateTreeSkeleton::Feed(_) => {
+                blocks.push(MemBlock {
+                    addr,
+                    size,
+                    label: format!("{path_str} Feed(size={size})"),
+                    path: path.to_vec(),
+                    node_type: "Feed".to_string(),
+                });
+            }
+            StateTreeSkeleton::FnCall(children) => {
+                for (i, child) in children.iter().enumerate() {
+                    let mut child_path = path.to_vec();
+                    child_path.push(i);
+                    traverse(child, &child_path, root_skeleton, blocks);
                 }
             }
         }
     }
 
-    build_region(root, "")
+    let mut blocks = Vec::new();
+    traverse(skeleton, &[], skeleton, &mut blocks);
+    blocks.sort_by_key(|b| b.addr);
+    blocks
 }
 
-/// Generate Mermaid subgraph representation for a MemRegion
-fn region_to_mermaid(region: &MemRegion, prefix: &str, indent: usize) -> String {
-    let indent_str = "  ".repeat(indent);
-    match region {
-        MemRegion::Leaf { label } => {
-            format!("{indent_str}{prefix}[\"{label}\"]\n")
-        }
-        MemRegion::Group { label, children } => {
-            let mut out = String::new();
-            out.push_str(&format!("{indent_str}subgraph {prefix} [\"{label}\"]\n"));
-            out.push_str(&format!("{}direction TB\n", "  ".repeat(indent + 1)));
-
-            for (i, child) in children.iter().enumerate() {
-                let child_prefix = format!("{prefix}_{i}");
-                out.push_str(&region_to_mermaid(child, &child_prefix, indent + 1));
-            }
-
-            out.push_str(&format!("{indent_str}end\n"));
-            out
-        }
+/// Group blocks by their common path prefix to create hierarchical structure
+fn group_blocks_by_path(blocks: &[MemBlock]) -> Vec<(Vec<usize>, Vec<MemBlock>)> {
+    use std::collections::BTreeMap;
+    
+    let mut groups: BTreeMap<Vec<usize>, Vec<MemBlock>> = BTreeMap::new();
+    
+    for block in blocks {
+        // For paths with length > 2, group by taking first N-2 elements
+        // This creates more meaningful hierarchical groups
+        let prefix = if block.path.len() > 2 {
+            block.path[..block.path.len() - 2].to_vec()
+        } else if block.path.len() == 2 {
+            vec![block.path[0]]
+        } else {
+            vec![]
+        };
+        groups.entry(prefix).or_default().push(block.clone());
     }
+    
+    groups.into_iter().collect()
 }
 
-/// Find a node in the region tree by path
-fn find_node_by_path<'a>(region: &'a MemRegion, path: &[usize]) -> Option<&'a MemRegion> {
-    if path.is_empty() {
-        return Some(region);
-    }
-
-    match region {
-        MemRegion::Leaf { .. } => None,
-        MemRegion::Group { children, .. } => {
-            let first = path[0];
-            children
-                .get(first)
-                .and_then(|child| find_node_by_path(child, &path[1..]))
-        }
-    }
-}
-
-/// Generate a node ID from a path
-fn path_to_id(prefix: &str, path: &[usize]) -> String {
-    if path.is_empty() {
-        prefix.to_string()
-    } else {
-        format!(
-            "{}_{}",
+/// Generate Mermaid representation with hierarchical subgraphs based on path
+fn blocks_to_mermaid_hierarchical(blocks: &[MemBlock], prefix: &str) -> String {
+    let mut out = String::new();
+    let groups = group_blocks_by_path(blocks);
+    
+    for (group_path, group_blocks) in groups {
+        let group_name = if group_path.is_empty() {
+            "root".to_string()
+        } else {
+            format!(
+                "[{}]",
+                group_path
+                    .iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        
+        let subgraph_id = format!(
+            "{}_group_{}",
             prefix,
-            path.iter()
+            group_path
+                .iter()
                 .map(|i| i.to_string())
                 .collect::<Vec<_>>()
                 .join("_")
-        )
+        );
+        
+        if group_blocks.len() > 1 {
+            out.push_str(&format!("    subgraph {subgraph_id} [\"{group_name}\"]\n"));
+            for block in &group_blocks {
+                let id = format!("{}_{}", prefix, block.addr);
+                let label = format!("Addr: {}\\nSize: {}\\n{}", block.addr, block.size, block.node_type);
+                out.push_str(&format!("      {id}[\"{label}\"]\n"));
+            }
+            out.push_str("    end\n");
+        } else {
+            // Single block, no subgraph needed
+            for block in &group_blocks {
+                let id = format!("{}_{}", prefix, block.addr);
+                let label = format!(
+                    "{}\\nAddr: {}\\nSize: {}",
+                    block.label, block.addr, block.size
+                );
+                out.push_str(&format!("    {id}[\"{label}\"]\n"));
+            }
+        }
     }
+    
+    out
 }
 
-/// Converts the patches to a Mermaid flowchart string.
+/// Converts the patches to a Mermaid flowchart string with horizontal layout.
 fn patches_to_mermaid(
-    old_map: &MemRegion,
-    new_map: &MemRegion,
+    old_blocks: &[MemBlock],
+    new_blocks: &[MemBlock],
     patches: impl Iterator<Item = CopyFromPatch>,
 ) -> String {
     let mut out = String::new();
+    out.push_str("%%{init: {'theme':'base', 'themeVariables': {'fontSize':'14px'}}}%%\n");
     out.push_str("flowchart LR\n");
 
-    out.push_str("  subgraph OldMemory\n");
-    out.push_str("  direction TB\n");
-    out.push_str(&region_to_mermaid(old_map, "O", 2));
-    out.push_str("  end\n");
-
-    out.push_str("  subgraph NewMemory\n");
-    out.push_str("  direction TB\n");
-    out.push_str(&region_to_mermaid(new_map, "N", 2));
+    out.push_str("  subgraph OldMemory [\"🗂️ Old Memory Layout\"]\n");
+    out.push_str("    direction TB\n");
+    out.push_str(&blocks_to_mermaid_hierarchical(old_blocks, "O"));
     out.push_str("  end\n\n");
 
-    for p in patches {
-        let old_node = find_node_by_path(old_map, &p.old_path);
-        let new_node = find_node_by_path(new_map, &p.new_path);
+    out.push_str("  subgraph NewMemory [\"🗂️ New Memory Layout\"]\n");
+    out.push_str("    direction TB\n");
+    out.push_str(&blocks_to_mermaid_hierarchical(new_blocks, "N"));
+    out.push_str("  end\n\n");
 
-        match (old_node, new_node) {
-            (Some(MemRegion::Leaf { .. }), Some(MemRegion::Leaf { .. })) => {
-                let old_id = path_to_id("O", &p.old_path);
-                let new_id = path_to_id("N", &p.new_path);
-                out.push_str(&format!("  {old_id} -->|copy| {new_id}\n"));
-            }
-            (Some(_), Some(_)) => {
-                // Both are groups - still generate a link
-                let old_id = path_to_id("O", &p.old_path);
-                let new_id = path_to_id("N", &p.new_path);
-                out.push_str(&format!("  {old_id} -.->|copy| {new_id}\n"));
-            }
-            _ => {
-                out.push_str(&format!(
-                    "  %% missing mapping for {:?} -> {:?}\n",
-                    p.old_path, p.new_path
-                ));
-            }
-        }
+    out.push_str("  %% Copy operations (patches)\n");
+    let patches_vec: Vec<_> = patches.collect();
+    for p in &patches_vec {
+        let old_id = format!("O_{}", p.src_addr);
+        let new_id = format!("N_{}", p.dst_addr);
+        let label = format!("{} words", p.size);
+        out.push_str(&format!("  {old_id} ==>|{label}| {new_id}\n"));
     }
     out
 }
@@ -181,8 +222,7 @@ fn main() -> Result<()> {
     let old_state_skeleton = get_state_tree_from_file(old_file)?;
     let new_state_skeleton = get_state_tree_from_file(new_file)?;
     let patches = take_diff(&old_state_skeleton, &new_state_skeleton);
-    let old_tree = StateTree::from(old_state_skeleton);
-    let new_tree = StateTree::from(new_state_skeleton);
+    
     eprintln!(
         "Computed patches:\n{}",
         patches
@@ -191,9 +231,10 @@ fn main() -> Result<()> {
             .collect::<Vec<_>>()
             .join("\n")
     );
-    let old_map = build_memory_map(&old_tree);
-    let new_map = build_memory_map(&new_tree);
-    let mermaid = patches_to_mermaid(&old_map, &new_map, patches.into_iter());
+    
+    let old_blocks = build_memory_blocks(&old_state_skeleton);
+    let new_blocks = build_memory_blocks(&new_state_skeleton);
+    let mermaid = patches_to_mermaid(&old_blocks, &new_blocks, patches.into_iter());
 
     println!("{mermaid}");
 

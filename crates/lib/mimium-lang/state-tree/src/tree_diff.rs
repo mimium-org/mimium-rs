@@ -7,23 +7,22 @@ pub fn take_diff<T: SizedType>(
     old_skeleton: &StateTreeSkeleton<T>,
     new_skeleton: &StateTreeSkeleton<T>,
 ) -> HashSet<CopyFromPatch> {
-    let patchset = build_patches_recursive(old_skeleton, new_skeleton, vec![], vec![]);
-    patchset.into_iter().collect()
+    build_patches_recursive(old_skeleton, new_skeleton, vec![], vec![])
 }
 
-/// LCSアルゴリズムの結果を表すEnum
+/// Enum representing the result of LCS algorithm
 #[derive(Debug)]
 pub enum DiffResult {
-    /// 両方のシーケンスに共通して存在する要素
+    /// Element that exists in both sequences
     Common { old_index: usize, new_index: usize },
-    /// 古いシーケンスにのみ存在する要素（削除された）
+    /// Element that exists only in the old sequence (deleted)
     Delete { old_index: usize },
-    /// 新しいシーケンスにのみ存在する要素（挿入された）
+    /// Element that exists only in the new sequence (inserted)
     Insert { new_index: usize },
 }
 
-/// 2つのスライスを比較し、スコアに基づいて最適なマッチングを返す
-/// `score_fn`クロージャでマッチスコア（0.0～1.0）を計算する
+/// Compare two slices and return optimal matching based on scores.
+/// The `score_fn` closure calculates the match score (0.0 to 1.0).
 pub fn lcs_by_score<T>(
     old: &[T],
     new: &[T],
@@ -32,7 +31,7 @@ pub fn lcs_by_score<T>(
     let old_len = old.len();
     let new_len = new.len();
 
-    // DP テーブル: dp[i][j] = 累積スコア
+    // DP table: dp[i][j] = cumulative score
     let mut dp = vec![vec![0.0; new_len + 1]; old_len + 1];
 
     for i in 1..=old_len {
@@ -40,15 +39,15 @@ pub fn lcs_by_score<T>(
             let score = score_fn(&old[i - 1], &new[j - 1]);
 
             if score > 0.0 {
-                // マッチした場合: 対角線の値 + マッチスコア
+                // If matched: diagonal value + match score
                 dp[i][j] = (dp[i - 1][j - 1] + score).max(dp[i - 1][j].max(dp[i][j - 1]));
             } else {
-                // マッチしなかった場合: 最大値を取る
+                // If not matched: take the maximum value
                 dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]);
             }
         }
     }
-    // バックトラックして結果を復元
+    // Backtrack to restore the result
     let mut results = Vec::new();
     let (mut i, mut j) = (old_len, new_len);
 
@@ -57,7 +56,7 @@ pub fn lcs_by_score<T>(
             let score = score_fn(&old[i - 1], &new[j - 1]);
 
             if score > 0.0 {
-                // マッチしている可能性が高い
+                // Likely matched
                 results.push(DiffResult::Common {
                     old_index: i - 1,
                     new_index: j - 1,
@@ -80,7 +79,7 @@ pub fn lcs_by_score<T>(
         }
     }
 
-    results.reverse(); // 結果を正しい順序にする
+    results.reverse(); // Reverse to get the correct order
     results
 }
 
@@ -102,28 +101,69 @@ fn nodes_match<T: SizedType>(old: &StateTreeSkeleton<T>, new: &StateTreeSkeleton
     }
 }
 
+/// Retrieve a node from a Skeleton using a path
+fn get_node_at_path<'a, T: SizedType>(
+    skeleton: &'a StateTreeSkeleton<T>,
+    path: &[usize],
+) -> Option<&'a StateTreeSkeleton<T>> {
+    if path.is_empty() {
+        return Some(skeleton);
+    }
+    
+    match skeleton {
+        StateTreeSkeleton::FnCall(children) => {
+            let child = children.get(path[0])?;
+            get_node_at_path(child, &path[1..])
+        }
+        _ => None,
+    }
+}
+
 fn build_patches_recursive<T: SizedType>(
-    old_node: &StateTreeSkeleton<T>,
-    new_node: &StateTreeSkeleton<T>,
+    old_skeleton: &StateTreeSkeleton<T>,
+    new_skeleton: &StateTreeSkeleton<T>,
     old_path: Vec<usize>,
     new_path: Vec<usize>,
 ) -> HashSet<CopyFromPatch> {
-    // ノードが完全に一致する場合は、単一のパッチを返す
+    // Retrieve the current node from the path
+    let old_node = get_node_at_path(old_skeleton, &old_path).expect("Invalid old_path");
+    let new_node = get_node_at_path(new_skeleton, &new_path).expect("Invalid new_path");
+    
+    // If the nodes are completely matched, return a single patch
     if nodes_match(old_node, new_node) {
-        return [CopyFromPatch { old_path, new_path }].into_iter().collect();
+        // Convert path to address
+        let (src_addr, size) = old_skeleton
+            .path_to_address(&old_path)
+            .expect("Invalid old_path");
+        let (dst_addr, dst_size) = new_skeleton
+            .path_to_address(&new_path)
+            .expect("Invalid new_path");
+
+        debug_assert_eq!(
+            size, dst_size,
+            "Size mismatch between matched nodes at old_path {old_path:?} and new_path {new_path:?}"
+        );
+
+        return [CopyFromPatch {
+            src_addr,
+            dst_addr,
+            size,
+        }]
+        .into_iter()
+        .collect();
     }
 
     match (old_node, new_node) {
         (StateTreeSkeleton::FnCall(old_children), StateTreeSkeleton::FnCall(new_children)) => {
-            // 最初に全ての子ノードのパッチを計算（スコア計算の副作用を避けるため）
+            // First, calculate patches for all child nodes (to avoid side effects in score calculation)
             let mut child_patches_map = Vec::new();
-            for (old_idx, old_child) in old_children.iter().enumerate() {
-                for (new_idx, new_child) in new_children.iter().enumerate() {
+            for old_idx in 0..old_children.len() {
+                for new_idx in 0..new_children.len() {
                     let child_old_path = [old_path.clone(), vec![old_idx]].concat();
                     let child_new_path = [new_path.clone(), vec![new_idx]].concat();
                     let patches = build_patches_recursive(
-                        old_child,
-                        new_child,
+                        old_skeleton,
+                        new_skeleton,
                         child_old_path,
                         child_new_path,
                     );
@@ -136,7 +176,7 @@ fn build_patches_recursive<T: SizedType>(
                 }
             }
 
-            // LCSでマッチングを見つける
+            // Find matching using LCS
             let old_c_with_id: Vec<_> = old_children.iter().enumerate().collect();
             let new_c_with_id: Vec<_> = new_children.iter().enumerate().collect();
 
@@ -152,7 +192,7 @@ fn build_patches_recursive<T: SizedType>(
                 },
             );
 
-            // LCS結果に基づいてパッチを収集
+            // Collect patches based on LCS results
             let mut c_patches = HashSet::new();
             for result in &lcs_results {
                 if let DiffResult::Common {
