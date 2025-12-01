@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v3.1.2
+
+### Fixed bug
+
+- Fixed that copy patches are not applied correctly(#177).
+
 ## v3.1.1
 
 ### Fixed bug
