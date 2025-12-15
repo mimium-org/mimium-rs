@@ -13,6 +13,13 @@ impl Location {
     pub fn new(span: Span, path: PathBuf) -> Self {
         Self { span, path }
     }
+
+    pub fn internal() -> Self {
+        Self {
+            span: Span { start: 0, end: 0 },
+            path: PathBuf::from("internal"),
+        }
+    }
 }
 impl Default for Location {
     fn default() -> Self {

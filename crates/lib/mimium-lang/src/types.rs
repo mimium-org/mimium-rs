@@ -161,6 +161,24 @@ impl Type {
             _ => false,
         }
     }
+    
+    pub fn contains_type_scheme(&self) -> bool {
+        match self {
+            Type::TypeScheme(_) => true,
+            Type::Array(t) => t.to_type().contains_type_scheme(),
+            Type::Tuple(t) => t.iter().any(|t| t.to_type().contains_type_scheme()),
+            Type::Record(t) => t
+                .iter()
+                .any(|RecordTypeField { ty, .. }| ty.to_type().contains_type_scheme()),
+            Type::Function { arg, ret } => {
+                arg.to_type().contains_type_scheme() || ret.to_type().contains_type_scheme()
+            }
+            Type::Ref(t) => t.to_type().contains_type_scheme(),
+            Type::Code(t) => t.to_type().contains_type_scheme(),
+            _ => false,
+        }
+    }
+
     pub fn is_intermediate(&self) -> Option<Arc<RwLock<TypeVar>>> {
         match self {
             Type::Intermediate(tvar) => Some(tvar.clone()),
@@ -258,6 +276,60 @@ impl Type {
             x => x.to_string(),
         }
     }
+
+    /// Generate a mangled name for monomorphization.
+    /// This creates a unique string representation of the type that can be used
+    /// to create specialized function names.
+    pub fn to_mangled_string(&self) -> String {
+        match self {
+            Type::Primitive(p) => match p {
+                PType::Unit => "unit".to_string(),
+                PType::Int => "int".to_string(),
+                PType::Numeric => "num".to_string(),
+                PType::String => "str".to_string(),
+            },
+            Type::Array(a) => {
+                format!("arr_{}", a.to_type().to_mangled_string())
+            }
+            Type::Tuple(v) => {
+                let mangled_types = v
+                    .iter()
+                    .map(|x| x.to_type().to_mangled_string())
+                    .collect::<Vec<_>>()
+                    .join("_");
+                format!("tup_{}", mangled_types)
+            }
+            Type::Record(v) => {
+                let mangled_fields = v
+                    .iter()
+                    .map(|RecordTypeField { key, ty, .. }| {
+                        format!("{}_{}", key.as_str(), ty.to_type().to_mangled_string())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("_");
+                format!("rec_{}", mangled_fields)
+            }
+            Type::Function { arg, ret } => {
+                format!(
+                    "fn_{}_{}",
+                    arg.to_type().to_mangled_string(),
+                    ret.to_type().to_mangled_string()
+                )
+            }
+            Type::Ref(x) => format!("ref_{}", x.to_type().to_mangled_string()),
+            Type::Code(c) => format!("code_{}", c.to_type().to_mangled_string()),
+            Type::Intermediate(tvar) => {
+                let tv = tvar.read().unwrap();
+                tv.parent
+                    .map(|p| p.to_type().to_mangled_string())
+                    .unwrap_or_else(|| format!("ivar_{}", tv.var.0))
+            }
+            Type::TypeScheme(id) => format!("scheme_{}", id.0),
+            Type::Any => "any".to_string(),
+            Type::Failure => "fail".to_string(),
+            Type::Unknown => "unknown".to_string(),
+        }
+    }
 }
 
 impl TypeNodeId {
@@ -270,6 +342,12 @@ impl TypeNodeId {
             _ => *self,
         }
     }
+
+    /// Generate a mangled string for this type, useful for monomorphization.
+    pub fn to_mangled_string(&self) -> String {
+        self.to_type().to_mangled_string()
+    }
+
     pub fn apply_fn<F>(&self, mut closure: F) -> Self
     where
         F: FnMut(Self) -> Self,

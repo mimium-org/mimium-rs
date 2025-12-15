@@ -48,6 +48,14 @@ struct DefaultArgData {
     pub ty: TypeNodeId,
 }
 
+/// Key for identifying a monomorphized function instance.
+/// Consists of the original function name and the mangled type signature.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct MonomorphKey {
+    pub original_name: Symbol,
+    pub type_signature: String,
+}
+
 #[derive(Debug)]
 struct Context {
     typeenv: InferContext,
@@ -57,6 +65,8 @@ struct Context {
     reg_count: VReg,
     program: Mir,
     default_args_map: BTreeMap<FunctionId, Vec<DefaultArgData>>,
+    /// Map from monomorphization key to the function ID of the specialized function
+    monomorph_map: BTreeMap<MonomorphKey, FunctionId>,
     data: Vec<ContextData>,
     data_i: usize,
 }
@@ -75,6 +85,7 @@ impl Context {
             fn_label: None,
             anonymous_fncount: 0,
             default_args_map: BTreeMap::new(),
+            monomorph_map: BTreeMap::new(),
             data: vec![ContextData::default()],
             data_i: 0,
         }
@@ -406,6 +417,53 @@ impl Context {
             LookupRes::Global(v) => LookupRes::Global(v.clone()),
             LookupRes::None => LookupRes::None,
         }
+    }
+
+    /// Get or create a monomorphized version of a generic function.
+    /// Returns the function ID of the specialized function.
+    fn get_or_create_monomorphized_function(
+        &mut self,
+        original_name: Symbol,
+        arg_type: TypeNodeId,
+        ret_type: TypeNodeId,
+        original_fid: FunctionId,
+    ) -> FunctionId {
+        let type_signature = format!(
+            "{}_{}",
+            arg_type.to_mangled_string(),
+            ret_type.to_mangled_string()
+        );
+        
+        let key = MonomorphKey {
+            original_name,
+            type_signature: type_signature.clone(),
+        };
+
+        if let Some(fid) = self.monomorph_map.get(&key) {
+            return *fid;
+        }
+
+        // Create a new specialized function name
+        let specialized_name = format!("{}_mono_{}", original_name.as_str(), type_signature).to_symbol();
+        
+        log::debug!(
+            "Creating monomorphized function: {} for types ({} -> {})",
+            specialized_name,
+            arg_type.to_type(),
+            ret_type.to_type()
+        );
+
+        // Clone the original function and specialize it
+        let original_fn = self.program.functions[original_fid.0 as usize].clone();
+        let new_fid = FunctionId(self.program.functions.len() as u64);
+        
+        let mut specialized_fn = original_fn.clone();
+        specialized_fn.label = specialized_name;
+        
+        self.program.functions.push(specialized_fn);
+        self.monomorph_map.insert(key, new_fid);
+        
+        new_fid
     }
 
     pub fn eval_literal(&mut self, lit: &Literal, _span: &Span) -> VPtr {
@@ -820,16 +878,61 @@ impl Context {
                 (result, ty, [states, states2].concat())
             }
             Expr::Apply(f, args) => {
-                let (f, ft, app_state) = self.eval_expr(*f);
-                let del = self.try_make_delay(&f, args);
+                let (f_val, ft, app_state) = self.eval_expr(*f);
+                let del = self.try_make_delay(&f_val, args);
                 if let Some((d, states)) = del {
                     return (d, numeric!(), states);
                 }
+                
                 // Get function parameter info
                 let (at, rt) = if let Type::Function { arg, ret } = ft.to_type() {
                     (arg, ret)
                 } else {
                     panic!("non function type {} {} ", ft.to_type(), ty.to_type());
+                };
+
+                // Check if this is a generic function that needs monomorphization
+                let needs_monomorphization = at.to_type().contains_type_scheme() 
+                    || rt.to_type().contains_type_scheme();
+
+                // If we have a generic external function (like `map`), we need to monomorphize it
+                let (f_to_call, monomorphized_rt) = if needs_monomorphization {
+                    if let Value::ExtFunction(fn_name, _fn_ty) = f_val.as_ref() {
+                        // Infer the concrete types from the arguments and expected return type
+                        // For now, use the types from type inference (ty for return, args types for arguments)
+                        let concrete_arg_ty = self.typeenv.infer_type(*args.first().expect("map needs args")).unwrap_or(at);
+                        let concrete_ret_ty = ty;
+                        
+                        log::debug!(
+                            "Monomorphizing generic function '{}' with arg type: {}, ret type: {}",
+                            fn_name,
+                            concrete_arg_ty.to_type(),
+                            concrete_ret_ty.to_type()
+                        );
+                        
+                        // Create a monomorphized version of the external function
+                        let mangled_name = format!(
+                            "{}_mono_{}_{}",
+                            fn_name.as_str(),
+                            concrete_arg_ty.to_mangled_string(),
+                            concrete_ret_ty.to_mangled_string()
+                        ).to_symbol();
+                        
+                        let concrete_fn_ty = Type::Function {
+                            arg: concrete_arg_ty,
+                            ret: concrete_ret_ty,
+                        }.into_id();
+                        
+                        let monomorphized_fn = Arc::new(Value::ExtFunction(mangled_name, concrete_fn_ty));
+                        (monomorphized_fn, concrete_ret_ty)
+                    } else {
+                        // For non-external functions, we would need to clone and specialize the function body
+                        // This is more complex and might be implemented later
+                        log::warn!("Monomorphization of non-external generic functions not yet implemented");
+                        (f_val.clone(), rt)
+                    }
+                } else {
+                    (f_val.clone(), rt)
                 };
 
                 // Handle parameter packing/unpacking if needed
@@ -885,7 +988,7 @@ impl Context {
                                                                 (field_val, kv.ty)
                                                             },
                                                 Some((SearchRes::Default, kv)) => {
-                                                  if let Value::Function(fid) = f.as_ref() {
+                                                  if let Value::Function(fid) = f_val.as_ref() {
                                                      let fid=      FunctionId(*fid as u64);
                                                         log::trace!("searching default argument for {} in function {}", kv.key, self.program.functions[fid.0 as usize].label.as_str());
                                                         let default_val = self.get_default_arg_call(kv.key, fid).expect(format!("msg: default argument {} not found", kv.key).as_str());
@@ -915,11 +1018,11 @@ impl Context {
                     self.eval_args(args)
                 };
 
-                let (res, state) = match f.as_ref() {
+                let (res, state) = match f_to_call.as_ref() {
                     Value::Global(v) => match v.as_ref() {
-                        Value::Function(idx) => self.emit_fncall(*idx as u64, atvvec.clone(), rt),
+                        Value::Function(idx) => self.emit_fncall(*idx as u64, atvvec.clone(), monomorphized_rt),
                         Value::Register(_) => (
-                            self.push_inst(Instruction::CallCls(v.clone(), atvvec.clone(), rt)),
+                            self.push_inst(Instruction::CallCls(v.clone(), atvvec.clone(), monomorphized_rt)),
                             vec![],
                         ),
                         _ => {
@@ -930,11 +1033,11 @@ impl Context {
                         //closure
                         //do not increment state size for closure
                         (
-                            self.push_inst(Instruction::CallCls(f.clone(), atvvec.clone(), rt)),
+                            self.push_inst(Instruction::CallCls(f_to_call.clone(), atvvec.clone(), monomorphized_rt)),
                             vec![],
                         )
                     }
-                    Value::Function(idx) => self.emit_fncall(*idx as u64, atvvec.clone(), rt),
+                    Value::Function(idx) => self.emit_fncall(*idx as u64, atvvec.clone(), monomorphized_rt),
                     Value::ExtFunction(label, _ty) => {
                         let (res, states) = if let (Some(res), states) =
                             self.make_intrinsics(*label, &atvvec)
@@ -943,7 +1046,7 @@ impl Context {
                         } else {
                             // we assume non-builtin external functions are stateless for now
                             (
-                                self.push_inst(Instruction::Call(f.clone(), atvvec.clone(), rt)),
+                                self.push_inst(Instruction::Call(f_to_call.clone(), atvvec.clone(), monomorphized_rt)),
                                 vec![],
                             )
                         };
@@ -953,7 +1056,7 @@ impl Context {
                     Value::None => unreachable!(),
                     _ => todo!(),
                 };
-                (res, rt, [app_state, arg_states, state].concat())
+                (res, monomorphized_rt, [app_state, arg_states, state].concat())
             }
 
             Expr::Lambda(ids, _rett, body) => {

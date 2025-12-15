@@ -500,6 +500,7 @@ impl InferContext {
     fn instantiate(&mut self, t: TypeNodeId) -> TypeNodeId {
         match t.to_type() {
             Type::TypeScheme(id) => {
+                log::debug!("instantiate typescheme id: {:?}", id);
                 if let Some(tvar) = self.instantiated_map.get(&id) {
                     *tvar
                 } else {
