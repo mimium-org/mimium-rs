@@ -502,7 +502,7 @@ pub mod program {
             }
             ProgramStatement::GlobalStatement(stmt) => statement::pretty(stmt, allocator),
             ProgramStatement::Import(symbol) => allocator
-                .text("import")
+                .text("include")
                 .append(allocator.text(symbol).double_quotes().parens()),
             ProgramStatement::Comment(symbol) => {
                 allocator.text("//").append(allocator.text(symbol))
