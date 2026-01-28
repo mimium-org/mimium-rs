@@ -270,6 +270,15 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+        if let Some(trivia_indices) = self.preparsed.leading_trivia_map.get(&self.current) {
+            for &trivia_idx in trivia_indices {
+                if let Some(token) = self.tokens.get(trivia_idx) {
+                    if token.kind == TokenKind::LineBreak {
+                        return true;
+                    }
+                }
+            }
+        }
         false
     }
 
@@ -639,6 +648,10 @@ impl<'a> Parser<'a> {
         self.parse_primary();
 
         loop {
+            // Do not allow postfix operators across a line break
+            if self.has_trailing_linebreak() {
+                break;
+            }
             match self.peek() {
                 Some(TokenKind::ParenBegin) => {
                     // Function call
