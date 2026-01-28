@@ -1,6 +1,8 @@
-# Parser for mimium Language Server
+# Parser for mimium
 
-This directory contains a prototype implementation of a parser for the mimium Language Server, based on the Red-Green Syntax Tree pattern.
+This directory contains the parser implementation for mimium, based on the Red-Green Syntax Tree pattern.
+
+For the formal syntax specification, see [ebnf.md](./ebnf.md).
 
 ## Overview
 
@@ -20,7 +22,7 @@ The parser consists of four main stages:
 
 Converts source text into position-aware tokens using chumsky parser combinators.
 
-- **Input**: Source text (String)
+- **Input**: Source text (`&str`)
 - **Output**: Sequence of `Token`s
 - Each token stores:
   - `kind`: Type of token (identifier, keyword, literal, etc.)
@@ -30,7 +32,6 @@ Converts source text into position-aware tokens using chumsky parser combinators
 - **Error Recovery**: Uses chumsky's error recovery to continue parsing after encountering invalid characters
   - Invalid characters are marked with `TokenKind::Error`
   - Parser continues collecting valid tokens after errors
-  - All errors are logged for debugging
 
 ### 2. Pre-parser (`preparser.rs`)
 
@@ -58,60 +59,45 @@ Parses token indices into a Green Tree (Concrete Syntax Tree).
 - Green nodes represent the complete syntactic structure
 - Can be shared and cached across multiple uses
 - Implements recursive descent parsing
-- **Tuple and Record Support**:
-  - Uses lookahead to distinguish tuples `(a, b)` from parenthesized expressions `(a)`
-  - Uses lookahead to distinguish records `{a = 1}` from blocks `{stmt}`
+- **Lookahead Disambiguation**:
+  - Tuples `(a, b)` vs parenthesized expressions `(a)`
+  - Records `{a = 1}` vs blocks `{stmt}`
   - Tuples require a comma (single element tuples need trailing comma)
   - Records require field assignment pattern `ident = expr`
 
-### 4. AST Parser (`red.rs`)
+### 4. Red Tree / AST (`red.rs`, `lower.rs`)
 
 Converts Green Tree to Red Tree and AST.
 
 - **Input**: Green Tree
 - **Output**: 
-  - Red Tree: Position-aware nodes with absolute offsets and parent references
+  - Red Tree: Position-aware nodes with absolute offsets
   - AST: Traditional abstract syntax tree without trivia
 - Red nodes are created on-demand from Green nodes
-- **Parent References**: Red nodes maintain weak references to parent nodes for bottom-up traversal
-  - Enables efficient upward navigation (e.g., finding enclosing function, scope)
-  - Avoids circular references using `Weak<RedNode>`
-  - Provides `parent()`, `ancestors()`, and `is_descendant_of()` methods
 - **Let-body-then Chain Transformation**: When converting to AST, flat statement lists are transformed into nested Let structures
   - Green/Red Tree: Statements stored as a flat list for full-fidelity representation
   - AST: Let bindings nested as `Let(x, value, Let(y, value2, body))` for semantic analysis
   - Matches the structure expected by the main mimium compiler
-- AST is suitable for semantic analysis
 
-## Usage Example
+## Usage
 
 ```rust
-use mimium_language_server::parser;
+use mimium_lang::compiler::parser;
 
 let source = "fn dsp() { 42 }";
 
 // Complete pipeline
-let (ast, tokens, preparsed, arena) = parser::parse(source);
+let (ast, tokens, preparsed, arena, errors) = parser::parse(source);
 
 // Or step by step:
 let tokens = parser::tokenize(source);
 let preparsed = parser::preparse(&tokens);
-let (cst, arena, annotated_tokens) = parser::parse_cst(tokens, &preparsed);
-let red = parser::green_to_red(cst, &arena, 0);
-let ast = parser::red_to_ast(&red, source, &annotated_tokens, &arena);
+let (green_id, arena, tokens, errors) = parser::parse_cst(tokens, &preparsed);
+let red = parser::green_to_red(green_id, 0);
+let ast = parser::red_to_ast(&red, source, &tokens, &arena);
 ```
 
-Run the demos:
-
-```bash
-# Main demo showing the full pipeline
-cargo run --package mimium-language-server --example parser_demo
-
-# Error recovery demo showing continued parsing after errors
-cargo run --package mimium-language-server --example error_recovery_demo
-```
-
-### Error Recovery Example
+### Error Recovery
 
 The tokenizer can recover from invalid characters and continue parsing:
 
@@ -140,33 +126,13 @@ This implementation follows the Red-Green Syntax Tree pattern used in rust-analy
 
 ## Testing
 
-The implementation includes comprehensive unit tests:
-
 ```bash
-cargo test --package mimium-language-server --lib
+cargo test -p mimium-lang parser
 ```
-
-All tests (28 total) should pass:
-- Tokenizer tests (8 tests including 2 error recovery tests)
-- Pre-parser tests (5 tests)
-- Green Tree tests (4 tests)
-- CST parser tests (3 tests)
-- Red Tree tests (3 tests)
-- Integration tests (5 tests)
-
-## Future Enhancements
-
-This is a prototype implementation. Future work could include:
-
-1. **More complete grammar**: Currently handles basic statements and expressions
-2. **Error recovery**: Better handling of syntax errors
-3. **Incremental parsing**: Reuse unchanged parts of the tree
-4. **Performance optimization**: Profile and optimize hot paths
-5. **Source maps**: Better tracking of macro expansions and includes
-6. **IDE features**: Implement code actions, refactorings using the full-fidelity tree
 
 ## References
 
+- [ebnf.md](./ebnf.md) - Formal syntax specification in EBNF
 - [rust-analyzer's rowan library](https://github.com/rust-lang/rust-analyzer/tree/master/crates/rowan)
 - [Roslyn's Red-Green Trees](https://ericlippert.com/2012/06/08/red-green-trees/)
 - [Simple but Powerful Pratt Parsing](https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html)

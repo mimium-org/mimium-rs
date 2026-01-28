@@ -4,15 +4,17 @@ pub mod green;
 mod lower;
 mod preparser;
 mod red;
-/// Parser for mimium Language Server
+/// Parser for mimium
 ///
 /// This module implements a parser based on the Red-Green Syntax Tree pattern.
 /// The parser preserves all information from the source code including comments and whitespace.
 ///
+/// For the formal syntax specification in EBNF, see `ebnf.md` in this directory.
+///
 /// ## Architecture
 ///
 /// 1. **Tokenizer** (`tokenizer.rs`): Converts source text into position-aware tokens
-///    - Input: Source text (String)
+///    - Input: Source text (`&str`)
 ///    - Output: Token sequence with position information
 ///    - Tokens store kind, start position, and length (not the actual value)
 ///
@@ -26,7 +28,7 @@ mod red;
 ///    - Output: Green Tree (position-independent, immutable CST)
 ///    - Represents the complete syntactic structure
 ///
-/// 4. **AST Parser** (`red.rs`): Converts Green Tree to Red Tree/AST
+/// 4. **AST Lowering** (`red.rs`, `lower.rs`): Converts Green Tree to Red Tree/AST
 ///    - Input: Green Tree
 ///    - Output: Red Tree (position-aware) or AST (without trivia)
 ///    - Red nodes have absolute positions
