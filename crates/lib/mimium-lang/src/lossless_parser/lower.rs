@@ -65,7 +65,9 @@ impl<'a> LosslessLowerer<'a> {
                                 if !pending_statements.is_empty() {
                                     if let Some(merged_expr) = into_then_expr(&pending_statements) {
                                         program_statements.push((
-                                            ProgramStatement::GlobalStatement(Statement::Single(merged_expr)),
+                                            ProgramStatement::GlobalStatement(Statement::Single(
+                                                merged_expr,
+                                            )),
                                             pending_span.clone(),
                                         ));
                                     }
@@ -89,7 +91,9 @@ impl<'a> LosslessLowerer<'a> {
             }
         }
 
-        Program { statements: program_statements }
+        Program {
+            statements: program_statements,
+        }
     }
 
     /// Lower a statement node. Unknown forms become `Statement::Error`.
@@ -145,11 +149,19 @@ impl<'a> LosslessLowerer<'a> {
         let (pat, pat_span) = self.lower_pattern(pattern_node)?;
 
         // Check for type annotation
-        let type_annotation = if let Some(type_anno_node) = self.find_child(node, |kind| kind == SyntaxKind::TypeAnnotation) {
+        let type_annotation = if let Some(type_anno_node) =
+            self.find_child(node, |kind| kind == SyntaxKind::TypeAnnotation)
+        {
             // Find the actual type node within the TypeAnnotation
             if let Some(type_children) = self.arena.children(type_anno_node) {
-                type_children.iter()
-                    .find(|c| self.arena.kind(**c).map(Self::is_type_kind).unwrap_or(false))
+                type_children
+                    .iter()
+                    .find(|c| {
+                        self.arena
+                            .kind(**c)
+                            .map(Self::is_type_kind)
+                            .unwrap_or(false)
+                    })
                     .map(|type_node| self.lower_type(*type_node))
             } else {
                 None
@@ -161,8 +173,9 @@ impl<'a> LosslessLowerer<'a> {
         let expr_nodes = self.collect_expr_nodes_after(node, pattern_node);
         let value = self.lower_expr_sequence(&expr_nodes);
         let loc = self.location_from_span(pat_span.clone());
-        
-        let ty = type_annotation.unwrap_or_else(|| Type::Unknown.into_id_with_location(loc.clone()));
+
+        let ty =
+            type_annotation.unwrap_or_else(|| Type::Unknown.into_id_with_location(loc.clone()));
         let typed = TypedPattern::new(pat, ty);
 
         Some(ProgramStatement::GlobalStatement(Statement::Let(
@@ -182,9 +195,9 @@ impl<'a> LosslessLowerer<'a> {
             .unwrap_or_else(|| (Vec::new(), self.node_span(node).unwrap_or(0..0)));
 
         // Check for return type annotation
-        let return_type = self.find_child(node, Self::is_type_kind).map(|type_node| {
-            self.lower_type(type_node)
-        });
+        let return_type = self
+            .find_child(node, Self::is_type_kind)
+            .map(|type_node| self.lower_type(type_node));
 
         let body_node = self
             .find_child(node, |kind| kind == SyntaxKind::BlockExpr)
@@ -265,7 +278,9 @@ impl<'a> LosslessLowerer<'a> {
             Some(SyntaxKind::SelfLiteral) => Expr::Literal(Literal::SelfLit).into_id(loc),
             Some(SyntaxKind::NowLiteral) => Expr::Literal(Literal::Now).into_id(loc),
             Some(SyntaxKind::SampleRateLiteral) => Expr::Literal(Literal::SampleRate).into_id(loc),
-            Some(SyntaxKind::PlaceHolderLiteral) => Expr::Literal(Literal::PlaceHolder).into_id(loc),
+            Some(SyntaxKind::PlaceHolderLiteral) => {
+                Expr::Literal(Literal::PlaceHolder).into_id(loc)
+            }
             Some(SyntaxKind::Identifier) => {
                 let text = self.text_of_first_token(node).unwrap_or("");
                 Expr::Var(text.to_symbol()).into_id(loc)
@@ -370,15 +385,14 @@ impl<'a> LosslessLowerer<'a> {
                 match self.arena.kind(*child) {
                     None => {
                         // Check if it's a valid identifier token (not |, commas, etc.)
-                        if let Some(token_index) = self.get_token_index(*child) {
-                            if let Some(token) = self.tokens.get(token_index) {
-                                if matches!(token.kind, TokenKind::Ident | TokenKind::IdentParameter) {
-                                    let ty = Type::Unknown.into_id_with_location(
-                                        self.location_from_span(self.node_span(node).unwrap_or(0..0)),
-                                    );
-                                    params.push(TypedId::new(token.text(self.source).to_symbol(), ty));
-                                }
-                            }
+                        if let Some(token_index) = self.get_token_index(*child)
+                            && let Some(token) = self.tokens.get(token_index)
+                            && matches!(token.kind, TokenKind::Ident | TokenKind::IdentParameter)
+                        {
+                            let ty = Type::Unknown.into_id_with_location(
+                                self.location_from_span(self.node_span(node).unwrap_or(0..0)),
+                            );
+                            params.push(TypedId::new(token.text(self.source).to_symbol(), ty));
                         }
                     }
                     Some(kind) if Self::is_expr_kind(kind) => {
@@ -522,25 +536,54 @@ impl<'a> LosslessLowerer<'a> {
 
                             // Lookahead for another '^' to enforce right-associativity
                             if let Some(next) = nodes.get(i + 1)
-                                && self.extract_binary_op(*next).map(|(o, _)| o) == Some(Op::Exponent)
+                                && self.extract_binary_op(*next).map(|(o, _)| o)
+                                    == Some(Op::Exponent)
                             {
-                                let (_, next_span) = self.extract_binary_op(*next).unwrap_or((Op::Exponent, 0..0));
+                                let (_, next_span) = self
+                                    .extract_binary_op(*next)
+                                    .unwrap_or((Op::Exponent, 0..0));
                                 let rhs2_nodes = self.child_exprs(*next);
                                 let rhs2 = self.lower_expr_sequence(&rhs2_nodes);
-                                let nested_loc = self.location_from_span(merge_spans(rhs1.to_span(), rhs2.to_span()));
-                                let nested_rhs = Expr::BinOp(rhs1, (Op::Exponent, next_span), rhs2).into_id(nested_loc);
-                                let final_loc = self.location_from_span(merge_spans(lhs.to_span(), nested_rhs.to_span()));
-                                acc = Some(Expr::BinOp(lhs, (Op::Exponent, op_span), nested_rhs).into_id(final_loc));
+                                let nested_loc = self.location_from_span(merge_spans(
+                                    rhs1.to_span(),
+                                    rhs2.to_span(),
+                                ));
+                                let nested_rhs = Expr::BinOp(rhs1, (Op::Exponent, next_span), rhs2)
+                                    .into_id(nested_loc);
+                                let final_loc = self.location_from_span(merge_spans(
+                                    lhs.to_span(),
+                                    nested_rhs.to_span(),
+                                ));
+                                acc = Some(
+                                    Expr::BinOp(lhs, (Op::Exponent, op_span), nested_rhs)
+                                        .into_id(final_loc),
+                                );
                                 i += 1; // consume the next '^'
-                            } else if let Expr::BinOp(left, (Op::At, at_span), right_immediate) = lhs.to_expr() {
+                            } else if let Expr::BinOp(left, (Op::At, at_span), right_immediate) =
+                                lhs.to_expr()
+                            {
                                 // Nest exponent on RHS of '@'
-                                let nested_loc = self.location_from_span(merge_spans(right_immediate.to_span(), rhs1.to_span()));
-                                let nested_rhs = Expr::BinOp(right_immediate, (Op::Exponent, op_span), rhs1).into_id(nested_loc);
-                                let final_loc = self.location_from_span(merge_spans(left.to_span(), nested_rhs.to_span()));
-                                acc = Some(Expr::BinOp(left, (Op::At, at_span), nested_rhs).into_id(final_loc));
+                                let nested_loc = self.location_from_span(merge_spans(
+                                    right_immediate.to_span(),
+                                    rhs1.to_span(),
+                                ));
+                                let nested_rhs =
+                                    Expr::BinOp(right_immediate, (Op::Exponent, op_span), rhs1)
+                                        .into_id(nested_loc);
+                                let final_loc = self.location_from_span(merge_spans(
+                                    left.to_span(),
+                                    nested_rhs.to_span(),
+                                ));
+                                acc = Some(
+                                    Expr::BinOp(left, (Op::At, at_span), nested_rhs)
+                                        .into_id(final_loc),
+                                );
                             } else {
-                                let loc = self.location_from_span(merge_spans(lhs.to_span(), rhs1.to_span()));
-                                acc = Some(Expr::BinOp(lhs, (Op::Exponent, op_span), rhs1).into_id(loc));
+                                let loc = self
+                                    .location_from_span(merge_spans(lhs.to_span(), rhs1.to_span()));
+                                acc = Some(
+                                    Expr::BinOp(lhs, (Op::Exponent, op_span), rhs1).into_id(loc),
+                                );
                             }
                         } else {
                             acc = Some(self.lower_expr(node));
@@ -557,7 +600,8 @@ impl<'a> LosslessLowerer<'a> {
                         // Check if there's a continuation
                         if i + 1 < nodes.len() {
                             let cont = self.lower_expr_sequence(&nodes[(i + 1)..]);
-                            let loc = self.location_from_span(merge_spans(assign.to_span(), cont.to_span()));
+                            let loc = self
+                                .location_from_span(merge_spans(assign.to_span(), cont.to_span()));
                             return Expr::Then(assign, Some(cont)).into_id(loc);
                         } else {
                             // No continuation in this sequence; just return bare assign
@@ -594,7 +638,8 @@ impl<'a> LosslessLowerer<'a> {
                     if let Some(prev) = acc.clone() {
                         if let Expr::Then(first, None) = prev.to_expr() {
                             let rhs = self.lower_expr_sequence(&nodes[i..]);
-                            let loc = self.location_from_span(merge_spans(prev.to_span(), rhs.to_span()));
+                            let loc =
+                                self.location_from_span(merge_spans(prev.to_span(), rhs.to_span()));
                             return Expr::Then(first, Some(rhs)).into_id(loc);
                         }
                     }
@@ -703,7 +748,7 @@ impl<'a> LosslessLowerer<'a> {
             let mut i = 0;
             while i < children.len() {
                 let child = children[i];
-                
+
                 // Check for identifier token
                 if let GreenNode::Token { token_index, .. } = self.arena.get(child)
                     && let Some(token) = self.tokens.get(*token_index)
@@ -722,9 +767,16 @@ impl<'a> LosslessLowerer<'a> {
                         if let Some(type_children) = self.arena.children(children[next]) {
                             ty = type_children
                                 .iter()
-                                .find(|c| self.arena.kind(**c).map(Self::is_type_kind).unwrap_or(false))
+                                .find(|c| {
+                                    self.arena
+                                        .kind(**c)
+                                        .map(Self::is_type_kind)
+                                        .unwrap_or(false)
+                                })
                                 .map(|type_node| self.lower_type(*type_node))
-                                .unwrap_or_else(|| Type::Unknown.into_id_with_location(loc.clone()));
+                                .unwrap_or_else(|| {
+                                    Type::Unknown.into_id_with_location(loc.clone())
+                                });
                         }
                         next += 1;
                     }
@@ -1071,21 +1123,14 @@ pub fn parse_program_lossless(source: &str, file_path: PathBuf) -> (Program, Vec
 pub fn parse_to_expr(
     source: &str,
     file_path: Option<PathBuf>,
-) -> (ExprNodeId, Vec<Box<dyn crate::utils::error::ReportableError>>) {
+) -> (
+    ExprNodeId,
+    Vec<Box<dyn crate::utils::error::ReportableError>>,
+) {
     let path = file_path.unwrap_or_default();
     let (prog, parse_errs) = parse_program_lossless(source, path.clone());
-    let errs = parse_errs
-        .into_iter()
-        .map(|e| -> Box<dyn crate::utils::error::ReportableError> {
-            Box::new(crate::utils::error::SimpleError {
-                message: format!("Parse error: {:?}", e),
-                span: crate::utils::metadata::Location {
-                    span: 0..0,
-                    path: path.clone(),
-                },
-            })
-        })
-        .collect::<Vec<_>>();
+    let errs =
+        crate::lossless_parser::parser_errors_to_reportable(source, path.clone(), parse_errs);
 
     if prog.statements.is_empty() {
         return (Expr::Error.into_id_without_span(), errs);
@@ -1135,10 +1180,10 @@ impl<'a> LosslessLowerer<'a> {
     /// Lower a type node to TypeNodeId
     fn lower_type(&self, node: GreenNodeId) -> crate::interner::TypeNodeId {
         use crate::types::{PType, RecordTypeField, Type};
-        
+
         let span = self.node_span(node).unwrap_or(0..0);
         let loc = self.location_from_span(span);
-        
+
         match self.arena.kind(node) {
             Some(SyntaxKind::PrimitiveType) => {
                 let text = self.text_of_first_token(node).unwrap_or("float");
@@ -1157,7 +1202,12 @@ impl<'a> LosslessLowerer<'a> {
                     .children(node)
                     .into_iter()
                     .flatten()
-                    .filter(|child| self.arena.kind(**child).map(Self::is_type_kind).unwrap_or(false))
+                    .filter(|child| {
+                        self.arena
+                            .kind(**child)
+                            .map(Self::is_type_kind)
+                            .unwrap_or(false)
+                    })
                     .map(|child| self.lower_type(*child))
                     .collect::<Vec<_>>();
                 Type::Tuple(elem_types).into_id_with_location(loc)
@@ -1169,16 +1219,22 @@ impl<'a> LosslessLowerer<'a> {
                     .children(node)
                     .into_iter()
                     .flatten()
-                    .filter(|child| self.arena.kind(**child).map(Self::is_type_kind).unwrap_or(false))
+                    .filter(|child| {
+                        self.arena
+                            .kind(**child)
+                            .map(Self::is_type_kind)
+                            .unwrap_or(false)
+                    })
                     .collect();
-                
+
                 if children.len() >= 2 {
                     let param_type = self.lower_type(*children[0]);
                     let return_type = self.lower_type(*children[1]);
                     Type::Function {
                         arg: param_type,
                         ret: return_type,
-                    }.into_id_with_location(loc)
+                    }
+                    .into_id_with_location(loc)
                 } else {
                     Type::Unknown.into_id_with_location(loc)
                 }
@@ -1187,7 +1243,7 @@ impl<'a> LosslessLowerer<'a> {
                 // Record type: {field: Type, ...}
                 let mut fields = Vec::new();
                 let mut current_field: Option<Symbol> = None;
-                
+
                 if let Some(children) = self.arena.children(node) {
                     for child in children {
                         // Check if it's an identifier token (not =, comma, etc.)
@@ -1202,11 +1258,7 @@ impl<'a> LosslessLowerer<'a> {
                         if self.arena.kind(*child).map(Self::is_type_kind) == Some(true)
                             && let Some(name) = current_field.take()
                         {
-                            fields.push(RecordTypeField::new(
-                                name,
-                                self.lower_type(*child),
-                                false,
-                            ));
+                            fields.push(RecordTypeField::new(name, self.lower_type(*child), false));
                         }
                     }
                 }

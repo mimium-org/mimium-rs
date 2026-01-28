@@ -525,19 +525,13 @@ pub fn pretty_print(
     width: usize,
 ) -> Result<String, Vec<Box<dyn ReportableError>>> {
     use mimium_lang::lossless_parser::parse_program_lossless;
+    use mimium_lang::lossless_parser::parser_errors_to_reportable;
     let (prog, parse_errs) = parse_program_lossless(src, file_path.clone().unwrap_or_default());
-    let errs = parse_errs
-        .into_iter()
-        .map(|e| -> Box<dyn ReportableError> {
-            Box::new(mimium_lang::utils::error::SimpleError {
-                message: format!("Parse error: {:?}", e),
-                span: mimium_lang::utils::metadata::Location {
-                    span: 0..0,
-                    path: file_path.clone().unwrap_or_default(),
-                },
-            })
-        })
-        .collect::<Vec<_>>();
+    let errs = parser_errors_to_reportable(
+        src,
+        file_path.clone().unwrap_or_default(),
+        parse_errs,
+    );
     if !errs.is_empty() {
         return Err(errs);
     }

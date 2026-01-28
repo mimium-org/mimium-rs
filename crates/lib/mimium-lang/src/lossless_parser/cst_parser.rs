@@ -43,7 +43,7 @@ pub struct ParserError {
 
 impl fmt::Display for ParserError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}] {}", self.token_index, self.detail)
+        write!(f, "{}", self.detail)
     }
 }
 
@@ -263,10 +263,10 @@ impl<'a> Parser<'a> {
         let prev_idx = self.current - 1;
         if let Some(trivia_indices) = self.preparsed.trailing_trivia_map.get(&prev_idx) {
             for &trivia_idx in trivia_indices {
-                if let Some(token) = self.tokens.get(trivia_idx) {
-                    if token.kind == TokenKind::LineBreak {
-                        return true;
-                    }
+                if let Some(token) = self.tokens.get(trivia_idx)
+                    && token.kind == TokenKind::LineBreak
+                {
+                    return true;
                 }
             }
         }
@@ -282,34 +282,18 @@ impl<'a> Parser<'a> {
         false
     }
 
-    /// Check if the token at current + offset has a leading linebreak in its trivia
-    fn has_leading_linebreak_at(&self, offset: usize) -> bool {
-        let idx = self.current + offset;
-        if let Some(trivia_indices) = self.preparsed.leading_trivia_map.get(&idx) {
-            for &trivia_idx in trivia_indices {
-                if let Some(token) = self.tokens.get(trivia_idx) {
-                    if token.kind == TokenKind::LineBreak {
-                        return true;
-                    }
-                }
-            }
+    /// Get previous token kind if there is no trivia between previous and current tokens.
+    fn prev_kind_if_adjacent(&self) -> Option<TokenKind> {
+        if self.current == 0 {
+            return None;
         }
-        false
-    }
-
-    /// Check if the token at current + offset has a trailing linebreak in its trivia
-    fn has_trailing_linebreak_at(&self, offset: usize) -> bool {
-        let idx = self.current + offset;
-        if let Some(trivia_indices) = self.preparsed.trailing_trivia_map.get(&idx) {
-            for &trivia_idx in trivia_indices {
-                if let Some(token) = self.tokens.get(trivia_idx) {
-                    if token.kind == TokenKind::LineBreak {
-                        return true;
-                    }
-                }
-            }
+        let curr_raw = *self.preparsed.token_indices.get(self.current)?;
+        let prev_raw = *self.preparsed.token_indices.get(self.current - 1)?;
+        if curr_raw == prev_raw + 1 {
+            self.tokens.get(prev_raw).map(|t| t.kind)
+        } else {
+            None
         }
-        false
     }
 
     /// Parse a statement
@@ -610,7 +594,11 @@ impl<'a> Parser<'a> {
         // In statement context (min_prec == 0), stop at linebreak after prefix
         // unless the next token is an infix operator (e.g. leading '|>').
         if min_prec == 0 && self.has_trailing_linebreak() {
-            if self.peek().and_then(|k| self.get_infix_precedence(k)).is_none() {
+            if self
+                .peek()
+                .and_then(|k| self.get_infix_precedence(k))
+                .is_none()
+            {
                 return;
             }
         }
@@ -621,10 +609,14 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 self.parse_infix_expr(prec);
-                
+
                 // After parsing infix, check for linebreak in statement context
                 if min_prec == 0 && self.has_trailing_linebreak() {
-                    if self.peek().and_then(|k| self.get_infix_precedence(k)).is_none() {
+                    if self
+                        .peek()
+                        .and_then(|k| self.get_infix_precedence(k))
+                        .is_none()
+                    {
                         break;
                     }
                 }
@@ -663,8 +655,8 @@ impl<'a> Parser<'a> {
             TokenKind::OpSum | TokenKind::OpMinus => Some(5),
             TokenKind::OpProduct | TokenKind::OpDivide | TokenKind::OpModulo => Some(6),
             TokenKind::OpExponent => Some(7),
-                // Pipe should have the lowest precedence to allow chaining with other operators
-                TokenKind::OpPipe => Some(0),
+            // Pipe should have the lowest precedence to allow chaining with other operators
+            TokenKind::OpPipe => Some(0),
             TokenKind::OpAt => Some(9),
             _ => None,
         }
@@ -702,6 +694,27 @@ impl<'a> Parser<'a> {
             _ => {
                 // Standard unary operator (-, +)
                 self.emit_node(SyntaxKind::UnaryExpr, |this| {
+                    if matches!(
+                        this.peek(),
+                        Some(TokenKind::OpSum) | Some(TokenKind::OpMinus)
+                    ) {
+                        if let Some(prev) = this.prev_kind_if_adjacent()
+                            && matches!(
+                                prev,
+                                TokenKind::OpSum
+                                    | TokenKind::OpMinus
+                                    | TokenKind::OpProduct
+                                    | TokenKind::OpDivide
+                                    | TokenKind::OpModulo
+                                    | TokenKind::OpExponent
+                            )
+                        {
+                            this.add_error(ParserError::invalid_syntax(
+                                this.current_token_index(),
+                                "Consecutive operators without whitespace are not allowed",
+                            ));
+                        }
+                    }
                     // Consume the unary operator
                     this.bump();
                     // Parse the operand with high precedence
@@ -1133,9 +1146,13 @@ impl<'a> Parser<'a> {
         let token1 = self.peek_ahead(1);
         let token2 = self.peek_ahead(2);
 
-        let is_record_key = matches!(token1, Some(TokenKind::Ident) | Some(TokenKind::IdentParameter));
+        let is_record_key = matches!(
+            token1,
+            Some(TokenKind::Ident) | Some(TokenKind::IdentParameter)
+        );
         let is_record_syntax = matches!(token1, Some(TokenKind::DoubleDot))
-            || (is_record_key && matches!(token2, Some(TokenKind::Assign) | Some(TokenKind::LeftArrow)));
+            || (is_record_key
+                && matches!(token2, Some(TokenKind::Assign) | Some(TokenKind::LeftArrow)));
 
         is_record_syntax
     }
@@ -1227,8 +1244,8 @@ impl<'a> Parser<'a> {
 
             while !this.check(TokenKind::BlockEnd) && !this.is_at_end() {
                 this.parse_statement();
-                
-                // After a statement, if there's trailing linebreak/semicolon, 
+
+                // After a statement, if there's trailing linebreak/semicolon,
                 // prepare for next statement. Otherwise, assume statement continues
                 // (but note that parse_statement itself stops at natural boundaries)
                 if this.has_trailing_linebreak() {

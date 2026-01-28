@@ -66,6 +66,8 @@ pub use preparser::{PreParsedTokens, preparse};
 pub use red::{AstNode, RedNode, red_to_ast};
 pub use token::{LosslessToken, TokenKind};
 pub use tokenizer::tokenize;
+use crate::utils::error::{ReportableError, SimpleError};
+use crate::utils::metadata::Location;
 
 /// Convenience function to create a Red node from a Green node
 pub fn green_to_red(green_id: GreenNodeId, offset: usize) -> std::sync::Arc<RedNode> {
@@ -89,6 +91,33 @@ pub fn parse(
     let ast = red_to_ast(&red, source, &tokens, &arena);
 
     (ast, tokens, preparsed, arena, errors)
+}
+
+/// Convert parser errors to ReportableError with source span.
+pub fn parser_errors_to_reportable(
+    source: &str,
+    file_path: std::path::PathBuf,
+    errors: Vec<cst_parser::ParserError>,
+) -> Vec<Box<dyn ReportableError>> {
+    let tokens = tokenize(source);
+    let fallback_span = tokens
+        .last()
+        .map(|t| t.start..t.end())
+        .unwrap_or(0..0);
+
+    errors
+        .into_iter()
+        .map(|err| {
+            let span = tokens
+                .get(err.token_index)
+                .map(|t| t.start..t.end())
+                .unwrap_or_else(|| fallback_span.clone());
+            Box::new(SimpleError {
+                message: format!("Parse error: {err}"),
+                span: Location { span, path: file_path.clone() },
+            }) as Box<dyn ReportableError>
+        })
+        .collect()
 }
 
 #[cfg(test)]
