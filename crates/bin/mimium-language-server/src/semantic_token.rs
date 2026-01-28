@@ -8,6 +8,8 @@ use mimium_lang::{
 };
 use tower_lsp::lsp_types::{SemanticTokenType, SemanticTokens};
 
+use crate::lossless_parser::{LosslessToken, TokenKind};
+
 /// Same as lstp_types::SemanticToken but lacks some fields like token_modifiers_bitset.
 #[derive(Debug)]
 pub struct ImCompleteSemanticToken {
@@ -69,6 +71,75 @@ fn token_to_semantic_token(token: &Token, span: &Span) -> Option<ImCompleteSeman
         length: span.end - span.start,
         token_type,
     })
+}
+
+/// Convert a lossless parser token to a semantic token
+fn lossless_token_to_semantic_token(token: &LosslessToken) -> Option<ImCompleteSemanticToken> {
+    let token_type = match token.kind {
+        TokenKind::Function
+        | TokenKind::Let
+        | TokenKind::LetRec
+        | TokenKind::If
+        | TokenKind::Else
+        | TokenKind::SelfLit
+        | TokenKind::Now
+        | TokenKind::SampleRate
+        | TokenKind::Macro
+        | TokenKind::Include
+        | TokenKind::StageKwd
+        | TokenKind::Main => get_token_id(&SemanticTokenType::KEYWORD),
+        TokenKind::Ident => get_token_id(&SemanticTokenType::VARIABLE),
+        TokenKind::Float | TokenKind::Int => get_token_id(&SemanticTokenType::NUMBER),
+        TokenKind::Str => get_token_id(&SemanticTokenType::STRING),
+        TokenKind::SingleLineComment | TokenKind::MultiLineComment => {
+            get_token_id(&SemanticTokenType::COMMENT)
+        }
+        TokenKind::Assign | TokenKind::OpPipe | TokenKind::OpAt | TokenKind::OpSum
+        | TokenKind::OpMinus | TokenKind::OpProduct | TokenKind::OpDivide | TokenKind::OpModulo
+        | TokenKind::OpExponent | TokenKind::OpEqual | TokenKind::OpNotEqual
+        | TokenKind::OpLessThan | TokenKind::OpLessEqual | TokenKind::OpGreaterThan
+        | TokenKind::OpGreaterEqual | TokenKind::OpAnd | TokenKind::OpOr
+        | TokenKind::OpUnknown => get_token_id(&SemanticTokenType::OPERATOR),
+        TokenKind::FloatType | TokenKind::IntegerType | TokenKind::StringType
+        | TokenKind::StructType => get_token_id(&SemanticTokenType::TYPE),
+        TokenKind::MacroExpand => get_token_id(&SemanticTokenType::MACRO),
+        // Skip whitespace, newlines, punctuation, and errors
+        TokenKind::Whitespace
+        | TokenKind::LineBreak
+        | TokenKind::ParenBegin
+        | TokenKind::ParenEnd
+        | TokenKind::BlockBegin
+        | TokenKind::BlockEnd
+        | TokenKind::ArrayBegin
+        | TokenKind::ArrayEnd
+        | TokenKind::LambdaArgBeginEnd
+        | TokenKind::Comma
+        | TokenKind::Colon
+        | TokenKind::SemiColon
+        | TokenKind::Arrow
+        | TokenKind::LeftArrow
+        | TokenKind::Dot
+        | TokenKind::DoubleDot
+        | TokenKind::BackQuote
+        | TokenKind::Dollar
+        | TokenKind::Sharp
+        | TokenKind::PlaceHolder
+        | TokenKind::Error
+        | TokenKind::Eof => return None,
+    };
+    Some(ImCompleteSemanticToken {
+        start: token.start,
+        length: token.length,
+        token_type,
+    })
+}
+
+/// Generate semantic tokens from lossless parser tokens
+pub fn tokens_from_lossless(tokens: &[LosslessToken]) -> Vec<ImCompleteSemanticToken> {
+    tokens
+        .iter()
+        .filter_map(lossless_token_to_semantic_token)
+        .collect()
 }
 
 pub fn parse(src: &str, uri: &str) -> ParseResult {

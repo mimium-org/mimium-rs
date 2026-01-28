@@ -275,6 +275,10 @@ impl Backend {
         let lossless_preparsed = lossless_parser::preparse(&lossless_tokens);
         let (lossless_root, lossless_arena) = lossless_parser::parse_cst(&lossless_tokens, &lossless_preparsed);
         
+        // Generate semantic tokens from lossless parser
+        let semantic_tokens = semantic_token::tokens_from_lossless(&lossless_tokens);
+        self.semantic_token_map.insert(url.to_string(), semantic_tokens);
+        
         // Store lossless parser results
         self.lossless_tokens_map.insert(url.to_string(), lossless_tokens.clone());
         self.lossless_root_map.insert(url.to_string(), lossless_root);
@@ -284,10 +288,9 @@ impl Backend {
         let ParseResult {
             ast,
             errors,
-            semantic_tokens,
+            semantic_tokens: _, // Ignore semantic tokens from old parser
         } = parse(src, url.as_str());
-        self.semantic_token_map
-            .insert(url.to_string(), semantic_tokens);
+        // Note: semantic_token_map is already populated above with lossless parser tokens
         let errs = {
             let ast = ast.wrap_to_staged_expr();
             let (_, _, typeerrs) = mirgen::typecheck(ast, &self.compiler_ctx.builtin_types, None);
