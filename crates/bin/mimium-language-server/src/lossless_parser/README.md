@@ -1,0 +1,133 @@
+# Lossless Parser for mimium Language Server
+
+This directory contains a prototype implementation of a lossless parser for the mimium Language Server, based on the Red-Green Syntax Tree pattern.
+
+## Overview
+
+The lossless parser preserves all information from the source code, including comments, whitespace, and exact positions. This makes it suitable for IDE features like:
+
+- Code formatting
+- Refactoring
+- Semantic highlighting
+- Code completion with context
+- Comment preservation during transformations
+
+## Architecture
+
+The parser consists of four main stages:
+
+### 1. Tokenizer (`tokenizer.rs`)
+
+Converts source text into position-aware tokens.
+
+- **Input**: Source text (String)
+- **Output**: Sequence of `LosslessToken`s
+- Each token stores:
+  - `kind`: Type of token (identifier, keyword, literal, etc.)
+  - `start`: Byte offset in source
+  - `length`: Length in bytes
+- Literals store only position information, not the actual value (values can be reconstructed from source + position)
+
+### 2. Pre-parser (`preparser.rs`)
+
+Separates trivia (comments, whitespace) from syntax tokens.
+
+- **Input**: Token sequence
+- **Output**: `PreParsedTokens` containing:
+  - `token_indices`: Indices of non-trivia tokens
+  - `leading_trivia_map`: Map from token index to leading trivia
+  - `trailing_trivia_map`: Map from token index to trailing trivia
+- Comments and whitespace are preserved in trivia maps
+- Linebreaks act as separators between leading and trailing trivia
+
+### 3. CST Parser (`cst_parser.rs`, `green.rs`)
+
+Parses token indices into a Green Tree (Concrete Syntax Tree).
+
+- **Input**: Token indices from pre-parser
+- **Output**: Green Tree (position-independent, immutable CST)
+- Green nodes represent the complete syntactic structure
+- Can be shared and cached across multiple uses
+- Implements recursive descent parsing
+
+### 4. AST Parser (`red.rs`)
+
+Converts Green Tree to Red Tree and AST.
+
+- **Input**: Green Tree
+- **Output**: 
+  - Red Tree: Position-aware nodes with absolute offsets
+  - AST: Traditional abstract syntax tree without trivia
+- Red nodes are created on-demand from Green nodes
+- AST is suitable for semantic analysis
+
+## Usage Example
+
+```rust
+use mimium_language_server::lossless_parser;
+
+let source = "fn dsp() { 42 }";
+
+// Complete pipeline
+let (ast, tokens, preparsed) = lossless_parser::parse(source);
+
+// Or step by step:
+let tokens = lossless_parser::tokenize(source);
+let preparsed = lossless_parser::preparse(&tokens);
+let cst = lossless_parser::parse_cst(&tokens, &preparsed);
+let red = lossless_parser::green_to_red(cst, 0);
+let ast = lossless_parser::red_to_ast(&red, source, &tokens);
+```
+
+Run the demo:
+
+```bash
+cargo run --package mimium-language-server --example lossless_parser_demo
+```
+
+## Red-Green Syntax Tree Pattern
+
+This implementation follows the Red-Green Syntax Tree pattern used in rust-analyzer and Roslyn:
+
+- **Green Tree**: Immutable, position-independent nodes that represent the syntactic structure
+  - Can be shared and cached
+  - Efficient for incremental parsing
+  - Contains all tokens including trivia
+
+- **Red Tree**: Position-aware wrapper around Green nodes
+  - Created on-demand with absolute positions
+  - Used for queries and navigation
+  - Efficient as Green nodes are reused
+
+## Testing
+
+The implementation includes comprehensive unit tests:
+
+```bash
+cargo test --package mimium-language-server --lib
+```
+
+All tests (26 total) should pass:
+- Tokenizer tests (6 tests)
+- Pre-parser tests (5 tests)
+- Green Tree tests (4 tests)
+- CST parser tests (3 tests)
+- Red Tree tests (3 tests)
+- Integration tests (5 tests)
+
+## Future Enhancements
+
+This is a prototype implementation. Future work could include:
+
+1. **More complete grammar**: Currently handles basic statements and expressions
+2. **Error recovery**: Better handling of syntax errors
+3. **Incremental parsing**: Reuse unchanged parts of the tree
+4. **Performance optimization**: Profile and optimize hot paths
+5. **Source maps**: Better tracking of macro expansions and includes
+6. **IDE features**: Implement code actions, refactorings using the lossless tree
+
+## References
+
+- [rust-analyzer's rowan library](https://github.com/rust-lang/rust-analyzer/tree/master/crates/rowan)
+- [Roslyn's Red-Green Trees](https://ericlippert.com/2012/06/08/red-green-trees/)
+- [Simple but Powerful Pratt Parsing](https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html)
