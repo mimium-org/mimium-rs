@@ -94,7 +94,6 @@ impl NodeBuilder for Parser<'_> {
         self.builder.finish_node();
     }
 }
-
 /// Parser state
 pub struct Parser<'a> {
     tokens: Vec<LosslessToken>,
@@ -274,7 +273,7 @@ impl<'a> Parser<'a> {
         });
     }
 
-    /// Parse parameter list: (param1, param2, ...)
+    /// Parse parameter list: (param1, param2, ...) or (param1: Type, param2: Type)
     fn parse_param_list(&mut self) {
         self.emit_node(SyntaxKind::ParamList, |this| {
             this.expect(TokenKind::ParenBegin);
@@ -287,6 +286,11 @@ impl<'a> Parser<'a> {
                         this.tokens[token_idx].kind = TokenKind::IdentParameter;
                     }
                     this.bump();
+                    
+                    // Optional type annotation
+                    if this.check(TokenKind::Colon) {
+                        this.parse_type_annotation();
+                    }
                 }
 
                 if this.check(TokenKind::Comma) {
@@ -303,6 +307,140 @@ impl<'a> Parser<'a> {
     /// Parse expression (simplified)
     fn parse_expr(&mut self) {
         self.parse_primary();
+    }
+
+    /// Parse type annotation: : Type
+    fn parse_type_annotation(&mut self) {
+        self.emit_node(SyntaxKind::TypeAnnotation, |this| {
+            this.expect(TokenKind::Colon);
+            this.parse_type();
+        });
+    }
+
+    /// Parse type expression
+    fn parse_type(&mut self) {
+        // Check for function type with parentheses: (T1, T2) -> R
+        if self.check(TokenKind::ParenBegin) {
+            let ahead_arrow = (1..MAX_LOOKAHEAD)
+                .find(|&i| matches!(self.peek_ahead(i), Some(TokenKind::Arrow)));
+            
+            if ahead_arrow.is_some() {
+                // Function type
+                self.emit_node(SyntaxKind::FunctionType, |inner| {
+                    inner.parse_type_tuple_or_paren();
+                    inner.expect(TokenKind::Arrow);
+                    inner.parse_type();
+                });
+                return;
+            }
+        }
+        
+        self.parse_type_primary();
+    }
+
+    /// Parse primary type (primitive, tuple, etc.)
+    fn parse_type_primary(&mut self) {
+        match self.peek() {
+            Some(TokenKind::FloatType) | Some(TokenKind::IntegerType) | Some(TokenKind::StringType) => {
+                self.emit_node(SyntaxKind::PrimitiveType, |inner| {
+                    inner.bump();
+                });
+            }
+            Some(TokenKind::ParenBegin) => {
+                // Tuple type: (T1, T2, ...)
+                self.parse_type_tuple_or_paren();
+            }
+            Some(TokenKind::BlockBegin) => {
+                // Record type: {field: Type, ...}
+                self.parse_type_record();
+            }
+            Some(TokenKind::ArrayBegin) => {
+                // Array type: [T]
+                self.emit_node(SyntaxKind::ArrayType, |inner| {
+                    inner.expect(TokenKind::ArrayBegin);
+                    inner.parse_type();
+                    inner.expect(TokenKind::ArrayEnd);
+                });
+            }
+            Some(TokenKind::Ident) => {
+                // Type variable or named type
+                self.emit_node(SyntaxKind::TypeIdent, |inner| {
+                    inner.bump();
+                });
+            }
+            _ => {
+                // Error: unexpected token for type
+                if !self.is_at_end() {
+                    self.add_error(ParserError::unexpected_token(
+                        self.current_token_index(),
+                        "type",
+                        &format!("{:?}", self.peek().unwrap_or(TokenKind::Eof)),
+                    ));
+                    self.bump();
+                }
+            }
+        }
+    }
+
+    /// Parse tuple type or parenthesized type: (T) or (T1, T2)
+    fn parse_type_tuple_or_paren(&mut self) {
+        // Look ahead to determine if it's a tuple
+        let is_tuple = (1..MAX_LOOKAHEAD)
+            .find_map(|i| {
+                match self.peek_ahead(i) {
+                    Some(TokenKind::Comma) => Some(true),
+                    Some(TokenKind::ParenEnd) => Some(false),
+                    None => Some(false),
+                    _ => None,
+                }
+            })
+            .unwrap_or(false);
+
+        if is_tuple {
+            self.emit_node(SyntaxKind::TupleType, |inner| {
+                inner.expect(TokenKind::ParenBegin);
+                if !inner.check(TokenKind::ParenEnd) {
+                    inner.parse_type();
+                    while inner.check(TokenKind::Comma) {
+                        inner.bump();
+                        if !inner.check(TokenKind::ParenEnd) {
+                            inner.parse_type();
+                        }
+                    }
+                }
+                inner.expect(TokenKind::ParenEnd);
+            });
+        } else {
+            // Just parenthesized type
+            self.bump(); // (
+            self.parse_type();
+            self.expect(TokenKind::ParenEnd);
+        }
+    }
+
+    /// Parse record type: {field1: Type1, field2: Type2}
+    fn parse_type_record(&mut self) {
+        self.emit_node(SyntaxKind::RecordType, |inner| {
+            inner.expect(TokenKind::BlockBegin);
+            
+            if !inner.check(TokenKind::BlockEnd) {
+                // Parse field: name : Type
+                inner.expect(TokenKind::Ident);
+                inner.expect(TokenKind::Colon);
+                inner.parse_type();
+                
+                while inner.check(TokenKind::Comma) {
+                    inner.bump();
+                    if !inner.check(TokenKind::BlockEnd) {
+                        inner.expect(TokenKind::Ident);
+                        inner.expect(TokenKind::Colon);
+                        inner.parse_type();
+                    }
+                }
+            }
+            
+            inner.expect(TokenKind::BlockEnd);
+        });
     }
 
     /// Parse primary expression
@@ -392,6 +530,11 @@ impl<'a> Parser<'a> {
                         this.tokens[token_idx].kind = TokenKind::IdentParameter;
                     }
                     this.bump();
+                    
+                    // Optional type annotation
+                    if this.check(TokenKind::Colon) {
+                        this.parse_type_annotation();
+                    }
                 } else {
                     // Skip unexpected tokens in parameter list to recover
                     this.bump();
@@ -408,23 +551,10 @@ impl<'a> Parser<'a> {
             // Closing '|'
             this.expect(TokenKind::LambdaArgBeginEnd);
 
-            // Optional return type annotation after '->'. We skip its tokens for now.
+            // Optional return type annotation after '->'
             if this.check(TokenKind::Arrow) {
                 this.bump();
-                while !this.is_at_end() {
-                    match this.peek() {
-                        // Stop before the lambda body expression
-                        Some(TokenKind::BlockBegin)
-                        | Some(TokenKind::ParenBegin)
-                        | Some(TokenKind::Ident)
-                        | Some(TokenKind::Int)
-                        | Some(TokenKind::Float)
-                        | Some(TokenKind::Str)
-                        | Some(TokenKind::If)
-                        | Some(TokenKind::LambdaArgBeginEnd) => break,
-                        _ => this.bump(),
-                    }
-                }
+                this.parse_type();
             }
 
             // Body expression
@@ -664,5 +794,38 @@ mod tests {
                 "Expected UnexpectedEof for 'expression', got: {:?}", errors[0].detail);
         // Parser should continue without crashing
         assert!(_arena.kind(_root_id).is_some());
+    }
+
+    #[test]
+    fn test_parse_type_annotation_simple() {
+        let source = "fn add(x: float, y: float) { x }";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
+
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
+        assert!(arena.width(root_id) > 0);
+    }
+
+    #[test]
+    fn test_parse_lambda_with_type() {
+        let source = "|x: float| -> float x";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
+
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
+        assert!(arena.width(root_id) > 0);
+    }
+
+    #[test]
+    fn test_parse_function_type() {
+        let source = "fn apply(f: (float) -> float, x: float) { f(x) }";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
+
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
+        assert!(arena.width(root_id) > 0);
     }
 }

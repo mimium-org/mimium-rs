@@ -56,7 +56,7 @@ impl GreenNode {
 }
 
 /// Arena for interning Green nodes
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct GreenNodeArena {
     nodes: SlotMap<GreenNodeId, GreenNode>,
 }
@@ -140,6 +140,9 @@ pub enum SyntaxKind {
     PrimitiveType,
     FunctionType,
     TupleType,
+    RecordType,
+    ArrayType,
+    TypeIdent,
 
     // Patterns
     Pattern,
@@ -177,6 +180,9 @@ impl std::fmt::Display for SyntaxKind {
             SyntaxKind::PrimitiveType => write!(f, "PrimitiveType"),
             SyntaxKind::FunctionType => write!(f, "FunctionType"),
             SyntaxKind::TupleType => write!(f, "TupleType"),
+            SyntaxKind::RecordType => write!(f, "RecordType"),
+            SyntaxKind::ArrayType => write!(f, "ArrayType"),
+            SyntaxKind::TypeIdent => write!(f, "TypeIdent"),
             SyntaxKind::Pattern => write!(f, "Pattern"),
             SyntaxKind::ParamList => write!(f, "ParamList"),
             SyntaxKind::ArgList => write!(f, "ArgList"),
