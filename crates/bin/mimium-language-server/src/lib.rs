@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::Stdio;
 
 use mimium_lang::interner::Symbol;
 
@@ -20,6 +21,8 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
 type SrcUri = String;
 
 /// Construct an [`ExecContext`] with the default set of plugins.
@@ -126,6 +129,7 @@ impl LanguageServer for Backend {
                     }),
                     file_operations: None,
                 }),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             server_info: None,
@@ -221,6 +225,63 @@ impl LanguageServer for Backend {
     }
     async fn did_close(&self, _: DidCloseTextDocumentParams) {
         debug!("file closed!");
+    }
+    
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let uri = params.text_document.uri;
+        let rope = match self.document_map.get(uri.as_str()) {
+            Some(rope) => rope,
+            None => return Ok(None),
+        };
+
+        let text = rope.to_string();
+        let indent_size = params.options.tab_size as usize;
+        let width = 80usize;
+
+        let formatter_path = std::env::var("HOME")
+            .map(|home| format!("{home}/.mimium/bin/mimium-fmt"))
+            .unwrap_or_else(|_| {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|path| path.parent().map(|parent| parent.join("mimium-fmt")))
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "mimium-fmt".to_string())
+            });
+
+        let mut child = match Command::new(formatter_path)
+            .arg("--width")
+            .arg(width.to_string())
+            .arg("--indent-size")
+            .arg(indent_size.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(_) => return Ok(None),
+        };
+
+        if let Some(mut stdin) = child.stdin.take()
+            && stdin.write_all(text.as_bytes()).await.is_err() {
+                return Ok(None);
+            }
+
+        let output = match child.wait_with_output().await {
+            Ok(output) => output,
+            Err(_) => return Ok(None),
+        };
+
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        let formatted = String::from_utf8_lossy(&output.stdout).to_string();
+
+        let last_line = rope.len_lines().saturating_sub(1);
+        let last_char = rope.line(last_line).len_chars();
+        let range = Range::new(Position::new(0, 0), Position::new(last_line as u32, last_char as u32));
+
+        Ok(Some(vec![TextEdit { range, new_text: formatted }]))
     }
 }
 fn diagnostic_from_error(
