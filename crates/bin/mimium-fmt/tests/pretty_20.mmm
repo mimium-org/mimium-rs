@@ -6,8 +6,8 @@ let sr =
 let _ =
     set_midi_port("from Max 1")
 let test_record =
-    {hoge = 100,
-    fuga = 200}
+    {fuga = 200,
+    hoge = 100}
 let test_tuple =
     (100, 200,
     400)

@@ -634,6 +634,22 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse expression with given minimum precedence without linebreak stopping.
+    fn parse_expr_with_precedence_no_linebreak(&mut self, min_prec: usize) {
+        self.parse_prefix_expr();
+
+        while let Some(token_kind) = self.peek() {
+            if let Some(prec) = self.get_infix_precedence(token_kind) {
+                if prec < min_prec {
+                    break;
+                }
+                self.parse_infix_expr(prec);
+            } else {
+                break;
+            }
+        }
+    }
+
     /// Get precedence of an infix operator (None means not an infix operator)
     fn get_infix_precedence(&self, token_kind: TokenKind) -> Option<usize> {
         match token_kind {
@@ -750,13 +766,13 @@ impl<'a> Parser<'a> {
             this.expect(TokenKind::ParenBegin);
 
             if !this.check(TokenKind::ParenEnd) {
-                // Use precedence 1 to avoid statement boundary detection within argument list
-                this.parse_expr_with_precedence(1);
+                // Do not stop at linebreaks, and allow low-precedence operators in args
+                this.parse_expr_with_precedence_no_linebreak(0);
 
                 while this.check(TokenKind::Comma) {
                     this.bump(); // ,
                     if !this.check(TokenKind::ParenEnd) {
-                        this.parse_expr_with_precedence(1);
+                        this.parse_expr_with_precedence_no_linebreak(0);
                     }
                 }
             }

@@ -3,8 +3,8 @@ let pi = 3.14159265359
 let sr = 48000.0
 let _ =
     set_midi_port("from Max 1")
-let test_record = {hoge = 100,
-    fuga = 200}
+let test_record = {fuga = 200,
+    hoge = 100}
 let test_tuple = (100, 200, 400)
 fn sec2samp(sec){
     sec * 48000.0

@@ -52,7 +52,7 @@ pub mod red;
 /// }
 ///
 /// // Step 4: Convert to AST (Red Tree)
-/// let red = lossless_parser::green_to_red(green_id, &arena, 0);
+/// let red = lossless_parser::green_to_red(green_id, 0);
 /// let ast = lossless_parser::red_to_ast(&red, source, &tokens, &arena);
 /// ```
 pub mod token;
