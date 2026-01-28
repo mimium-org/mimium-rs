@@ -179,28 +179,45 @@ where
 }
 
 /// Tokenize the source text into a sequence of lossless tokens
+/// Uses chumsky's error recovery to continue parsing after errors
 pub fn tokenize(source: &str) -> Vec<LosslessToken> {
+    // Error token parser - matches any character and creates an error token
+    let error_token = any()
+        .map_with(|_, e| {
+            let span: SimpleSpan = e.span();
+            LosslessToken::new(TokenKind::Error, span.start, span.end - span.start)
+        });
+    
     let lexer = token_parser()
         .map_with(|kind, e| {
             let span: SimpleSpan = e.span();
             LosslessToken::new(kind, span.start, span.end - span.start)
         })
+        // Try normal parsing, if it fails, create an error token for the invalid character
+        .or(error_token)
         .repeated()
         .collect::<Vec<_>>()
         .then_ignore(end());
 
-    match lexer.parse(source).into_result() {
-        Ok(mut tokens) => {
+    // Use into_output_errors to get both tokens and errors
+    let (tokens, errors) = lexer.parse(source).into_output_errors();
+    
+    // Log errors for debugging
+    if !errors.is_empty() {
+        eprintln!("Tokenization recovered from {} errors:", errors.len());
+        for error in &errors {
+            eprintln!("  - {:?}", error);
+        }
+    }
+    
+    match tokens {
+        Some(mut tokens) => {
             // Add EOF token
             tokens.push(LosslessToken::new(TokenKind::Eof, source.len(), 0));
             tokens
         }
-        Err(errors) => {
-            // On parse errors, try to recover by collecting what we can
-            // This matches the behavior of mimium-lang's error recovery
-            // For now, we return just EOF, but in a full implementation
-            // we would use chumsky's error recovery features
-            eprintln!("Tokenization errors: {:?}", errors);
+        None => {
+            // If parsing completely failed, return just EOF
             vec![LosslessToken::new(TokenKind::Eof, source.len(), 0)]
         }
     }
@@ -297,5 +314,44 @@ mod tests {
         assert!(tokens[3].is_trivia());  // linebreak
         assert!(tokens[4].is_trivia());  // whitespace
         assert!(!tokens[5].is_trivia()); // dsp
+    }
+    
+    #[test]
+    fn test_error_recovery() {
+        // Test with invalid character (unicode character that's not in grammar)
+        let source = "fn dsp() { 42 § }";
+        let tokens = tokenize(source);
+        
+        // Should recover and continue parsing
+        let token_kinds: Vec<_> = tokens.iter()
+            .filter(|t| !t.is_trivia() && t.kind != TokenKind::Eof)
+            .map(|t| t.kind)
+            .collect();
+        
+        // Should have: fn, dsp, (, ), {, 42, Error, }
+        assert!(token_kinds.contains(&TokenKind::Function));
+        assert!(token_kinds.contains(&TokenKind::Ident));
+        assert!(token_kinds.contains(&TokenKind::Int));
+        assert!(token_kinds.contains(&TokenKind::Error));
+        assert!(token_kinds.contains(&TokenKind::BlockBegin));
+        assert!(token_kinds.contains(&TokenKind::BlockEnd));
+    }
+    
+    #[test]
+    fn test_error_recovery_multiple_errors() {
+        // Test with multiple invalid characters
+        let source = "fn § dsp() { © }";
+        let tokens = tokenize(source);
+        
+        let error_count = tokens.iter().filter(|t| t.is_error()).count();
+        
+        // Should have 2 error tokens
+        assert_eq!(error_count, 2);
+        
+        // Should still parse valid tokens
+        let has_fn = tokens.iter().any(|t| t.kind == TokenKind::Function);
+        let has_dsp = tokens.iter().any(|t| t.kind == TokenKind::Ident);
+        assert!(has_fn);
+        assert!(has_dsp);
     }
 }

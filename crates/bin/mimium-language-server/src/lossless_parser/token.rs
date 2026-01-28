@@ -90,6 +90,7 @@ pub enum TokenKind {
     MultiLineComment,
     
     // Special
+    Error,        // Error token for recovery
     Eof,
 }
 
@@ -157,6 +158,7 @@ impl fmt::Display for TokenKind {
             TokenKind::StageKwd => write!(f, "stage"),
             TokenKind::Main => write!(f, "main"),
             TokenKind::Sharp => write!(f, "#"),
+            TokenKind::Error => write!(f, "error"),
             TokenKind::Eof => write!(f, "eof"),
         }
     }
@@ -195,6 +197,11 @@ impl LosslessToken {
             | TokenKind::SingleLineComment 
             | TokenKind::MultiLineComment
         )
+    }
+    
+    /// Check if this token is an error token
+    pub fn is_error(&self) -> bool {
+        self.kind == TokenKind::Error
     }
 }
 
