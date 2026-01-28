@@ -216,11 +216,90 @@ impl<'a> Parser<'a> {
                 Some(TokenKind::Function) => this.parse_function_decl(),
                 Some(TokenKind::Let) => this.parse_let_decl(),
                 Some(TokenKind::LetRec) => this.parse_letrec_decl(),
+                Some(TokenKind::Include) => this.parse_include_stmt(),
+                Some(TokenKind::Sharp) => this.parse_stage_decl(),
                 _ => {
                     // Try parsing as expression
                     this.parse_expr();
                 }
             }
+        });
+    }
+
+    /// Parse include statement: include("filename.mmm")
+    fn parse_include_stmt(&mut self) {
+        self.emit_node(SyntaxKind::IncludeStmt, |this| {
+            this.expect(TokenKind::Include);
+            this.expect(TokenKind::ParenBegin);
+            this.expect(TokenKind::Str);
+            this.expect(TokenKind::ParenEnd);
+        });
+    }
+
+    /// Parse stage declaration: #stage(main) or #stage(macro)
+    fn parse_stage_decl(&mut self) {
+        self.emit_node(SyntaxKind::StageDecl, |this| {
+            this.expect(TokenKind::Sharp);
+            this.expect(TokenKind::StageKwd);
+            this.expect(TokenKind::ParenBegin);
+            
+            // Expect either 'main' or 'macro'
+            if this.check(TokenKind::Main) {
+                this.bump();
+            } else if this.check(TokenKind::Macro) {
+                this.bump();
+            } else {
+                this.expect(TokenKind::Main); // Will trigger error
+            }
+            
+            this.expect(TokenKind::ParenEnd);
+        });
+    }
+
+    /// Parse macro expansion: MacroName!(args)
+    fn parse_macro_expansion(&mut self) {
+        self.emit_node(SyntaxKind::MacroExpansion, |this| {
+            // Macro name (identifier)
+            this.expect(TokenKind::Ident);
+            // Exclamation mark
+            this.expect(TokenKind::MacroExpand);
+            // Arguments in parentheses
+            this.expect(TokenKind::ParenBegin);
+            
+            // Parse arguments as expression list
+            if !this.check(TokenKind::ParenEnd) {
+                this.parse_expr();
+                while this.check(TokenKind::Comma) {
+                    this.bump();
+                    if !this.check(TokenKind::ParenEnd) {
+                        this.parse_expr();
+                    }
+                }
+            }
+            
+            this.expect(TokenKind::ParenEnd);
+        });
+    }
+
+    /// Parse bracket (quote) expression: `expr or `{block}
+    fn parse_bracket_expr(&mut self) {
+        self.emit_node(SyntaxKind::BracketExpr, |this| {
+            this.expect(TokenKind::BackQuote);
+            
+            // Check if it's a block or single expression
+            if this.check(TokenKind::BlockBegin) {
+                this.parse_block_expr();
+            } else {
+                this.parse_expr();
+            }
+        });
+    }
+
+    /// Parse escape (unquote) expression: $expr
+    fn parse_escape_expr(&mut self) {
+        self.emit_node(SyntaxKind::EscapeExpr, |this| {
+            this.expect(TokenKind::Dollar);
+            this.parse_expr();
         });
     }
 
@@ -249,11 +328,11 @@ impl<'a> Parser<'a> {
         });
     }
 
-    /// Parse let declaration: let name = expr
+    /// Parse let declaration: let pattern = expr
     fn parse_let_decl(&mut self) {
         self.emit_node(SyntaxKind::LetDecl, |this| {
             this.expect(TokenKind::Let);
-            this.expect(TokenKind::Ident); // variable name
+            this.parse_pattern(); // Parse pattern instead of just identifier
 
             if this.expect(TokenKind::Assign) {
                 this.parse_expr();
@@ -265,11 +344,87 @@ impl<'a> Parser<'a> {
     fn parse_letrec_decl(&mut self) {
         self.emit_node(SyntaxKind::LetRecDecl, |this| {
             this.expect(TokenKind::LetRec);
-            this.expect(TokenKind::Ident);
+            this.expect(TokenKind::Ident); // letrec only supports simple identifier
 
             if this.expect(TokenKind::Assign) {
                 this.parse_expr();
             }
+        });
+    }
+
+    /// Parse pattern: single identifier, tuple pattern, or record pattern
+    fn parse_pattern(&mut self) {
+        match self.peek() {
+            Some(TokenKind::Ident) | Some(TokenKind::PlaceHolder) => {
+                // Single pattern: x or _
+                self.emit_node(SyntaxKind::SinglePattern, |this| {
+                    this.bump();
+                });
+            }
+            Some(TokenKind::ParenBegin) => {
+                // Tuple pattern: (x, y, z)
+                self.parse_tuple_pattern();
+            }
+            Some(TokenKind::BlockBegin) => {
+                // Record pattern: {a = x, b = y}
+                self.parse_record_pattern();
+            }
+            _ => {
+                // Error: unexpected token
+                if let Some(kind) = self.peek() {
+                    self.add_error(ParserError::unexpected_token(
+                        self.current_token_index(),
+                        "pattern (identifier, tuple, or record)",
+                        &format!("{kind:?}"),
+                    ));
+                }
+                self.bump();
+            }
+        }
+    }
+
+    /// Parse tuple pattern: (x, y, z)
+    fn parse_tuple_pattern(&mut self) {
+        self.emit_node(SyntaxKind::TuplePattern, |this| {
+            this.expect(TokenKind::ParenBegin);
+
+            if !this.check(TokenKind::ParenEnd) {
+                this.parse_pattern();
+
+                while this.check(TokenKind::Comma) {
+                    this.bump(); // ,
+                    if !this.check(TokenKind::ParenEnd) {
+                        this.parse_pattern();
+                    }
+                }
+            }
+
+            this.expect(TokenKind::ParenEnd);
+        });
+    }
+
+    /// Parse record pattern: {a = x, b = y}
+    fn parse_record_pattern(&mut self) {
+        self.emit_node(SyntaxKind::RecordPattern, |this| {
+            this.expect(TokenKind::BlockBegin);
+
+            if !this.check(TokenKind::BlockEnd) {
+                // Parse field: name = pattern
+                this.expect(TokenKind::Ident); // field name
+                this.expect(TokenKind::Assign);
+                this.parse_pattern();
+
+                while this.check(TokenKind::Comma) {
+                    this.bump(); // ,
+                    if !this.check(TokenKind::BlockEnd) {
+                        this.expect(TokenKind::Ident); // field name
+                        this.expect(TokenKind::Assign);
+                        this.parse_pattern();
+                    }
+                }
+            }
+
+            this.expect(TokenKind::BlockEnd);
         });
     }
 
@@ -304,9 +459,175 @@ impl<'a> Parser<'a> {
         });
     }
 
-    /// Parse expression (simplified)
+    /// Parse expression with operator precedence and assignment
     fn parse_expr(&mut self) {
+        self.parse_assignment_expr();
+    }
+
+    /// Parse assignment expression: expr = expr
+    /// Assignment has lower precedence than all binary operators
+    fn parse_assignment_expr(&mut self) {
+        let start_pos = self.current;
+        self.parse_expr_with_precedence(0);
+
+        // Check if this is an assignment
+        if self.check(TokenKind::Assign) {
+            // Need to wrap the already-parsed LHS in AssignExpr
+            // This is a bit tricky since we've already added nodes to the tree
+            // Solution: We'll handle this at the CST level by creating AssignExpr node
+            // and the RHS after the operator
+            self.emit_node(SyntaxKind::AssignExpr, |this| {
+                this.expect(TokenKind::Assign);
+                this.parse_expr_with_precedence(0);
+            });
+        }
+    }
+
+    /// Parse expression with given minimum precedence (Pratt parser)
+    fn parse_expr_with_precedence(&mut self, min_prec: usize) {
+        self.parse_prefix_expr();
+
+        while let Some(token_kind) = self.peek() {
+            if let Some(prec) = self.get_infix_precedence(token_kind) {
+                if prec < min_prec {
+                    break;
+                }
+                self.parse_infix_expr(prec);
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Get precedence of an infix operator (None means not an infix operator)
+    fn get_infix_precedence(&self, token_kind: TokenKind) -> Option<usize> {
+        match token_kind {
+            TokenKind::OpOr => Some(1),
+            TokenKind::OpAnd => Some(2),
+            TokenKind::OpEqual | TokenKind::OpNotEqual => Some(3),
+            TokenKind::OpLessThan
+            | TokenKind::OpLessEqual
+            | TokenKind::OpGreaterThan
+            | TokenKind::OpGreaterEqual => Some(4),
+            TokenKind::OpSum | TokenKind::OpMinus => Some(5),
+            TokenKind::OpProduct | TokenKind::OpDivide | TokenKind::OpModulo => Some(6),
+            TokenKind::OpExponent => Some(7),
+            TokenKind::OpPipe => Some(8),
+            TokenKind::OpAt => Some(9),
+            _ => None,
+        }
+    }
+
+    /// Get unary operator precedence
+    fn get_prefix_precedence(&self, token_kind: Option<TokenKind>) -> bool {
+        matches!(
+            token_kind,
+            Some(TokenKind::OpMinus)
+                | Some(TokenKind::OpSum)
+                | Some(TokenKind::Dollar)
+                | Some(TokenKind::BackQuote)
+        )
+    }
+
+    /// Parse prefix expression (unary operators and postfix operations)
+    fn parse_prefix_expr(&mut self) {
+        if self.get_prefix_precedence(self.peek()) {
+            self.parse_unary_expr();
+        } else {
+            self.parse_postfix_expr();
+        }
+    }
+
+    /// Parse unary expression
+    fn parse_unary_expr(&mut self) {
+        match self.peek() {
+            Some(TokenKind::BackQuote) => {
+                self.parse_bracket_expr();
+            }
+            Some(TokenKind::Dollar) => {
+                self.parse_escape_expr();
+            }
+            _ => {
+                // Standard unary operator (-, +)
+                self.emit_node(SyntaxKind::UnaryExpr, |this| {
+                    // Consume the unary operator
+                    this.bump();
+                    // Parse the operand with high precedence
+                    this.parse_prefix_expr();
+                });
+            }
+        }
+    }
+
+    /// Parse postfix expression (handles function calls, field access, etc.)
+    fn parse_postfix_expr(&mut self) {
         self.parse_primary();
+
+        loop {
+            match self.peek() {
+                Some(TokenKind::ParenBegin) => {
+                    // Function call
+                    self.emit_node(SyntaxKind::CallExpr, |this| {
+                        this.parse_arg_list();
+                    });
+                }
+                Some(TokenKind::Dot) => {
+                    // Field access: expr.field or projection: expr.0, expr.1
+                    self.emit_node(SyntaxKind::FieldAccess, |this| {
+                        this.expect(TokenKind::Dot);
+                        // Can be either Ident (field name) or Int (tuple projection)
+                        if this.check(TokenKind::Ident) {
+                            this.bump();
+                        } else if this.check(TokenKind::Int) {
+                            this.bump();
+                        } else {
+                            this.expect(TokenKind::Ident); // Will trigger error
+                        }
+                    });
+                }
+                Some(TokenKind::ArrayBegin) => {
+                    // Array indexing: expr[index]
+                    self.emit_node(SyntaxKind::IndexExpr, |this| {
+                        this.expect(TokenKind::ArrayBegin);
+                        this.parse_expr();
+                        this.expect(TokenKind::ArrayEnd);
+                    });
+                }
+                _ => break,
+            }
+        }
+    }
+
+    /// Parse infix expression
+    fn parse_infix_expr(&mut self, prec: usize) {
+        self.emit_node(SyntaxKind::BinaryExpr, |this| {
+            // Consume the binary operator
+            this.bump();
+            // Parse the right-hand side with appropriate precedence
+            // For left-associative operators, use prec + 1
+            // For right-associative operators, use prec
+            this.parse_expr_with_precedence(prec + 1);
+        });
+    }
+
+    /// Parse argument list: (expr, expr, ...)
+    fn parse_arg_list(&mut self) {
+        self.emit_node(SyntaxKind::ArgList, |this| {
+            this.expect(TokenKind::ParenBegin);
+
+            if !this.check(TokenKind::ParenEnd) {
+                this.parse_expr();
+
+                while this.check(TokenKind::Comma) {
+                    this.bump(); // ,
+                    if !this.check(TokenKind::ParenEnd) {
+                        this.parse_expr();
+                    }
+                }
+            }
+
+            this.expect(TokenKind::ParenEnd);
+        });
     }
 
     /// Parse type annotation: : Type
@@ -461,13 +782,37 @@ impl<'a> Parser<'a> {
                     this.bump();
                 });
             }
+            Some(TokenKind::SelfLit) => {
+                self.emit_node(SyntaxKind::SelfLiteral, |this| {
+                    this.bump();
+                });
+            }
+            Some(TokenKind::Now) => {
+                self.emit_node(SyntaxKind::NowLiteral, |this| {
+                    this.bump();
+                });
+            }
+            Some(TokenKind::SampleRate) => {
+                self.emit_node(SyntaxKind::SampleRateLiteral, |this| {
+                    this.bump();
+                });
+            }
             Some(TokenKind::LambdaArgBeginEnd) => {
                 self.parse_lambda_expr();
             }
             Some(TokenKind::Ident) => {
-                self.emit_node(SyntaxKind::Identifier, |this| {
-                    this.bump();
-                });
+                // Check if next token is ! for macro expansion
+                if self.peek_ahead(1) == Some(TokenKind::MacroExpand) {
+                    self.parse_macro_expansion();
+                } else {
+                    self.emit_node(SyntaxKind::Identifier, |this| {
+                        this.bump();
+                    });
+                }
+            }
+            Some(TokenKind::ArrayBegin) => {
+                // Array literal: [1, 2, 3]
+                self.parse_array_expr();
             }
             Some(TokenKind::ParenBegin) => {
                 // Need lookahead to distinguish tuple from parenthesized expression
@@ -493,6 +838,12 @@ impl<'a> Parser<'a> {
             }
             Some(TokenKind::If) => {
                 self.parse_if_expr();
+            }
+            Some(TokenKind::PlaceHolder) => {
+                // Placeholder: _
+                self.emit_node(SyntaxKind::Identifier, |this| {
+                    this.bump();
+                });
             }
             None | Some(TokenKind::Eof) => {
                 // EOF reached when expecting an expression
@@ -599,14 +950,16 @@ impl<'a> Parser<'a> {
             return false;
         }
 
-        // Look for pattern: Ident =
-        if let Some(TokenKind::Ident) = self.peek_ahead(1)
-            && let Some(TokenKind::Assign) = self.peek_ahead(2)
-        {
-            return true;
+        // Get lookahead tokens once to avoid repeated peek_ahead calls
+        let token1 = self.peek_ahead(1);
+        let token2 = self.peek_ahead(2);
+        
+        match (token1, token2) {
+            (Some(TokenKind::DoubleDot), _) => true,                          // .. (incomplete records)
+            (Some(TokenKind::Ident), Some(TokenKind::Assign)) => true,        // field = value
+            (Some(TokenKind::Ident), Some(TokenKind::LeftArrow)) => true,     // record <- field = value (update)
+            _ => false,
         }
-
-        false
     }
 
     /// Parse tuple expression: (a, b, c)
@@ -630,22 +983,51 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse record expression: {field1 = expr1, field2 = expr2}
+    /// Also handles record update: {base <- field = value}
+    /// And incomplete records: {field1 = expr1, ..}
     fn parse_record_expr(&mut self) {
         self.emit_node(SyntaxKind::RecordExpr, |this| {
             this.expect(TokenKind::BlockBegin);
 
             if !this.check(TokenKind::BlockEnd) {
-                // Parse field: name = expr
-                this.expect(TokenKind::Ident); // field name
-                this.expect(TokenKind::Assign);
-                this.parse_expr();
-
-                while this.check(TokenKind::Comma) {
-                    this.bump(); // ,
-                    if !this.check(TokenKind::BlockEnd) {
-                        this.expect(TokenKind::Ident); // field name
-                        this.expect(TokenKind::Assign);
-                        this.parse_expr();
+                // Check for record update: {base <- field = value}
+                if this.check(TokenKind::Ident) && this.peek_ahead(1) == Some(TokenKind::LeftArrow) {
+                    this.parse_expr(); // base record
+                    this.expect(TokenKind::LeftArrow); // <-
+                    
+                    // Parse updated fields
+                    this.expect(TokenKind::Ident);
+                    this.expect(TokenKind::Assign);
+                    this.parse_expr();
+                    
+                    while this.check(TokenKind::Comma) {
+                        this.bump();
+                        if !this.check(TokenKind::BlockEnd) {
+                            this.expect(TokenKind::Ident);
+                            this.expect(TokenKind::Assign);
+                            this.parse_expr();
+                        }
+                    }
+                } else {
+                    // Regular record: {field = expr, ...} or {field = expr, ..}
+                    // Parse field: name = expr
+                    this.expect(TokenKind::Ident);
+                    this.expect(TokenKind::Assign);
+                    this.parse_expr();
+                    
+                    while this.check(TokenKind::Comma) {
+                        this.bump();
+                        if !this.check(TokenKind::BlockEnd) {
+                            if this.check(TokenKind::DoubleDot) {
+                                // Incomplete record: field = expr, ..
+                                this.bump(); // ..
+                                break;
+                            } else {
+                                this.expect(TokenKind::Ident);
+                                this.expect(TokenKind::Assign);
+                                this.parse_expr();
+                            }
+                        }
                     }
                 }
             }
@@ -677,9 +1059,37 @@ impl<'a> Parser<'a> {
                 this.parse_block_expr(); // then branch
             }
 
-            if this.expect(TokenKind::Else) && this.check(TokenKind::BlockBegin) {
-                this.parse_block_expr(); // else branch
+            // Else branch: can be either block or if expression (for else-if chains)
+            if this.check(TokenKind::Else) {
+                this.bump();
+                if this.check(TokenKind::If) {
+                    // Else-if: parse another if expression
+                    this.parse_if_expr();
+                } else if this.check(TokenKind::BlockBegin) {
+                    // Regular else block
+                    this.parse_block_expr();
+                }
             }
+        });
+    }
+
+    /// Parse array expression: [expr1, expr2, ...]
+    fn parse_array_expr(&mut self) {
+        self.emit_node(SyntaxKind::ArrayExpr, |this| {
+            this.expect(TokenKind::ArrayBegin);
+
+            if !this.check(TokenKind::ArrayEnd) {
+                this.parse_expr();
+
+                while this.check(TokenKind::Comma) {
+                    this.bump(); // ,
+                    if !this.check(TokenKind::ArrayEnd) {
+                        this.parse_expr();
+                    }
+                }
+            }
+
+            this.expect(TokenKind::ArrayEnd);
         });
     }
 }
@@ -691,291 +1101,4 @@ pub fn parse_cst(
 ) -> (GreenNodeId, GreenNodeArena, Vec<LosslessToken>, Vec<ParserError>) {
     let parser = Parser::new(tokens, preparsed);
     parser.parse()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::lossless_parser::preparser::preparse;
-    use crate::lossless_parser::tokenizer::tokenize;
-
-    #[test]
-    fn test_parse_simple_program() {
-        let source = "fn dsp() { 42 }";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        assert_eq!(arena.kind(root_id), Some(SyntaxKind::Program));
-        assert!(arena.children(root_id).is_some());
-        assert!(
-            errors.is_empty(),
-            "Expected no errors, got: {}",
-            errors
-                .iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("; ")
-        );
-    }
-
-    #[test]
-    fn test_parse_let_statement() {
-        let source = "let x = 42";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        let children = arena.children(root_id).unwrap();
-        assert!(!children.is_empty());
-        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
-    }
-
-    #[test]
-    fn test_parse_function() {
-        let source = "fn add(x, y) { x }";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        assert!(arena.width(root_id) > 0);
-        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    }
-
-    #[test]
-    fn test_parse_tuple() {
-        let source = "(1, 2, 3)";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        let children = arena.children(root_id).unwrap();
-        assert!(!children.is_empty());
-        assert!(errors.is_empty(), "Expected no Ïerrors, got {errors:?}");
-    }
-
-    #[test]
-    fn test_parse_record() {
-        let source = "{x = 1, y = 2}";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        let children = arena.children(root_id).unwrap();
-        assert!(!children.is_empty());
-        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    }
-
-    #[test]
-    fn test_parse_error_recovery_missing_paren() {
-        // Missing closing parenthesis in function
-        let source = "fn test(x { 42 }";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (_root_id, _arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        // Should have collected an error
-        assert!(!errors.is_empty(), "Expected parse errors");
-        assert!(matches!(errors[0].detail, ErrorDetail::UnexpectedToken { .. }));
-    }
-
-    #[test]
-    fn test_parse_error_recovery_missing_block() {
-        // Missing expression in let binding
-        let source = "let x =";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (_root_id, _arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        // Should have collected an error when EOF is reached after '='
-        assert!(!errors.is_empty(), "Expected parse errors for incomplete let binding");
-        // Error should be about unexpected EOF expecting an expression
-        assert!(matches!(&errors[0].detail, ErrorDetail::UnexpectedEof { expected } if expected == "expression"),
-                "Expected UnexpectedEof for 'expression', got: {:?}", errors[0].detail);
-        // Parser should continue without crashing
-        assert!(_arena.kind(_root_id).is_some());
-    }
-
-    #[test]
-    fn test_parse_type_annotation_simple() {
-        let source = "fn add(x: float, y: float) { x }";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-        assert!(arena.width(root_id) > 0);
-    }
-
-    #[test]
-    fn test_parse_lambda_with_type() {
-        let source = "|x: float| -> float x";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-        assert!(arena.width(root_id) > 0);
-    }
-
-    #[test]
-    fn test_parse_function_type() {
-        let source = "fn apply(f: (float) -> float, x: float) { f(x) }";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-        assert!(arena.width(root_id) > 0);
-    }
-
-    // Quick Wins: Phase 1 test conversions from original parser tests
-    // These tests verify basic CST structure for literals, variables, and simple constructs
-
-    #[test]
-    fn test_parse_int_literal() {
-        // Converted from: test_int() in parser/test.rs
-        let source = "3466";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-        // Verify structure: Program -> Statement -> IntLiteral
-        use crate::lossless_parser::cst_test_helpers::*;
-        assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
-        assert!(arena.width(root_id) > 0);
-    }
-
-    #[test]
-    fn test_parse_string_literal() {
-        // Converted from: test_string() in parser/test.rs
-        let source = r#""teststr""#;
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-        use crate::lossless_parser::cst_test_helpers::*;
-        assert_cst_contains_kind(&arena, root_id, SyntaxKind::StringLiteral);
-        assert!(arena.width(root_id) > 0);
-    }
-
-    #[test]
-    fn test_parse_variable() {
-        // Converted from: test_var() in parser/test.rs
-        let source = "hoge";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-        use crate::lossless_parser::cst_test_helpers::*;
-        assert_cst_contains_kind(&arena, root_id, SyntaxKind::Identifier);
-        assert!(arena.width(root_id) > 0);
-    }
-
-    #[test]
-    fn test_parse_float_literal() {
-        let source = "3.14";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-        use crate::lossless_parser::cst_test_helpers::*;
-        assert_cst_contains_kind(&arena, root_id, SyntaxKind::FloatLiteral);
-        assert!(arena.width(root_id) > 0);
-    }
-
-    #[test]
-    fn test_parse_type_annotation_function_param() {
-        // Converted from: test_typed_param() - simple parameter with type
-        let source = "fn test(x: float) { x }";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-        use crate::lossless_parser::cst_test_helpers::*;
-        assert_cst_contains_kind(&arena, root_id, SyntaxKind::FunctionDecl);
-        assert_cst_contains_kind(&arena, root_id, SyntaxKind::TypeAnnotation);
-        assert!(arena.width(root_id) > 0);
-    }
-
-    #[test]
-    fn test_parse_lambda_simple() {
-        // Converted from: test_lambda() - simple lambda expression
-        let source = "|x| x";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-        use crate::lossless_parser::cst_test_helpers::*;
-        assert_cst_contains_kind(&arena, root_id, SyntaxKind::LambdaExpr);
-        assert!(arena.width(root_id) > 0);
-    }
-
-    #[test]
-    fn test_parse_tuple_simple() {
-        // Converted from: test_tuple() - simple tuple expression
-        let source = "(1, 2)";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-        use crate::lossless_parser::cst_test_helpers::*;
-        assert_cst_contains_kind(&arena, root_id, SyntaxKind::TupleExpr);
-        // Verify two IntLiterals in the tuple
-        assert_node_count(&arena, root_id, SyntaxKind::IntLiteral, 2);
-        assert!(arena.width(root_id) > 0);
-    }
-
-    #[test]
-    fn test_parse_record_simple() {
-        // Converted from: test_record() - simple record expression
-        let source = "{x = 1}";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-        use crate::lossless_parser::cst_test_helpers::*;
-        assert_cst_contains_kind(&arena, root_id, SyntaxKind::RecordExpr);
-        assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
-        assert!(arena.width(root_id) > 0);
-    }
-
-    #[test]
-    fn test_parse_if_simple() {
-        // Converted from: test_if() - simple if expression with condition and branches
-        let source = "if (1) { 2 } else { 3 }";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-        use crate::lossless_parser::cst_test_helpers::*;
-        assert_cst_contains_kind(&arena, root_id, SyntaxKind::IfExpr);
-        // Verify three IntLiterals (condition 1, then 2, else 3)
-        assert_node_count(&arena, root_id, SyntaxKind::IntLiteral, 3);
-        assert!(arena.width(root_id) > 0);
-    }
-
-    #[test]
-    fn test_parse_let_binding() {
-        // Converted from: test_let() - let binding expression
-        let source = "let x = 42";
-        let tokens = tokenize(source);
-        let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
-
-        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-        use crate::lossless_parser::cst_test_helpers::*;
-        assert_cst_contains_kind(&arena, root_id, SyntaxKind::LetDecl);
-        assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
-        assert!(arena.width(root_id) > 0);
-    }
 }

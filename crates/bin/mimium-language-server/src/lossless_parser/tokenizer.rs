@@ -99,7 +99,7 @@ where
         just("<").to(TokenKind::OpLessThan),
         just(">").to(TokenKind::OpGreaterThan),
         just("=").to(TokenKind::Assign),
-        just("!").to(TokenKind::OpUnknown),
+        just("!").to(TokenKind::MacroExpand),
     ))
 }
 
@@ -132,11 +132,9 @@ fn identifier_parser<'src, I>() -> impl Parser<'src, I, TokenKind, LexerError<'s
 where
     I: StrInput<'src, Token = char, Span = SimpleSpan, Slice = &'src str>,
 {
-    // Macro expansion: identifier followed by !
-    let macro_expand = text::ident()
-        .then_ignore(just('!'))
-        .to(TokenKind::MacroExpand);
-
+    // NOTE: MacroExpand (!) is now parsed as a separate operator token
+    // The parser will handle Ident followed by MacroExpand
+    
     let ident = text::ident()
         .to_slice()
         .map(|ident: &'src str| match ident {
@@ -160,9 +158,8 @@ where
             _ => TokenKind::Ident,
         });
 
-    macro_expand.or(ident)
+    ident
 }
-
 /// Main tokenizer that combines all parsers
 fn token_parser<'src, I>() -> impl Parser<'src, I, TokenKind, LexerError<'src>> + Clone
 where

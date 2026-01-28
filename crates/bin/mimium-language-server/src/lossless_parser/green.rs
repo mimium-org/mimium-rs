@@ -121,6 +121,13 @@ pub enum SyntaxKind {
     BinaryExpr,
     UnaryExpr,
     CallExpr,
+    FieldAccess,
+    IndexExpr,
+    AssignExpr,
+    ArrayExpr,
+    MacroExpansion,
+    BracketExpr,
+    EscapeExpr,
     LambdaExpr,
     IfExpr,
     BlockExpr,
@@ -131,6 +138,9 @@ pub enum SyntaxKind {
     IntLiteral,
     FloatLiteral,
     StringLiteral,
+    SelfLiteral,
+    NowLiteral,
+    SampleRateLiteral,
 
     // Names and paths
     Identifier,
@@ -146,6 +156,13 @@ pub enum SyntaxKind {
 
     // Patterns
     Pattern,
+    SinglePattern,
+    TuplePattern,
+    RecordPattern,
+
+    // Top-level statements
+    IncludeStmt,
+    StageDecl,
 
     // Lists and sequences
     ParamList,
@@ -167,6 +184,13 @@ impl std::fmt::Display for SyntaxKind {
             SyntaxKind::BinaryExpr => write!(f, "BinaryExpr"),
             SyntaxKind::UnaryExpr => write!(f, "UnaryExpr"),
             SyntaxKind::CallExpr => write!(f, "CallExpr"),
+            SyntaxKind::FieldAccess => write!(f, "FieldAccess"),
+            SyntaxKind::IndexExpr => write!(f, "IndexExpr"),
+            SyntaxKind::AssignExpr => write!(f, "AssignExpr"),
+            SyntaxKind::ArrayExpr => write!(f, "ArrayExpr"),
+            SyntaxKind::MacroExpansion => write!(f, "MacroExpansion"),
+            SyntaxKind::BracketExpr => write!(f, "BracketExpr"),
+            SyntaxKind::EscapeExpr => write!(f, "EscapeExpr"),
             SyntaxKind::LambdaExpr => write!(f, "LambdaExpr"),
             SyntaxKind::IfExpr => write!(f, "IfExpr"),
             SyntaxKind::BlockExpr => write!(f, "BlockExpr"),
@@ -175,6 +199,9 @@ impl std::fmt::Display for SyntaxKind {
             SyntaxKind::IntLiteral => write!(f, "IntLiteral"),
             SyntaxKind::FloatLiteral => write!(f, "FloatLiteral"),
             SyntaxKind::StringLiteral => write!(f, "StringLiteral"),
+            SyntaxKind::SelfLiteral => write!(f, "SelfLiteral"),
+            SyntaxKind::NowLiteral => write!(f, "NowLiteral"),
+            SyntaxKind::SampleRateLiteral => write!(f, "SampleRateLiteral"),
             SyntaxKind::Identifier => write!(f, "Identifier"),
             SyntaxKind::TypeAnnotation => write!(f, "TypeAnnotation"),
             SyntaxKind::PrimitiveType => write!(f, "PrimitiveType"),
@@ -184,6 +211,11 @@ impl std::fmt::Display for SyntaxKind {
             SyntaxKind::ArrayType => write!(f, "ArrayType"),
             SyntaxKind::TypeIdent => write!(f, "TypeIdent"),
             SyntaxKind::Pattern => write!(f, "Pattern"),
+            SyntaxKind::SinglePattern => write!(f, "SinglePattern"),
+            SyntaxKind::TuplePattern => write!(f, "TuplePattern"),
+            SyntaxKind::RecordPattern => write!(f, "RecordPattern"),
+            SyntaxKind::IncludeStmt => write!(f, "IncludeStmt"),
+            SyntaxKind::StageDecl => write!(f, "StageDecl"),
             SyntaxKind::ParamList => write!(f, "ParamList"),
             SyntaxKind::ArgList => write!(f, "ArgList"),
             SyntaxKind::ExprList => write!(f, "ExprList"),
