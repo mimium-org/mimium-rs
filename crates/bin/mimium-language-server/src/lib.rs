@@ -14,8 +14,10 @@ use mimium_lang::utils::error::ReportableError;
 use mimium_lang::{Config, ExecContext};
 use ropey::Rope;
 use semantic_token::{ImCompleteSemanticToken, LEGEND_TYPE, ParseResult, parse};
-
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tower_lsp::jsonrpc::Result;
+use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 type SrcUri = String;
@@ -65,7 +67,6 @@ impl std::fmt::Debug for MimiumCtx {
 struct Backend {
     client: Client,
     compiler_ctx: MimiumCtx,
-    #[allow(dead_code)]
     ast_map: DashMap<SrcUri, ExprNodeId>,
     // semantic_map: DashMap<SrcUri, Semantic>,
     document_map: DashMap<SrcUri, Rope>,
@@ -272,30 +273,18 @@ impl Backend {
         // Run lossless parser for IDE features
         let lossless_tokens = lossless_parser::tokenize(src);
         let lossless_preparsed = lossless_parser::preparse(&lossless_tokens);
-        let (lossless_root, lossless_arena, annotated_tokens, parse_errors) =
-            lossless_parser::parse_cst(lossless_tokens.clone(), &lossless_preparsed);
+        let (lossless_root, lossless_arena, lossless_tokens, _lossless_errors) =
+            lossless_parser::parse_cst(lossless_tokens, &lossless_preparsed);
 
-        // Log parse errors if any
-        if !parse_errors.is_empty() {
-            eprintln!(
-                "Parse errors in {}: {}",
-                url,
-                parse_errors
-                    .iter()
-                    .map(|e| e.to_string())
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            );
-        }
-
-        // Generate semantic tokens from lossless parser
-        let semantic_tokens = semantic_token::tokens_from_lossless(&annotated_tokens);
+        // Generate semantic tokens from lossless parser by traversing Green Tree
+        let semantic_tokens =
+            semantic_token::tokens_from_green(lossless_root, &lossless_arena, &lossless_tokens);
         self.semantic_token_map
             .insert(url.to_string(), semantic_tokens);
 
         // Store lossless parser results
         self.lossless_tokens_map
-            .insert(url.to_string(), annotated_tokens.clone());
+            .insert(url.to_string(), lossless_tokens);
         self.lossless_root_map
             .insert(url.to_string(), lossless_root);
         self.lossless_arena_map
@@ -358,8 +347,6 @@ fn offset_to_position(offset: usize, rope: &Rope) -> Option<Position> {
     Some(Position::new(line as u32, column as u32))
 }
 
-/// Position を offset に変換 (将来使用予定)
-#[allow(dead_code)]
 fn position_to_offset(position: Position, rope: &Rope) -> Option<usize> {
     let line_char_offset = rope.try_line_to_char(position.line as usize).ok()?;
     let slice = rope.slice(0..line_char_offset + position.character as usize);
