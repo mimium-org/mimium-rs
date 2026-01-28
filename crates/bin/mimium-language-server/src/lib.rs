@@ -1,8 +1,7 @@
 use std::path::PathBuf;
 
 use mimium_lang::interner::Symbol;
-
-pub mod lossless_parser;
+use mimium_lang::lossless_parser;
 pub mod semantic_token;
 
 use dashmap::DashMap;

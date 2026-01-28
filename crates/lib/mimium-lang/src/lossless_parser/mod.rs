@@ -1,6 +1,7 @@
 pub mod cst_parser;
 pub mod cst_test_helpers;
 pub mod green;
+pub mod lower;
 pub mod preparser;
 pub mod red;
 /// Lossless Parser for mimium Language Server
@@ -34,7 +35,7 @@ pub mod red;
 /// ## Usage Example
 ///
 /// ```rust
-/// use mimium_language_server::lossless_parser;
+/// use mimium_lang::lossless_parser;
 ///
 /// let source = "fn dsp() { 42 }";
 ///
@@ -60,6 +61,7 @@ pub mod tokenizer;
 // Re-export main types and functions
 pub use cst_parser::parse_cst;
 pub use green::{GreenNodeArena, GreenNodeId, SyntaxKind};
+pub use lower::parse_program_lossless;
 pub use preparser::{PreParsedTokens, preparse};
 pub use red::{AstNode, RedNode, red_to_ast};
 pub use token::{LosslessToken, TokenKind};

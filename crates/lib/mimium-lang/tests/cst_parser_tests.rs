@@ -11,10 +11,10 @@
 //! - Phase 2 features (field access, indexing, assignment)
 //! - Error recovery
 
-use mimium_language_server::lossless_parser::cst_parser::*;
-use mimium_language_server::lossless_parser::green::SyntaxKind;
-use mimium_language_server::lossless_parser::preparser::preparse;
-use mimium_language_server::lossless_parser::tokenizer::tokenize;
+use mimium_lang::lossless_parser::cst_parser::*;
+use mimium_lang::lossless_parser::green::SyntaxKind;
+use mimium_lang::lossless_parser::preparser::preparse;
+use mimium_lang::lossless_parser::tokenizer::tokenize;
 
 #[test]
 fn test_parse_simple_program() {
@@ -166,7 +166,7 @@ fn test_parse_lambda_with_type() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::LambdaExpr);
     assert!(arena.width(root_id) > 0);
 }
@@ -179,7 +179,7 @@ fn test_parse_int_literal() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
     assert!(arena.width(root_id) > 0);
 }
@@ -192,7 +192,7 @@ fn test_parse_identifier() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::Identifier);
     assert!(arena.width(root_id) > 0);
 }
@@ -205,7 +205,7 @@ fn test_parse_float_literal() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::FloatLiteral);
     assert!(arena.width(root_id) > 0);
 }
@@ -219,7 +219,7 @@ fn test_parse_type_annotation_function_param() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::FunctionDecl);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::TypeAnnotation);
     assert!(arena.width(root_id) > 0);
@@ -234,7 +234,7 @@ fn test_parse_lambda_simple() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::LambdaExpr);
     assert!(arena.width(root_id) > 0);
 }
@@ -248,7 +248,7 @@ fn test_parse_tuple_simple() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::TupleExpr);
     // Verify two IntLiterals in the tuple
     assert_node_count(&arena, root_id, SyntaxKind::IntLiteral, 2);
@@ -264,7 +264,7 @@ fn test_parse_tuple_nested() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::TupleExpr);
     // Verify at least two TupleExpr nodes (outer and inner)
     assert!(count_nodes_by_kind(&arena, root_id, SyntaxKind::TupleExpr) >= 2);
@@ -280,7 +280,7 @@ fn test_parse_record_simple() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::RecordExpr);
     // Should have 2 IntLiterals (values)
     assert_node_count(&arena, root_id, SyntaxKind::IntLiteral, 2);
@@ -296,7 +296,7 @@ fn test_parse_type_annotation_primitive() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::TypeAnnotation);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::PrimitiveType);
     assert!(arena.width(root_id) > 0);
@@ -311,7 +311,7 @@ fn test_parse_type_tuple() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::TupleType);
     assert!(arena.width(root_id) > 0);
 }
@@ -325,7 +325,7 @@ fn test_parse_type_function() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::FunctionType);
     assert!(arena.width(root_id) > 0);
 }
@@ -339,7 +339,7 @@ fn test_parse_type_record() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::RecordType);
     assert!(arena.width(root_id) > 0);
 }
@@ -353,7 +353,7 @@ fn test_parse_if_else_expr() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IfExpr);
     assert!(arena.width(root_id) > 0);
 }
@@ -367,7 +367,7 @@ fn test_parse_binary_add() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::BinaryExpr);
     assert_node_count(&arena, root_id, SyntaxKind::IntLiteral, 2);
     assert!(arena.width(root_id) > 0);
@@ -381,7 +381,7 @@ fn test_parse_binary_multiply() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::BinaryExpr);
     assert_node_count(&arena, root_id, SyntaxKind::IntLiteral, 2);
     assert!(arena.width(root_id) > 0);
@@ -396,7 +396,7 @@ fn test_parse_binary_precedence() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     // Should have two BinaryExpr nodes (one for +, one for *)
     assert!(count_nodes_by_kind(&arena, root_id, SyntaxKind::BinaryExpr) >= 2);
     assert_node_count(&arena, root_id, SyntaxKind::IntLiteral, 3);
@@ -412,7 +412,7 @@ fn test_parse_binary_complex_precedence() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::BinaryExpr);
     assert_node_count(&arena, root_id, SyntaxKind::IntLiteral, 4);
     assert!(arena.width(root_id) > 0);
@@ -426,7 +426,7 @@ fn test_parse_unary_minus() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::UnaryExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
     assert!(arena.width(root_id) > 0);
@@ -440,7 +440,7 @@ fn test_parse_unary_nested() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     // Should have nested UnaryExpr nodes
     assert!(count_nodes_by_kind(&arena, root_id, SyntaxKind::UnaryExpr) >= 2);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
@@ -455,7 +455,7 @@ fn test_parse_call_simple() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::CallExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::ArgList);
     assert!(arena.width(root_id) > 0);
@@ -469,7 +469,7 @@ fn test_parse_call_multiple_args() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::CallExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::ArgList);
     assert_node_count(&arena, root_id, SyntaxKind::IntLiteral, 3);
@@ -484,7 +484,7 @@ fn test_parse_call_nested() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     // Should have two CallExpr nodes (f and g)
     assert!(count_nodes_by_kind(&arena, root_id, SyntaxKind::CallExpr) >= 2);
     assert!(arena.width(root_id) > 0);
@@ -498,7 +498,7 @@ fn test_parse_call_with_binary_expr() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::CallExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::BinaryExpr);
     assert!(arena.width(root_id) > 0);
@@ -514,7 +514,7 @@ fn test_parse_array_literal() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::ArrayExpr);
     assert_node_count(&arena, root_id, SyntaxKind::IntLiteral, 3);
     assert!(arena.width(root_id) > 0);
@@ -528,7 +528,7 @@ fn test_parse_array_empty() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::ArrayExpr);
     assert!(arena.width(root_id) > 0);
 }
@@ -541,7 +541,7 @@ fn test_parse_field_access_simple() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::FieldAccess);
     assert!(arena.width(root_id) > 0);
 }
@@ -554,7 +554,7 @@ fn test_parse_field_access_chained() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     // Should have two FieldAccess nodes for chained access
     assert!(count_nodes_by_kind(&arena, root_id, SyntaxKind::FieldAccess) >= 2);
     assert!(arena.width(root_id) > 0);
@@ -568,7 +568,7 @@ fn test_parse_array_indexing_simple() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IndexExpr);
     assert!(arena.width(root_id) > 0);
 }
@@ -581,7 +581,7 @@ fn test_parse_array_indexing_with_expression() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IndexExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::BinaryExpr);
     assert!(arena.width(root_id) > 0);
@@ -595,7 +595,7 @@ fn test_parse_special_literal_self() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::SelfLiteral);
     assert!(arena.width(root_id) > 0);
 }
@@ -608,7 +608,7 @@ fn test_parse_special_literal_now() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::NowLiteral);
     assert!(arena.width(root_id) > 0);
 }
@@ -621,7 +621,7 @@ fn test_parse_special_literal_samplerate() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::SampleRateLiteral);
     assert!(arena.width(root_id) > 0);
 }
@@ -635,7 +635,7 @@ fn test_parse_complex_expression_mixed() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     // Should have indexing, field access, pipe, call, and binary operations
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IndexExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::FieldAccess);
@@ -652,7 +652,7 @@ fn test_parse_array_of_tuples() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::ArrayExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::TupleExpr);
     assert_node_count(&arena, root_id, SyntaxKind::IntLiteral, 4);
@@ -667,7 +667,7 @@ fn test_parse_record_with_field_access() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::RecordExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IndexExpr);
     assert!(arena.width(root_id) > 0);
@@ -681,7 +681,7 @@ fn test_parse_assignment_simple() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::AssignExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::Identifier);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
@@ -696,7 +696,7 @@ fn test_parse_assignment_field_access() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::AssignExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::FieldAccess);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
@@ -711,7 +711,7 @@ fn test_parse_assignment_array_index() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::AssignExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IndexExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
@@ -728,7 +728,7 @@ fn test_parse_assignment_complex_expression() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::AssignExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::BinaryExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
@@ -745,7 +745,7 @@ fn test_parse_pattern_single() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::LetDecl);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::SinglePattern);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
@@ -760,7 +760,7 @@ fn test_parse_pattern_tuple() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::LetDecl);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::TuplePattern);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::TupleExpr);
@@ -777,7 +777,7 @@ fn test_parse_pattern_tuple_nested() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::LetDecl);
     // Should have nested TuplePattern nodes
     assert!(count_nodes_by_kind(&arena, root_id, SyntaxKind::TuplePattern) >= 2);
@@ -793,7 +793,7 @@ fn test_parse_pattern_record() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::LetDecl);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::RecordPattern);
     // Should have 2 SinglePattern nodes (x and y)
@@ -809,7 +809,7 @@ fn test_parse_pattern_record_nested() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::LetDecl);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::RecordPattern);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::TuplePattern);
@@ -828,7 +828,7 @@ fn test_parse_include_simple() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IncludeStmt);
     // String literal should be present as Str token
     assert!(arena.width(root_id) > 0);
@@ -842,7 +842,7 @@ fn test_parse_include_with_path() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IncludeStmt);
     assert!(arena.width(root_id) > 0);
 }
@@ -855,7 +855,7 @@ fn test_parse_stage_main() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::StageDecl);
     assert!(arena.width(root_id) > 0);
 }
@@ -868,7 +868,7 @@ fn test_parse_stage_macro() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::StageDecl);
     assert!(arena.width(root_id) > 0);
 }
@@ -882,7 +882,7 @@ fn dsp() { 0.0 }"#;
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IncludeStmt);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::FunctionDecl);
     assert!(arena.width(root_id) > 0);
@@ -898,7 +898,7 @@ fn test_parse_macro_expansion_simple() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::MacroExpansion);
     assert!(arena.width(root_id) > 0);
 }
@@ -911,7 +911,7 @@ fn test_parse_macro_expansion_no_args() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::MacroExpansion);
     assert!(arena.width(root_id) > 0);
 }
@@ -924,7 +924,7 @@ fn test_parse_bracket_expr_simple() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::BracketExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::Identifier);
     assert!(arena.width(root_id) > 0);
@@ -938,7 +938,7 @@ fn test_parse_bracket_expr_block() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::BracketExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::BlockExpr);
     assert!(arena.width(root_id) > 0);
@@ -952,7 +952,7 @@ fn test_parse_escape_expr() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::EscapeExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::Identifier);
     assert!(arena.width(root_id) > 0);
@@ -966,7 +966,7 @@ fn test_parse_bracket_escape_combined() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::BracketExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::EscapeExpr);
     assert!(arena.width(root_id) > 0);
@@ -982,7 +982,7 @@ fn test_parse_projection_tuple() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::FieldAccess);
     // Projection is recognized as field access with numeric index
     assert!(arena.width(root_id) > 0);
@@ -996,7 +996,7 @@ fn test_parse_projection_second() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::FieldAccess);
     assert!(arena.width(root_id) > 0);
 }
@@ -1009,7 +1009,7 @@ fn test_parse_else_if_chain() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     // Should have multiple IfExpr nodes (nested)
     assert!(count_nodes_by_kind(&arena, root_id, SyntaxKind::IfExpr) >= 2);
     assert!(count_nodes_by_kind(&arena, root_id, SyntaxKind::IntLiteral) >= 3);
@@ -1024,7 +1024,7 @@ fn test_parse_else_if_simple() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IfExpr);
     assert!(arena.width(root_id) > 0);
 }
@@ -1037,7 +1037,7 @@ fn test_parse_placeholder_in_expr() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::BinaryExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::Identifier);
     assert!(arena.width(root_id) > 0);
@@ -1051,7 +1051,7 @@ fn test_parse_placeholder_tuple() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::TuplePattern);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::SinglePattern);
     assert!(arena.width(root_id) > 0);
@@ -1067,7 +1067,7 @@ fn test_parse_record_update_simple() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::RecordExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::Identifier);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
@@ -1082,7 +1082,7 @@ fn test_parse_record_update_with_fields() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::RecordExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::Identifier);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
@@ -1097,7 +1097,7 @@ fn test_parse_incomplete_record() {
     let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
-    use mimium_language_server::lossless_parser::cst_test_helpers::*;
+    use mimium_lang::lossless_parser::cst_test_helpers::*;
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::RecordExpr);
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
     assert!(arena.width(root_id) > 0);

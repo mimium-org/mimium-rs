@@ -1,11 +1,15 @@
 use crate::ast::operators::Op;
 use crate::ast::*;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
+use crate::lossless_parser::cst_parser::ParserError as LosslessParserError;
+use crate::lossless_parser::lower::LosslessLowerer;
+use crate::lossless_parser::token::LosslessToken;
+use crate::lossless_parser::{parse_cst, preparse, tokenize};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::types::{PType, RecordTypeField, Type};
-use crate::utils::error::ReportableError;
+use crate::utils::error::{ReportableError, SimpleError};
 use crate::utils::metadata::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chumsky::input::{MapExtra, Stream, ValueInput};
 use chumsky::pratt::{Associativity, Operator};
@@ -1135,11 +1139,43 @@ pub fn parse_to_expr(
     src: &str,
     current_file: Option<PathBuf>,
 ) -> (ExprNodeId, Vec<Box<dyn ReportableError>>) {
-    let (prog, mut errs) = parse(src, current_file.clone());
+    let file_path = current_file.unwrap_or_default();
+    let tokens = tokenize(src);
+    let preparsed = preparse(&tokens);
+    let (root, arena, tokens, parse_errors) = parse_cst(tokens, &preparsed);
+    let lowerer = LosslessLowerer::new(src, &tokens, &arena, file_path.clone());
+    let prog = lowerer.lower_program(root);
+
+    let mut errs: Vec<Box<dyn ReportableError>> = parse_errors
+        .into_iter()
+        .map(|err| lossless_error_to_reportable(err, &tokens, file_path.as_path(), src.len()))
+        .collect();
+
     if prog.statements.is_empty() {
         return (Expr::Error.into_id_without_span(), errs);
     }
-    let (expr, mut new_errs) = expr_from_program(prog, current_file.unwrap_or_default());
+
+    let (expr, mut new_errs) = expr_from_program(prog, file_path);
     errs.append(&mut new_errs);
     (expr, errs)
+}
+
+fn lossless_error_to_reportable(
+    err: LosslessParserError,
+    tokens: &[LosslessToken],
+    file_path: &Path,
+    src_len: usize,
+) -> Box<dyn ReportableError> {
+    let span = tokens
+        .get(err.token_index)
+        .map(|tok| tok.start..tok.end())
+        .unwrap_or(src_len..src_len);
+    let loc = Location {
+        span,
+        path: file_path.to_path_buf(),
+    };
+    Box::new(SimpleError {
+        message: err.detail.to_string(),
+        span: loc,
+    })
 }

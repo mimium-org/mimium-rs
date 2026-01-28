@@ -6,7 +6,7 @@ use mimium_lang::{
 };
 use tower_lsp::lsp_types::SemanticTokenType;
 
-use crate::lossless_parser::{
+use mimium_lang::lossless_parser::{
     GreenNodeArena, GreenNodeId, LosslessToken, SyntaxKind, TokenKind, green::GreenNode,
 };
 
