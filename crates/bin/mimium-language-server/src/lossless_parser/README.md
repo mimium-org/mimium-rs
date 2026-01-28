@@ -60,9 +60,13 @@ Converts Green Tree to Red Tree and AST.
 
 - **Input**: Green Tree
 - **Output**: 
-  - Red Tree: Position-aware nodes with absolute offsets
+  - Red Tree: Position-aware nodes with absolute offsets and parent references
   - AST: Traditional abstract syntax tree without trivia
 - Red nodes are created on-demand from Green nodes
+- **Parent References**: Red nodes maintain weak references to parent nodes for bottom-up traversal
+  - Enables efficient upward navigation (e.g., finding enclosing function, scope)
+  - Avoids circular references using `Weak<RedNode>`
+  - Provides `parent()`, `ancestors()`, and `is_descendant_of()` methods
 - AST is suitable for semantic analysis
 
 ## Usage Example

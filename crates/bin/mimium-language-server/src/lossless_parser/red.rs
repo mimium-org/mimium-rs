@@ -3,10 +3,11 @@
 /// 
 /// Red nodes have absolute positions and are created from Green nodes.
 /// They represent the actual AST without comments and whitespace.
+/// Red nodes maintain parent references for bottom-up traversal.
 
 use super::green::{GreenNodeArena, GreenNodeId, SyntaxKind};
 use super::token::{LosslessToken, TokenKind};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 /// Red node - represents an AST node with position information
 /// This is the "Red" part of Red-Green Syntax Tree
@@ -16,6 +17,8 @@ pub struct RedNode {
     green_id: GreenNodeId,
     /// Absolute position in the source
     offset: usize,
+    /// Parent node (weak reference to avoid cycles)
+    parent: Option<Weak<RedNode>>,
 }
 
 impl RedNode {
@@ -24,6 +27,16 @@ impl RedNode {
         Arc::new(RedNode {
             green_id,
             offset,
+            parent: None,
+        })
+    }
+    
+    /// Create a new red node with a parent reference
+    pub fn new_with_parent(green_id: GreenNodeId, offset: usize, parent: Weak<RedNode>) -> Arc<Self> {
+        Arc::new(RedNode {
+            green_id,
+            offset,
+            parent: Some(parent),
         })
     }
     
@@ -52,15 +65,24 @@ impl RedNode {
         self.green_id
     }
     
-    /// Get children as red nodes
-    pub fn children(&self, arena: &GreenNodeArena) -> Vec<Arc<RedNode>> {
+    /// Get the parent node if it exists
+    pub fn parent(&self) -> Option<Arc<RedNode>> {
+        self.parent.as_ref().and_then(|weak| weak.upgrade())
+    }
+    
+    /// Get children as red nodes with parent references
+    pub fn children(self: &Arc<Self>, arena: &GreenNodeArena) -> Vec<Arc<RedNode>> {
         if let Some(green_children) = arena.children(self.green_id) {
             let mut offset = self.offset;
             
             green_children
                 .iter()
                 .map(|&child_id| {
-                    let child = RedNode::new(child_id, offset);
+                    let child = RedNode::new_with_parent(
+                        child_id, 
+                        offset,
+                        Arc::downgrade(self)
+                    );
                     offset += arena.width(child_id);
                     child
                 })
@@ -68,6 +90,26 @@ impl RedNode {
         } else {
             Vec::new()
         }
+    }
+    
+    /// Get ancestors of this node (bottom-up traversal)
+    pub fn ancestors(&self) -> Vec<Arc<RedNode>> {
+        let mut result = Vec::new();
+        let mut current = self.parent();
+        
+        while let Some(node) = current {
+            result.push(node.clone());
+            current = node.parent();
+        }
+        
+        result
+    }
+    
+    /// Check if this node is a descendant of another node
+    pub fn is_descendant_of(&self, ancestor: &RedNode) -> bool {
+        self.ancestors().iter().any(|node| {
+            node.green_id == ancestor.green_id && node.offset == ancestor.offset
+        })
     }
     
     /// Get the text of this node from the source
@@ -129,7 +171,7 @@ pub enum AstNode {
 }
 
 /// Convert Red Tree to AST
-pub fn red_to_ast(red: &RedNode, source: &str, tokens: &[LosslessToken], arena: &GreenNodeArena) -> AstNode {
+pub fn red_to_ast(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], arena: &GreenNodeArena) -> AstNode {
     match red.kind(arena) {
         Some(SyntaxKind::Program) => {
             let children = red.children(arena);
@@ -293,7 +335,7 @@ pub fn red_to_ast(red: &RedNode, source: &str, tokens: &[LosslessToken], arena: 
 }
 
 /// Extract parameter names from ParamList node
-fn extract_params(red: &RedNode, source: &str, tokens: &[LosslessToken], arena: &GreenNodeArena) -> Vec<String> {
+fn extract_params(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], arena: &GreenNodeArena) -> Vec<String> {
     let mut params = Vec::new();
     
     for child in red.children(arena) {
@@ -358,6 +400,73 @@ mod tests {
                 assert!(!statements.is_empty());
             }
             _ => panic!("Expected Program node"),
+        }
+    }
+    
+    #[test]
+    fn test_parent_references() {
+        let source = "fn add(x, y) { 42 }";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let root = RedNode::new(root_id, 0);
+        
+        // Root should have no parent
+        assert!(root.parent().is_none());
+        
+        // Get children with parent references
+        let children = root.children(&arena);
+        
+        // Children should have parent references pointing to root
+        for child in children.iter() {
+            let parent = child.parent();
+            assert!(parent.is_some(), "Child should have a parent reference");
+            
+            let parent = parent.unwrap();
+            assert_eq!(parent.offset(), root.offset());
+            assert_eq!(parent.green_id(), root.green_id());
+        }
+    }
+    
+    #[test]
+    fn test_ancestors() {
+        let source = "fn add(x, y) { let z = 42 }";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let root = RedNode::new(root_id, 0);
+        
+        // Get first child (statement)
+        let children = root.children(&arena);
+        if let Some(statement) = children.first() {
+            // Get ancestors
+            let ancestors = statement.ancestors();
+            
+            // Should have at least the root as ancestor
+            assert!(!ancestors.is_empty(), "Statement should have ancestors");
+            
+            // First ancestor should be the root
+            if let Some(first_ancestor) = ancestors.first() {
+                assert_eq!(first_ancestor.offset(), root.offset());
+            }
+        }
+    }
+    
+    #[test]
+    fn test_is_descendant_of() {
+        let source = "fn add(x, y) { 42 }";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let root = RedNode::new(root_id, 0);
+        
+        let children = root.children(&arena);
+        if let Some(child) = children.first() {
+            // Child should be descendant of root
+            assert!(child.is_descendant_of(&root), "Child should be descendant of root");
+            
+            // Root should not be descendant of child
+            assert!(!root.is_descendant_of(child), "Root should not be descendant of child");
         }
     }
 }
