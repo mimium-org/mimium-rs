@@ -419,11 +419,11 @@ fn extract_params(
 /// Transform a flat list of statements into a Let-body-then chain
 ///
 /// For example:
-/// ```
+/// ```text
 /// [LetDecl(x, 1), LetDecl(y, 2), Expr(x+y)]
 /// ```
 /// becomes:
-/// ```
+/// ```text
 /// LetDecl(x, 1, LetDecl(y, 2, Expr(x+y)))
 /// ```
 fn transform_let_chain(statements: Vec<AstNode>) -> AstNode {

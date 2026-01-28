@@ -40,11 +40,11 @@
 /// let preparsed = lossless_parser::preparse(&tokens);
 /// 
 /// // Step 3: Parse to CST (Green Tree)
-/// let cst = lossless_parser::parse_cst(&tokens, &preparsed);
+/// let (green_id, arena) = lossless_parser::parse_cst(&tokens, &preparsed);
 /// 
 /// // Step 4: Convert to AST (Red Tree)
-/// let red = lossless_parser::green_to_red(cst, 0);
-/// let ast = lossless_parser::red_to_ast(&red, source, &tokens);
+/// let red = lossless_parser::green_to_red(green_id, &arena, 0);
+/// let ast = lossless_parser::red_to_ast(&red, source, &tokens, &arena);
 /// ```
 
 pub mod token;

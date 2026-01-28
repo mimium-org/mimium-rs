@@ -71,6 +71,10 @@ struct Backend {
     // semantic_map: DashMap<SrcUri, Semantic>,
     document_map: DashMap<SrcUri, Rope>,
     semantic_token_map: DashMap<SrcUri, Vec<ImCompleteSemanticToken>>,
+    // Lossless parser state
+    lossless_arena_map: DashMap<SrcUri, lossless_parser::GreenNodeArena>,
+    lossless_root_map: DashMap<SrcUri, lossless_parser::GreenNodeId>,
+    lossless_tokens_map: DashMap<SrcUri, Vec<lossless_parser::LosslessToken>>,
 }
 
 #[tower_lsp::async_trait]
@@ -266,6 +270,17 @@ impl Backend {
     fn compile(&self, src: &str, url: Url) -> Vec<Diagnostic> {
         let rope = ropey::Rope::from_str(src);
 
+        // Run lossless parser for IDE features
+        let lossless_tokens = lossless_parser::tokenize(src);
+        let lossless_preparsed = lossless_parser::preparse(&lossless_tokens);
+        let (lossless_root, lossless_arena) = lossless_parser::parse_cst(&lossless_tokens, &lossless_preparsed);
+        
+        // Store lossless parser results
+        self.lossless_tokens_map.insert(url.to_string(), lossless_tokens.clone());
+        self.lossless_root_map.insert(url.to_string(), lossless_root);
+        self.lossless_arena_map.insert(url.to_string(), lossless_arena);
+
+        // Run existing parser for type checking
         let ParseResult {
             ast,
             errors,
@@ -307,6 +322,9 @@ pub async fn lib_main() {
         ast_map: DashMap::new(),
         document_map: DashMap::new(),
         semantic_token_map: DashMap::new(),
+        lossless_arena_map: DashMap::new(),
+        lossless_root_map: DashMap::new(),
+        lossless_tokens_map: DashMap::new(),
     })
     .finish();
 
