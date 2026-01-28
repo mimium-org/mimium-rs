@@ -29,6 +29,13 @@ impl<'a> Parser<'a> {
             .map(|t| t.kind)
     }
     
+    /// Peek ahead n tokens
+    fn peek_ahead(&self, n: usize) -> Option<TokenKind> {
+        self.preparsed
+            .get_token(self.current + n, self.tokens)
+            .map(|t| t.kind)
+    }
+    
     /// Get the current token
     fn current_token(&self) -> Option<&LosslessToken> {
         self.preparsed.get_token(self.current, self.tokens)
@@ -191,12 +198,26 @@ impl<'a> Parser<'a> {
                 self.builder.finish_node();
             }
             Some(TokenKind::ParenBegin) => {
-                self.bump(); // (
-                self.parse_expr();
-                self.expect(TokenKind::ParenEnd);
+                // Need lookahead to distinguish tuple from parenthesized expression
+                // Tuple: (a, b) or (a,)
+                // Paren: (a) or (expr)
+                if self.is_tuple_expr() {
+                    self.parse_tuple_expr();
+                } else {
+                    self.bump(); // (
+                    self.parse_expr();
+                    self.expect(TokenKind::ParenEnd);
+                }
             }
             Some(TokenKind::BlockBegin) => {
-                self.parse_block_expr();
+                // Need lookahead to distinguish record from block
+                // Record: {a = 1, b = 2}
+                // Block: {stmt; stmt}
+                if self.is_record_expr() {
+                    self.parse_record_expr();
+                } else {
+                    self.parse_block_expr();
+                }
             }
             Some(TokenKind::If) => {
                 self.parse_if_expr();
@@ -209,6 +230,98 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+    }
+    
+    /// Check if current position is a tuple expression
+    /// Tuple: (a, b) or (a,) - has comma
+    /// Paren: (a) - no comma
+    fn is_tuple_expr(&self) -> bool {
+        if !self.check(TokenKind::ParenBegin) {
+            return false;
+        }
+        
+        // Look ahead to find comma before ParenEnd
+        let mut depth = 0;
+        for i in 1..20 { // look ahead max 20 tokens
+            match self.peek_ahead(i) {
+                Some(TokenKind::ParenBegin) => depth += 1,
+                Some(TokenKind::ParenEnd) => {
+                    if depth == 0 {
+                        return false; // no comma found
+                    }
+                    depth -= 1;
+                }
+                Some(TokenKind::Comma) if depth == 0 => return true,
+                None => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+    
+    /// Check if current position is a record expression
+    /// Record: {a = 1, b = 2} - has assignment
+    /// Block: {stmt; stmt} - has other tokens
+    fn is_record_expr(&self) -> bool {
+        if !self.check(TokenKind::BlockBegin) {
+            return false;
+        }
+        
+        // Look for pattern: Ident = 
+        if let Some(TokenKind::Ident) = self.peek_ahead(1) {
+            if let Some(TokenKind::Assign) = self.peek_ahead(2) {
+                return true;
+            }
+        }
+        
+        false
+    }
+    
+    /// Parse tuple expression: (a, b, c)
+    fn parse_tuple_expr(&mut self) {
+        self.builder.start_node(SyntaxKind::TupleExpr);
+        
+        self.expect(TokenKind::ParenBegin);
+        
+        if !self.check(TokenKind::ParenEnd) {
+            self.parse_expr();
+            
+            while self.check(TokenKind::Comma) {
+                self.bump(); // ,
+                if !self.check(TokenKind::ParenEnd) {
+                    self.parse_expr();
+                }
+            }
+        }
+        
+        self.expect(TokenKind::ParenEnd);
+        self.builder.finish_node();
+    }
+    
+    /// Parse record expression: {field1 = expr1, field2 = expr2}
+    fn parse_record_expr(&mut self) {
+        self.builder.start_node(SyntaxKind::RecordExpr);
+        
+        self.expect(TokenKind::BlockBegin);
+        
+        if !self.check(TokenKind::BlockEnd) {
+            // Parse field: name = expr
+            self.expect(TokenKind::Ident); // field name
+            self.expect(TokenKind::Assign);
+            self.parse_expr();
+            
+            while self.check(TokenKind::Comma) {
+                self.bump(); // ,
+                if !self.check(TokenKind::BlockEnd) {
+                    self.expect(TokenKind::Ident); // field name
+                    self.expect(TokenKind::Assign);
+                    self.parse_expr();
+                }
+            }
+        }
+        
+        self.expect(TokenKind::BlockEnd);
+        self.builder.finish_node();
     }
     
     /// Parse block expression: { statements }
@@ -288,5 +401,27 @@ mod tests {
         let (root_id, arena) = parse_cst(&tokens, &preparsed);
         
         assert!(arena.width(root_id) > 0);
+    }
+    
+    #[test]
+    fn test_parse_tuple() {
+        let source = "(1, 2, 3)";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        
+        let children = arena.children(root_id).unwrap();
+        assert!(!children.is_empty());
+    }
+    
+    #[test]
+    fn test_parse_record() {
+        let source = "{x = 1, y = 2}";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        
+        let children = arena.children(root_id).unwrap();
+        assert!(!children.is_empty());
     }
 }

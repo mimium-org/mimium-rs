@@ -121,6 +121,8 @@ pub enum SyntaxKind {
     LambdaExpr,
     IfExpr,
     BlockExpr,
+    TupleExpr,
+    RecordExpr,
     
     // Literals
     IntLiteral,
@@ -162,6 +164,8 @@ impl std::fmt::Display for SyntaxKind {
             SyntaxKind::LambdaExpr => write!(f, "LambdaExpr"),
             SyntaxKind::IfExpr => write!(f, "IfExpr"),
             SyntaxKind::BlockExpr => write!(f, "BlockExpr"),
+            SyntaxKind::TupleExpr => write!(f, "TupleExpr"),
+            SyntaxKind::RecordExpr => write!(f, "RecordExpr"),
             SyntaxKind::IntLiteral => write!(f, "IntLiteral"),
             SyntaxKind::FloatLiteral => write!(f, "FloatLiteral"),
             SyntaxKind::StringLiteral => write!(f, "StringLiteral"),

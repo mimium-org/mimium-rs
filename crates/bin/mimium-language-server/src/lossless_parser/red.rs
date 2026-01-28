@@ -162,6 +162,14 @@ pub enum AstNode {
         statements: Vec<AstNode>,
     },
     
+    TupleExpr {
+        elements: Vec<AstNode>,
+    },
+    
+    RecordExpr {
+        fields: Vec<(String, AstNode)>,
+    },
+    
     IntLiteral(i64),
     FloatLiteral(f64),
     StringLiteral(String),
@@ -328,6 +336,49 @@ pub fn red_to_ast(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], ar
                 }
             }
             AstNode::Error
+        }
+        
+        Some(SyntaxKind::TupleExpr) => {
+            let children = red.children(arena);
+            let elements = children
+                .iter()
+                .filter_map(|child| {
+                    // Skip tokens (parens, commas), only process expressions
+                    if child.kind(arena).is_some() {
+                        Some(red_to_ast(child, source, tokens, arena))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            AstNode::TupleExpr { elements }
+        }
+        
+        Some(SyntaxKind::RecordExpr) => {
+            let children = red.children(arena);
+            let mut fields = Vec::new();
+            let mut current_field_name = None;
+            
+            for child in children.iter() {
+                let green = arena.get(child.green_id());
+                match green {
+                    super::green::GreenNode::Token { token_index, .. } => {
+                        if let Some(token) = tokens.get(*token_index) {
+                            if token.kind == TokenKind::Ident {
+                                current_field_name = Some(token.text(source).to_string());
+                            }
+                        }
+                    }
+                    _ => {
+                        // This is an expression node
+                        if let Some(field_name) = current_field_name.take() {
+                            let value = red_to_ast(child, source, tokens, arena);
+                            fields.push((field_name, value));
+                        }
+                    }
+                }
+            }
+            AstNode::RecordExpr { fields }
         }
         
         _ => AstNode::Error,
