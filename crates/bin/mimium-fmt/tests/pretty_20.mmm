@@ -1,3 +1,5 @@
+// the comment will be removed
+///this comment will also be removed
 import("dummy.mmm")
 let pi =
     3.14159265359
