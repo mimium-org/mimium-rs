@@ -86,6 +86,7 @@ fn lossless_token_to_semantic_token(token: &LosslessToken) -> Option<ImCompleteS
         | TokenKind::Macro
         | TokenKind::Include
         | TokenKind::StageKwd
+        | TokenKind::Sharp
         | TokenKind::Main => get_token_id(&SemanticTokenType::KEYWORD),
         TokenKind::Ident | TokenKind::IdentVariable => get_token_id(&SemanticTokenType::VARIABLE),
         TokenKind::IdentFunction => get_token_id(&SemanticTokenType::FUNCTION),
@@ -119,28 +120,7 @@ fn lossless_token_to_semantic_token(token: &LosslessToken) -> Option<ImCompleteS
         | TokenKind::StructType => get_token_id(&SemanticTokenType::TYPE),
         TokenKind::MacroExpand => get_token_id(&SemanticTokenType::MACRO),
         // Skip whitespace, newlines, punctuation, and errors
-        TokenKind::Whitespace
-        | TokenKind::LineBreak
-        | TokenKind::ParenBegin
-        | TokenKind::ParenEnd
-        | TokenKind::BlockBegin
-        | TokenKind::BlockEnd
-        | TokenKind::ArrayBegin
-        | TokenKind::ArrayEnd
-        | TokenKind::LambdaArgBeginEnd
-        | TokenKind::Comma
-        | TokenKind::Colon
-        | TokenKind::SemiColon
-        | TokenKind::Arrow
-        | TokenKind::LeftArrow
-        | TokenKind::Dot
-        | TokenKind::DoubleDot
-        | TokenKind::BackQuote
-        | TokenKind::Dollar
-        | TokenKind::Sharp
-        | TokenKind::PlaceHolder
-        | TokenKind::Error
-        | TokenKind::Eof => return None,
+        _ => return None,
     };
     Some(ImCompleteSemanticToken {
         start: token.start,
