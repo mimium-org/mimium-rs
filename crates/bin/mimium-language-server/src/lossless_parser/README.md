@@ -18,7 +18,7 @@ The parser consists of four main stages:
 
 ### 1. Tokenizer (`tokenizer.rs`)
 
-Converts source text into position-aware tokens.
+Converts source text into position-aware tokens using chumsky parser combinators.
 
 - **Input**: Source text (String)
 - **Output**: Sequence of `LosslessToken`s
@@ -27,6 +27,10 @@ Converts source text into position-aware tokens.
   - `start`: Byte offset in source
   - `length`: Length in bytes
 - Literals store only position information, not the actual value (values can be reconstructed from source + position)
+- **Error Recovery**: Uses chumsky's error recovery to continue parsing after encountering invalid characters
+  - Invalid characters are marked with `TokenKind::Error`
+  - Parser continues collecting valid tokens after errors
+  - All errors are logged for debugging
 
 ### 2. Pre-parser (`preparser.rs`)
 
@@ -79,10 +83,27 @@ let red = lossless_parser::green_to_red(cst, 0);
 let ast = lossless_parser::red_to_ast(&red, source, &tokens);
 ```
 
-Run the demo:
+Run the demos:
 
 ```bash
+# Main demo showing the full pipeline
 cargo run --package mimium-language-server --example lossless_parser_demo
+
+# Error recovery demo showing continued parsing after errors
+cargo run --package mimium-language-server --example error_recovery_demo
+```
+
+### Error Recovery Example
+
+The tokenizer can recover from invalid characters and continue parsing:
+
+```rust
+let source = "fn dsp() { let x = 42 § let y = 3.14 © }";
+let tokens = lossless_parser::tokenize(source);
+
+// The parser continues and marks invalid characters as Error tokens
+// Valid tokens: fn, dsp, (, ), {, let, x, =, 42, let, y, =, 3.14, }
+// Error tokens: §, ©
 ```
 
 ## Red-Green Syntax Tree Pattern
@@ -107,8 +128,8 @@ The implementation includes comprehensive unit tests:
 cargo test --package mimium-language-server --lib
 ```
 
-All tests (26 total) should pass:
-- Tokenizer tests (6 tests)
+All tests (28 total) should pass:
+- Tokenizer tests (8 tests including 2 error recovery tests)
 - Pre-parser tests (5 tests)
 - Green Tree tests (4 tests)
 - CST parser tests (3 tests)
