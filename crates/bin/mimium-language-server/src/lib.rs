@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use mimium_lang::interner::Symbol;
 
 pub mod semantic_token;
+pub mod lossless_parser;
 
 use dashmap::DashMap;
 use log::debug;
