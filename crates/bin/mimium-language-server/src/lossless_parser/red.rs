@@ -16,17 +16,14 @@ pub struct RedNode {
     green: Arc<GreenNode>,
     /// Absolute position in the source
     offset: usize,
-    /// Parent node (weak reference to avoid cycles)
-    parent: Option<Arc<RedNode>>,
 }
 
 impl RedNode {
     /// Create a new red node from a green node
-    pub fn new(green: Arc<GreenNode>, offset: usize, parent: Option<Arc<RedNode>>) -> Arc<Self> {
+    pub fn new(green: Arc<GreenNode>, offset: usize) -> Arc<Self> {
         Arc::new(RedNode {
             green,
             offset,
-            parent,
         })
     }
     
@@ -55,24 +52,17 @@ impl RedNode {
         &self.green
     }
     
-    /// Get the parent node
-    pub fn parent(&self) -> Option<&Arc<RedNode>> {
-        self.parent.as_ref()
-    }
-    
     /// Get children as red nodes
     pub fn children(&self) -> Vec<Arc<RedNode>> {
         if let Some(green_children) = self.green.children() {
             let mut offset = self.offset;
-            let self_arc = Arc::new(self.clone());
             
             green_children
                 .iter()
                 .map(|green_child| {
                     let child = RedNode::new(
                         green_child.clone(),
-                        offset,
-                        Some(self_arc.clone())
+                        offset
                     );
                     offset += green_child.width();
                     child
@@ -324,7 +314,7 @@ mod tests {
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
         let green = parse_cst(&tokens, &preparsed);
-        let red = RedNode::new(green, 0, None);
+        let red = RedNode::new(green, 0);
         
         assert_eq!(red.offset(), 0);
         assert!(red.width() > 0);
@@ -336,7 +326,7 @@ mod tests {
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
         let green = parse_cst(&tokens, &preparsed);
-        let red = RedNode::new(green, 0, None);
+        let red = RedNode::new(green, 0);
         let ast = red_to_ast(&red, source, &tokens);
         
         match ast {
@@ -351,7 +341,7 @@ mod tests {
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
         let green = parse_cst(&tokens, &preparsed);
-        let red = RedNode::new(green, 0, None);
+        let red = RedNode::new(green, 0);
         let ast = red_to_ast(&red, source, &tokens);
         
         match ast {

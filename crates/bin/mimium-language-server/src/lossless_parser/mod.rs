@@ -64,7 +64,7 @@ pub use red::{RedNode, AstNode, red_to_ast};
 
 /// Convenience function to create a Red node from a Green node
 pub fn green_to_red(green: std::sync::Arc<GreenNode>, offset: usize) -> std::sync::Arc<RedNode> {
-    RedNode::new(green, offset, None)
+    RedNode::new(green, offset)
 }
 
 /// Complete parsing pipeline from source to AST

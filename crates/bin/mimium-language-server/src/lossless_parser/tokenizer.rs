@@ -94,10 +94,11 @@ pub fn tokenize(source: &str) -> Vec<LosslessToken> {
                             end = pos + c.len_utf8();
                         }
                         '.' => {
-                            // Look ahead to see if next char is digit
-                            let chars_vec: Vec<_> = chars.clone().collect();
-                            if chars_vec.len() >= 2 {
-                                let next_c = chars_vec[1].1;
+                            // Look ahead one more character to see if it's a digit
+                            // We need to clone to peek further without consuming
+                            let mut chars_clone = chars.clone();
+                            chars_clone.next(); // Skip the '.'
+                            if let Some(&(_, next_c)) = chars_clone.peek() {
                                 if next_c.is_ascii_digit() && !has_dot {
                                     has_dot = true;
                                     chars.next();
@@ -194,8 +195,10 @@ pub fn tokenize(source: &str) -> Vec<LosslessToken> {
                     chars.next();
                     LosslessToken::new(TokenKind::OpNotEqual, start, 2)
                 } else {
-                    // Standalone ! might be part of macro expansion, handled above
-                    continue;
+                    // Standalone '!' - treat as unknown operator for now
+                    // In actual mimium syntax, '!' is used for macro expansion
+                    // which is handled in the identifier pattern
+                    LosslessToken::new(TokenKind::OpUnknown, start, 1)
                 }
             }
             
