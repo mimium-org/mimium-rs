@@ -1,19 +1,18 @@
 // the comment will be removed
 ///this comment will also be removed
-import("dummy.mmm")
+include("dummy.mmm")
 let pi = 3.14159265359
 let sr = 48000.0
-let _ =
-    set_midi_port("from Max 1")
+let _ = set_midi_port("from Max 1")
 let test_record = {fuga = 200,
     hoge = 100}
 let test_tuple = (100, 200, 400)
-fn sec2samp(sec){// the comment will be removed
+fn sec2samp(sec){ // the comment will be removed
     sec * 48000.0
 }
 fn countup(active){
     let r = (self + 1.0)
-    let rr = /*block comment*/ if(active) r else 0.0
+    let rr = /*block comment*/if(active) r else 0.0
     rr
 }
 fn countupn(time, active){
@@ -59,8 +58,7 @@ fn synth(note, vel){
     sig * gain
 }
 let ch0 = midi_note_mono!(0.0, 69.0, 0.0)
-let probe =
-    make_probe("sig")
+let probe = make_probe("sig")
 fn dsp(){
     let l = probe(ch0() |> synth)
     (l, l)

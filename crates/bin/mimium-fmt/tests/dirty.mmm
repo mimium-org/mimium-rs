@@ -1,6 +1,6 @@
 // the comment will be removed
 ///this comment will also be removed
-     import("dummy.mmm")
+     include("dummy.mmm")
 let pi = 3.14159265359
     let sr = 48000.0
 let _ =     set_midi_port("from Max 1")

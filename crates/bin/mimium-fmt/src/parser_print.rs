@@ -151,13 +151,25 @@ fn insert_gap_comments(formatted: &str, gap_comments: &[Vec<CommentInfo>]) -> St
                 // We need to insert comments after this token
                 let comments = &gap_comments[nontrivia_idx];
                 
-                // Look ahead to skip trailing trivia
+                // Look ahead to skip trailing trivia on the same line only
+                // We need to preserve indentation whitespace on the next line
                 let mut j = token_idx + 1;
+                let mut found_linebreak = false;
                 
                 while j < fmt_tokens.len() {
                     let next = fmt_tokens[j];
                     match next.kind {
-                        TokenKind::LineBreak | TokenKind::Whitespace => {
+                        TokenKind::LineBreak => {
+                            // Skip linebreaks
+                            j += 1;
+                            found_linebreak = true;
+                        }
+                        TokenKind::Whitespace => {
+                            if found_linebreak {
+                                // This is indentation for next line - stop skipping
+                                break;
+                            }
+                            // Still on same line, skip trailing whitespace
                             j += 1;
                         }
                         _ => break,

@@ -177,6 +177,8 @@ mod expr {
                     .collect::<Vec<_>>();
                 allocator
                     .intersperse(docs, breakable_comma(allocator))
+                    .nest(get_indent_size() as isize)
+                    .group()
                     .parens()
             }
             Expr::Proj(e, idx) => pretty(e, allocator)
@@ -191,6 +193,7 @@ mod expr {
                 doc1.append(
                     allocator
                         .intersperse(docs2, breakable_comma(allocator))
+                        .nest(get_indent_size() as isize)
                         .group()
                         .parens(),
                 )
@@ -208,6 +211,7 @@ mod expr {
                     .collect::<Vec<_>>();
                 allocator
                     .intersperse(docs, breakable_comma(allocator))
+                    .nest(get_indent_size() as isize)
                     .group()
                     .braces()
             }
@@ -427,11 +431,8 @@ mod statement {
                 allocator
                     .text("let ")
                     .append(pat_doc)
-                    .append(allocator.text(" ="))
-                    .append(allocator.softline())
+                    .append(allocator.text(" = "))
                     .append(body_doc.group())
-                    .group()
-                    .nest(get_indent_size() as isize)
             }
             Statement::LetRec(id, body) => {
                 let body_doc = expr::pretty(body, allocator);
