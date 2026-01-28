@@ -427,6 +427,7 @@ fn transform_let_chain(statements: Vec<AstNode>) -> AstNode {
         match stmt {
             AstNode::LetDecl { name, value } => {
                 // Transform LetDecl into a nested structure with body
+                // We destructure the Box, so value is AstNode, not Box<AstNode>
                 AstNode::LetDecl {
                     name,
                     value: Box::new(AstNode::BlockExpr {

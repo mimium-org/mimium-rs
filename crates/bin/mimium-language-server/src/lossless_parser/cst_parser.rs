@@ -12,6 +12,9 @@ pub struct Parser<'a> {
     builder: GreenTreeBuilder,
 }
 
+/// Maximum lookahead distance for disambiguation
+const MAX_LOOKAHEAD: usize = 20;
+
 impl<'a> Parser<'a> {
     pub fn new(tokens: &'a [LosslessToken], preparsed: &'a PreParsedTokens) -> Self {
         Self {
@@ -242,7 +245,7 @@ impl<'a> Parser<'a> {
         
         // Look ahead to find comma before ParenEnd
         let mut depth = 0;
-        for i in 1..20 { // look ahead max 20 tokens
+        for i in 1..MAX_LOOKAHEAD {
             match self.peek_ahead(i) {
                 Some(TokenKind::ParenBegin) => depth += 1,
                 Some(TokenKind::ParenEnd) => {
