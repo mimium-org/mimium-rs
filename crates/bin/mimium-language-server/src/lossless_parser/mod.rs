@@ -1,4 +1,5 @@
 pub mod cst_parser;
+pub mod cst_test_helpers;
 pub mod green;
 pub mod preparser;
 pub mod red;

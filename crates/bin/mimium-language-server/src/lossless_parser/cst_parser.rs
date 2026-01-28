@@ -828,4 +828,154 @@ mod tests {
         assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
         assert!(arena.width(root_id) > 0);
     }
+
+    // Quick Wins: Phase 1 test conversions from original parser tests
+    // These tests verify basic CST structure for literals, variables, and simple constructs
+
+    #[test]
+    fn test_parse_int_literal() {
+        // Converted from: test_int() in parser/test.rs
+        let source = "3466";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
+
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
+        // Verify structure: Program -> Statement -> IntLiteral
+        use crate::lossless_parser::cst_test_helpers::*;
+        assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
+        assert!(arena.width(root_id) > 0);
+    }
+
+    #[test]
+    fn test_parse_string_literal() {
+        // Converted from: test_string() in parser/test.rs
+        let source = r#""teststr""#;
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
+
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
+        use crate::lossless_parser::cst_test_helpers::*;
+        assert_cst_contains_kind(&arena, root_id, SyntaxKind::StringLiteral);
+        assert!(arena.width(root_id) > 0);
+    }
+
+    #[test]
+    fn test_parse_variable() {
+        // Converted from: test_var() in parser/test.rs
+        let source = "hoge";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
+
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
+        use crate::lossless_parser::cst_test_helpers::*;
+        assert_cst_contains_kind(&arena, root_id, SyntaxKind::Identifier);
+        assert!(arena.width(root_id) > 0);
+    }
+
+    #[test]
+    fn test_parse_float_literal() {
+        let source = "3.14";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
+
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
+        use crate::lossless_parser::cst_test_helpers::*;
+        assert_cst_contains_kind(&arena, root_id, SyntaxKind::FloatLiteral);
+        assert!(arena.width(root_id) > 0);
+    }
+
+    #[test]
+    fn test_parse_type_annotation_function_param() {
+        // Converted from: test_typed_param() - simple parameter with type
+        let source = "fn test(x: float) { x }";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
+
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
+        use crate::lossless_parser::cst_test_helpers::*;
+        assert_cst_contains_kind(&arena, root_id, SyntaxKind::FunctionDecl);
+        assert_cst_contains_kind(&arena, root_id, SyntaxKind::TypeAnnotation);
+        assert!(arena.width(root_id) > 0);
+    }
+
+    #[test]
+    fn test_parse_lambda_simple() {
+        // Converted from: test_lambda() - simple lambda expression
+        let source = "|x| x";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
+
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
+        use crate::lossless_parser::cst_test_helpers::*;
+        assert_cst_contains_kind(&arena, root_id, SyntaxKind::LambdaExpr);
+        assert!(arena.width(root_id) > 0);
+    }
+
+    #[test]
+    fn test_parse_tuple_simple() {
+        // Converted from: test_tuple() - simple tuple expression
+        let source = "(1, 2)";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
+
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
+        use crate::lossless_parser::cst_test_helpers::*;
+        assert_cst_contains_kind(&arena, root_id, SyntaxKind::TupleExpr);
+        // Verify two IntLiterals in the tuple
+        assert_node_count(&arena, root_id, SyntaxKind::IntLiteral, 2);
+        assert!(arena.width(root_id) > 0);
+    }
+
+    #[test]
+    fn test_parse_record_simple() {
+        // Converted from: test_record() - simple record expression
+        let source = "{x = 1}";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
+
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
+        use crate::lossless_parser::cst_test_helpers::*;
+        assert_cst_contains_kind(&arena, root_id, SyntaxKind::RecordExpr);
+        assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
+        assert!(arena.width(root_id) > 0);
+    }
+
+    #[test]
+    fn test_parse_if_simple() {
+        // Converted from: test_if() - simple if expression with condition and branches
+        let source = "if (1) { 2 } else { 3 }";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
+
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
+        use crate::lossless_parser::cst_test_helpers::*;
+        assert_cst_contains_kind(&arena, root_id, SyntaxKind::IfExpr);
+        // Verify three IntLiterals (condition 1, then 2, else 3)
+        assert_node_count(&arena, root_id, SyntaxKind::IntLiteral, 3);
+        assert!(arena.width(root_id) > 0);
+    }
+
+    #[test]
+    fn test_parse_let_binding() {
+        // Converted from: test_let() - let binding expression
+        let source = "let x = 42";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
+
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
+        use crate::lossless_parser::cst_test_helpers::*;
+        assert_cst_contains_kind(&arena, root_id, SyntaxKind::LetDecl);
+        assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
+        assert!(arena.width(root_id) > 0);
+    }
 }
