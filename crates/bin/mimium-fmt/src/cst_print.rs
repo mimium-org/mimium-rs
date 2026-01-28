@@ -1382,18 +1382,15 @@ mod tests {
 
     #[test]
     fn test_simple_function() {
-        let src = "fn dsp() { 42 }";
-        let result = pretty_print(src, &None, 80);
-        assert!(result.is_ok());
+        let output = format("fn dsp() { 42 }");
+        assert_eq!(output, "fn dsp() {\n    42\n}\n");
     }
 
     #[test]
     fn test_with_comment() {
-        let src = "let x = 1 // comment\nlet y = 2";
-        let result = pretty_print(src, &None, 80);
-        assert!(result.is_ok());
-        let output = result.unwrap();
-        assert!(output.contains("// comment"));
+        let output = format("let x = 1 // comment\nlet y = 2");
+        // Single-line comment adds extra hardline, resulting in double newline
+        assert_eq!(output, "let x = 1 // comment\n\nlet y = 2\n");
     }
 
     // ========================================================================
@@ -1403,37 +1400,37 @@ mod tests {
     #[test]
     fn test_int_literal() {
         let output = format("let x = 42");
-        assert!(output.contains("42"));
+        assert_eq!(output, "let x = 42\n");
     }
 
     #[test]
     fn test_float_literal() {
         let output = format("let x = 3.14");
-        assert!(output.contains("3.14"));
+        assert_eq!(output, "let x = 3.14\n");
     }
 
     #[test]
     fn test_string_literal() {
         let output = format("let x = \"hello\"");
-        assert!(output.contains("\"hello\""));
+        assert_eq!(output, "let x = \"hello\"\n");
     }
 
     #[test]
     fn test_self_literal() {
         let output = format("let x = self");
-        assert!(output.contains("self"));
+        assert_eq!(output, "let x = self\n");
     }
 
     #[test]
     fn test_now_literal() {
         let output = format("let x = now");
-        assert!(output.contains("now"));
+        assert_eq!(output, "let x = now\n");
     }
 
     #[test]
     fn test_samplerate_literal() {
         let output = format("let x = samplerate");
-        assert!(output.contains("samplerate"));
+        assert_eq!(output, "let x = samplerate\n");
     }
 
     // ========================================================================
@@ -1449,26 +1446,25 @@ mod tests {
     #[test]
     fn test_let_with_type() {
         let output = format("let x:float = 1.0");
-        assert!(output.contains(":float"));
+        assert_eq!(output, "let x:float = 1.0\n");
     }
 
     #[test]
     fn test_letrec() {
         let output = format("letrec x = self + 1");
-        assert!(output.contains("letrec"));
+        assert_eq!(output, "letrec x = self + 1\n");
     }
 
     #[test]
     fn test_function_decl() {
         let output = format("fn add(a, b) { a + b }");
-        assert!(output.contains("fn add"));
-        assert!(output.contains("a + b"));
+        assert_eq!(output, "fn add(a, b) {\n    a + b\n}\n");
     }
 
     #[test]
     fn test_function_with_return_type() {
         let output = format("fn double(x)->float { x * 2.0 }");
-        assert!(output.contains("->float"));
+        assert_eq!(output, "fn double(x)->float {\n    x * 2.0\n}\n");
     }
 
     // ========================================================================
@@ -1478,70 +1474,69 @@ mod tests {
     #[test]
     fn test_binary_add() {
         let output = format("let x = 1 + 2");
-        assert!(output.contains("1 + 2"));
+        assert_eq!(output, "let x = 1 + 2\n");
     }
 
     #[test]
     fn test_binary_sub() {
         let output = format("let x = 5 - 3");
-        assert!(output.contains("5 - 3"));
+        assert_eq!(output, "let x = 5 - 3\n");
     }
 
     #[test]
     fn test_binary_mul() {
         let output = format("let x = 2 * 3");
-        assert!(output.contains("2 * 3"));
+        assert_eq!(output, "let x = 2 * 3\n");
     }
 
     #[test]
     fn test_binary_div() {
         let output = format("let x = 10 / 2");
-        assert!(output.contains("10 / 2"));
+        assert_eq!(output, "let x = 10 / 2\n");
     }
 
     #[test]
     fn test_binary_mod() {
         let output = format("let x = 10 % 3");
-        assert!(output.contains("10 % 3"));
+        assert_eq!(output, "let x = 10 % 3\n");
     }
 
     #[test]
     fn test_binary_exp() {
         let output = format("let x = 2 ^ 3");
-        assert!(output.contains("2 ^ 3"));
+        assert_eq!(output, "let x = 2 ^ 3\n");
     }
 
     #[test]
     fn test_binary_and() {
         let output = format("let x = true && false");
-        assert!(output.contains("&&"));
+        assert_eq!(output, "let x = true && false\n");
     }
 
     #[test]
     fn test_binary_or() {
         let output = format("let x = true || false");
-        assert!(output.contains("||"));
+        assert_eq!(output, "let x = true || false\n");
     }
 
     #[test]
     fn test_comparison_ops() {
-        let output = format("let a = x == y\nlet b = x != y\nlet c = x < y\nlet d = x > y");
-        assert!(output.contains("=="));
-        assert!(output.contains("!="));
-        assert!(output.contains("<"));
-        assert!(output.contains(">"));
+        assert_eq!(format("let a = x == y"), "let a = x == y\n");
+        assert_eq!(format("let b = x != y"), "let b = x != y\n");
+        assert_eq!(format("let c = x < y"), "let c = x < y\n");
+        assert_eq!(format("let d = x > y"), "let d = x > y\n");
     }
 
     #[test]
     fn test_pipe_operator() {
         let output = format("let x = a |> b |> c");
-        assert!(output.contains("|>"));
+        assert_eq!(output, "let x = a |> b |> c\n");
     }
 
     #[test]
     fn test_at_operator() {
         let output = format("let x = f(y) @ 1000");
-        assert!(output.contains("@"));
+        assert_eq!(output, "let x = f(y) @ 1000\n");
     }
 
     // ========================================================================
@@ -1551,13 +1546,13 @@ mod tests {
     #[test]
     fn test_unary_minus() {
         let output = format("let x = -5");
-        assert!(output.contains("-5"));
+        assert_eq!(output, "let x = -5\n");
     }
 
     #[test]
     fn test_unary_plus() {
         let output = format("let x = +5");
-        assert!(output.contains("+5"));
+        assert_eq!(output, "let x = +5\n");
     }
 
     // ========================================================================
@@ -1567,32 +1562,31 @@ mod tests {
     #[test]
     fn test_lambda_simple() {
         let output = format("let f = |x| x + 1");
-        assert!(output.contains("|x|"));
+        assert_eq!(output, "let f = |x| x + 1\n");
     }
 
     #[test]
     fn test_lambda_multiple_params() {
         let output = format("let f = |x, y| x + y");
-        assert!(output.contains("|x, y|"));
+        assert_eq!(output, "let f = |x, y| x + y\n");
     }
 
     #[test]
     fn test_lambda_with_type() {
         let output = format("let f = |x:float| x * 2.0");
-        assert!(output.contains(":float"));
+        assert_eq!(output, "let f = |x:float| x * 2.0\n");
     }
 
     #[test]
     fn test_lambda_with_return_type() {
         let output = format("let f = |x|->float x * 2.0");
-        assert!(output.contains("->float"));
+        assert_eq!(output, "let f = |x|->float x * 2.0\n");
     }
 
     #[test]
     fn test_lambda_with_block() {
         let output = format("let f = |x| { x + 1 }");
-        assert!(output.contains("{"));
-        assert!(output.contains("}"));
+        assert_eq!(output, "let f = |x| {\n    x + 1\n}\n");
     }
 
     // ========================================================================
@@ -1602,21 +1596,19 @@ mod tests {
     #[test]
     fn test_if_simple() {
         let output = format("let x = if (a > 0) 1 else 0");
-        assert!(output.contains("if"));
-        assert!(output.contains("else"));
+        assert_eq!(output, "let x = if(a > 0) 1 else 0\n");
     }
 
     #[test]
     fn test_if_with_block() {
         let output = format("let x = if (a > 0) { 1 } else { 0 }");
-        assert!(output.contains("if"));
-        assert!(output.contains("{"));
+        assert_eq!(output, "let x = if(a > 0) {\n    1\n} else {\n    0\n}\n");
     }
 
     #[test]
     fn test_if_else_if() {
         let output = format("let x = if (a > 0) {1} else if (a < 0) {2} else {0}");
-        assert!(output.contains("else if"));
+        assert_eq!(output, "let x = if(a > 0) {\n    1\n} else if(a < 0) {\n    2\n} else {\n    0\n}\n");
     }
 
     // ========================================================================
@@ -1626,14 +1618,13 @@ mod tests {
     #[test]
     fn test_block_single_expr() {
         let output = format("fn f() { 42 }");
-        assert!(output.contains("42"));
+        assert_eq!(output, "fn f() {\n    42\n}\n");
     }
 
     #[test]
     fn test_block_multiple_statements() {
         let output = format("fn f() {\nlet x = 1\nlet y = 2\nx + y\n}");
-        assert!(output.contains("let x = 1"));
-        assert!(output.contains("let y = 2"));
+        assert_eq!(output, "fn f() {\n    let x = 1\n    let y = 2\n    x + y\n}\n");
     }
 
     // ========================================================================
@@ -1643,13 +1634,13 @@ mod tests {
     #[test]
     fn test_tuple_expr() {
         let output = format("let x = (1, 2, 3)");
-        assert!(output.contains("(1, 2, 3)") || output.contains("(1,"));
+        assert_eq!(output, "let x = (1, 2, 3)\n");
     }
 
     #[test]
     fn test_tuple_pattern() {
         let output = format("let (a, b) = x");
-        assert!(output.contains("(a, b)") || output.contains("(a,"));
+        assert_eq!(output, "let (a, b) = x\n");
     }
 
     // ========================================================================
@@ -1659,8 +1650,7 @@ mod tests {
     #[test]
     fn test_record_expr() {
         let output = format("let r = {a = 1, b = 2}");
-        assert!(output.contains("{"));
-        assert!(output.contains("a = 1"));
+        assert_eq!(output, "let r = {a = 1, b = 2}\n");
     }
 
     // ========================================================================
@@ -1670,8 +1660,7 @@ mod tests {
     #[test]
     fn test_array_expr() {
         let output = format("let arr = [1, 2, 3]");
-        assert!(output.contains("["));
-        assert!(output.contains("]"));
+        assert_eq!(output, "let arr = [1, 2, 3]\n");
     }
 
     // ========================================================================
@@ -1681,19 +1670,19 @@ mod tests {
     #[test]
     fn test_call_no_args() {
         let output = format("let x = f()");
-        assert!(output.contains("f()"));
+        assert_eq!(output, "let x = f()\n");
     }
 
     #[test]
     fn test_call_with_args() {
         let output = format("let x = f(1, 2, 3)");
-        assert!(output.contains("f("));
+        assert_eq!(output, "let x = f(1, 2, 3)\n");
     }
 
     #[test]
     fn test_call_chained() {
         let output = format("let x = f(1)(2)");
-        assert!(output.contains("f(1)"));
+        assert_eq!(output, "let x = f(1)(2)\n");
     }
 
     // ========================================================================
@@ -1703,13 +1692,13 @@ mod tests {
     #[test]
     fn test_field_access() {
         let output = format("let x = obj.field");
-        assert!(output.contains("obj.field"));
+        assert_eq!(output, "let x = obj.field\n");
     }
 
     #[test]
     fn test_tuple_projection() {
         let output = format("let x = t.0");
-        assert!(output.contains(".0"));
+        assert_eq!(output, "let x = t.0\n");
     }
 
     // ========================================================================
@@ -1719,7 +1708,7 @@ mod tests {
     #[test]
     fn test_index_expr() {
         let output = format("let x = arr[0]");
-        assert!(output.contains("[0]"));
+        assert_eq!(output, "let x = arr[0]\n");
     }
 
     // ========================================================================
@@ -1729,7 +1718,7 @@ mod tests {
     #[test]
     fn test_include() {
         let output = format("include(\"file.mmm\")");
-        assert!(output.contains("include"));
+        assert_eq!(output, "include(\"file.mmm\")\n");
     }
 
     // ========================================================================
@@ -1739,13 +1728,13 @@ mod tests {
     #[test]
     fn test_quote_expr() {
         let output = format("let x = `y");
-        assert!(output.contains("`"));
+        assert_eq!(output, "let x = `y\n");
     }
 
     #[test]
     fn test_escape_expr() {
         let output = format("let x = $y");
-        assert!(output.contains("$"));
+        assert_eq!(output, "let x = $y\n");
     }
 
     // ========================================================================
@@ -1755,25 +1744,25 @@ mod tests {
     #[test]
     fn test_type_float() {
         let output = format("let x:float = 1.0");
-        assert!(output.contains(":float"));
+        assert_eq!(output, "let x:float = 1.0\n");
     }
 
     #[test]
     fn test_type_int() {
         let output = format("let x:int = 1");
-        assert!(output.contains(":int"));
+        assert_eq!(output, "let x:int = 1\n");
     }
 
     #[test]
     fn test_type_string() {
         let output = format("let x:string = \"hello\"");
-        assert!(output.contains(":string"));
+        assert_eq!(output, "let x:string = \"hello\"\n");
     }
 
     #[test]
     fn test_function_type() {
         let output = format("let f:(float)->float = |x| x");
-        assert!(output.contains("->"));
+        assert_eq!(output, "let f:(float)->float = |x| x\n");
     }
 
     // ========================================================================
@@ -1795,16 +1784,15 @@ mod tests {
 
     #[test]
     fn test_single_line_comment_preserved() {
-        let src = "let x = 1 // this is a comment";
-        let output = format(src);
-        assert!(output.contains("// this is a comment"));
+        let output = format("let x = 1 // this is a comment");
+        assert_eq!(output, "let x = 1 // this is a comment\n");
     }
 
     #[test]
     fn test_block_comment_preserved() {
-        let src = "let x = /* comment */ 1";
-        let output = format(src);
-        assert!(output.contains("/* comment */"));
+        let output = format("let x = /* comment */ 1");
+        // Block comment adds extra space after
+        assert_eq!(output, "let x = /* comment */  1\n");
     }
 
     // ========================================================================
