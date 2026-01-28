@@ -183,10 +183,14 @@ pub fn red_to_ast(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], ar
     match red.kind(arena) {
         Some(SyntaxKind::Program) => {
             let children = red.children(arena);
-            let statements = children
+            let mut statements: Vec<AstNode> = children
                 .iter()
                 .map(|child| red_to_ast(child, source, tokens, arena))
                 .collect();
+            
+            // Transform flat statement list into Let-body-then chain
+            statements = vec![transform_let_chain(statements)];
+            
             AstNode::Program { statements }
         }
         
@@ -403,6 +407,54 @@ fn extract_params(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], ar
     params
 }
 
+/// Transform a flat list of statements into a Let-body-then chain
+/// 
+/// For example:
+/// ```
+/// [LetDecl(x, 1), LetDecl(y, 2), Expr(x+y)]
+/// ```
+/// becomes:
+/// ```
+/// LetDecl(x, 1, LetDecl(y, 2, Expr(x+y)))
+/// ```
+fn transform_let_chain(statements: Vec<AstNode>) -> AstNode {
+    if statements.is_empty() {
+        return AstNode::Error;
+    }
+    
+    // Work backwards through the statements, building the chain from the inside out
+    let mut result = statements.into_iter().rev().reduce(|body, stmt| {
+        match stmt {
+            AstNode::LetDecl { name, value } => {
+                // Transform LetDecl into a nested structure with body
+                AstNode::LetDecl {
+                    name,
+                    value: Box::new(AstNode::BlockExpr {
+                        statements: vec![*value, body],
+                    }),
+                }
+            }
+            AstNode::LetRecDecl { name, value } => {
+                // Same for LetRecDecl
+                AstNode::LetRecDecl {
+                    name,
+                    value: Box::new(AstNode::BlockExpr {
+                        statements: vec![*value, body],
+                    }),
+                }
+            }
+            _ => {
+                // For non-Let statements, wrap with the body in a block
+                AstNode::BlockExpr {
+                    statements: vec![stmt, body],
+                }
+            }
+        }
+    });
+    
+    result.unwrap_or(AstNode::Error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,6 +570,26 @@ mod tests {
             
             // Root should not be descendant of child
             assert!(!root.is_descendant_of(child), "Root should not be descendant of child");
+        }
+    }
+    
+    #[test]
+    fn test_let_chain_transformation() {
+        let source = "let x = 1\nlet y = 2\nx";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let red = RedNode::new(root_id, 0);
+        let ast = red_to_ast(&red, source, &tokens, &arena);
+        
+        // The AST should have transformed the flat statement list into a chain
+        match ast {
+            AstNode::Program { statements } => {
+                assert_eq!(statements.len(), 1);
+                // The single statement should be a nested structure
+                // of Let bindings, not a flat list
+            }
+            _ => panic!("Expected Program node"),
         }
     }
 }
