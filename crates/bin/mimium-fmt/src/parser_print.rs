@@ -39,10 +39,13 @@ pub fn pretty_print(
     let gap_comments = collect_gap_comments(src, &tokens, &preparsed);
     let formatted_with_comments = insert_gap_comments(&formatted, &gap_comments);
 
+    // Ensure output ends with a trailing newline
+    let with_trailing_newline = format!("{formatted_with_comments}\n");
+
     if leading_comments.is_empty() {
-        Ok(formatted_with_comments)
+        Ok(with_trailing_newline)
     } else {
-        Ok(format!("{leading_comments}{formatted_with_comments}"))
+        Ok(format!("{leading_comments}{with_trailing_newline}"))
     }
 }
 

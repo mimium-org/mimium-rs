@@ -1,3 +1,4 @@
+mod cst_print;
 mod parser_print;
 mod print;
 
@@ -15,6 +16,8 @@ pub static GLOBAL_DATA: LazyLock<Mutex<GlobalConfig>> =
     LazyLock::new(|| Mutex::new(GlobalConfig::default()));
 
 pub use parser_print::pretty_print;
+/// CST-based pretty print (experimental - includes comments in width calculation)
+pub use cst_print::pretty_print as pretty_print_cst;
 
 use clap::Parser;
 use mimium_lang::utils::error::report;
@@ -33,6 +36,9 @@ pub struct Args {
     /// Indentation size
     #[arg(long, default_value = "4")]
     indent_size: usize,
+    /// Use CST-based formatter (experimental)
+    #[arg(long)]
+    cst: bool,
 }
 
 pub fn lib_main() {
@@ -55,7 +61,13 @@ pub fn lib_main() {
             buf
         }
     };
-    let res = pretty_print(code.as_str(), &file_path, args.width);
+    
+    let res = if args.cst {
+        pretty_print_cst(code.as_str(), &file_path, args.width)
+    } else {
+        pretty_print(code.as_str(), &file_path, args.width)
+    };
+    
     match res {
         Ok(rendered) => {
             println!("{rendered}");

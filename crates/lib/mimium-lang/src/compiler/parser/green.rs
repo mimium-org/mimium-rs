@@ -234,6 +234,14 @@ impl std::fmt::Display for SyntaxKind {
     }
 }
 
+/// A marker representing a position in the parse tree building process.
+/// Used to wrap previously parsed nodes into a new parent node.
+#[derive(Clone, Copy, Debug)]
+pub struct Marker {
+    /// Position in the children list of the current node when the marker was created
+    pub pos: usize,
+}
+
 /// A builder for constructing Green Trees with an arena
 pub struct GreenTreeBuilder {
     arena: GreenNodeArena,
@@ -258,9 +266,36 @@ impl GreenTreeBuilder {
         self.arena
     }
 
+    /// Create a marker at the current position.
+    /// This marker can be used later to wrap nodes parsed after this point
+    /// into a new parent node using `start_node_at`.
+    pub fn marker(&self) -> Marker {
+        let pos = self
+            .stack
+            .last()
+            .map(|(_, children)| children.len())
+            .unwrap_or(0);
+        Marker { pos }
+    }
+
     /// Start a new internal node
     pub fn start_node(&mut self, kind: SyntaxKind) {
         self.stack.push((kind, Vec::new()));
+    }
+
+    /// Start a new node at a previously saved marker position.
+    /// This effectively wraps all nodes parsed since the marker was created
+    /// into a new parent node.
+    pub fn start_node_at(&mut self, marker: Marker, kind: SyntaxKind) {
+        if let Some((_, children)) = self.stack.last_mut() {
+            // Extract children from marker position onwards
+            let wrapped_children: Vec<_> = children.drain(marker.pos..).collect();
+            // Push new node with those children
+            self.stack.push((kind, wrapped_children));
+        } else {
+            // At root level, just start a new node
+            self.stack.push((kind, Vec::new()));
+        }
     }
 
     /// Add a token as a child

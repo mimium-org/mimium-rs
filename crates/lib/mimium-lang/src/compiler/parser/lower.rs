@@ -354,12 +354,12 @@ impl<'a> Lowerer<'a> {
                 let (callee, args) = self.lower_macro_expand(node);
                 Expr::MacroExpand(callee, args).into_id(loc)
             }
-            Some(SyntaxKind::BinaryExpr)
-            | Some(SyntaxKind::AssignExpr)
-            | Some(SyntaxKind::CallExpr)
-            | Some(SyntaxKind::FieldAccess)
-            | Some(SyntaxKind::IndexExpr) => {
-                // These need left-hand context; they are handled in `lower_expr_sequence`.
+            Some(SyntaxKind::BinaryExpr) => self.lower_binary(node),
+            Some(SyntaxKind::CallExpr) => self.lower_call(node),
+            Some(SyntaxKind::FieldAccess) => self.lower_field_access(node),
+            Some(SyntaxKind::IndexExpr) => self.lower_index(node),
+            Some(SyntaxKind::AssignExpr) => {
+                // AssignExpr still needs left-hand context from sequence
                 Expr::Error.into_id(loc)
             }
             Some(SyntaxKind::BracketExpr) => {
@@ -562,77 +562,16 @@ impl<'a> Lowerer<'a> {
                 let node = nodes[i];
                 match self.arena.kind(node) {
                     Some(SyntaxKind::BinaryExpr) => {
-                        let (op, op_span) = self
-                            .extract_binary_op(node)
-                            .unwrap_or((Op::Unknown("".to_string()), 0..0));
-                        if op == Op::Exponent {
-                            if let Some(lhs) = acc {
-                                // Immediate RHS from current '^' node children (if any)
-                                let rhs1_nodes = self.child_exprs(node);
-                                let rhs1 = self.lower_expr_sequence(&rhs1_nodes);
-
-                                // Lookahead for another '^' to enforce right-associativity
-                                if let Some(next) = nodes.get(i + 1)
-                                    && self.extract_binary_op(*next).map(|(o, _)| o)
-                                        == Some(Op::Exponent)
-                                {
-                                    let (_, next_span) = self
-                                        .extract_binary_op(*next)
-                                        .unwrap_or((Op::Exponent, 0..0));
-                                    let rhs2_nodes = self.child_exprs(*next);
-                                    let rhs2 = self.lower_expr_sequence(&rhs2_nodes);
-                                    let nested_loc = self.location_from_span(merge_spans(
-                                        rhs1.to_span(),
-                                        rhs2.to_span(),
-                                    ));
-                                    let nested_rhs =
-                                        Expr::BinOp(rhs1, (Op::Exponent, next_span), rhs2)
-                                            .into_id(nested_loc);
-                                    let final_loc = self.location_from_span(merge_spans(
-                                        lhs.to_span(),
-                                        nested_rhs.to_span(),
-                                    ));
-                                    let expr =
-                                        Expr::BinOp(lhs, (Op::Exponent, op_span), nested_rhs)
-                                            .into_id(final_loc);
-                                    return ControlFlow::Continue((Some(expr), true));
-                                } else if let Expr::BinOp(
-                                    left,
-                                    (Op::At, at_span),
-                                    right_immediate,
-                                ) = lhs.to_expr()
-                                {
-                                    // Nest exponent on RHS of '@'
-                                    let nested_loc = self.location_from_span(merge_spans(
-                                        right_immediate.to_span(),
-                                        rhs1.to_span(),
-                                    ));
-                                    let nested_rhs =
-                                        Expr::BinOp(right_immediate, (Op::Exponent, op_span), rhs1)
-                                            .into_id(nested_loc);
-                                    let final_loc = self.location_from_span(merge_spans(
-                                        left.to_span(),
-                                        nested_rhs.to_span(),
-                                    ));
-                                    let expr = Expr::BinOp(left, (Op::At, at_span), nested_rhs)
-                                        .into_id(final_loc);
-                                    return ControlFlow::Continue((Some(expr), false));
-                                } else {
-                                    let loc = self.location_from_span(merge_spans(
-                                        lhs.to_span(),
-                                        rhs1.to_span(),
-                                    ));
-                                    let expr = Expr::BinOp(lhs, (Op::Exponent, op_span), rhs1)
-                                        .into_id(loc);
-                                    return ControlFlow::Continue((Some(expr), false));
-                                }
-                            }
-                            ControlFlow::Continue((Some(self.lower_expr(node)), false))
-                        } else if let Some(lhs) = acc {
-                            ControlFlow::Continue((Some(self.lower_binary(lhs, node)), false))
-                        } else {
-                            ControlFlow::Continue((Some(self.lower_expr(node)), false))
-                        }
+                        ControlFlow::Continue((Some(self.lower_binary(node)), false))
+                    }
+                    Some(SyntaxKind::CallExpr) => {
+                        ControlFlow::Continue((Some(self.lower_call(node)), false))
+                    }
+                    Some(SyntaxKind::FieldAccess) => {
+                        ControlFlow::Continue((Some(self.lower_field_access(node)), false))
+                    }
+                    Some(SyntaxKind::IndexExpr) => {
+                        ControlFlow::Continue((Some(self.lower_index(node)), false))
                     }
                     Some(SyntaxKind::AssignExpr) => {
                         if let Some(lhs) = acc {
@@ -651,27 +590,6 @@ impl<'a> Lowerer<'a> {
                             // No continuation in this sequence; just return bare assign
                             // Multi-statement chaining will be handled by lower_program's into_then_expr
                             ControlFlow::Continue((Some(assign), false))
-                        } else {
-                            ControlFlow::Continue((Some(self.lower_expr(node)), false))
-                        }
-                    }
-                    Some(SyntaxKind::CallExpr) => {
-                        if let Some(callee) = acc {
-                            ControlFlow::Continue((Some(self.lower_call(callee, node)), false))
-                        } else {
-                            ControlFlow::Continue((Some(self.lower_expr(node)), false))
-                        }
-                    }
-                    Some(SyntaxKind::FieldAccess) => {
-                        if let Some(lhs) = acc {
-                            ControlFlow::Continue((Some(self.lower_field_access(lhs, node)), false))
-                        } else {
-                            ControlFlow::Continue((Some(self.lower_expr(node)), false))
-                        }
-                    }
-                    Some(SyntaxKind::IndexExpr) => {
-                        if let Some(lhs) = acc {
-                            ControlFlow::Continue((Some(self.lower_index(lhs, node)), false))
                         } else {
                             ControlFlow::Continue((Some(self.lower_expr(node)), false))
                         }
@@ -701,39 +619,79 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn lower_binary(&self, lhs: ExprNodeId, node: GreenNodeId) -> ExprNodeId {
+    /// Lower a BinaryExpr where LHS is a child of the node
+    fn lower_binary(&self, node: GreenNodeId) -> ExprNodeId {
         let (op, op_span) = self
             .extract_binary_op(node)
             .unwrap_or((Op::Unknown("".to_string()), 0..0));
 
-        let rhs_nodes = self.child_exprs(node);
-        let rhs = self.lower_expr_sequence(&rhs_nodes);
+        let expr_children = self.child_exprs(node);
 
-        let lhs_span = lhs.to_span();
-        let rhs_span = rhs.to_span();
-        let loc = self.location_from_span(merge_spans(lhs_span, rhs_span));
+        // With the new CST structure, BinaryExpr contains exactly:
+        // - LHS expression (first child expression)
+        // - operator token (handled by extract_binary_op)
+        // - RHS expression (second child expression)
+        // The LHS might itself be a BinaryExpr for chained operations like a + b + c
+
+        let (lhs, rhs) = if expr_children.len() >= 2 {
+            // Standard case: first expression is LHS, second is RHS
+            let lhs_node = expr_children[0];
+            let rhs_node = expr_children[expr_children.len() - 1];
+            (self.lower_expr(lhs_node), self.lower_expr(rhs_node))
+        } else if expr_children.len() == 1 {
+            // Edge case: only one expression child (RHS), LHS might be missing
+            (
+                Expr::Error.into_id_without_span(),
+                self.lower_expr(expr_children[0]),
+            )
+        } else {
+            // No expression children
+            (
+                Expr::Error.into_id_without_span(),
+                Expr::Error.into_id_without_span(),
+            )
+        };
+
+        let loc = self.location_from_span(merge_spans(lhs.to_span(), rhs.to_span()));
         Expr::BinOp(lhs, (op, op_span), rhs).into_id(loc)
     }
 
-    fn lower_assign(&self, lhs: ExprNodeId, node: GreenNodeId) -> ExprNodeId {
-        let rhs_nodes = self.child_exprs(node);
-        let rhs = self.lower_expr_sequence(&rhs_nodes);
-        let loc = self.location_from_span(merge_spans(lhs.to_span(), rhs.to_span()));
-        Expr::Assign(lhs, rhs).into_id(loc)
-    }
+    /// Lower a CallExpr where callee is a child of the node
+    fn lower_call(&self, node: GreenNodeId) -> ExprNodeId {
+        let expr_children = self.child_exprs(node);
 
-    fn lower_call(&self, callee: ExprNodeId, node: GreenNodeId) -> ExprNodeId {
+        // CallExpr contains: callee expression, then ArgList
+        let callee = if !expr_children.is_empty() {
+            self.lower_expr(expr_children[0])
+        } else {
+            Expr::Error.into_id_without_span()
+        };
+
         let args = self.lower_arg_list(node);
         let call_span = self.node_span(node).unwrap_or_else(|| callee.to_span());
         let loc = self.location_from_span(merge_spans(callee.to_span(), call_span));
         Expr::Apply(callee, args).into_id(loc)
     }
 
-    fn lower_field_access(&self, lhs: ExprNodeId, node: GreenNodeId) -> ExprNodeId {
+    /// Lower a FieldAccess where LHS is a child of the node
+    fn lower_field_access(&self, node: GreenNodeId) -> ExprNodeId {
+        let expr_children = self.child_exprs(node);
+
+        let lhs = if !expr_children.is_empty() {
+            self.lower_expr(expr_children[0])
+        } else {
+            Expr::Error.into_id_without_span()
+        };
+
         let lhs_span = lhs.to_span();
+
+        // Find the field name or index token (direct children only)
         let expr = self
-            .walk_tokens(node)
+            .arena
+            .children(node)
             .into_iter()
+            .flatten()
+            .filter_map(|&child| self.get_token_index(child))
             .filter_map(|idx| self.tokens.get(idx))
             .find_map(|tok| match tok.kind {
                 TokenKind::Ident => Some(Expr::FieldAccess(lhs, tok.text(self.source).to_symbol())),
@@ -745,6 +703,7 @@ impl<'a> Lowerer<'a> {
                 _ => None,
             })
             .unwrap_or(Expr::Error);
+
         let span = self
             .node_span(node)
             .map(|s| merge_spans(lhs_span.clone(), s))
@@ -756,15 +715,39 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn lower_index(&self, lhs: ExprNodeId, node: GreenNodeId) -> ExprNodeId {
+    /// Lower an IndexExpr where LHS is a child of the node
+    fn lower_index(&self, node: GreenNodeId) -> ExprNodeId {
+        let expr_children = self.child_exprs(node);
+
+        // IndexExpr contains: LHS expression, index expression (between [ and ])
+        let (lhs, index) = if expr_children.len() >= 2 {
+            (
+                self.lower_expr(expr_children[0]),
+                self.lower_expr(expr_children[1]),
+            )
+        } else if expr_children.len() == 1 {
+            (
+                self.lower_expr(expr_children[0]),
+                Expr::Error.into_id_without_span(),
+            )
+        } else {
+            (
+                Expr::Error.into_id_without_span(),
+                Expr::Error.into_id_without_span(),
+            )
+        };
+
         let lhs_span = lhs.to_span();
+        let index_span = index.to_span();
+        let loc = self.location_from_span(merge_spans(lhs_span, index_span));
+        Expr::ArrayAccess(lhs, index).into_id(loc)
+    }
+
+    fn lower_assign(&self, lhs: ExprNodeId, node: GreenNodeId) -> ExprNodeId {
         let rhs_nodes = self.child_exprs(node);
-        let idx = self.lower_expr_sequence(&rhs_nodes);
-        let node_span = self
-            .node_span(node)
-            .unwrap_or(merge_spans(lhs_span.clone(), idx.to_span()));
-        let loc = self.location_from_span(merge_spans(lhs_span, node_span));
-        Expr::ArrayAccess(lhs, idx).into_id(loc)
+        let rhs = self.lower_expr_sequence(&rhs_nodes);
+        let loc = self.location_from_span(merge_spans(lhs.to_span(), rhs.to_span()));
+        Expr::Assign(lhs, rhs).into_id(loc)
     }
 
     fn lower_macro_expand(&self, node: GreenNodeId) -> (ExprNodeId, Vec<ExprNodeId>) {
@@ -1123,29 +1106,38 @@ impl<'a> Lowerer<'a> {
     }
 
     fn extract_binary_op(&self, node: GreenNodeId) -> Option<(Op, Span)> {
-        self.walk_tokens(node).into_iter().find_map(|idx| {
-            let tok = self.tokens.get(idx)?;
-            let op = match tok.kind {
-                TokenKind::OpSum => Some(Op::Sum),
-                TokenKind::OpMinus => Some(Op::Minus),
-                TokenKind::OpProduct => Some(Op::Product),
-                TokenKind::OpDivide => Some(Op::Divide),
-                TokenKind::OpEqual => Some(Op::Equal),
-                TokenKind::OpNotEqual => Some(Op::NotEqual),
-                TokenKind::OpLessThan => Some(Op::LessThan),
-                TokenKind::OpLessEqual => Some(Op::LessEqual),
-                TokenKind::OpGreaterThan => Some(Op::GreaterThan),
-                TokenKind::OpGreaterEqual => Some(Op::GreaterEqual),
-                TokenKind::OpModulo => Some(Op::Modulo),
-                TokenKind::OpExponent => Some(Op::Exponent),
-                TokenKind::OpAnd => Some(Op::And),
-                TokenKind::OpOr => Some(Op::Or),
-                TokenKind::OpAt => Some(Op::At),
-                TokenKind::OpPipe => Some(Op::Pipe),
-                _ => None,
-            }?;
-            Some((op, tok.start..tok.end()))
-        })
+        // Only look at direct children of this node, not recursively
+        // This is important because nested BinaryExpr would also contain operator tokens
+        let children = self.arena.children(node)?;
+        for &child in children {
+            if let Some(idx) = self.get_token_index(child)
+                && let Some(tok) = self.tokens.get(idx)
+            {
+                let op = match tok.kind {
+                    TokenKind::OpSum => Some(Op::Sum),
+                    TokenKind::OpMinus => Some(Op::Minus),
+                    TokenKind::OpProduct => Some(Op::Product),
+                    TokenKind::OpDivide => Some(Op::Divide),
+                    TokenKind::OpEqual => Some(Op::Equal),
+                    TokenKind::OpNotEqual => Some(Op::NotEqual),
+                    TokenKind::OpLessThan => Some(Op::LessThan),
+                    TokenKind::OpLessEqual => Some(Op::LessEqual),
+                    TokenKind::OpGreaterThan => Some(Op::GreaterThan),
+                    TokenKind::OpGreaterEqual => Some(Op::GreaterEqual),
+                    TokenKind::OpModulo => Some(Op::Modulo),
+                    TokenKind::OpExponent => Some(Op::Exponent),
+                    TokenKind::OpAnd => Some(Op::And),
+                    TokenKind::OpOr => Some(Op::Or),
+                    TokenKind::OpAt => Some(Op::At),
+                    TokenKind::OpPipe => Some(Op::Pipe),
+                    _ => None,
+                };
+                if let Some(op) = op {
+                    return Some((op, tok.start..tok.end()));
+                }
+            }
+        }
+        None
     }
 }
 

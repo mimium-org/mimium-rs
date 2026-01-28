@@ -1,6 +1,6 @@
 /// CST Parser - parses token indices into Green Tree
 /// This is a simple recursive descent parser that produces a CST
-use super::green::{GreenNodeArena, GreenNodeId, GreenTreeBuilder, SyntaxKind};
+use super::green::{GreenNodeArena, GreenNodeId, GreenTreeBuilder, Marker, SyntaxKind};
 use super::preparser::PreParsedTokens;
 use super::token::{Token, TokenKind};
 use std::fmt;
@@ -230,14 +230,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse the entire program
-    pub fn parse(
-        mut self,
-    ) -> (
-        GreenNodeId,
-        GreenNodeArena,
-        Vec<Token>,
-        Vec<ParserError>,
-    ) {
+    pub fn parse(mut self) -> (GreenNodeId, GreenNodeArena, Vec<Token>, Vec<ParserError>) {
         self.builder.start_node(SyntaxKind::Program);
 
         while !self.is_at_end() {
@@ -589,18 +582,21 @@ impl<'a> Parser<'a> {
 
     /// Parse expression with given minimum precedence (Pratt parser)
     fn parse_expr_with_precedence(&mut self, min_prec: usize) {
+        // Save marker BEFORE parsing prefix (LHS)
+        let mut lhs_marker = self.builder.marker();
+
         self.parse_prefix_expr();
 
         // In statement context (min_prec == 0), stop at linebreak after prefix
         // unless the next token is an infix operator (e.g. leading '|>').
-        if min_prec == 0 && self.has_trailing_linebreak() {
-            if self
+        if min_prec == 0
+            && self.has_trailing_linebreak()
+            && self
                 .peek()
                 .and_then(|k| self.get_infix_precedence(k))
                 .is_none()
-            {
-                return;
-            }
+        {
+            return;
         }
 
         while let Some(token_kind) = self.peek() {
@@ -608,17 +604,31 @@ impl<'a> Parser<'a> {
                 if prec < min_prec {
                     break;
                 }
-                self.parse_infix_expr(prec);
+
+                // Wrap LHS and infix into BinaryExpr using the marker
+                self.builder
+                    .start_node_at(lhs_marker, SyntaxKind::BinaryExpr);
+                // Consume the binary operator
+                self.bump();
+                // Parse the right-hand side with appropriate precedence
+                // For left-associative operators, use prec + 1
+                self.parse_expr_with_precedence(prec + 1);
+                self.builder.finish_node();
+
+                // Update marker for next iteration (now points to the BinaryExpr we just created)
+                lhs_marker = Marker {
+                    pos: self.builder.marker().pos.saturating_sub(1),
+                };
 
                 // After parsing infix, check for linebreak in statement context
-                if min_prec == 0 && self.has_trailing_linebreak() {
-                    if self
+                if min_prec == 0
+                    && self.has_trailing_linebreak()
+                    && self
                         .peek()
                         .and_then(|k| self.get_infix_precedence(k))
                         .is_none()
-                    {
-                        break;
-                    }
+                {
+                    break;
                 }
             } else {
                 break;
@@ -628,6 +638,9 @@ impl<'a> Parser<'a> {
 
     /// Parse expression with given minimum precedence without linebreak stopping.
     fn parse_expr_with_precedence_no_linebreak(&mut self, min_prec: usize) {
+        // Save marker BEFORE parsing prefix (LHS)
+        let mut lhs_marker = self.builder.marker();
+
         self.parse_prefix_expr();
 
         while let Some(token_kind) = self.peek() {
@@ -635,7 +648,20 @@ impl<'a> Parser<'a> {
                 if prec < min_prec {
                     break;
                 }
-                self.parse_infix_expr(prec);
+
+                // Wrap LHS and infix into BinaryExpr using the marker
+                self.builder
+                    .start_node_at(lhs_marker, SyntaxKind::BinaryExpr);
+                // Consume the binary operator
+                self.bump();
+                // Parse the right-hand side with appropriate precedence
+                self.parse_expr_with_precedence_no_linebreak(prec + 1);
+                self.builder.finish_node();
+
+                // Update marker for next iteration
+                lhs_marker = Marker {
+                    pos: self.builder.marker().pos.saturating_sub(1),
+                };
             } else {
                 break;
             }
@@ -697,23 +723,21 @@ impl<'a> Parser<'a> {
                     if matches!(
                         this.peek(),
                         Some(TokenKind::OpSum) | Some(TokenKind::OpMinus)
-                    ) {
-                        if let Some(prev) = this.prev_kind_if_adjacent()
-                            && matches!(
-                                prev,
-                                TokenKind::OpSum
-                                    | TokenKind::OpMinus
-                                    | TokenKind::OpProduct
-                                    | TokenKind::OpDivide
-                                    | TokenKind::OpModulo
-                                    | TokenKind::OpExponent
-                            )
-                        {
-                            this.add_error(ParserError::invalid_syntax(
-                                this.current_token_index(),
-                                "Consecutive operators without whitespace are not allowed",
-                            ));
-                        }
+                    ) && let Some(prev) = this.prev_kind_if_adjacent()
+                        && matches!(
+                            prev,
+                            TokenKind::OpSum
+                                | TokenKind::OpMinus
+                                | TokenKind::OpProduct
+                                | TokenKind::OpDivide
+                                | TokenKind::OpModulo
+                                | TokenKind::OpExponent
+                        )
+                    {
+                        this.add_error(ParserError::invalid_syntax(
+                            this.current_token_index(),
+                            "Consecutive operators without whitespace are not allowed",
+                        ));
                     }
                     // Consume the unary operator
                     this.bump();
@@ -726,6 +750,9 @@ impl<'a> Parser<'a> {
 
     /// Parse postfix expression (handles function calls, field access, etc.)
     fn parse_postfix_expr(&mut self) {
+        // Save marker before parsing primary (the potential callee/lhs)
+        let mut lhs_marker = self.builder.marker();
+
         self.parse_primary();
 
         loop {
@@ -735,42 +762,47 @@ impl<'a> Parser<'a> {
             }
             match self.peek() {
                 Some(TokenKind::ParenBegin) => {
-                    // Function call
-                    self.emit_node(SyntaxKind::CallExpr, |this| {
-                        this.parse_arg_list();
-                    });
+                    // Function call - wrap callee and arglist into CallExpr
+                    self.builder.start_node_at(lhs_marker, SyntaxKind::CallExpr);
+                    self.parse_arg_list();
+                    self.builder.finish_node();
+
+                    // Update marker for chained calls (e.g., foo()())
+                    lhs_marker = Marker {
+                        pos: self.builder.marker().pos.saturating_sub(1),
+                    };
                 }
                 Some(TokenKind::Dot) => {
                     // Field access: expr.field or projection: expr.0, expr.1
-                    self.emit_node(SyntaxKind::FieldAccess, |this| {
-                        this.expect(TokenKind::Dot);
-                        // Can be either Ident (field name) or Int (tuple projection)
-                        this.expects(&[TokenKind::Ident, TokenKind::Int]);
-                    });
+                    self.builder
+                        .start_node_at(lhs_marker, SyntaxKind::FieldAccess);
+                    self.bump(); // consume Dot
+                    // Can be either Ident (field name) or Int (tuple projection)
+                    self.expects(&[TokenKind::Ident, TokenKind::Int]);
+                    self.builder.finish_node();
+
+                    // Update marker for chained access
+                    lhs_marker = Marker {
+                        pos: self.builder.marker().pos.saturating_sub(1),
+                    };
                 }
                 Some(TokenKind::ArrayBegin) => {
                     // Array indexing: expr[index]
-                    self.emit_node(SyntaxKind::IndexExpr, |this| {
-                        this.expect(TokenKind::ArrayBegin);
-                        this.parse_expr();
-                        this.expect(TokenKind::ArrayEnd);
-                    });
+                    self.builder
+                        .start_node_at(lhs_marker, SyntaxKind::IndexExpr);
+                    self.bump(); // consume [
+                    self.parse_expr();
+                    self.expect(TokenKind::ArrayEnd);
+                    self.builder.finish_node();
+
+                    // Update marker for chained indexing
+                    lhs_marker = Marker {
+                        pos: self.builder.marker().pos.saturating_sub(1),
+                    };
                 }
                 _ => break,
             }
         }
-    }
-
-    /// Parse infix expression
-    fn parse_infix_expr(&mut self, prec: usize) {
-        self.emit_node(SyntaxKind::BinaryExpr, |this| {
-            // Consume the binary operator
-            this.bump();
-            // Parse the right-hand side with appropriate precedence
-            // For left-associative operators, use prec + 1
-            // For right-associative operators, use prec
-            this.parse_expr_with_precedence(prec + 1);
-        });
     }
 
     /// Parse argument list: (expr, expr, ...)
@@ -1310,12 +1342,7 @@ impl<'a> Parser<'a> {
 pub fn parse_cst(
     tokens: Vec<Token>,
     preparsed: &PreParsedTokens,
-) -> (
-    GreenNodeId,
-    GreenNodeArena,
-    Vec<Token>,
-    Vec<ParserError>,
-) {
+) -> (GreenNodeId, GreenNodeArena, Vec<Token>, Vec<ParserError>) {
     let parser = Parser::new(tokens, preparsed);
     parser.parse()
 }
