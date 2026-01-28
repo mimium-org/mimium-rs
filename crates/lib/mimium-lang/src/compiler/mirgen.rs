@@ -247,6 +247,7 @@ impl Context {
         let TypedPattern { pat, .. } = pattern;
         let span = pattern.to_span();
         match (pat, ty.to_type()) {
+            (Pattern::Placeholder, _) => {}
             (Pattern::Single(id), t) => {
                 if is_global && !matches!(v.as_ref(), Value::Function(_)) {
                     let gv = Arc::new(Value::Global(v.clone()));
@@ -1348,7 +1349,7 @@ pub fn typecheck(
 }
 
 /// Generate MIR from AST.
-/// The input ast (`root_expr_id`) should contain global context. (See [[compiler::parser::add_global_context]].)
+/// The input ast (`root_expr_id`) should contain global context. (See [[parser::add_global_context]].)
 /// MIR generator itself does not emit any error, the any compile errors are analyzed before generating MIR, mostly in type checker.
 /// Note that the AST may contain partial error nodes, to do type check and report them as possible.
 pub fn compile(

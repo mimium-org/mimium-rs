@@ -130,6 +130,20 @@ pub trait GeneralInterpreter {
                     self.eval_in_new_env(&[(name, wrapped_v)], ctx, e)
                 })
             }
+            Expr::Let(
+                TypedPattern {
+                    pat: Pattern::Placeholder,
+                    ..
+                },
+                e,
+                body,
+            ) => {
+                // Evaluate the value but don't bind it
+                let _ = self.eval(ctx, e);
+                log::trace!("letting _ (placeholder) at stage: {}", ctx.stage);
+                let empty = self.get_empty_val();
+                body.map_or(empty, |e| self.eval(ctx, e))
+            }
             Expr::Let(_, _, _) => {
                 panic!("Let with multiple patterns should be destructed before evaluation")
             }

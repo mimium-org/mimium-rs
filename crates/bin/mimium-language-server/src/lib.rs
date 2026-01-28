@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::process::Stdio;
 
 use mimium_lang::interner::Symbol;
 
@@ -8,17 +9,17 @@ use dashmap::DashMap;
 use log::debug;
 use mimium_lang::compiler::mirgen;
 use mimium_lang::interner::{ExprNodeId, TypeNodeId};
+use mimium_lang::compiler::parser;
 use mimium_lang::plugin::Plugin;
 use mimium_lang::utils::error::ReportableError;
 use mimium_lang::{Config, ExecContext};
 use ropey::Rope;
 use semantic_token::{ImCompleteSemanticToken, LEGEND_TYPE, ParseResult, parse};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
 type SrcUri = String;
 
 /// Construct an [`ExecContext`] with the default set of plugins.
@@ -70,6 +71,10 @@ struct Backend {
     // semantic_map: DashMap<SrcUri, Semantic>,
     document_map: DashMap<SrcUri, Rope>,
     semantic_token_map: DashMap<SrcUri, Vec<ImCompleteSemanticToken>>,
+    // Parser state
+    parser_arena_map: DashMap<SrcUri, parser::GreenNodeArena>,
+    parser_root_map: DashMap<SrcUri, parser::GreenNodeId>,
+    parser_tokens_map: DashMap<SrcUri, Vec<parser::Token>>,
 }
 
 #[tower_lsp::async_trait]
@@ -121,6 +126,7 @@ impl LanguageServer for Backend {
                     }),
                     file_operations: None,
                 }),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             server_info: None,
@@ -217,6 +223,63 @@ impl LanguageServer for Backend {
     async fn did_close(&self, _: DidCloseTextDocumentParams) {
         debug!("file closed!");
     }
+    
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let uri = params.text_document.uri;
+        let rope = match self.document_map.get(uri.as_str()) {
+            Some(rope) => rope,
+            None => return Ok(None),
+        };
+
+        let text = rope.to_string();
+        let indent_size = params.options.tab_size as usize;
+        let width = 80usize;
+
+        let formatter_path = std::env::var("HOME")
+            .map(|home| format!("{home}/.mimium/bin/mimium-fmt"))
+            .unwrap_or_else(|_| {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|path| path.parent().map(|parent| parent.join("mimium-fmt")))
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "mimium-fmt".to_string())
+            });
+
+        let mut child = match Command::new(formatter_path)
+            .arg("--width")
+            .arg(width.to_string())
+            .arg("--indent-size")
+            .arg(indent_size.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(_) => return Ok(None),
+        };
+
+        if let Some(mut stdin) = child.stdin.take()
+            && stdin.write_all(text.as_bytes()).await.is_err() {
+                return Ok(None);
+            }
+
+        let output = match child.wait_with_output().await {
+            Ok(output) => output,
+            Err(_) => return Ok(None),
+        };
+
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        let formatted = String::from_utf8_lossy(&output.stdout).to_string();
+
+        let last_line = rope.len_lines().saturating_sub(1);
+        let last_char = rope.line(last_line).len_chars();
+        let range = Range::new(Position::new(0, 0), Position::new(last_line as u32, last_char as u32));
+
+        Ok(Some(vec![TextEdit { range, new_text: formatted }]))
+    }
 }
 fn diagnostic_from_error(
     error: Box<dyn ReportableError>,
@@ -265,13 +328,33 @@ impl Backend {
     fn compile(&self, src: &str, url: Url) -> Vec<Diagnostic> {
         let rope = ropey::Rope::from_str(src);
 
+        // Run parser for IDE features
+        let parser_tokens = parser::tokenize(src);
+        let parser_preparsed = parser::preparse(&parser_tokens);
+        let (parser_root, parser_arena, parser_tokens, _parser_errors) =
+            parser::parse_cst(parser_tokens, &parser_preparsed);
+
+        // Generate semantic tokens from parser by traversing Green Tree
+        let semantic_tokens =
+            semantic_token::tokens_from_green(parser_root, &parser_arena, &parser_tokens);
+        self.semantic_token_map
+            .insert(url.to_string(), semantic_tokens);
+
+        // Store parser results
+        self.parser_tokens_map
+            .insert(url.to_string(), parser_tokens);
+        self.parser_root_map
+            .insert(url.to_string(), parser_root);
+        self.parser_arena_map
+            .insert(url.to_string(), parser_arena);
+
+        // Run existing parser for type checking
         let ParseResult {
             ast,
             errors,
-            semantic_tokens,
+            semantic_tokens: _, // Ignore semantic tokens from old parser
         } = parse(src, url.as_str());
-        self.semantic_token_map
-            .insert(url.to_string(), semantic_tokens);
+        // Note: semantic_token_map is already populated above with parser tokens
         let errs = {
             let ast = ast.wrap_to_staged_expr();
             let (_, _, typeerrs) = mirgen::typecheck(ast, &self.compiler_ctx.builtin_types, None);
@@ -306,6 +389,9 @@ pub async fn lib_main() {
         ast_map: DashMap::new(),
         document_map: DashMap::new(),
         semantic_token_map: DashMap::new(),
+        parser_arena_map: DashMap::new(),
+        parser_root_map: DashMap::new(),
+        parser_tokens_map: DashMap::new(),
     })
     .finish();
 

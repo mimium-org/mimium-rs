@@ -1,7 +1,7 @@
 pub mod bytecodegen;
 pub(crate) mod intrinsics;
-pub mod mirgen;
 pub mod parser;
+pub mod mirgen;
 pub mod typing;
 use crate::plugin::{ExtFunTypeInfo, MacroFunction};
 
