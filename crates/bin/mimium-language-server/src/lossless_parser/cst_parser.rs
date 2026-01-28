@@ -191,7 +191,14 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse the entire program
-    pub fn parse(mut self) -> (GreenNodeId, GreenNodeArena, Vec<LosslessToken>, Vec<ParserError>) {
+    pub fn parse(
+        mut self,
+    ) -> (
+        GreenNodeId,
+        GreenNodeArena,
+        Vec<LosslessToken>,
+        Vec<ParserError>,
+    ) {
         self.builder.start_node(SyntaxKind::Program);
 
         while !self.is_at_end() {
@@ -242,7 +249,7 @@ impl<'a> Parser<'a> {
             this.expect(TokenKind::Sharp);
             this.expect(TokenKind::StageKwd);
             this.expect(TokenKind::ParenBegin);
-            
+
             // Expect either 'main' or 'macro'
             if this.check(TokenKind::Main) {
                 this.bump();
@@ -251,7 +258,7 @@ impl<'a> Parser<'a> {
             } else {
                 this.expect(TokenKind::Main); // Will trigger error
             }
-            
+
             this.expect(TokenKind::ParenEnd);
         });
     }
@@ -265,7 +272,7 @@ impl<'a> Parser<'a> {
             this.expect(TokenKind::MacroExpand);
             // Arguments in parentheses
             this.expect(TokenKind::ParenBegin);
-            
+
             // Parse arguments as expression list
             if !this.check(TokenKind::ParenEnd) {
                 this.parse_expr();
@@ -276,7 +283,7 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            
+
             this.expect(TokenKind::ParenEnd);
         });
     }
@@ -285,7 +292,7 @@ impl<'a> Parser<'a> {
     fn parse_bracket_expr(&mut self) {
         self.emit_node(SyntaxKind::BracketExpr, |this| {
             this.expect(TokenKind::BackQuote);
-            
+
             // Check if it's a block or single expression
             if this.check(TokenKind::BlockBegin) {
                 this.parse_block_expr();
@@ -441,7 +448,7 @@ impl<'a> Parser<'a> {
                         this.tokens[token_idx].kind = TokenKind::IdentParameter;
                     }
                     this.bump();
-                    
+
                     // Optional type annotation
                     if this.check(TokenKind::Colon) {
                         this.parse_type_annotation();
@@ -642,9 +649,9 @@ impl<'a> Parser<'a> {
     fn parse_type(&mut self) {
         // Check for function type with parentheses: (T1, T2) -> R
         if self.check(TokenKind::ParenBegin) {
-            let ahead_arrow = (1..MAX_LOOKAHEAD)
-                .find(|&i| matches!(self.peek_ahead(i), Some(TokenKind::Arrow)));
-            
+            let ahead_arrow =
+                (1..MAX_LOOKAHEAD).find(|&i| matches!(self.peek_ahead(i), Some(TokenKind::Arrow)));
+
             if ahead_arrow.is_some() {
                 // Function type
                 self.emit_node(SyntaxKind::FunctionType, |inner| {
@@ -655,14 +662,16 @@ impl<'a> Parser<'a> {
                 return;
             }
         }
-        
+
         self.parse_type_primary();
     }
 
     /// Parse primary type (primitive, tuple, etc.)
     fn parse_type_primary(&mut self) {
         match self.peek() {
-            Some(TokenKind::FloatType) | Some(TokenKind::IntegerType) | Some(TokenKind::StringType) => {
+            Some(TokenKind::FloatType)
+            | Some(TokenKind::IntegerType)
+            | Some(TokenKind::StringType) => {
                 self.emit_node(SyntaxKind::PrimitiveType, |inner| {
                     inner.bump();
                 });
@@ -707,13 +716,11 @@ impl<'a> Parser<'a> {
     fn parse_type_tuple_or_paren(&mut self) {
         // Look ahead to determine if it's a tuple
         let is_tuple = (1..MAX_LOOKAHEAD)
-            .find_map(|i| {
-                match self.peek_ahead(i) {
-                    Some(TokenKind::Comma) => Some(true),
-                    Some(TokenKind::ParenEnd) => Some(false),
-                    None => Some(false),
-                    _ => None,
-                }
+            .find_map(|i| match self.peek_ahead(i) {
+                Some(TokenKind::Comma) => Some(true),
+                Some(TokenKind::ParenEnd) => Some(false),
+                None => Some(false),
+                _ => None,
             })
             .unwrap_or(false);
 
@@ -743,13 +750,13 @@ impl<'a> Parser<'a> {
     fn parse_type_record(&mut self) {
         self.emit_node(SyntaxKind::RecordType, |inner| {
             inner.expect(TokenKind::BlockBegin);
-            
+
             if !inner.check(TokenKind::BlockEnd) {
                 // Parse field: name : Type
                 inner.expect(TokenKind::Ident);
                 inner.expect(TokenKind::Colon);
                 inner.parse_type();
-                
+
                 while inner.check(TokenKind::Comma) {
                     inner.bump();
                     if !inner.check(TokenKind::BlockEnd) {
@@ -759,7 +766,7 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            
+
             inner.expect(TokenKind::BlockEnd);
         });
     }
@@ -881,7 +888,7 @@ impl<'a> Parser<'a> {
                         this.tokens[token_idx].kind = TokenKind::IdentParameter;
                     }
                     this.bump();
-                    
+
                     // Optional type annotation
                     if this.check(TokenKind::Colon) {
                         this.parse_type_annotation();
@@ -953,11 +960,11 @@ impl<'a> Parser<'a> {
         // Get lookahead tokens once to avoid repeated peek_ahead calls
         let token1 = self.peek_ahead(1);
         let token2 = self.peek_ahead(2);
-        
+
         match (token1, token2) {
-            (Some(TokenKind::DoubleDot), _) => true,                          // .. (incomplete records)
-            (Some(TokenKind::Ident), Some(TokenKind::Assign)) => true,        // field = value
-            (Some(TokenKind::Ident), Some(TokenKind::LeftArrow)) => true,     // record <- field = value (update)
+            (Some(TokenKind::DoubleDot), _) => true, // .. (incomplete records)
+            (Some(TokenKind::Ident), Some(TokenKind::Assign)) => true, // field = value
+            (Some(TokenKind::Ident), Some(TokenKind::LeftArrow)) => true, // record <- field = value (update)
             _ => false,
         }
     }
@@ -991,15 +998,16 @@ impl<'a> Parser<'a> {
 
             if !this.check(TokenKind::BlockEnd) {
                 // Check for record update: {base <- field = value}
-                if this.check(TokenKind::Ident) && this.peek_ahead(1) == Some(TokenKind::LeftArrow) {
+                if this.check(TokenKind::Ident) && this.peek_ahead(1) == Some(TokenKind::LeftArrow)
+                {
                     this.parse_expr(); // base record
                     this.expect(TokenKind::LeftArrow); // <-
-                    
+
                     // Parse updated fields
                     this.expect(TokenKind::Ident);
                     this.expect(TokenKind::Assign);
                     this.parse_expr();
-                    
+
                     while this.check(TokenKind::Comma) {
                         this.bump();
                         if !this.check(TokenKind::BlockEnd) {
@@ -1014,7 +1022,7 @@ impl<'a> Parser<'a> {
                     this.expect(TokenKind::Ident);
                     this.expect(TokenKind::Assign);
                     this.parse_expr();
-                    
+
                     while this.check(TokenKind::Comma) {
                         this.bump();
                         if !this.check(TokenKind::BlockEnd) {
@@ -1098,7 +1106,12 @@ impl<'a> Parser<'a> {
 pub fn parse_cst(
     tokens: Vec<LosslessToken>,
     preparsed: &PreParsedTokens,
-) -> (GreenNodeId, GreenNodeArena, Vec<LosslessToken>, Vec<ParserError>) {
+) -> (
+    GreenNodeId,
+    GreenNodeArena,
+    Vec<LosslessToken>,
+    Vec<ParserError>,
+) {
     let parser = Parser::new(tokens, preparsed);
     parser.parse()
 }

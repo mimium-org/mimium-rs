@@ -134,7 +134,7 @@ where
 {
     // NOTE: MacroExpand (!) is now parsed as a separate operator token
     // The parser will handle Ident followed by MacroExpand
-    
+
     let ident = text::ident()
         .to_slice()
         .map(|ident: &'src str| match ident {

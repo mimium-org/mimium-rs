@@ -1,5 +1,5 @@
 //! Integration tests for CST Parser
-//! 
+//!
 //! This module contains comprehensive tests for the CST parser implementation.
 //! Tests are organized by feature area:
 //! - Basic parsing (programs, statements)
@@ -12,9 +12,9 @@
 //! - Error recovery
 
 use mimium_language_server::lossless_parser::cst_parser::*;
+use mimium_language_server::lossless_parser::green::SyntaxKind;
 use mimium_language_server::lossless_parser::preparser::preparse;
 use mimium_language_server::lossless_parser::tokenizer::tokenize;
-use mimium_language_server::lossless_parser::green::SyntaxKind;
 
 #[test]
 fn test_parse_simple_program() {
@@ -117,9 +117,10 @@ fn test_parse_error_recovery_unexpected_token() {
     assert!(!errors.is_empty(), "Expected parse errors, got none");
     // The error might be UnexpectedEof instead of UnexpectedToken since we reach EOF
     assert!(
-        matches!(errors[0].detail, ErrorDetail::UnexpectedToken { .. }) ||
-        matches!(errors[0].detail, ErrorDetail::UnexpectedEof { .. }),
-        "Expected UnexpectedToken or UnexpectedEof, got: {:?}", errors[0].detail
+        matches!(errors[0].detail, ErrorDetail::UnexpectedToken { .. })
+            || matches!(errors[0].detail, ErrorDetail::UnexpectedEof { .. }),
+        "Expected UnexpectedToken or UnexpectedEof, got: {:?}",
+        errors[0].detail
     );
 }
 
@@ -132,10 +133,16 @@ fn test_parse_error_recovery_missing_block() {
     let (_root_id, _arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
     // Should have collected an error when EOF is reached after '='
-    assert!(!errors.is_empty(), "Expected parse errors for incomplete let binding");
+    assert!(
+        !errors.is_empty(),
+        "Expected parse errors for incomplete let binding"
+    );
     // Error should be about unexpected EOF expecting an expression
-    assert!(matches!(&errors[0].detail, ErrorDetail::UnexpectedEof { expected } if expected == "expression"),
-            "Expected UnexpectedEof for 'expression', got: {:?}", errors[0].detail);
+    assert!(
+        matches!(&errors[0].detail, ErrorDetail::UnexpectedEof { expected } if expected == "expression"),
+        "Expected UnexpectedEof for 'expression', got: {:?}",
+        errors[0].detail
+    );
     // Parser should continue without crashing
     assert!(_arena.kind(_root_id).is_some());
 }
@@ -1095,4 +1102,3 @@ fn test_parse_incomplete_record() {
     assert_cst_contains_kind(&arena, root_id, SyntaxKind::IntLiteral);
     assert!(arena.width(root_id) > 0);
 }
-

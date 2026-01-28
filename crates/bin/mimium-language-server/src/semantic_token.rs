@@ -1,9 +1,14 @@
 use std::path::PathBuf;
 
-use mimium_lang::{interner::ExprNodeId, utils::{error::ReportableError, metadata::Span}};
+use mimium_lang::{
+    interner::ExprNodeId,
+    utils::{error::ReportableError, metadata::Span},
+};
 use tower_lsp::lsp_types::SemanticTokenType;
 
-use crate::lossless_parser::{green::GreenNode, GreenNodeArena, GreenNodeId, LosslessToken, SyntaxKind, TokenKind};
+use crate::lossless_parser::{
+    GreenNodeArena, GreenNodeId, LosslessToken, SyntaxKind, TokenKind, green::GreenNode,
+};
 
 /// Same as lstp_types::SemanticToken but lacks some fields like token_modifiers_bitset.
 #[derive(Debug)]
@@ -83,9 +88,10 @@ fn token_kind_to_semantic_index(kind: TokenKind) -> Option<usize> {
         | TokenKind::LambdaArgBeginEnd
         | TokenKind::BackQuote
         | TokenKind::Dollar => get_token_id(&SemanticTokenType::OPERATOR),
-        TokenKind::FloatType | TokenKind::IntegerType | TokenKind::StringType | TokenKind::StructType => {
-            get_token_id(&SemanticTokenType::TYPE)
-        }
+        TokenKind::FloatType
+        | TokenKind::IntegerType
+        | TokenKind::StringType
+        | TokenKind::StructType => get_token_id(&SemanticTokenType::TYPE),
         TokenKind::MacroExpand => get_token_id(&SemanticTokenType::MACRO),
         TokenKind::Whitespace
         | TokenKind::LineBreak
@@ -183,7 +189,11 @@ fn mark_identifiers_as_function(
     }
 }
 
-fn node_contains_pipe(node_id: GreenNodeId, arena: &GreenNodeArena, tokens: &[LosslessToken]) -> bool {
+fn node_contains_pipe(
+    node_id: GreenNodeId,
+    arena: &GreenNodeArena,
+    tokens: &[LosslessToken],
+) -> bool {
     match arena.get(node_id) {
         GreenNode::Token { token_index, .. } => tokens[*token_index].kind == TokenKind::OpPipe,
         GreenNode::Internal { children, .. } => children
@@ -213,16 +223,19 @@ fn mark_function_decl_name(
     token_types: &mut [Option<usize>],
     function_id: usize,
 ) {
-    children.iter().find_map(|child| match arena.get(*child) {
+    if let Some(token_index) = children.iter().find_map(|child| match arena.get(*child) {
         GreenNode::Token { token_index, .. }
-            if matches!(tokens[*token_index].kind, TokenKind::Ident | TokenKind::IdentFunction) =>
+            if matches!(
+                tokens[*token_index].kind,
+                TokenKind::Ident | TokenKind::IdentFunction
+            ) =>
         {
             Some(*token_index)
         }
         _ => None,
-    }).map(|token_index| {
+    }) {
         token_types[token_index] = Some(function_id);
-    });
+    }
 }
 
 fn apply_contextual_semantics(
@@ -239,14 +252,30 @@ fn apply_contextual_semantics(
 
         for (idx, child) in children.iter().enumerate() {
             if let Some(kind) = arena.kind(*child) {
-                if kind == SyntaxKind::CallExpr {
-                    if let Some(prev) = find_prev_non_trivia(children, idx, arena, tokens) {
-                        mark_identifiers_as_function(prev, arena, tokens, token_types, function_id);
+                match kind {
+                    SyntaxKind::CallExpr => {
+                        if let Some(prev) = find_prev_non_trivia(children, idx, arena, tokens) {
+                            mark_identifiers_as_function(
+                                prev,
+                                arena,
+                                tokens,
+                                token_types,
+                                function_id,
+                            );
+                        }
                     }
-                } else if kind == SyntaxKind::BinaryExpr && node_contains_pipe(*child, arena, tokens) {
-                    if let Some(prev) = find_prev_non_trivia(children, idx, arena, tokens) {
-                        mark_identifiers_as_function(prev, arena, tokens, token_types, function_id);
+                    SyntaxKind::BinaryExpr if node_contains_pipe(*child, arena, tokens) => {
+                        if let Some(prev) = find_prev_non_trivia(children, idx, arena, tokens) {
+                            mark_identifiers_as_function(
+                                prev,
+                                arena,
+                                tokens,
+                                token_types,
+                                function_id,
+                            );
+                        }
                     }
+                    _ => {}
                 }
             }
             apply_contextual_semantics(*child, arena, tokens, token_types, function_id);
@@ -270,11 +299,13 @@ pub fn tokens_from_green(
     tokens
         .iter()
         .enumerate()
-        .filter_map(|(idx, token)| token_types[idx].map(|token_type| ImCompleteSemanticToken {
-            start: token.start,
-            length: token.length,
-            token_type,
-        }))
+        .filter_map(|(idx, token)| {
+            token_types[idx].map(|token_type| ImCompleteSemanticToken {
+                start: token.start,
+                length: token.length,
+                token_type,
+            })
+        })
         .collect()
 }
 

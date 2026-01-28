@@ -71,7 +71,15 @@ pub fn green_to_red(green_id: GreenNodeId, offset: usize) -> std::sync::Arc<RedN
 }
 
 /// Complete parsing pipeline from source to AST with error collection
-pub fn parse(source: &str) -> (AstNode, Vec<LosslessToken>, PreParsedTokens, GreenNodeArena, Vec<cst_parser::ParserError>) {
+pub fn parse(
+    source: &str,
+) -> (
+    AstNode,
+    Vec<LosslessToken>,
+    PreParsedTokens,
+    GreenNodeArena,
+    Vec<cst_parser::ParserError>,
+) {
     let tokens = tokenize(source);
     let preparsed = preparse(&tokens);
     let (green_id, arena, tokens, errors) = parse_cst(tokens, &preparsed);

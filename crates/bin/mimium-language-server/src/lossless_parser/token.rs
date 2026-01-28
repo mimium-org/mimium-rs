@@ -7,93 +7,93 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TokenKind {
     // Identifiers and literals
-    Ident,              // Generic identifier
-    IdentFunction,      // Function name in declaration
-    IdentParameter,     // Function parameter
-    IdentVariable,      // Variable name (for future use)
+    Ident,          // Generic identifier
+    IdentFunction,  // Function name in declaration
+    IdentParameter, // Function parameter
+    IdentVariable,  // Variable name (for future use)
     MacroExpand,
-    
+
     // Type keywords
     FloatType,
     IntegerType,
     StringType,
     StructType,
-    
+
     // Literals - value can be reconstructed from source text and position
     Float,
     Int,
     Str,
-    
+
     // Operators
-    OpSum,        // +
-    OpMinus,      // -
-    OpProduct,    // *
-    OpDivide,     // /
-    OpEqual,      // ==
-    OpNotEqual,   // !=
-    OpLessThan,   // <
-    OpLessEqual,  // <=
-    OpGreaterThan,   // >
-    OpGreaterEqual,  // >=
-    OpModulo,     // %
-    OpExponent,   // ^
-    OpAt,         // @
-    OpAnd,        // &&
-    OpOr,         // ||
-    OpPipe,       // |>
-    OpUnknown,    // Other operators
-    
+    OpSum,          // +
+    OpMinus,        // -
+    OpProduct,      // *
+    OpDivide,       // /
+    OpEqual,        // ==
+    OpNotEqual,     // !=
+    OpLessThan,     // <
+    OpLessEqual,    // <=
+    OpGreaterThan,  // >
+    OpGreaterEqual, // >=
+    OpModulo,       // %
+    OpExponent,     // ^
+    OpAt,           // @
+    OpAnd,          // &&
+    OpOr,           // ||
+    OpPipe,         // |>
+    OpUnknown,      // Other operators
+
     // Special literals
     SelfLit,
     Now,
     SampleRate,
-    
+
     // Punctuation
-    Comma,        // ,
-    Dot,          // .
-    DoubleDot,    // ..
-    Colon,        // :
-    SemiColon,    // ;
-    
+    Comma,     // ,
+    Dot,       // .
+    DoubleDot, // ..
+    Colon,     // :
+    SemiColon, // ;
+
     // Keywords
     Let,
     LetRec,
-    Assign,       // =
-    
+    Assign, // =
+
     // Brackets
-    ParenBegin,   // (
-    ParenEnd,     // )
-    ArrayBegin,   // [
-    ArrayEnd,     // ]
-    BlockBegin,   // {
-    BlockEnd,     // }
+    ParenBegin,        // (
+    ParenEnd,          // )
+    ArrayBegin,        // [
+    ArrayEnd,          // ]
+    BlockBegin,        // {
+    BlockEnd,          // }
     LambdaArgBeginEnd, // |
-    BackQuote,    // `
-    Dollar,       // $
-    
+    BackQuote,         // `
+    Dollar,            // $
+
     // Function and flow control
-    Function,     // fn
-    Macro,        // macro
-    Arrow,        // ->
-    LeftArrow,    // <-
-    PlaceHolder,  // _
+    Function,    // fn
+    Macro,       // macro
+    Arrow,       // ->
+    LeftArrow,   // <-
+    PlaceHolder, // _
     If,
     Else,
-    
+
     // Directives
     Include,
-    Sharp,        // #
-    StageKwd,     // stage
-    Main,         // main
-    
+    Sharp,    // #
+    StageKwd, // stage
+    Main,     // main
+
     // Trivia (whitespace and comments)
     LineBreak,
     Whitespace,
     SingleLineComment,
     MultiLineComment,
-    
+
     // Special
-    Error,        // Error token for recovery
+    Error, // Error token for recovery
     Eof,
 }
 
@@ -181,30 +181,34 @@ pub struct LosslessToken {
 
 impl LosslessToken {
     pub fn new(kind: TokenKind, start: usize, length: usize) -> Self {
-        Self { kind, start, length }
+        Self {
+            kind,
+            start,
+            length,
+        }
     }
-    
+
     /// Get the end position of this token
     pub fn end(&self) -> usize {
         self.start + self.length
     }
-    
+
     /// Get the text of this token from the source
     pub fn text<'a>(&self, source: &'a str) -> &'a str {
         &source[self.start..self.end()]
     }
-    
+
     /// Check if this token is trivia (whitespace or comment)
     pub fn is_trivia(&self) -> bool {
         matches!(
             self.kind,
-            TokenKind::LineBreak 
-            | TokenKind::Whitespace 
-            | TokenKind::SingleLineComment 
-            | TokenKind::MultiLineComment
+            TokenKind::LineBreak
+                | TokenKind::Whitespace
+                | TokenKind::SingleLineComment
+                | TokenKind::MultiLineComment
         )
     }
-    
+
     /// Check if this token is an error token
     pub fn is_error(&self) -> bool {
         self.kind == TokenKind::Error

@@ -63,11 +63,7 @@ pub fn collect_nodes_by_kind(
 /// Assert that a node or its subtree contains at least one child of the given kind.
 ///
 /// Panics if not found, with a descriptive message.
-pub fn assert_cst_contains_kind(
-    arena: &GreenNodeArena,
-    node_id: GreenNodeId,
-    kind: SyntaxKind,
-) {
+pub fn assert_cst_contains_kind(arena: &GreenNodeArena, node_id: GreenNodeId, kind: SyntaxKind) {
     if find_node_by_kind(arena, node_id, kind).is_none() {
         panic!(
             "Expected to find {:?} in subtree rooted at {:?}",
@@ -155,11 +151,7 @@ pub fn get_cst_depth(arena: &GreenNodeArena, node_id: GreenNodeId) -> usize {
 }
 
 /// Assert that CST structure has a specific minimum depth.
-pub fn assert_cst_depth_at_least(
-    arena: &GreenNodeArena,
-    node_id: GreenNodeId,
-    min_depth: usize,
-) {
+pub fn assert_cst_depth_at_least(arena: &GreenNodeArena, node_id: GreenNodeId, min_depth: usize) {
     let actual_depth = get_cst_depth(arena, node_id);
     assert!(
         actual_depth >= min_depth,
