@@ -6,7 +6,7 @@ use super::token::{LosslessToken, TokenKind};
 
 /// Parser state
 pub struct Parser<'a> {
-    tokens: &'a [LosslessToken],
+    tokens: Vec<LosslessToken>,
     preparsed: &'a PreParsedTokens,
     current: usize, // Index into preparsed.token_indices
     builder: GreenTreeBuilder,
@@ -16,7 +16,7 @@ pub struct Parser<'a> {
 const MAX_LOOKAHEAD: usize = 20;
 
 impl<'a> Parser<'a> {
-    pub fn new(tokens: &'a [LosslessToken], preparsed: &'a PreParsedTokens) -> Self {
+    pub fn new(tokens: Vec<LosslessToken>, preparsed: &'a PreParsedTokens) -> Self {
         Self {
             tokens,
             preparsed,
@@ -28,20 +28,20 @@ impl<'a> Parser<'a> {
     /// Get the current token kind
     fn peek(&self) -> Option<TokenKind> {
         self.preparsed
-            .get_token(self.current, self.tokens)
+            .get_token(self.current, &self.tokens)
             .map(|t| t.kind)
     }
 
     /// Peek ahead n tokens
     fn peek_ahead(&self, n: usize) -> Option<TokenKind> {
         self.preparsed
-            .get_token(self.current + n, self.tokens)
+            .get_token(self.current + n, &self.tokens)
             .map(|t| t.kind)
     }
 
     /// Get the current token
     fn current_token(&self) -> Option<&LosslessToken> {
-        self.preparsed.get_token(self.current, self.tokens)
+        self.preparsed.get_token(self.current, &self.tokens)
     }
 
     /// Check if current token matches the expected kind
@@ -70,7 +70,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse the entire program
-    pub fn parse(mut self) -> (GreenNodeId, GreenNodeArena) {
+    pub fn parse(mut self) -> (GreenNodeId, GreenNodeArena, Vec<LosslessToken>) {
         self.builder.start_node(SyntaxKind::Program);
 
         while !self.is_at_end() {
@@ -79,7 +79,7 @@ impl<'a> Parser<'a> {
 
         let root_id = self.builder.finish_node().unwrap();
         let arena = self.builder.into_arena();
-        (root_id, arena)
+        (root_id, arena, self.tokens)
     }
 
     /// Check if we've reached the end
@@ -109,7 +109,14 @@ impl<'a> Parser<'a> {
         self.builder.start_node(SyntaxKind::FunctionDecl);
 
         self.expect(TokenKind::Function);
-        self.expect(TokenKind::Ident); // function name
+        
+        // Mark function name with IdentFunction kind
+        if self.check(TokenKind::Ident) {
+            if let Some(&token_idx) = self.preparsed.token_indices.get(self.current) {
+                self.tokens[token_idx].kind = TokenKind::IdentFunction;
+            }
+            self.bump();
+        }
 
         // Parameters
         if self.check(TokenKind::ParenBegin) {
@@ -159,7 +166,14 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::ParenBegin);
 
         while !self.check(TokenKind::ParenEnd) && !self.is_at_end() {
-            self.expect(TokenKind::Ident);
+            // Mark parameter name with IdentParameter kind
+            if self.check(TokenKind::Ident) {
+                if let Some(&token_idx) = self.preparsed.token_indices.get(self.current) {
+                    // Change token kind to IdentParameter
+                    self.tokens[token_idx].kind = TokenKind::IdentParameter;
+                }
+                self.bump();
+            }
 
             if self.check(TokenKind::Comma) {
                 self.bump();
@@ -194,6 +208,9 @@ impl<'a> Parser<'a> {
                 self.builder.start_node(SyntaxKind::StringLiteral);
                 self.bump();
                 self.builder.finish_node();
+            }
+            Some(TokenKind::LambdaArgBeginEnd) => {
+                self.parse_lambda_expr();
             }
             Some(TokenKind::Ident) => {
                 self.builder.start_node(SyntaxKind::Identifier);
@@ -233,6 +250,63 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+    }
+
+    /// Parse lambda expression: |x, y| expr
+    fn parse_lambda_expr(&mut self) {
+        self.builder.start_node(SyntaxKind::LambdaExpr);
+
+        // Opening '|'
+        self.expect(TokenKind::LambdaArgBeginEnd);
+
+        // Parameters
+        while !self.check(TokenKind::LambdaArgBeginEnd) && !self.is_at_end() {
+            if self.check(TokenKind::Ident) {
+                if let Some(&token_idx) = self.preparsed.token_indices.get(self.current) {
+                    self.tokens[token_idx].kind = TokenKind::IdentParameter;
+                }
+                self.bump();
+            } else {
+                // Skip unexpected tokens in parameter list to recover
+                self.bump();
+            }
+
+            if self.check(TokenKind::Comma) {
+                self.bump();
+            } else if !self.check(TokenKind::LambdaArgBeginEnd) {
+                // Invalid separator; try to recover by stopping params
+                break;
+            }
+        }
+
+        // Closing '|'
+        self.expect(TokenKind::LambdaArgBeginEnd);
+
+        // Optional return type annotation after '->'. We skip its tokens for now.
+        if self.check(TokenKind::Arrow) {
+            self.bump();
+            while !self.is_at_end() {
+                match self.peek() {
+                    // Stop before the lambda body expression
+                    Some(TokenKind::BlockBegin)
+                    | Some(TokenKind::ParenBegin)
+                    | Some(TokenKind::Ident)
+                    | Some(TokenKind::Int)
+                    | Some(TokenKind::Float)
+                    | Some(TokenKind::Str)
+                    | Some(TokenKind::If)
+                    | Some(TokenKind::LambdaArgBeginEnd) => break,
+                    _ => self.bump(),
+                }
+            }
+        }
+
+        // Body expression
+        if !self.is_at_end() {
+            self.parse_expr();
+        }
+
+        self.builder.finish_node();
     }
 
     /// Check if current position is a tuple expression
@@ -364,9 +438,9 @@ impl<'a> Parser<'a> {
 
 /// Parse tokens into a Green Tree (CST)
 pub fn parse_cst(
-    tokens: &[LosslessToken],
+    tokens: Vec<LosslessToken>,
     preparsed: &PreParsedTokens,
-) -> (GreenNodeId, GreenNodeArena) {
+) -> (GreenNodeId, GreenNodeArena, Vec<LosslessToken>) {
     let parser = Parser::new(tokens, preparsed);
     parser.parse()
 }
@@ -382,7 +456,7 @@ mod tests {
         let source = "fn dsp() { 42 }";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
 
         assert_eq!(arena.kind(root_id), Some(SyntaxKind::Program));
         assert!(arena.children(root_id).is_some());
@@ -393,7 +467,7 @@ mod tests {
         let source = "let x = 42";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
 
         let children = arena.children(root_id).unwrap();
         assert!(!children.is_empty());
@@ -404,7 +478,7 @@ mod tests {
         let source = "fn add(x, y) { x }";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
 
         assert!(arena.width(root_id) > 0);
     }
@@ -414,7 +488,7 @@ mod tests {
         let source = "(1, 2, 3)";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
 
         let children = arena.children(root_id).unwrap();
         assert!(!children.is_empty());
@@ -425,7 +499,7 @@ mod tests {
         let source = "{x = 1, y = 2}";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
 
         let children = arena.children(root_id).unwrap();
         assert!(!children.is_empty());

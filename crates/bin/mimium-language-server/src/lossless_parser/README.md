@@ -91,14 +91,14 @@ use mimium_language_server::lossless_parser;
 let source = "fn dsp() { 42 }";
 
 // Complete pipeline
-let (ast, tokens, preparsed) = lossless_parser::parse(source);
+let (ast, tokens, preparsed, arena) = lossless_parser::parse(source);
 
 // Or step by step:
 let tokens = lossless_parser::tokenize(source);
 let preparsed = lossless_parser::preparse(&tokens);
-let cst = lossless_parser::parse_cst(&tokens, &preparsed);
-let red = lossless_parser::green_to_red(cst, 0);
-let ast = lossless_parser::red_to_ast(&red, source, &tokens);
+let (cst, arena, annotated_tokens) = lossless_parser::parse_cst(tokens, &preparsed);
+let red = lossless_parser::green_to_red(cst, &arena, 0);
+let ast = lossless_parser::red_to_ast(&red, source, &annotated_tokens, &arena);
 ```
 
 Run the demos:

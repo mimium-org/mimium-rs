@@ -40,7 +40,7 @@ fn dsp() {
     
     // Step 3: Parse to CST
     println!("Step 3: CST Parsing (Green Tree)");
-    let (root_id, arena) = lossless_parser::parse_cst(&tokens, &preparsed);
+    let (root_id, arena, annotated_tokens) = lossless_parser::parse_cst(tokens, &preparsed);
     println!("Root node kind: {:?}", arena.kind(root_id));
     println!("Root node width: {}", arena.width(root_id));
     println!();
@@ -48,7 +48,7 @@ fn dsp() {
     // Step 4: Convert to AST
     println!("Step 4: AST Conversion (Red Tree)");
     let red = lossless_parser::green_to_red(root_id, &arena, 0);
-    let ast = lossless_parser::red_to_ast(&red, source, &tokens, &arena);
+    let ast = lossless_parser::red_to_ast(&red, source, &annotated_tokens, &arena);
     println!("AST: {:#?}", ast);
     
     println!("\n=== Demo Complete ===");

@@ -39,8 +39,8 @@
 /// // Step 2: Pre-parse (separate trivia)
 /// let preparsed = lossless_parser::preparse(&tokens);
 /// 
-/// // Step 3: Parse to CST (Green Tree)
-/// let (green_id, arena) = lossless_parser::parse_cst(&tokens, &preparsed);
+/// // Step 3: Parse to CST (Green Tree) and get annotated tokens
+/// let (green_id, arena, tokens) = lossless_parser::parse_cst(tokens, &preparsed);
 /// 
 /// // Step 4: Convert to AST (Red Tree)
 /// let red = lossless_parser::green_to_red(green_id, &arena, 0);
@@ -71,7 +71,7 @@ pub fn green_to_red(green_id: GreenNodeId, arena: &GreenNodeArena, offset: usize
 pub fn parse(source: &str) -> (AstNode, Vec<LosslessToken>, PreParsedTokens, GreenNodeArena) {
     let tokens = tokenize(source);
     let preparsed = preparse(&tokens);
-    let (green_id, arena) = parse_cst(&tokens, &preparsed);
+    let (green_id, arena, tokens) = parse_cst(tokens, &preparsed);
     let red = green_to_red(green_id, &arena, 0);
     let ast = red_to_ast(&red, source, &tokens, &arena);
     

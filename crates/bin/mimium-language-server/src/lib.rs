@@ -273,14 +273,15 @@ impl Backend {
         // Run lossless parser for IDE features
         let lossless_tokens = lossless_parser::tokenize(src);
         let lossless_preparsed = lossless_parser::preparse(&lossless_tokens);
-        let (lossless_root, lossless_arena) = lossless_parser::parse_cst(&lossless_tokens, &lossless_preparsed);
-        
+        let (lossless_root, lossless_arena, annotated_tokens) =
+            lossless_parser::parse_cst(lossless_tokens.clone(), &lossless_preparsed);
+
         // Generate semantic tokens from lossless parser
-        let semantic_tokens = semantic_token::tokens_from_lossless(&lossless_tokens);
+        let semantic_tokens = semantic_token::tokens_from_lossless(&annotated_tokens);
         self.semantic_token_map.insert(url.to_string(), semantic_tokens);
         
         // Store lossless parser results
-        self.lossless_tokens_map.insert(url.to_string(), lossless_tokens.clone());
+        self.lossless_tokens_map.insert(url.to_string(), annotated_tokens.clone());
         self.lossless_root_map.insert(url.to_string(), lossless_root);
         self.lossless_arena_map.insert(url.to_string(), lossless_arena);
 

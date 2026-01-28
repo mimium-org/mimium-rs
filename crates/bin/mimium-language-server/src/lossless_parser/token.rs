@@ -7,7 +7,10 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TokenKind {
     // Identifiers and literals
-    Ident,
+    Ident,              // Generic identifier
+    IdentFunction,      // Function name in declaration
+    IdentParameter,     // Function parameter
+    IdentVariable,      // Variable name (for future use)
     MacroExpand,
     
     // Type keywords
@@ -98,6 +101,9 @@ impl fmt::Display for TokenKind {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             TokenKind::Ident => write!(f, "identifier"),
+            TokenKind::IdentFunction => write!(f, "identifier_function"),
+            TokenKind::IdentParameter => write!(f, "identifier_parameter"),
+            TokenKind::IdentVariable => write!(f, "identifier_variable"),
             TokenKind::MacroExpand => write!(f, "macro_expand"),
             TokenKind::FloatType => write!(f, "float"),
             TokenKind::IntegerType => write!(f, "int"),

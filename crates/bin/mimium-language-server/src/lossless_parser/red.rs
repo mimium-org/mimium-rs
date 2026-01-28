@@ -218,7 +218,9 @@ pub fn red_to_ast(
                 match green {
                     super::green::GreenNode::Token { token_index, .. } => {
                         if let Some(token) = tokens.get(*token_index) {
-                            if token.kind == TokenKind::Ident && i == 1 {
+                            if matches!(token.kind, TokenKind::Ident | TokenKind::IdentFunction)
+                                && i == 1
+                            {
                                 name = token.text(source).to_string();
                             }
                         }
@@ -250,7 +252,9 @@ pub fn red_to_ast(
                 match green {
                     super::green::GreenNode::Token { token_index, .. } => {
                         if let Some(token) = tokens.get(*token_index) {
-                            if token.kind == TokenKind::Ident && i == 1 {
+                            if matches!(token.kind, TokenKind::Ident | TokenKind::IdentVariable)
+                                && i == 1
+                            {
                                 name = token.text(source).to_string();
                             }
                         }
@@ -372,7 +376,7 @@ pub fn red_to_ast(
                 match green {
                     super::green::GreenNode::Token { token_index, .. } => {
                         if let Some(token) = tokens.get(*token_index) {
-                            if token.kind == TokenKind::Ident {
+                            if matches!(token.kind, TokenKind::Ident | TokenKind::IdentVariable) {
                                 current_field_name = Some(token.text(source).to_string());
                             }
                         }
@@ -406,7 +410,7 @@ fn extract_params(
         let green = arena.get(child.green_id());
         if let super::green::GreenNode::Token { token_index, .. } = green {
             if let Some(token) = tokens.get(*token_index) {
-                if token.kind == TokenKind::Ident {
+                if matches!(token.kind, TokenKind::Ident | TokenKind::IdentParameter) {
                     params.push(token.text(source).to_string());
                 }
             }
@@ -477,7 +481,7 @@ mod tests {
         let source = "42";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
         let red = RedNode::new(root_id, 0);
 
         assert_eq!(red.offset(), 0);
@@ -489,9 +493,9 @@ mod tests {
         let source = "42";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let (root_id, arena, annotated_tokens) = parse_cst(tokens, &preparsed);
         let red = RedNode::new(root_id, 0);
-        let ast = red_to_ast(&red, source, &tokens, &arena);
+        let ast = red_to_ast(&red, source, &annotated_tokens, &arena);
 
         match ast {
             AstNode::Program { .. } => {} // Expected
@@ -504,9 +508,9 @@ mod tests {
         let source = "fn add(x, y) { 42 }";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let (root_id, arena, annotated_tokens) = parse_cst(tokens, &preparsed);
         let red = RedNode::new(root_id, 0);
-        let ast = red_to_ast(&red, source, &tokens, &arena);
+        let ast = red_to_ast(&red, source, &annotated_tokens, &arena);
 
         match ast {
             AstNode::Program { statements } => {
@@ -521,7 +525,7 @@ mod tests {
         let source = "fn add(x, y) { 42 }";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
         let root = RedNode::new(root_id, 0);
 
         // Root should have no parent
@@ -546,7 +550,7 @@ mod tests {
         let source = "fn add(x, y) { let z = 42 }";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
         let root = RedNode::new(root_id, 0);
 
         // Get first child (statement)
@@ -570,7 +574,7 @@ mod tests {
         let source = "fn add(x, y) { 42 }";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
         let root = RedNode::new(root_id, 0);
 
         let children = root.children(&arena);
@@ -594,9 +598,9 @@ mod tests {
         let source = "let x = 1\nlet y = 2\nx";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let (root_id, arena, annotated_tokens) = parse_cst(tokens, &preparsed);
         let red = RedNode::new(root_id, 0);
-        let ast = red_to_ast(&red, source, &tokens, &arena);
+        let ast = red_to_ast(&red, source, &annotated_tokens, &arena);
 
         // The AST should have transformed the flat statement list into a chain
         match ast {

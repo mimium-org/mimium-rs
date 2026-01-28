@@ -1,12 +1,10 @@
-use std::{collections::VecDeque, path::PathBuf};
+use std::path::PathBuf;
 
 use mimium_lang::{
-    ast::{program::Program, statement::Statement},
     interner::ExprNodeId,
-    pattern::TypedId,
     utils::{error::ReportableError, metadata::Span},
 };
-use tower_lsp::lsp_types::{SemanticTokenType, SemanticTokens};
+use tower_lsp::lsp_types::SemanticTokenType;
 
 use crate::lossless_parser::{LosslessToken, TokenKind};
 
@@ -42,6 +40,7 @@ use mimium_lang::compiler::parser::Token;
 fn get_token_id(semt: &SemanticTokenType) -> usize {
     LEGEND_TYPE.iter().position(|item| item == semt).unwrap()
 }
+
 fn token_to_semantic_token(token: &Token, span: &Span) -> Option<ImCompleteSemanticToken> {
     let token_type = match token {
         Token::Function
@@ -88,19 +87,35 @@ fn lossless_token_to_semantic_token(token: &LosslessToken) -> Option<ImCompleteS
         | TokenKind::Include
         | TokenKind::StageKwd
         | TokenKind::Main => get_token_id(&SemanticTokenType::KEYWORD),
-        TokenKind::Ident => get_token_id(&SemanticTokenType::VARIABLE),
+        TokenKind::Ident | TokenKind::IdentVariable => get_token_id(&SemanticTokenType::VARIABLE),
+        TokenKind::IdentFunction => get_token_id(&SemanticTokenType::FUNCTION),
+        TokenKind::IdentParameter => get_token_id(&SemanticTokenType::PARAMETER),
         TokenKind::Float | TokenKind::Int => get_token_id(&SemanticTokenType::NUMBER),
         TokenKind::Str => get_token_id(&SemanticTokenType::STRING),
         TokenKind::SingleLineComment | TokenKind::MultiLineComment => {
             get_token_id(&SemanticTokenType::COMMENT)
         }
-        TokenKind::Assign | TokenKind::OpPipe | TokenKind::OpAt | TokenKind::OpSum
-        | TokenKind::OpMinus | TokenKind::OpProduct | TokenKind::OpDivide | TokenKind::OpModulo
-        | TokenKind::OpExponent | TokenKind::OpEqual | TokenKind::OpNotEqual
-        | TokenKind::OpLessThan | TokenKind::OpLessEqual | TokenKind::OpGreaterThan
-        | TokenKind::OpGreaterEqual | TokenKind::OpAnd | TokenKind::OpOr
+        TokenKind::Assign
+        | TokenKind::OpPipe
+        | TokenKind::OpAt
+        | TokenKind::OpSum
+        | TokenKind::OpMinus
+        | TokenKind::OpProduct
+        | TokenKind::OpDivide
+        | TokenKind::OpModulo
+        | TokenKind::OpExponent
+        | TokenKind::OpEqual
+        | TokenKind::OpNotEqual
+        | TokenKind::OpLessThan
+        | TokenKind::OpLessEqual
+        | TokenKind::OpGreaterThan
+        | TokenKind::OpGreaterEqual
+        | TokenKind::OpAnd
+        | TokenKind::OpOr
         | TokenKind::OpUnknown => get_token_id(&SemanticTokenType::OPERATOR),
-        TokenKind::FloatType | TokenKind::IntegerType | TokenKind::StringType
+        TokenKind::FloatType
+        | TokenKind::IntegerType
+        | TokenKind::StringType
         | TokenKind::StructType => get_token_id(&SemanticTokenType::TYPE),
         TokenKind::MacroExpand => get_token_id(&SemanticTokenType::MACRO),
         // Skip whitespace, newlines, punctuation, and errors
