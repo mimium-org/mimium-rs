@@ -217,12 +217,11 @@ pub fn red_to_ast(
                 let green = arena.get(child.green_id());
                 match green {
                     super::green::GreenNode::Token { token_index, .. } => {
-                        if let Some(token) = tokens.get(*token_index) {
-                            if matches!(token.kind, TokenKind::Ident | TokenKind::IdentFunction)
-                                && i == 1
-                            {
-                                name = token.text(source).to_string();
-                            }
+                        if let Some(token) = tokens.get(*token_index)
+                            && matches!(token.kind, TokenKind::Ident | TokenKind::IdentFunction)
+                            && i == 1
+                        {
+                            name = token.text(source).to_string();
                         }
                     }
                     _ => {
@@ -251,12 +250,11 @@ pub fn red_to_ast(
                 let green = arena.get(child.green_id());
                 match green {
                     super::green::GreenNode::Token { token_index, .. } => {
-                        if let Some(token) = tokens.get(*token_index) {
-                            if matches!(token.kind, TokenKind::Ident | TokenKind::IdentVariable)
-                                && i == 1
-                            {
-                                name = token.text(source).to_string();
-                            }
+                        if let Some(token) = tokens.get(*token_index)
+                            && matches!(token.kind, TokenKind::Ident | TokenKind::IdentVariable)
+                            && i == 1
+                        {
+                            name = token.text(source).to_string();
                         }
                     }
                     _ => {
@@ -293,12 +291,12 @@ pub fn red_to_ast(
             let children = red.children(arena);
             if let Some(child) = children.first() {
                 let green = arena.get(child.green_id());
-                if let super::green::GreenNode::Token { token_index, .. } = green {
-                    if let Some(token) = tokens.get(*token_index) {
-                        let text = token.text(source);
-                        if let Ok(value) = text.parse::<i64>() {
-                            return AstNode::IntLiteral(value);
-                        }
+                if let super::green::GreenNode::Token { token_index, .. } = green
+                    && let Some(token) = tokens.get(*token_index)
+                {
+                    let text = token.text(source);
+                    if let Ok(value) = text.parse::<i64>() {
+                        return AstNode::IntLiteral(value);
                     }
                 }
             }
@@ -309,12 +307,12 @@ pub fn red_to_ast(
             let children = red.children(arena);
             if let Some(child) = children.first() {
                 let green = arena.get(child.green_id());
-                if let super::green::GreenNode::Token { token_index, .. } = green {
-                    if let Some(token) = tokens.get(*token_index) {
-                        let text = token.text(source);
-                        if let Ok(value) = text.parse::<f64>() {
-                            return AstNode::FloatLiteral(value);
-                        }
+                if let super::green::GreenNode::Token { token_index, .. } = green
+                    && let Some(token) = tokens.get(*token_index)
+                {
+                    let text = token.text(source);
+                    if let Ok(value) = text.parse::<f64>() {
+                        return AstNode::FloatLiteral(value);
                     }
                 }
             }
@@ -325,13 +323,13 @@ pub fn red_to_ast(
             let children = red.children(arena);
             if let Some(child) = children.first() {
                 let green = arena.get(child.green_id());
-                if let super::green::GreenNode::Token { token_index, .. } = green {
-                    if let Some(token) = tokens.get(*token_index) {
-                        let text = token.text(source);
-                        // Remove quotes
-                        let unquoted = text.trim_matches('"');
-                        return AstNode::StringLiteral(unquoted.to_string());
-                    }
+                if let super::green::GreenNode::Token { token_index, .. } = green
+                    && let Some(token) = tokens.get(*token_index)
+                {
+                    let text = token.text(source);
+                    // Remove quotes
+                    let unquoted = text.trim_matches('"');
+                    return AstNode::StringLiteral(unquoted.to_string());
                 }
             }
             AstNode::Error
@@ -341,10 +339,10 @@ pub fn red_to_ast(
             let children = red.children(arena);
             if let Some(child) = children.first() {
                 let green = arena.get(child.green_id());
-                if let super::green::GreenNode::Token { token_index, .. } = green {
-                    if let Some(token) = tokens.get(*token_index) {
-                        return AstNode::Identifier(token.text(source).to_string());
-                    }
+                if let super::green::GreenNode::Token { token_index, .. } = green
+                    && let Some(token) = tokens.get(*token_index)
+                {
+                    return AstNode::Identifier(token.text(source).to_string());
                 }
             }
             AstNode::Error
@@ -375,10 +373,10 @@ pub fn red_to_ast(
                 let green = arena.get(child.green_id());
                 match green {
                     super::green::GreenNode::Token { token_index, .. } => {
-                        if let Some(token) = tokens.get(*token_index) {
-                            if matches!(token.kind, TokenKind::Ident | TokenKind::IdentVariable) {
-                                current_field_name = Some(token.text(source).to_string());
-                            }
+                        if let Some(token) = tokens.get(*token_index)
+                            && matches!(token.kind, TokenKind::Ident | TokenKind::IdentVariable)
+                        {
+                            current_field_name = Some(token.text(source).to_string());
                         }
                     }
                     _ => {
@@ -408,12 +406,11 @@ fn extract_params(
 
     for child in red.children(arena) {
         let green = arena.get(child.green_id());
-        if let super::green::GreenNode::Token { token_index, .. } = green {
-            if let Some(token) = tokens.get(*token_index) {
-                if matches!(token.kind, TokenKind::Ident | TokenKind::IdentParameter) {
-                    params.push(token.text(source).to_string());
-                }
-            }
+        if let super::green::GreenNode::Token { token_index, .. } = green
+            && let Some(token) = tokens.get(*token_index)
+            && matches!(token.kind, TokenKind::Ident | TokenKind::IdentParameter)
+        {
+            params.push(token.text(source).to_string());
         }
     }
 
@@ -436,7 +433,7 @@ fn transform_let_chain(statements: Vec<AstNode>) -> AstNode {
     }
 
     // Work backwards through the statements, building the chain from the inside out
-    let mut result = statements.into_iter().rev().reduce(|body, stmt| {
+    let result = statements.into_iter().rev().reduce(|body, stmt| {
         match stmt {
             AstNode::LetDecl { name, value } => {
                 // Transform LetDecl into a nested structure with body
