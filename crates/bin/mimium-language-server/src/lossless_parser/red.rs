@@ -1,10 +1,9 @@
 /// Red Tree - Abstract Syntax Tree (AST) without trivia
 /// Based on the Red-Green Syntax Tree pattern
-/// 
+///
 /// Red nodes have absolute positions and are created from Green nodes.
 /// They represent the actual AST without comments and whitespace.
 /// Red nodes maintain parent references for bottom-up traversal.
-
 use super::green::{GreenNodeArena, GreenNodeId, SyntaxKind};
 use super::token::{LosslessToken, TokenKind};
 use std::sync::{Arc, Weak};
@@ -30,59 +29,59 @@ impl RedNode {
             parent: None,
         })
     }
-    
+
     /// Create a new red node with a parent reference
-    pub fn new_with_parent(green_id: GreenNodeId, offset: usize, parent: Weak<RedNode>) -> Arc<Self> {
+    pub fn new_with_parent(
+        green_id: GreenNodeId,
+        offset: usize,
+        parent: Weak<RedNode>,
+    ) -> Arc<Self> {
         Arc::new(RedNode {
             green_id,
             offset,
             parent: Some(parent),
         })
     }
-    
+
     /// Get the absolute position of this node
     pub fn offset(&self) -> usize {
         self.offset
     }
-    
+
     /// Get the width (length) of this node
     pub fn width(&self, arena: &GreenNodeArena) -> usize {
         arena.width(self.green_id)
     }
-    
+
     /// Get the end position of this node
     pub fn end(&self, arena: &GreenNodeArena) -> usize {
         self.offset + self.width(arena)
     }
-    
+
     /// Get the syntax kind of this node
     pub fn kind(&self, arena: &GreenNodeArena) -> Option<SyntaxKind> {
         arena.kind(self.green_id)
     }
-    
+
     /// Get the underlying green node ID
     pub fn green_id(&self) -> GreenNodeId {
         self.green_id
     }
-    
+
     /// Get the parent node if it exists
     pub fn parent(&self) -> Option<Arc<RedNode>> {
         self.parent.as_ref().and_then(|weak| weak.upgrade())
     }
-    
+
     /// Get children as red nodes with parent references
     pub fn children(self: &Arc<Self>, arena: &GreenNodeArena) -> Vec<Arc<RedNode>> {
         if let Some(green_children) = arena.children(self.green_id) {
             let mut offset = self.offset;
-            
+
             green_children
                 .iter()
                 .map(|&child_id| {
-                    let child = RedNode::new_with_parent(
-                        child_id, 
-                        offset,
-                        Arc::downgrade(self)
-                    );
+                    let child = RedNode::new_with_parent(child_id, offset, Arc::downgrade(self));
                     offset += arena.width(child_id);
                     child
                 })
@@ -91,27 +90,27 @@ impl RedNode {
             Vec::new()
         }
     }
-    
+
     /// Get ancestors of this node (bottom-up traversal)
     pub fn ancestors(&self) -> Vec<Arc<RedNode>> {
         let mut result = Vec::new();
         let mut current = self.parent();
-        
+
         while let Some(node) = current {
             result.push(node.clone());
             current = node.parent();
         }
-        
+
         result
     }
-    
+
     /// Check if this node is a descendant of another node
     pub fn is_descendant_of(&self, ancestor: &RedNode) -> bool {
-        self.ancestors().iter().any(|node| {
-            node.green_id == ancestor.green_id && node.offset == ancestor.offset
-        })
+        self.ancestors()
+            .iter()
+            .any(|node| node.green_id == ancestor.green_id && node.offset == ancestor.offset)
     }
-    
+
     /// Get the text of this node from the source
     pub fn text<'a>(&self, source: &'a str, arena: &GreenNodeArena) -> &'a str {
         &source[self.offset..self.end(arena)]
@@ -124,62 +123,67 @@ pub enum AstNode {
     Program {
         statements: Vec<AstNode>,
     },
-    
+
     FunctionDecl {
         name: String,
         params: Vec<String>,
         body: Box<AstNode>,
     },
-    
+
     LetDecl {
         name: String,
         value: Box<AstNode>,
     },
-    
+
     LetRecDecl {
         name: String,
         value: Box<AstNode>,
     },
-    
+
     BinaryExpr {
         op: String,
         left: Box<AstNode>,
         right: Box<AstNode>,
     },
-    
+
     CallExpr {
         callee: Box<AstNode>,
         args: Vec<AstNode>,
     },
-    
+
     IfExpr {
         condition: Box<AstNode>,
         then_branch: Box<AstNode>,
         else_branch: Option<Box<AstNode>>,
     },
-    
+
     BlockExpr {
         statements: Vec<AstNode>,
     },
-    
+
     TupleExpr {
         elements: Vec<AstNode>,
     },
-    
+
     RecordExpr {
         fields: Vec<(String, AstNode)>,
     },
-    
+
     IntLiteral(i64),
     FloatLiteral(f64),
     StringLiteral(String),
     Identifier(String),
-    
+
     Error,
 }
 
 /// Convert Red Tree to AST
-pub fn red_to_ast(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], arena: &GreenNodeArena) -> AstNode {
+pub fn red_to_ast(
+    red: &Arc<RedNode>,
+    source: &str,
+    tokens: &[LosslessToken],
+    arena: &GreenNodeArena,
+) -> AstNode {
     match red.kind(arena) {
         Some(SyntaxKind::Program) => {
             let children = red.children(arena);
@@ -187,13 +191,13 @@ pub fn red_to_ast(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], ar
                 .iter()
                 .map(|child| red_to_ast(child, source, tokens, arena))
                 .collect();
-            
+
             // Transform flat statement list into Let-body-then chain
             statements = vec![transform_let_chain(statements)];
-            
+
             AstNode::Program { statements }
         }
-        
+
         Some(SyntaxKind::Statement) => {
             let children = red.children(arena);
             if let Some(first) = children.first() {
@@ -202,13 +206,13 @@ pub fn red_to_ast(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], ar
                 AstNode::Error
             }
         }
-        
+
         Some(SyntaxKind::FunctionDecl) => {
             let children = red.children(arena);
             let mut name = String::new();
             let mut params = Vec::new();
             let mut body = None;
-            
+
             for (i, child) in children.iter().enumerate() {
                 let green = arena.get(child.green_id());
                 match green {
@@ -228,19 +232,19 @@ pub fn red_to_ast(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], ar
                     }
                 }
             }
-            
+
             AstNode::FunctionDecl {
                 name,
                 params,
                 body: body.unwrap_or_else(|| Box::new(AstNode::Error)),
             }
         }
-        
+
         Some(SyntaxKind::LetDecl) => {
             let children = red.children(arena);
             let mut name = String::new();
             let mut value = None;
-            
+
             for (i, child) in children.iter().enumerate() {
                 let green = arena.get(child.green_id());
                 match green {
@@ -258,13 +262,13 @@ pub fn red_to_ast(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], ar
                     }
                 }
             }
-            
+
             AstNode::LetDecl {
                 name,
                 value: value.unwrap_or_else(|| Box::new(AstNode::Error)),
             }
         }
-        
+
         Some(SyntaxKind::BlockExpr) => {
             let children = red.children(arena);
             let statements = children
@@ -280,7 +284,7 @@ pub fn red_to_ast(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], ar
                 .collect();
             AstNode::BlockExpr { statements }
         }
-        
+
         Some(SyntaxKind::IntLiteral) => {
             let children = red.children(arena);
             if let Some(child) = children.first() {
@@ -296,7 +300,7 @@ pub fn red_to_ast(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], ar
             }
             AstNode::Error
         }
-        
+
         Some(SyntaxKind::FloatLiteral) => {
             let children = red.children(arena);
             if let Some(child) = children.first() {
@@ -312,7 +316,7 @@ pub fn red_to_ast(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], ar
             }
             AstNode::Error
         }
-        
+
         Some(SyntaxKind::StringLiteral) => {
             let children = red.children(arena);
             if let Some(child) = children.first() {
@@ -328,7 +332,7 @@ pub fn red_to_ast(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], ar
             }
             AstNode::Error
         }
-        
+
         Some(SyntaxKind::Identifier) => {
             let children = red.children(arena);
             if let Some(child) = children.first() {
@@ -341,7 +345,7 @@ pub fn red_to_ast(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], ar
             }
             AstNode::Error
         }
-        
+
         Some(SyntaxKind::TupleExpr) => {
             let children = red.children(arena);
             let elements = children
@@ -357,12 +361,12 @@ pub fn red_to_ast(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], ar
                 .collect();
             AstNode::TupleExpr { elements }
         }
-        
+
         Some(SyntaxKind::RecordExpr) => {
             let children = red.children(arena);
             let mut fields = Vec::new();
             let mut current_field_name = None;
-            
+
             for child in children.iter() {
                 let green = arena.get(child.green_id());
                 match green {
@@ -384,15 +388,20 @@ pub fn red_to_ast(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], ar
             }
             AstNode::RecordExpr { fields }
         }
-        
+
         _ => AstNode::Error,
     }
 }
 
 /// Extract parameter names from ParamList node
-fn extract_params(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], arena: &GreenNodeArena) -> Vec<String> {
+fn extract_params(
+    red: &Arc<RedNode>,
+    source: &str,
+    tokens: &[LosslessToken],
+    arena: &GreenNodeArena,
+) -> Vec<String> {
     let mut params = Vec::new();
-    
+
     for child in red.children(arena) {
         let green = arena.get(child.green_id());
         if let super::green::GreenNode::Token { token_index, .. } = green {
@@ -403,12 +412,12 @@ fn extract_params(red: &Arc<RedNode>, source: &str, tokens: &[LosslessToken], ar
             }
         }
     }
-    
+
     params
 }
 
 /// Transform a flat list of statements into a Let-body-then chain
-/// 
+///
 /// For example:
 /// ```
 /// [LetDecl(x, 1), LetDecl(y, 2), Expr(x+y)]
@@ -421,7 +430,7 @@ fn transform_let_chain(statements: Vec<AstNode>) -> AstNode {
     if statements.is_empty() {
         return AstNode::Error;
     }
-    
+
     // Work backwards through the statements, building the chain from the inside out
     let mut result = statements.into_iter().rev().reduce(|body, stmt| {
         match stmt {
@@ -452,7 +461,7 @@ fn transform_let_chain(statements: Vec<AstNode>) -> AstNode {
             }
         }
     });
-    
+
     result.unwrap_or(AstNode::Error)
 }
 
@@ -462,7 +471,7 @@ mod tests {
     use crate::lossless_parser::cst_parser::parse_cst;
     use crate::lossless_parser::preparser::preparse;
     use crate::lossless_parser::tokenizer::tokenize;
-    
+
     #[test]
     fn test_red_node_creation() {
         let source = "42";
@@ -470,11 +479,11 @@ mod tests {
         let preparsed = preparse(&tokens);
         let (root_id, arena) = parse_cst(&tokens, &preparsed);
         let red = RedNode::new(root_id, 0);
-        
+
         assert_eq!(red.offset(), 0);
         assert!(red.width(&arena) > 0);
     }
-    
+
     #[test]
     fn test_red_to_ast_simple() {
         let source = "42";
@@ -483,13 +492,13 @@ mod tests {
         let (root_id, arena) = parse_cst(&tokens, &preparsed);
         let red = RedNode::new(root_id, 0);
         let ast = red_to_ast(&red, source, &tokens, &arena);
-        
+
         match ast {
-            AstNode::Program { .. } => {}, // Expected
+            AstNode::Program { .. } => {} // Expected
             _ => panic!("Expected Program node"),
         }
     }
-    
+
     #[test]
     fn test_red_to_ast_function() {
         let source = "fn add(x, y) { 42 }";
@@ -498,7 +507,7 @@ mod tests {
         let (root_id, arena) = parse_cst(&tokens, &preparsed);
         let red = RedNode::new(root_id, 0);
         let ast = red_to_ast(&red, source, &tokens, &arena);
-        
+
         match ast {
             AstNode::Program { statements } => {
                 assert!(!statements.is_empty());
@@ -506,7 +515,7 @@ mod tests {
             _ => panic!("Expected Program node"),
         }
     }
-    
+
     #[test]
     fn test_parent_references() {
         let source = "fn add(x, y) { 42 }";
@@ -514,24 +523,24 @@ mod tests {
         let preparsed = preparse(&tokens);
         let (root_id, arena) = parse_cst(&tokens, &preparsed);
         let root = RedNode::new(root_id, 0);
-        
+
         // Root should have no parent
         assert!(root.parent().is_none());
-        
+
         // Get children with parent references
         let children = root.children(&arena);
-        
+
         // Children should have parent references pointing to root
         for child in children.iter() {
             let parent = child.parent();
             assert!(parent.is_some(), "Child should have a parent reference");
-            
+
             let parent = parent.unwrap();
             assert_eq!(parent.offset(), root.offset());
             assert_eq!(parent.green_id(), root.green_id());
         }
     }
-    
+
     #[test]
     fn test_ancestors() {
         let source = "fn add(x, y) { let z = 42 }";
@@ -539,23 +548,23 @@ mod tests {
         let preparsed = preparse(&tokens);
         let (root_id, arena) = parse_cst(&tokens, &preparsed);
         let root = RedNode::new(root_id, 0);
-        
+
         // Get first child (statement)
         let children = root.children(&arena);
         if let Some(statement) = children.first() {
             // Get ancestors
             let ancestors = statement.ancestors();
-            
+
             // Should have at least the root as ancestor
             assert!(!ancestors.is_empty(), "Statement should have ancestors");
-            
+
             // First ancestor should be the root
             if let Some(first_ancestor) = ancestors.first() {
                 assert_eq!(first_ancestor.offset(), root.offset());
             }
         }
     }
-    
+
     #[test]
     fn test_is_descendant_of() {
         let source = "fn add(x, y) { 42 }";
@@ -563,17 +572,23 @@ mod tests {
         let preparsed = preparse(&tokens);
         let (root_id, arena) = parse_cst(&tokens, &preparsed);
         let root = RedNode::new(root_id, 0);
-        
+
         let children = root.children(&arena);
         if let Some(child) = children.first() {
             // Child should be descendant of root
-            assert!(child.is_descendant_of(&root), "Child should be descendant of root");
-            
+            assert!(
+                child.is_descendant_of(&root),
+                "Child should be descendant of root"
+            );
+
             // Root should not be descendant of child
-            assert!(!root.is_descendant_of(child), "Root should not be descendant of child");
+            assert!(
+                !root.is_descendant_of(child),
+                "Root should not be descendant of child"
+            );
         }
     }
-    
+
     #[test]
     fn test_let_chain_transformation() {
         let source = "let x = 1\nlet y = 2\nx";
@@ -582,7 +597,7 @@ mod tests {
         let (root_id, arena) = parse_cst(&tokens, &preparsed);
         let red = RedNode::new(root_id, 0);
         let ast = red_to_ast(&red, source, &tokens, &arena);
-        
+
         // The AST should have transformed the flat statement list into a chain
         match ast {
             AstNode::Program { statements } => {

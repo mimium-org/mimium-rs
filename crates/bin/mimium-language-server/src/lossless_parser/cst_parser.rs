@@ -24,31 +24,31 @@ impl<'a> Parser<'a> {
             builder: GreenTreeBuilder::new(),
         }
     }
-    
+
     /// Get the current token kind
     fn peek(&self) -> Option<TokenKind> {
         self.preparsed
             .get_token(self.current, self.tokens)
             .map(|t| t.kind)
     }
-    
+
     /// Peek ahead n tokens
     fn peek_ahead(&self, n: usize) -> Option<TokenKind> {
         self.preparsed
             .get_token(self.current + n, self.tokens)
             .map(|t| t.kind)
     }
-    
+
     /// Get the current token
     fn current_token(&self) -> Option<&LosslessToken> {
         self.preparsed.get_token(self.current, self.tokens)
     }
-    
+
     /// Check if current token matches the expected kind
     fn check(&self, kind: TokenKind) -> bool {
         self.peek() == Some(kind)
     }
-    
+
     /// Advance to the next token and add current to the tree
     fn bump(&mut self) {
         if let Some(&token_idx) = self.preparsed.token_indices.get(self.current) {
@@ -58,7 +58,7 @@ impl<'a> Parser<'a> {
         }
         self.current += 1;
     }
-    
+
     /// Expect a specific token kind and consume it
     fn expect(&mut self, kind: TokenKind) -> bool {
         if self.check(kind) {
@@ -68,29 +68,29 @@ impl<'a> Parser<'a> {
             false
         }
     }
-    
+
     /// Parse the entire program
     pub fn parse(mut self) -> (GreenNodeId, GreenNodeArena) {
         self.builder.start_node(SyntaxKind::Program);
-        
+
         while !self.is_at_end() {
             self.parse_statement();
         }
-        
+
         let root_id = self.builder.finish_node().unwrap();
         let arena = self.builder.into_arena();
         (root_id, arena)
     }
-    
+
     /// Check if we've reached the end
     fn is_at_end(&self) -> bool {
         self.peek().map_or(true, |k| k == TokenKind::Eof)
     }
-    
+
     /// Parse a statement
     fn parse_statement(&mut self) {
         self.builder.start_node(SyntaxKind::Statement);
-        
+
         match self.peek() {
             Some(TokenKind::Function) => self.parse_function_decl(),
             Some(TokenKind::Let) => self.parse_let_decl(),
@@ -100,83 +100,83 @@ impl<'a> Parser<'a> {
                 self.parse_expr();
             }
         }
-        
+
         self.builder.finish_node();
     }
-    
+
     /// Parse function declaration: fn name(params) { body }
     fn parse_function_decl(&mut self) {
         self.builder.start_node(SyntaxKind::FunctionDecl);
-        
+
         self.expect(TokenKind::Function);
         self.expect(TokenKind::Ident); // function name
-        
+
         // Parameters
         if self.check(TokenKind::ParenBegin) {
             self.parse_param_list();
         }
-        
+
         // Body
         if self.check(TokenKind::BlockBegin) {
             self.parse_block_expr();
         }
-        
+
         self.builder.finish_node();
     }
-    
+
     /// Parse let declaration: let name = expr
     fn parse_let_decl(&mut self) {
         self.builder.start_node(SyntaxKind::LetDecl);
-        
+
         self.expect(TokenKind::Let);
         self.expect(TokenKind::Ident); // variable name
-        
+
         if self.expect(TokenKind::Assign) {
             self.parse_expr();
         }
-        
+
         self.builder.finish_node();
     }
-    
+
     /// Parse letrec declaration
     fn parse_letrec_decl(&mut self) {
         self.builder.start_node(SyntaxKind::LetRecDecl);
-        
+
         self.expect(TokenKind::LetRec);
         self.expect(TokenKind::Ident);
-        
+
         if self.expect(TokenKind::Assign) {
             self.parse_expr();
         }
-        
+
         self.builder.finish_node();
     }
-    
+
     /// Parse parameter list: (param1, param2, ...)
     fn parse_param_list(&mut self) {
         self.builder.start_node(SyntaxKind::ParamList);
-        
+
         self.expect(TokenKind::ParenBegin);
-        
+
         while !self.check(TokenKind::ParenEnd) && !self.is_at_end() {
             self.expect(TokenKind::Ident);
-            
+
             if self.check(TokenKind::Comma) {
                 self.bump();
             } else {
                 break;
             }
         }
-        
+
         self.expect(TokenKind::ParenEnd);
         self.builder.finish_node();
     }
-    
+
     /// Parse expression (simplified)
     fn parse_expr(&mut self) {
         self.parse_primary();
     }
-    
+
     /// Parse primary expression
     fn parse_primary(&mut self) {
         match self.peek() {
@@ -234,7 +234,7 @@ impl<'a> Parser<'a> {
             }
         }
     }
-    
+
     /// Check if current position is a tuple expression
     /// Tuple: (a, b) or (a,) - has comma
     /// Paren: (a) - no comma
@@ -242,7 +242,7 @@ impl<'a> Parser<'a> {
         if !self.check(TokenKind::ParenBegin) {
             return false;
         }
-        
+
         // Look ahead to find comma before ParenEnd
         let mut depth = 0;
         for i in 1..MAX_LOOKAHEAD {
@@ -261,7 +261,7 @@ impl<'a> Parser<'a> {
         }
         false
     }
-    
+
     /// Check if current position is a record expression
     /// Record: {a = 1, b = 2} - has assignment
     /// Block: {stmt; stmt} - has other tokens
@@ -269,26 +269,26 @@ impl<'a> Parser<'a> {
         if !self.check(TokenKind::BlockBegin) {
             return false;
         }
-        
-        // Look for pattern: Ident = 
+
+        // Look for pattern: Ident =
         if let Some(TokenKind::Ident) = self.peek_ahead(1) {
             if let Some(TokenKind::Assign) = self.peek_ahead(2) {
                 return true;
             }
         }
-        
+
         false
     }
-    
+
     /// Parse tuple expression: (a, b, c)
     fn parse_tuple_expr(&mut self) {
         self.builder.start_node(SyntaxKind::TupleExpr);
-        
+
         self.expect(TokenKind::ParenBegin);
-        
+
         if !self.check(TokenKind::ParenEnd) {
             self.parse_expr();
-            
+
             while self.check(TokenKind::Comma) {
                 self.bump(); // ,
                 if !self.check(TokenKind::ParenEnd) {
@@ -296,23 +296,23 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        
+
         self.expect(TokenKind::ParenEnd);
         self.builder.finish_node();
     }
-    
+
     /// Parse record expression: {field1 = expr1, field2 = expr2}
     fn parse_record_expr(&mut self) {
         self.builder.start_node(SyntaxKind::RecordExpr);
-        
+
         self.expect(TokenKind::BlockBegin);
-        
+
         if !self.check(TokenKind::BlockEnd) {
             // Parse field: name = expr
             self.expect(TokenKind::Ident); // field name
             self.expect(TokenKind::Assign);
             self.parse_expr();
-            
+
             while self.check(TokenKind::Comma) {
                 self.bump(); // ,
                 if !self.check(TokenKind::BlockEnd) {
@@ -322,48 +322,51 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        
+
         self.expect(TokenKind::BlockEnd);
         self.builder.finish_node();
     }
-    
+
     /// Parse block expression: { statements }
     fn parse_block_expr(&mut self) {
         self.builder.start_node(SyntaxKind::BlockExpr);
-        
+
         self.expect(TokenKind::BlockBegin);
-        
+
         while !self.check(TokenKind::BlockEnd) && !self.is_at_end() {
             self.parse_statement();
         }
-        
+
         self.expect(TokenKind::BlockEnd);
         self.builder.finish_node();
     }
-    
+
     /// Parse if expression: if cond { then } else { else }
     fn parse_if_expr(&mut self) {
         self.builder.start_node(SyntaxKind::IfExpr);
-        
+
         self.expect(TokenKind::If);
         self.parse_expr(); // condition
-        
+
         if self.check(TokenKind::BlockBegin) {
             self.parse_block_expr(); // then branch
         }
-        
+
         if self.expect(TokenKind::Else) {
             if self.check(TokenKind::BlockBegin) {
                 self.parse_block_expr(); // else branch
             }
         }
-        
+
         self.builder.finish_node();
     }
 }
 
 /// Parse tokens into a Green Tree (CST)
-pub fn parse_cst(tokens: &[LosslessToken], preparsed: &PreParsedTokens) -> (GreenNodeId, GreenNodeArena) {
+pub fn parse_cst(
+    tokens: &[LosslessToken],
+    preparsed: &PreParsedTokens,
+) -> (GreenNodeId, GreenNodeArena) {
     let parser = Parser::new(tokens, preparsed);
     parser.parse()
 }
@@ -373,57 +376,57 @@ mod tests {
     use super::*;
     use crate::lossless_parser::preparser::preparse;
     use crate::lossless_parser::tokenizer::tokenize;
-    
+
     #[test]
     fn test_parse_simple_program() {
         let source = "fn dsp() { 42 }";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
         let (root_id, arena) = parse_cst(&tokens, &preparsed);
-        
+
         assert_eq!(arena.kind(root_id), Some(SyntaxKind::Program));
         assert!(arena.children(root_id).is_some());
     }
-    
+
     #[test]
     fn test_parse_let_statement() {
         let source = "let x = 42";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
         let (root_id, arena) = parse_cst(&tokens, &preparsed);
-        
+
         let children = arena.children(root_id).unwrap();
         assert!(!children.is_empty());
     }
-    
+
     #[test]
     fn test_parse_function() {
         let source = "fn add(x, y) { x }";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
         let (root_id, arena) = parse_cst(&tokens, &preparsed);
-        
+
         assert!(arena.width(root_id) > 0);
     }
-    
+
     #[test]
     fn test_parse_tuple() {
         let source = "(1, 2, 3)";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
         let (root_id, arena) = parse_cst(&tokens, &preparsed);
-        
+
         let children = arena.children(root_id).unwrap();
         assert!(!children.is_empty());
     }
-    
+
     #[test]
     fn test_parse_record() {
         let source = "{x = 1, y = 2}";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
         let (root_id, arena) = parse_cst(&tokens, &preparsed);
-        
+
         let children = arena.children(root_id).unwrap();
         assert!(!children.is_empty());
     }

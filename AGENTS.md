@@ -28,7 +28,7 @@ The language implements its own virtual machine (VM) and instruction set to exec
 
 - Use `cargo fmt` before commiting.
 - Fix small warnings by utilizing `cargo clippy`.
-- Write documentation comments `///` as possible for public API and the top of the file.
+- Write documentation comments `///`  for public API and `//!` the top of the file as possible.
 - Write comments in English even if you asked in different languages.
 - Do not use much emoji in the comments.
 - Do not write too much comments when the behavior is apprent from the code.
