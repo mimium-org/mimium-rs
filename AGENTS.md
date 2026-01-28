@@ -31,7 +31,8 @@ The language implements its own virtual machine (VM) and instruction set to exec
 - Write documentation comments `///`  for public API and `//!` the top of the file as possible.
 - Write comments in English even if you asked in different languages.
 - Do not use much emoji in the comments.
-- Do not write too much comments when the behavior is apprent from the code.
+- Do not write too much comments when the behavior is apparent from the code.
+- Do not leave the comment for just tracking history of changes. Always leave comment for those whom read the codes first time.
 - You should use `debug_assert!` instead `assert!` for debugging purpose
 
 ## Test Strategy
