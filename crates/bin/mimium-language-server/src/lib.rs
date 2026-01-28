@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use mimium_lang::interner::Symbol;
 
-pub mod semantic_token;
 pub mod lossless_parser;
+pub mod semantic_token;
 
 use dashmap::DashMap;
 use log::debug;
@@ -14,10 +14,8 @@ use mimium_lang::utils::error::ReportableError;
 use mimium_lang::{Config, ExecContext};
 use ropey::Rope;
 use semantic_token::{ImCompleteSemanticToken, LEGEND_TYPE, ParseResult, parse};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+
 use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 type SrcUri = String;
@@ -278,12 +276,16 @@ impl Backend {
 
         // Generate semantic tokens from lossless parser
         let semantic_tokens = semantic_token::tokens_from_lossless(&annotated_tokens);
-        self.semantic_token_map.insert(url.to_string(), semantic_tokens);
-        
+        self.semantic_token_map
+            .insert(url.to_string(), semantic_tokens);
+
         // Store lossless parser results
-        self.lossless_tokens_map.insert(url.to_string(), annotated_tokens.clone());
-        self.lossless_root_map.insert(url.to_string(), lossless_root);
-        self.lossless_arena_map.insert(url.to_string(), lossless_arena);
+        self.lossless_tokens_map
+            .insert(url.to_string(), annotated_tokens.clone());
+        self.lossless_root_map
+            .insert(url.to_string(), lossless_root);
+        self.lossless_arena_map
+            .insert(url.to_string(), lossless_arena);
 
         // Run existing parser for type checking
         let ParseResult {

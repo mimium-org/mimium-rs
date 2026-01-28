@@ -51,10 +51,10 @@ impl<'a> Parser<'a> {
 
     /// Advance to the next token and add current to the tree
     fn bump(&mut self) {
-        if let Some(&token_idx) = self.preparsed.token_indices.get(self.current) {
-            if let Some(token) = self.tokens.get(token_idx) {
-                self.builder.add_token(token_idx, token.length);
-            }
+        if let Some(&token_idx) = self.preparsed.token_indices.get(self.current)
+            && let Some(token) = self.tokens.get(token_idx)
+        {
+            self.builder.add_token(token_idx, token.length);
         }
         self.current += 1;
     }
@@ -84,7 +84,7 @@ impl<'a> Parser<'a> {
 
     /// Check if we've reached the end
     fn is_at_end(&self) -> bool {
-        self.peek().map_or(true, |k| k == TokenKind::Eof)
+        self.peek().is_none_or(|k| k == TokenKind::Eof)
     }
 
     /// Parse a statement
@@ -109,7 +109,7 @@ impl<'a> Parser<'a> {
         self.builder.start_node(SyntaxKind::FunctionDecl);
 
         self.expect(TokenKind::Function);
-        
+
         // Mark function name with IdentFunction kind
         if self.check(TokenKind::Ident) {
             if let Some(&token_idx) = self.preparsed.token_indices.get(self.current) {
@@ -345,10 +345,10 @@ impl<'a> Parser<'a> {
         }
 
         // Look for pattern: Ident =
-        if let Some(TokenKind::Ident) = self.peek_ahead(1) {
-            if let Some(TokenKind::Assign) = self.peek_ahead(2) {
-                return true;
-            }
+        if let Some(TokenKind::Ident) = self.peek_ahead(1)
+            && let Some(TokenKind::Assign) = self.peek_ahead(2)
+        {
+            return true;
         }
 
         false
@@ -426,10 +426,8 @@ impl<'a> Parser<'a> {
             self.parse_block_expr(); // then branch
         }
 
-        if self.expect(TokenKind::Else) {
-            if self.check(TokenKind::BlockBegin) {
-                self.parse_block_expr(); // else branch
-            }
+        if self.expect(TokenKind::Else) && self.check(TokenKind::BlockBegin) {
+            self.parse_block_expr(); // else branch
         }
 
         self.builder.finish_node();
