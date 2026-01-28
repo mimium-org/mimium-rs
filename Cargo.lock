@@ -1969,6 +1969,7 @@ dependencies = [
  "dashmap 6.1.0",
  "env_logger",
  "log",
+ "mimium-fmt",
  "mimium-guitools",
  "mimium-lang",
  "mimium-midi",

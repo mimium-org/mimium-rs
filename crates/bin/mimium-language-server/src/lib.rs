@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::process::Stdio;
 
 use mimium_lang::interner::Symbol;
 
@@ -8,18 +7,16 @@ pub mod semantic_token;
 use dashmap::DashMap;
 use log::debug;
 use mimium_lang::compiler::mirgen;
-use mimium_lang::interner::{ExprNodeId, TypeNodeId};
 use mimium_lang::compiler::parser;
+use mimium_lang::interner::{ExprNodeId, TypeNodeId};
 use mimium_lang::plugin::Plugin;
 use mimium_lang::utils::error::ReportableError;
 use mimium_lang::{Config, ExecContext};
 use ropey::Rope;
 use semantic_token::{ImCompleteSemanticToken, LEGEND_TYPE, ParseResult, parse};
-use tower_lsp::jsonrpc::Result;
+use tower_lsp::jsonrpc::{Error, ErrorCode, Result};
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
-use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
 type SrcUri = String;
 
 /// Construct an [`ExecContext`] with the default set of plugins.
@@ -75,6 +72,12 @@ struct Backend {
     parser_arena_map: DashMap<SrcUri, parser::GreenNodeArena>,
     parser_root_map: DashMap<SrcUri, parser::GreenNodeId>,
     parser_tokens_map: DashMap<SrcUri, Vec<parser::Token>>,
+}
+
+fn server_error(message: &str) -> Error {
+    let mut error = Error::new(ErrorCode::ServerError(-1));
+    error.message = message.to_owned().into();
+    error
 }
 
 #[tower_lsp::async_trait]
@@ -223,62 +226,54 @@ impl LanguageServer for Backend {
     async fn did_close(&self, _: DidCloseTextDocumentParams) {
         debug!("file closed!");
     }
-    
+
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        debug!("formatting");
         let uri = params.text_document.uri;
         let rope = match self.document_map.get(uri.as_str()) {
             Some(rope) => rope,
-            None => return Ok(None),
+            None => {
+                return Err(Error::new(ErrorCode::ServerError(-1)));
+            }
         };
 
         let text = rope.to_string();
         let indent_size = params.options.tab_size as usize;
         let width = 80usize;
 
-        let formatter_path = std::env::var("HOME")
-            .map(|home| format!("{home}/.mimium/bin/mimium-fmt"))
-            .unwrap_or_else(|_| {
-                std::env::current_exe()
-                    .ok()
-                    .and_then(|path| path.parent().map(|parent| parent.join("mimium-fmt")))
-                    .map(|path| path.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "mimium-fmt".to_string())
-            });
-
-        let mut child = match Command::new(formatter_path)
-            .arg("--width")
-            .arg(width.to_string())
-            .arg("--indent-size")
-            .arg(indent_size.to_string())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(_) => return Ok(None),
-        };
-
-        if let Some(mut stdin) = child.stdin.take()
-            && stdin.write_all(text.as_bytes()).await.is_err() {
-                return Ok(None);
-            }
-
-        let output = match child.wait_with_output().await {
-            Ok(output) => output,
-            Err(_) => return Ok(None),
-        };
-
-        if !output.status.success() {
-            return Ok(None);
+        // Set global config for formatter
+        if let Ok(mut gdata) = mimium_fmt::GLOBAL_DATA.try_lock() {
+            gdata.indent_size = indent_size;
         }
 
-        let formatted = String::from_utf8_lossy(&output.stdout).to_string();
+        // Call formatter directly
+        let formatted = match mimium_fmt::pretty_print(&text, &None, width) {
+            Ok(result) => result,
+            Err(errs) => {
+                let error_messages: Vec<String> = errs
+                    .iter()
+                    .map(|e| e.get_message())
+                    .collect();
+                return Err(server_error(&format!(
+                    "formatter error: {}",
+                    error_messages.join(", ")
+                )));
+            }
+        };
+
+        debug!("formatted: {:#?}", formatted);
 
         let last_line = rope.len_lines().saturating_sub(1);
         let last_char = rope.line(last_line).len_chars();
-        let range = Range::new(Position::new(0, 0), Position::new(last_line as u32, last_char as u32));
+        let range = Range::new(
+            Position::new(0, 0),
+            Position::new(last_line as u32, last_char as u32),
+        );
 
-        Ok(Some(vec![TextEdit { range, new_text: formatted }]))
+        Ok(Some(vec![TextEdit {
+            range,
+            new_text: formatted,
+        }]))
     }
 }
 fn diagnostic_from_error(
@@ -343,10 +338,8 @@ impl Backend {
         // Store parser results
         self.parser_tokens_map
             .insert(url.to_string(), parser_tokens);
-        self.parser_root_map
-            .insert(url.to_string(), parser_root);
-        self.parser_arena_map
-            .insert(url.to_string(), parser_arena);
+        self.parser_root_map.insert(url.to_string(), parser_root);
+        self.parser_arena_map.insert(url.to_string(), parser_arena);
 
         // Run existing parser for type checking
         let ParseResult {
