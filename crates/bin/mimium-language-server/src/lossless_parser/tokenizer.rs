@@ -190,15 +190,17 @@ pub fn tokenize(source: &str) -> Vec<LosslessToken> {
         .then_ignore(end());
 
     match lexer.parse(source).into_result() {
-        Ok(tokens) => {
-            let mut result = tokens;
+        Ok(mut tokens) => {
             // Add EOF token
-            result.push(LosslessToken::new(TokenKind::Eof, source.len(), 0));
-            result
+            tokens.push(LosslessToken::new(TokenKind::Eof, source.len(), 0));
+            tokens
         }
-        Err(_) => {
-            // On error, return empty vec with just EOF
-            // In a production implementation, we would handle errors more gracefully
+        Err(errors) => {
+            // On parse errors, try to recover by collecting what we can
+            // This matches the behavior of mimium-lang's error recovery
+            // For now, we return just EOF, but in a full implementation
+            // we would use chumsky's error recovery features
+            eprintln!("Tokenization errors: {:?}", errors);
             vec![LosslessToken::new(TokenKind::Eof, source.len(), 0)]
         }
     }
