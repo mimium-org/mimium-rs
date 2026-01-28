@@ -190,6 +190,45 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Expect any of the given token kinds and consume the first match.
+    /// Returns true if matched; otherwise records an error and returns false.
+    fn expects(&mut self, kinds: &[TokenKind]) -> bool {
+        let expected = kinds
+            .iter()
+            .map(|k| format!("{k:?}"))
+            .collect::<Vec<_>>()
+            .join(" or ");
+
+        match self.peek() {
+            Some(kind) if kinds.contains(&kind) => {
+                self.bump();
+                true
+            }
+            Some(found) => {
+                self.add_error(ParserError::unexpected_token(
+                    self.current_token_index(),
+                    &expected,
+                    &format!("{found:?}"),
+                ));
+                false
+            }
+            None => {
+                self.add_error(ParserError::unexpected_eof(
+                    self.current_token_index(),
+                    &expected,
+                ));
+                false
+            }
+        }
+    }
+
+    /// Expect all token kinds in order, consuming each. Returns true if all matched.
+    fn expect_all(&mut self, kinds: &[TokenKind]) -> bool {
+        kinds
+            .iter()
+            .fold(true, |acc, &kind| acc & self.expect(kind))
+    }
+
     /// Parse the entire program
     pub fn parse(
         mut self,
@@ -236,28 +275,22 @@ impl<'a> Parser<'a> {
     /// Parse include statement: include("filename.mmm")
     fn parse_include_stmt(&mut self) {
         self.emit_node(SyntaxKind::IncludeStmt, |this| {
-            this.expect(TokenKind::Include);
-            this.expect(TokenKind::ParenBegin);
-            this.expect(TokenKind::Str);
-            this.expect(TokenKind::ParenEnd);
+            this.expect_all(&[
+                TokenKind::Include,
+                TokenKind::ParenBegin,
+                TokenKind::Str,
+                TokenKind::ParenEnd,
+            ]);
         });
     }
 
     /// Parse stage declaration: #stage(main) or #stage(macro)
     fn parse_stage_decl(&mut self) {
         self.emit_node(SyntaxKind::StageDecl, |this| {
-            this.expect(TokenKind::Sharp);
-            this.expect(TokenKind::StageKwd);
-            this.expect(TokenKind::ParenBegin);
+            this.expect_all(&[TokenKind::Sharp, TokenKind::StageKwd, TokenKind::ParenBegin]);
 
             // Expect either 'main' or 'macro'
-            if this.check(TokenKind::Main) {
-                this.bump();
-            } else if this.check(TokenKind::Macro) {
-                this.bump();
-            } else {
-                this.expect(TokenKind::Main); // Will trigger error
-            }
+            this.expects(&[TokenKind::Main, TokenKind::Macro]);
 
             this.expect(TokenKind::ParenEnd);
         });
@@ -266,12 +299,12 @@ impl<'a> Parser<'a> {
     /// Parse macro expansion: MacroName!(args)
     fn parse_macro_expansion(&mut self) {
         self.emit_node(SyntaxKind::MacroExpansion, |this| {
-            // Macro name (identifier)
-            this.expect(TokenKind::Ident);
-            // Exclamation mark
-            this.expect(TokenKind::MacroExpand);
-            // Arguments in parentheses
-            this.expect(TokenKind::ParenBegin);
+            // Macro name (identifier) and '!('
+            this.expect_all(&[
+                TokenKind::Ident,
+                TokenKind::MacroExpand,
+                TokenKind::ParenBegin,
+            ]);
 
             // Parse arguments as expression list
             if !this.check(TokenKind::ParenEnd) {
@@ -350,8 +383,7 @@ impl<'a> Parser<'a> {
     /// Parse letrec declaration
     fn parse_letrec_decl(&mut self) {
         self.emit_node(SyntaxKind::LetRecDecl, |this| {
-            this.expect(TokenKind::LetRec);
-            this.expect(TokenKind::Ident); // letrec only supports simple identifier
+            this.expect_all(&[TokenKind::LetRec, TokenKind::Ident]);
 
             if this.expect(TokenKind::Assign) {
                 this.parse_expr();
@@ -417,15 +449,13 @@ impl<'a> Parser<'a> {
 
             if !this.check(TokenKind::BlockEnd) {
                 // Parse field: name = pattern
-                this.expect(TokenKind::Ident); // field name
-                this.expect(TokenKind::Assign);
+                this.expect_all(&[TokenKind::Ident, TokenKind::Assign]);
                 this.parse_pattern();
 
                 while this.check(TokenKind::Comma) {
                     this.bump(); // ,
                     if !this.check(TokenKind::BlockEnd) {
-                        this.expect(TokenKind::Ident); // field name
-                        this.expect(TokenKind::Assign);
+                        this.expect_all(&[TokenKind::Ident, TokenKind::Assign]);
                         this.parse_pattern();
                     }
                 }
@@ -474,7 +504,6 @@ impl<'a> Parser<'a> {
     /// Parse assignment expression: expr = expr
     /// Assignment has lower precedence than all binary operators
     fn parse_assignment_expr(&mut self) {
-        let start_pos = self.current;
         self.parse_expr_with_precedence(0);
 
         // Check if this is an assignment
@@ -583,13 +612,7 @@ impl<'a> Parser<'a> {
                     self.emit_node(SyntaxKind::FieldAccess, |this| {
                         this.expect(TokenKind::Dot);
                         // Can be either Ident (field name) or Int (tuple projection)
-                        if this.check(TokenKind::Ident) {
-                            this.bump();
-                        } else if this.check(TokenKind::Int) {
-                            this.bump();
-                        } else {
-                            this.expect(TokenKind::Ident); // Will trigger error
-                        }
+                        this.expects(&[TokenKind::Ident, TokenKind::Int]);
                     });
                 }
                 Some(TokenKind::ArrayBegin) => {
@@ -753,15 +776,13 @@ impl<'a> Parser<'a> {
 
             if !inner.check(TokenKind::BlockEnd) {
                 // Parse field: name : Type
-                inner.expect(TokenKind::Ident);
-                inner.expect(TokenKind::Colon);
+                inner.expect_all(&[TokenKind::Ident, TokenKind::Colon]);
                 inner.parse_type();
 
                 while inner.check(TokenKind::Comma) {
                     inner.bump();
                     if !inner.check(TokenKind::BlockEnd) {
-                        inner.expect(TokenKind::Ident);
-                        inner.expect(TokenKind::Colon);
+                        inner.expect_all(&[TokenKind::Ident, TokenKind::Colon]);
                         inner.parse_type();
                     }
                 }
