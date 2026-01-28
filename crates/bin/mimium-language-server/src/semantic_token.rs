@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use mimium_lang::{
     interner::ExprNodeId,
     lossless_parser::{
-        green::GreenNode, GreenNodeArena, GreenNodeId, LosslessToken, SyntaxKind, TokenKind,
+        GreenNodeArena, GreenNodeId, LosslessToken, SyntaxKind, TokenKind, green::GreenNode,
     },
-    utils::{error::ReportableError, metadata::Span},
+    utils::error::ReportableError,
 };
 use tower_lsp::lsp_types::SemanticTokenType;
 
@@ -304,9 +304,9 @@ pub fn parse(src: &str, uri: &str) -> ParseResult {
             })
         })
         .collect();
-    
+
     let (ast, parse_errs) = parse_to_expr(src, Some(PathBuf::from(uri)));
-    
+
     ParseResult {
         ast,
         semantic_tokens,

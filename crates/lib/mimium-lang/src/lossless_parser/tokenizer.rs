@@ -135,7 +135,7 @@ where
     // NOTE: MacroExpand (!) is now parsed as a separate operator token
     // The parser will handle Ident followed by MacroExpand
 
-    let ident = text::ident()
+    text::ident()
         .to_slice()
         .map(|ident: &'src str| match ident {
             "fn" => TokenKind::Function,
@@ -156,9 +156,7 @@ where
             "main" => TokenKind::Main,
             "_" => TokenKind::PlaceHolder,
             _ => TokenKind::Ident,
-        });
-
-    ident
+        })
 }
 /// Main tokenizer that combines all parsers
 fn token_parser<'src, I>() -> impl Parser<'src, I, TokenKind, LexerError<'src>> + Clone

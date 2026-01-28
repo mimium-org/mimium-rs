@@ -260,7 +260,13 @@ pub fn red_to_ast(
                     _ => {
                         // Attempt to extract identifier from pattern subtree if name is empty
                         if name.is_empty()
-                            && matches!(child.kind(arena), Some(SyntaxKind::Pattern) | Some(SyntaxKind::SinglePattern) | Some(SyntaxKind::TuplePattern) | Some(SyntaxKind::RecordPattern))
+                            && matches!(
+                                child.kind(arena),
+                                Some(SyntaxKind::Pattern)
+                                    | Some(SyntaxKind::SinglePattern)
+                                    | Some(SyntaxKind::TuplePattern)
+                                    | Some(SyntaxKind::RecordPattern)
+                            )
                         {
                             // DFS over subtree to find first identifier token
                             let mut stack = vec![child.clone()];
@@ -268,7 +274,10 @@ pub fn red_to_ast(
                                 let g = arena.get(node.green_id());
                                 if let super::green::GreenNode::Token { token_index, .. } = g {
                                     if let Some(tok) = tokens.get(*token_index)
-                                        && matches!(tok.kind, TokenKind::Ident | TokenKind::IdentVariable)
+                                        && matches!(
+                                            tok.kind,
+                                            TokenKind::Ident | TokenKind::IdentVariable
+                                        )
                                     {
                                         name = tok.text(source).to_string();
                                         break;
@@ -502,7 +511,7 @@ mod tests {
 
         assert_eq!(red.offset(), 0);
         assert!(red.width(&arena) > 0);
-        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
     }
 
     #[test]
@@ -519,7 +528,7 @@ mod tests {
             _ => panic!("Expected Program node"),
         }
 
-        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
     }
 
     #[test]
@@ -538,7 +547,7 @@ mod tests {
             _ => panic!("Expected Program node"),
         }
 
-        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
     }
 
     #[test]
@@ -565,7 +574,7 @@ mod tests {
             assert_eq!(parent.green_id(), root.green_id());
         }
 
-        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
     }
 
     #[test]
@@ -591,7 +600,7 @@ mod tests {
             }
         }
 
-        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
     }
 
     #[test]
@@ -617,7 +626,7 @@ mod tests {
             );
         }
 
-        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
     }
 
     #[test]
@@ -639,6 +648,6 @@ mod tests {
             _ => panic!("Expected Program node"),
         }
 
-        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
     }
 }

@@ -11,6 +11,7 @@ use crate::lossless_parser::token::{LosslessToken, TokenKind};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::types::Type;
 use crate::utils::metadata::{Location, Span};
+use std::ops::ControlFlow;
 use std::path::PathBuf;
 
 /// Lossless CST -> existing `Program`/`Expr` lowering.
@@ -42,53 +43,61 @@ impl<'a> LosslessLowerer<'a> {
 
     /// Lower a full program node into the existing `Program` structure.
     pub fn lower_program(&self, root: GreenNodeId) -> Program {
-        let mut program_statements = Vec::new();
-        let mut pending_statements = Vec::new();
-        let mut pending_span = 0..0;
-
-        if let Some(children) = self.arena.children(root) {
-            for child in children {
-                if self.arena.kind(*child) == Some(SyntaxKind::Statement) {
-                    if let Some((stmt, span)) = self.lower_statement(*child) {
-                        match &stmt {
-                            ProgramStatement::GlobalStatement(Statement::Single(expr)) => {
-                                // Collect global single statements for potential Then-chaining
-                                let stmts = stmt_from_expr_top(*expr);
-                                for s in stmts {
-                                    let loc = self.location_from_span(span.clone());
-                                    pending_statements.push((s, loc));
-                                }
-                                pending_span = span;
-                            }
-                            _ => {
-                                // Non-global statement: flush pending, then add this
-                                if !pending_statements.is_empty() {
-                                    if let Some(merged_expr) = into_then_expr(&pending_statements) {
-                                        program_statements.push((
-                                            ProgramStatement::GlobalStatement(Statement::Single(
-                                                merged_expr,
-                                            )),
-                                            pending_span.clone(),
-                                        ));
+        let (mut program_statements, pending_statements, pending_span) =
+            self.arena.children(root).map_or(
+                (Vec::new(), Vec::new(), 0..0),
+                |children| {
+                    children
+                        .iter()
+                        .copied()
+                        .filter(|child| self.arena.kind(*child) == Some(SyntaxKind::Statement))
+                        .filter_map(|child| self.lower_statement(child))
+                        .fold(
+                            (Vec::new(), Vec::new(), 0..0),
+                            |(mut program_statements, mut pending_statements, mut pending_span),
+                             (stmt, span)| {
+                                match &stmt {
+                                    ProgramStatement::GlobalStatement(Statement::Single(expr)) => {
+                                        // Collect global single statements for potential Then-chaining
+                                        let stmts = stmt_from_expr_top(*expr);
+                                        let new_pending = stmts
+                                            .into_iter()
+                                            .map(|s| (s, self.location_from_span(span.clone())));
+                                        pending_statements.extend(new_pending);
+                                        pending_span = span;
                                     }
-                                    pending_statements.clear();
+                                    _ => {
+                                        // Non-global statement: flush pending, then add this
+                                        if !pending_statements.is_empty() {
+                                            if let Some(merged_expr) =
+                                                into_then_expr(&pending_statements)
+                                            {
+                                                program_statements.push((
+                                                    ProgramStatement::GlobalStatement(
+                                                        Statement::Single(merged_expr),
+                                                    ),
+                                                    pending_span.clone(),
+                                                ));
+                                            }
+                                            pending_statements.clear();
+                                        }
+                                        program_statements.push((stmt, span));
+                                    }
                                 }
-                                program_statements.push((stmt, span));
-                            }
-                        }
-                    }
-                }
-            }
+                                (program_statements, pending_statements, pending_span)
+                            },
+                        )
+                },
+            );
 
-            // Flush any remaining pending statements
-            if !pending_statements.is_empty() {
-                if let Some(merged_expr) = into_then_expr(&pending_statements) {
-                    program_statements.push((
-                        ProgramStatement::GlobalStatement(Statement::Single(merged_expr)),
-                        pending_span.clone(),
-                    ));
-                }
-            }
+        // Flush any remaining pending statements
+        if !pending_statements.is_empty()
+            && let Some(merged_expr) = into_then_expr(&pending_statements)
+        {
+            program_statements.push((
+                ProgramStatement::GlobalStatement(Statement::Single(merged_expr)),
+                pending_span.clone(),
+            ));
         }
 
         Program {
@@ -102,17 +111,16 @@ impl<'a> LosslessLowerer<'a> {
         let stmt = match self.arena.kind(node) {
             Some(SyntaxKind::Statement) => {
                 // Inspect children to find the first meaningful node.
-                let mut inner_kind = None;
-                let mut inner_id = None;
-                if let Some(children) = self.arena.children(node) {
-                    for child in children {
-                        if let Some(kind) = self.arena.kind(*child) {
-                            inner_kind = Some(kind);
-                            inner_id = Some(*child);
-                            break;
-                        }
-                    }
-                }
+                let (inner_kind, inner_id) = self
+                    .arena
+                    .children(node)
+                    .and_then(|children| {
+                        children.iter().copied().find_map(|child| {
+                            self.arena.kind(child).map(|kind| (kind, child))
+                        })
+                    })
+                    .map(|(kind, id)| (Some(kind), Some(id)))
+                    .unwrap_or((None, None));
 
                 match (inner_kind, inner_id) {
                     (Some(SyntaxKind::FunctionDecl), Some(id)) => self
@@ -300,7 +308,7 @@ impl<'a> LosslessLowerer<'a> {
             Some(SyntaxKind::IfExpr) => {
                 let expr_children = self.child_exprs(node);
                 let raw_cond = expr_children
-                    .get(0)
+                    .first()
                     .map(|&id| self.lower_expr(id))
                     .unwrap_or_else(|| Expr::Error.into_id(loc.clone()));
                 // Unwrap parens around condition to match legacy AST
@@ -377,31 +385,41 @@ impl<'a> LosslessLowerer<'a> {
     }
 
     fn lower_lambda(&self, node: GreenNodeId) -> (Vec<TypedId>, ExprNodeId) {
-        let mut params = Vec::new();
-        let mut body_nodes = Vec::new();
-
-        if let Some(children) = self.arena.children(node) {
-            for child in children {
-                match self.arena.kind(*child) {
-                    None => {
-                        // Check if it's a valid identifier token (not |, commas, etc.)
-                        if let Some(token_index) = self.get_token_index(*child)
-                            && let Some(token) = self.tokens.get(token_index)
-                            && matches!(token.kind, TokenKind::Ident | TokenKind::IdentParameter)
-                        {
-                            let ty = Type::Unknown.into_id_with_location(
-                                self.location_from_span(self.node_span(node).unwrap_or(0..0)),
-                            );
-                            params.push(TypedId::new(token.text(self.source).to_symbol(), ty));
+        let (params, body_nodes) = self
+            .arena
+            .children(node)
+            .map(|children| {
+                children.iter().copied().fold(
+                    (Vec::new(), Vec::new()),
+                    |(mut params, mut body_nodes), child| {
+                        match self.arena.kind(child) {
+                            None => {
+                                // Check if it's a valid identifier token (not |, commas, etc.)
+                                if let Some(token_index) = self.get_token_index(child)
+                                    && let Some(token) = self.tokens.get(token_index)
+                                    && matches!(token.kind, TokenKind::Ident | TokenKind::IdentParameter)
+                                {
+                                    let ty = Type::Unknown.into_id_with_location(
+                                        self.location_from_span(
+                                            self.node_span(node).unwrap_or(0..0),
+                                        ),
+                                    );
+                                    params.push(TypedId::new(
+                                        token.text(self.source).to_symbol(),
+                                        ty,
+                                    ));
+                                }
+                            }
+                            Some(kind) if Self::is_expr_kind(kind) => {
+                                body_nodes.push(child);
+                            }
+                            _ => {}
                         }
-                    }
-                    Some(kind) if Self::is_expr_kind(kind) => {
-                        body_nodes.push(*child);
-                    }
-                    _ => {}
-                }
-            }
-        }
+                        (params, body_nodes)
+                    },
+                )
+            })
+            .unwrap_or_else(|| (Vec::new(), Vec::new()));
 
         let body = self.lower_expr_sequence(&body_nodes);
 
@@ -409,56 +427,60 @@ impl<'a> LosslessLowerer<'a> {
     }
 
     fn lower_record_fields(&self, node: GreenNodeId) -> Vec<crate::ast::RecordField> {
-        let mut fields = Vec::new();
-        let mut current: Option<Symbol> = None;
+        let (mut fields, _) = self.arena.children(node).map_or(
+            (Vec::new(), None),
+            |children| {
+                children.iter().copied().fold(
+                    (Vec::new(), None),
+                    |(mut fields, mut current), child| {
+                        // Check if it's an identifier token (not =, comma, etc.)
+                        if let Some(token_index) = self.get_token_index(child)
+                            && let Some(token) = self.tokens.get(token_index)
+                            && matches!(token.kind, TokenKind::Ident)
+                        {
+                            current = Some(token.text(self.source).to_symbol());
+                            return (fields, current);
+                        }
 
-        if let Some(children) = self.arena.children(node) {
-            for child in children {
-                // Check if it's an identifier token (not =, comma, etc.)
-                if let Some(token_index) = self.get_token_index(*child)
-                    && let Some(token) = self.tokens.get(token_index)
-                    && matches!(token.kind, TokenKind::Ident)
-                {
-                    current = Some(token.text(self.source).to_symbol());
-                    continue;
-                }
-
-                if self.arena.kind(*child).map(Self::is_expr_kind) == Some(true)
-                    && let Some(name) = current.take()
-                {
-                    fields.push(crate::ast::RecordField {
-                        name,
-                        expr: self.lower_expr(*child),
-                    });
-                }
-            }
-        }
+                        if self.arena.kind(child).map(Self::is_expr_kind) == Some(true)
+                            && let Some(name) = current.take()
+                        {
+                            fields.push(crate::ast::RecordField {
+                                name,
+                                expr: self.lower_expr(child),
+                            });
+                        }
+                        (fields, current)
+                    },
+                )
+            },
+        );
 
         fields.sort_by(|a, b| a.name.as_ref().cmp(b.name.as_ref()));
         fields
     }
 
     fn lower_block_statements(&self, node: GreenNodeId) -> Vec<(Statement, Location)> {
-        let mut stmts = Vec::new();
-        if let Some(children) = self.arena.children(node) {
-            for child in children {
-                if self.arena.kind(*child) == Some(SyntaxKind::Statement)
-                    && let Some((stmt, span)) = self.lower_statement(*child)
-                {
-                    stmts.push((
-                        match stmt {
-                            ProgramStatement::GlobalStatement(s) => s,
-                            ProgramStatement::StageDeclaration { stage } => {
-                                Statement::DeclareStage(stage)
-                            }
-                            _ => Statement::Error,
-                        },
-                        self.location_from_span(span),
-                    ));
-                }
-            }
-        }
-        stmts
+        self.arena
+            .children(node)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|child| self.arena.kind(*child) == Some(SyntaxKind::Statement))
+            .filter_map(|child| self.lower_statement(child))
+            .map(|(stmt, span)| {
+                (
+                    match stmt {
+                        ProgramStatement::GlobalStatement(s) => s,
+                        ProgramStatement::StageDeclaration { stage } => {
+                            Statement::DeclareStage(stage)
+                        }
+                        _ => Statement::Error,
+                    },
+                    self.location_from_span(span),
+                )
+            })
+            .collect()
     }
 
     fn lower_pattern(&self, node: GreenNodeId) -> Option<(Pattern, Span)> {
@@ -490,26 +512,34 @@ impl<'a> LosslessLowerer<'a> {
                 Pattern::Tuple(elems)
             }
             Some(SyntaxKind::RecordPattern) => {
-                let mut items = Vec::new();
-                if let Some(children) = self.arena.children(node) {
-                    let mut current = None;
-                    for child in children {
-                        if let Some(token_index) = self.get_token_index(*child)
-                            && let Some(token) = self.tokens.get(token_index)
-                            && matches!(token.kind, TokenKind::Ident | TokenKind::IdentParameter)
-                        {
-                            current = Some(token.text(self.source).to_symbol());
-                            continue;
-                        }
+                let (items, _) = self.arena.children(node).map_or(
+                    (Vec::new(), None),
+                    |children| {
+                        children.iter().copied().fold(
+                            (Vec::new(), None),
+                            |(mut items, mut current), child| {
+                                if let Some(token_index) = self.get_token_index(child)
+                                    && let Some(token) = self.tokens.get(token_index)
+                                    && matches!(
+                                        token.kind,
+                                        TokenKind::Ident | TokenKind::IdentParameter
+                                    )
+                                {
+                                    current = Some(token.text(self.source).to_symbol());
+                                    return (items, current);
+                                }
 
-                        if self.arena.kind(*child).map(Self::is_pattern_kind) == Some(true)
-                            && let Some((p, _)) = self.lower_pattern(*child)
-                            && let Some(name) = current.take()
-                        {
-                            items.push((name, p));
-                        }
-                    }
-                }
+                                if self.arena.kind(child).map(Self::is_pattern_kind) == Some(true)
+                                    && let Some((p, _)) = self.lower_pattern(child)
+                                    && let Some(name) = current.take()
+                                {
+                                    items.push((name, p));
+                                }
+                                (items, current)
+                            },
+                        )
+                    },
+                );
                 Pattern::Record(items)
             }
             _ => Pattern::Error,
@@ -519,137 +549,153 @@ impl<'a> LosslessLowerer<'a> {
     }
 
     fn lower_expr_sequence(&self, nodes: &[GreenNodeId]) -> ExprNodeId {
-        let mut acc: Option<ExprNodeId> = None;
-        let mut i = 0;
-        while i < nodes.len() {
-            let node = nodes[i];
-            match self.arena.kind(node) {
-                Some(SyntaxKind::BinaryExpr) => {
-                    let (op, op_span) = self
-                        .extract_binary_op(node)
-                        .unwrap_or((Op::Unknown("".to_string()), 0..0));
-                    if op == Op::Exponent {
-                        if let Some(lhs) = acc.take() {
-                            // Immediate RHS from current '^' node children (if any)
-                            let rhs1_nodes = self.child_exprs(node);
-                            let rhs1 = self.lower_expr_sequence(&rhs1_nodes);
+        let result = (0..nodes.len()).try_fold(
+            (Option::<ExprNodeId>::None, false),
+            |(acc, skip_next), i| {
+                if skip_next {
+                    return ControlFlow::Continue((acc, false));
+                }
 
-                            // Lookahead for another '^' to enforce right-associativity
-                            if let Some(next) = nodes.get(i + 1)
-                                && self.extract_binary_op(*next).map(|(o, _)| o)
-                                    == Some(Op::Exponent)
-                            {
-                                let (_, next_span) = self
-                                    .extract_binary_op(*next)
-                                    .unwrap_or((Op::Exponent, 0..0));
-                                let rhs2_nodes = self.child_exprs(*next);
-                                let rhs2 = self.lower_expr_sequence(&rhs2_nodes);
-                                let nested_loc = self.location_from_span(merge_spans(
-                                    rhs1.to_span(),
-                                    rhs2.to_span(),
+                let node = nodes[i];
+                match self.arena.kind(node) {
+                    Some(SyntaxKind::BinaryExpr) => {
+                        let (op, op_span) = self
+                            .extract_binary_op(node)
+                            .unwrap_or((Op::Unknown("".to_string()), 0..0));
+                        if op == Op::Exponent {
+                            if let Some(lhs) = acc {
+                                // Immediate RHS from current '^' node children (if any)
+                                let rhs1_nodes = self.child_exprs(node);
+                                let rhs1 = self.lower_expr_sequence(&rhs1_nodes);
+
+                                // Lookahead for another '^' to enforce right-associativity
+                                if let Some(next) = nodes.get(i + 1)
+                                    && self.extract_binary_op(*next).map(|(o, _)| o)
+                                        == Some(Op::Exponent)
+                                {
+                                    let (_, next_span) = self
+                                        .extract_binary_op(*next)
+                                        .unwrap_or((Op::Exponent, 0..0));
+                                    let rhs2_nodes = self.child_exprs(*next);
+                                    let rhs2 = self.lower_expr_sequence(&rhs2_nodes);
+                                    let nested_loc = self.location_from_span(merge_spans(
+                                        rhs1.to_span(),
+                                        rhs2.to_span(),
+                                    ));
+                                    let nested_rhs =
+                                        Expr::BinOp(rhs1, (Op::Exponent, next_span), rhs2)
+                                            .into_id(nested_loc);
+                                    let final_loc = self.location_from_span(merge_spans(
+                                        lhs.to_span(),
+                                        nested_rhs.to_span(),
+                                    ));
+                                    let expr =
+                                        Expr::BinOp(lhs, (Op::Exponent, op_span), nested_rhs)
+                                            .into_id(final_loc);
+                                    return ControlFlow::Continue((Some(expr), true));
+                                } else if let Expr::BinOp(
+                                    left,
+                                    (Op::At, at_span),
+                                    right_immediate,
+                                ) = lhs.to_expr()
+                                {
+                                    // Nest exponent on RHS of '@'
+                                    let nested_loc = self.location_from_span(merge_spans(
+                                        right_immediate.to_span(),
+                                        rhs1.to_span(),
+                                    ));
+                                    let nested_rhs =
+                                        Expr::BinOp(right_immediate, (Op::Exponent, op_span), rhs1)
+                                            .into_id(nested_loc);
+                                    let final_loc = self.location_from_span(merge_spans(
+                                        left.to_span(),
+                                        nested_rhs.to_span(),
+                                    ));
+                                    let expr = Expr::BinOp(left, (Op::At, at_span), nested_rhs)
+                                        .into_id(final_loc);
+                                    return ControlFlow::Continue((Some(expr), false));
+                                } else {
+                                    let loc = self.location_from_span(merge_spans(
+                                        lhs.to_span(),
+                                        rhs1.to_span(),
+                                    ));
+                                    let expr = Expr::BinOp(lhs, (Op::Exponent, op_span), rhs1)
+                                        .into_id(loc);
+                                    return ControlFlow::Continue((Some(expr), false));
+                                }
+                            }
+                            ControlFlow::Continue((Some(self.lower_expr(node)), false))
+                        } else if let Some(lhs) = acc {
+                            ControlFlow::Continue((Some(self.lower_binary(lhs, node)), false))
+                        } else {
+                            ControlFlow::Continue((Some(self.lower_expr(node)), false))
+                        }
+                    }
+                    Some(SyntaxKind::AssignExpr) => {
+                        if let Some(lhs) = acc {
+                            let assign = self.lower_assign(lhs, node);
+                            // Check if there's a continuation
+                            if i + 1 < nodes.len() {
+                                let cont = self.lower_expr_sequence(&nodes[(i + 1)..]);
+                                let loc = self.location_from_span(merge_spans(
+                                    assign.to_span(),
+                                    cont.to_span(),
                                 ));
-                                let nested_rhs = Expr::BinOp(rhs1, (Op::Exponent, next_span), rhs2)
-                                    .into_id(nested_loc);
-                                let final_loc = self.location_from_span(merge_spans(
-                                    lhs.to_span(),
-                                    nested_rhs.to_span(),
-                                ));
-                                acc = Some(
-                                    Expr::BinOp(lhs, (Op::Exponent, op_span), nested_rhs)
-                                        .into_id(final_loc),
-                                );
-                                i += 1; // consume the next '^'
-                            } else if let Expr::BinOp(left, (Op::At, at_span), right_immediate) =
-                                lhs.to_expr()
-                            {
-                                // Nest exponent on RHS of '@'
-                                let nested_loc = self.location_from_span(merge_spans(
-                                    right_immediate.to_span(),
-                                    rhs1.to_span(),
-                                ));
-                                let nested_rhs =
-                                    Expr::BinOp(right_immediate, (Op::Exponent, op_span), rhs1)
-                                        .into_id(nested_loc);
-                                let final_loc = self.location_from_span(merge_spans(
-                                    left.to_span(),
-                                    nested_rhs.to_span(),
-                                ));
-                                acc = Some(
-                                    Expr::BinOp(left, (Op::At, at_span), nested_rhs)
-                                        .into_id(final_loc),
-                                );
-                            } else {
-                                let loc = self
-                                    .location_from_span(merge_spans(lhs.to_span(), rhs1.to_span()));
-                                acc = Some(
-                                    Expr::BinOp(lhs, (Op::Exponent, op_span), rhs1).into_id(loc),
+                                return ControlFlow::Break(
+                                    Expr::Then(assign, Some(cont)).into_id(loc),
                                 );
                             }
-                        } else {
-                            acc = Some(self.lower_expr(node));
-                        }
-                    } else if let Some(lhs) = acc.take() {
-                        acc = Some(self.lower_binary(lhs, node));
-                    } else {
-                        acc = Some(self.lower_expr(node));
-                    }
-                }
-                Some(SyntaxKind::AssignExpr) => {
-                    if let Some(lhs) = acc.take() {
-                        let assign = self.lower_assign(lhs, node);
-                        // Check if there's a continuation
-                        if i + 1 < nodes.len() {
-                            let cont = self.lower_expr_sequence(&nodes[(i + 1)..]);
-                            let loc = self
-                                .location_from_span(merge_spans(assign.to_span(), cont.to_span()));
-                            return Expr::Then(assign, Some(cont)).into_id(loc);
-                        } else {
                             // No continuation in this sequence; just return bare assign
                             // Multi-statement chaining will be handled by lower_program's into_then_expr
-                            acc = Some(assign);
+                            ControlFlow::Continue((Some(assign), false))
+                        } else {
+                            ControlFlow::Continue((Some(self.lower_expr(node)), false))
                         }
-                    } else {
-                        acc = Some(self.lower_expr(node));
                     }
-                }
-                Some(SyntaxKind::CallExpr) => {
-                    if let Some(callee) = acc.take() {
-                        acc = Some(self.lower_call(callee, node));
-                    } else {
-                        acc = Some(self.lower_expr(node));
+                    Some(SyntaxKind::CallExpr) => {
+                        if let Some(callee) = acc {
+                            ControlFlow::Continue((Some(self.lower_call(callee, node)), false))
+                        } else {
+                            ControlFlow::Continue((Some(self.lower_expr(node)), false))
+                        }
                     }
-                }
-                Some(SyntaxKind::FieldAccess) => {
-                    if let Some(lhs) = acc.take() {
-                        acc = Some(self.lower_field_access(lhs, node));
-                    } else {
-                        acc = Some(self.lower_expr(node));
+                    Some(SyntaxKind::FieldAccess) => {
+                        if let Some(lhs) = acc {
+                            ControlFlow::Continue((Some(self.lower_field_access(lhs, node)), false))
+                        } else {
+                            ControlFlow::Continue((Some(self.lower_expr(node)), false))
+                        }
                     }
-                }
-                Some(SyntaxKind::IndexExpr) => {
-                    if let Some(lhs) = acc.take() {
-                        acc = Some(self.lower_index(lhs, node));
-                    } else {
-                        acc = Some(self.lower_expr(node));
+                    Some(SyntaxKind::IndexExpr) => {
+                        if let Some(lhs) = acc {
+                            ControlFlow::Continue((Some(self.lower_index(lhs, node)), false))
+                        } else {
+                            ControlFlow::Continue((Some(self.lower_expr(node)), false))
+                        }
                     }
-                }
-                Some(_) => {
-                    // If we previously built a Then(assign, None), attach the remainder as continuation
-                    if let Some(prev) = acc.clone() {
-                        if let Expr::Then(first, None) = prev.to_expr() {
+                    Some(_) => {
+                        // If we previously built a Then(assign, None), attach the remainder as continuation
+                        if let Some(prev) = acc
+                            && let Expr::Then(first, None) = prev.to_expr()
+                        {
                             let rhs = self.lower_expr_sequence(&nodes[i..]);
                             let loc =
                                 self.location_from_span(merge_spans(prev.to_span(), rhs.to_span()));
-                            return Expr::Then(first, Some(rhs)).into_id(loc);
+                            return ControlFlow::Break(Expr::Then(first, Some(rhs)).into_id(loc));
                         }
+                        ControlFlow::Continue((Some(self.lower_expr(node)), false))
                     }
-                    acc = Some(self.lower_expr(node));
+                    None => ControlFlow::Continue((acc, false)),
                 }
-                None => {}
+            },
+        );
+
+        match result {
+            ControlFlow::Break(expr) => expr,
+            ControlFlow::Continue((acc, _)) => {
+                acc.unwrap_or_else(|| Expr::Error.into_id_without_span())
             }
-            i += 1;
         }
-        acc.unwrap_or_else(|| Expr::Error.into_id_without_span())
     }
 
     fn lower_binary(&self, lhs: ExprNodeId, node: GreenNodeId) -> ExprNodeId {
@@ -682,25 +728,22 @@ impl<'a> LosslessLowerer<'a> {
 
     fn lower_field_access(&self, lhs: ExprNodeId, node: GreenNodeId) -> ExprNodeId {
         let lhs_span = lhs.to_span();
-        let mut field = None;
-        for idx in self.walk_tokens(node) {
-            if let Some(tok) = self.tokens.get(idx) {
-                match tok.kind {
-                    TokenKind::Ident => {
-                        field = Some(Expr::FieldAccess(lhs, tok.text(self.source).to_symbol()));
-                        break;
-                    }
-                    TokenKind::Int => {
-                        if let Ok(n) = tok.text(self.source).parse::<i64>() {
-                            field = Some(Expr::Proj(lhs, n));
-                            break;
-                        }
-                    }
-                    _ => {}
+        let expr = self
+            .walk_tokens(node)
+            .into_iter()
+            .filter_map(|idx| self.tokens.get(idx))
+            .find_map(|tok| match tok.kind {
+                TokenKind::Ident => {
+                    Some(Expr::FieldAccess(lhs, tok.text(self.source).to_symbol()))
                 }
-            }
-        }
-        let expr = field.unwrap_or(Expr::Error);
+                TokenKind::Int => tok
+                    .text(self.source)
+                    .parse::<i64>()
+                    .ok()
+                    .map(|n| Expr::Proj(lhs, n)),
+                _ => None,
+            })
+            .unwrap_or(Expr::Error);
         let span = self
             .node_span(node)
             .map(|s| merge_spans(lhs_span.clone(), s))
@@ -742,68 +785,72 @@ impl<'a> LosslessLowerer<'a> {
     }
 
     fn lower_param_list(&self, node: GreenNodeId) -> (Vec<TypedId>, Span) {
-        let mut params = Vec::new();
-
-        if let Some(children) = self.arena.children(node) {
-            let mut i = 0;
-            while i < children.len() {
-                let child = children[i];
-
-                // Check for identifier token
-                if let GreenNode::Token { token_index, .. } = self.arena.get(child)
-                    && let Some(token) = self.tokens.get(*token_index)
-                    && matches!(token.kind, TokenKind::Ident | TokenKind::IdentParameter)
-                {
-                    let name = token.text(self.source).to_symbol();
-                    let loc = self.location_from_span(token.start..token.end());
-                    let mut next = i + 1;
-                    let mut ty = Type::Unknown.into_id_with_location(loc.clone());
-                    let mut default_value = None;
-
-                    // Optional type annotation
-                    if next < children.len()
-                        && self.arena.kind(children[next]) == Some(SyntaxKind::TypeAnnotation)
-                    {
-                        if let Some(type_children) = self.arena.children(children[next]) {
-                            ty = type_children
-                                .iter()
-                                .find(|c| {
-                                    self.arena
-                                        .kind(**c)
-                                        .map(Self::is_type_kind)
-                                        .unwrap_or(false)
-                                })
-                                .map(|type_node| self.lower_type(*type_node))
-                                .unwrap_or_else(|| {
-                                    Type::Unknown.into_id_with_location(loc.clone())
-                                });
-                        }
-                        next += 1;
+        let params = if let Some(children) = self.arena.children(node) {
+            let (new_params, _) =
+                (0..children.len()).fold((Vec::new(), 0usize), |(mut acc, mut next_index), i| {
+                    if i < next_index {
+                        return (acc, next_index);
                     }
 
-                    // Optional default value
-                    if next < children.len()
-                        && self.arena.kind(children[next]) == Some(SyntaxKind::ParamDefault)
+                    let child = children[i];
+                    // Check for identifier token
+                    if let GreenNode::Token { token_index, .. } = self.arena.get(child)
+                        && let Some(token) = self.tokens.get(*token_index)
+                        && matches!(token.kind, TokenKind::Ident | TokenKind::IdentParameter)
                     {
-                        let expr_nodes = self.child_exprs(children[next]);
-                        if !expr_nodes.is_empty() {
-                            default_value = Some(self.lower_expr_sequence(&expr_nodes));
+                        let name = token.text(self.source).to_symbol();
+                        let loc = self.location_from_span(token.start..token.end());
+                        let mut next = i + 1;
+                        let mut ty = Type::Unknown.into_id_with_location(loc.clone());
+                        let mut default_value = None;
+
+                        // Optional type annotation
+                        if next < children.len()
+                            && self.arena.kind(children[next]) == Some(SyntaxKind::TypeAnnotation)
+                        {
+                            if let Some(type_children) = self.arena.children(children[next]) {
+                                ty = type_children
+                                    .iter()
+                                    .find(|c| {
+                                        self.arena
+                                            .kind(**c)
+                                            .map(Self::is_type_kind)
+                                            .unwrap_or(false)
+                                    })
+                                    .map(|type_node| self.lower_type(*type_node))
+                                    .unwrap_or_else(|| {
+                                        Type::Unknown.into_id_with_location(loc.clone())
+                                    });
+                            }
+                            next += 1;
                         }
-                        next += 1;
+
+                        // Optional default value
+                        if next < children.len()
+                            && self.arena.kind(children[next]) == Some(SyntaxKind::ParamDefault)
+                        {
+                            let expr_nodes = self.child_exprs(children[next]);
+                            if !expr_nodes.is_empty() {
+                                default_value = Some(self.lower_expr_sequence(&expr_nodes));
+                            }
+                            next += 1;
+                        }
+
+                        let tid = match default_value {
+                            Some(default_value) => TypedId::with_default(name, ty, default_value),
+                            None => TypedId::new(name, ty),
+                        };
+
+                        acc.push(tid);
+                        next_index = next;
                     }
 
-                    let tid = match default_value {
-                        Some(default_value) => TypedId::with_default(name, ty, default_value),
-                        None => TypedId::new(name, ty),
-                    };
-
-                    params.push(tid);
-                    i = next;
-                    continue;
-                }
-                i += 1;
-            }
-        }
+                    (acc, next_index.max(i + 1))
+                });
+            new_params
+        } else {
+            Vec::new()
+        };
 
         let span = self.node_span(node).unwrap_or(0..0);
         (params, span)
@@ -920,15 +967,18 @@ impl<'a> LosslessLowerer<'a> {
                 self.tokens.get(*token_index).map(|t| t.start..t.end())
             }
             GreenNode::Internal { children, .. } => {
-                let mut start: Option<usize> = None;
-                let mut end: Option<usize> = None;
-
-                for child in children.iter() {
-                    if let Some(span) = self.node_span(*child) {
-                        start = Some(start.map_or(span.start, |s| s.min(span.start)));
-                        end = Some(end.map_or(span.end, |e| e.max(span.end)));
-                    }
-                }
+                let (start, end) = children
+                    .iter()
+                    .filter_map(|child| self.node_span(*child))
+                    .fold(
+                        (Option::<usize>::None, Option::<usize>::None),
+                        |(start, end), span| {
+                            let next_start =
+                                Some(start.map_or(span.start, |s| s.min(span.start)));
+                            let next_end = Some(end.map_or(span.end, |e| e.max(span.end)));
+                            (next_start, next_end)
+                        },
+                    );
 
                 start.zip(end).map(|(s, e)| s..e)
             }
@@ -943,13 +993,11 @@ impl<'a> LosslessLowerer<'a> {
     }
 
     fn lower_arg_list(&self, node: GreenNodeId) -> Vec<ExprNodeId> {
-        // Prefer extracting from an explicit ArgList child if present.
-        if let Some(arg_node) = self.find_child(node, |kind| kind == SyntaxKind::ArgList) {
-            let mut args = Vec::new();
-            let mut current: Vec<GreenNodeId> = Vec::new();
-            if let Some(children) = self.arena.children(arg_node) {
-                for child in children {
-                    match self.arena.get(*child) {
+        let collect_args = |children: &[GreenNodeId]| {
+            let (mut args, current) = children.iter().copied().fold(
+                (Vec::new(), Vec::new()),
+                |(mut args, mut current), child| {
+                    match self.arena.get(child) {
                         GreenNode::Token { token_index, .. }
                             if self.tokens.get(*token_index).map(|t| t.kind)
                                 == Some(TokenKind::Comma) =>
@@ -960,75 +1008,68 @@ impl<'a> LosslessLowerer<'a> {
                             }
                         }
                         _ => {
-                            if self.arena.kind(*child).map(Self::is_expr_kind) == Some(true) {
-                                current.push(*child);
+                            if self.arena.kind(child).map(Self::is_expr_kind) == Some(true) {
+                                current.push(child);
                             }
                         }
                     }
-                }
-            }
+                    (args, current)
+                },
+            );
             if !current.is_empty() {
                 args.push(self.lower_expr_sequence(&current));
             }
-            return args;
+            args
+        };
+
+        // Prefer extracting from an explicit ArgList child if present.
+        if let Some(arg_node) = self.find_child(node, |kind| kind == SyntaxKind::ArgList) {
+            if let Some(children) = self.arena.children(arg_node) {
+                return collect_args(children);
+            }
+            return Vec::new();
         }
 
         // Fallback: scan direct children if no ArgList exists.
-        let mut args = Vec::new();
-        let mut current: Vec<GreenNodeId> = Vec::new();
         if let Some(children) = self.arena.children(node) {
-            for child in children {
-                match self.arena.get(*child) {
-                    GreenNode::Token { token_index, .. }
-                        if self.tokens.get(*token_index).map(|t| t.kind)
-                            == Some(TokenKind::Comma) =>
-                    {
-                        if !current.is_empty() {
-                            args.push(self.lower_expr_sequence(&current));
-                            current.clear();
-                        }
-                    }
-                    _ => {
-                        if self.arena.kind(*child).map(Self::is_expr_kind) == Some(true) {
-                            current.push(*child);
-                        }
-                    }
-                }
-            }
+            return collect_args(children);
         }
-        if !current.is_empty() {
-            args.push(self.lower_expr_sequence(&current));
-        }
-        args
+        Vec::new()
     }
 
     fn lower_expr_list(&self, node: GreenNodeId) -> Vec<ExprNodeId> {
-        let mut elems = Vec::new();
-        let mut current: Vec<GreenNodeId> = Vec::new();
-        if let Some(children) = self.arena.children(node) {
-            for child in children {
-                match self.arena.get(*child) {
-                    GreenNode::Token { token_index, .. }
-                        if self.tokens.get(*token_index).map(|t| t.kind)
-                            == Some(TokenKind::Comma) =>
-                    {
-                        if !current.is_empty() {
-                            elems.push(self.lower_expr_sequence(&current));
-                            current.clear();
+        let collect_elems = |children: &[GreenNodeId]| {
+            let (mut elems, current) = children.iter().copied().fold(
+                (Vec::new(), Vec::new()),
+                |(mut elems, mut current), child| {
+                    match self.arena.get(child) {
+                        GreenNode::Token { token_index, .. }
+                            if self.tokens.get(*token_index).map(|t| t.kind)
+                                == Some(TokenKind::Comma) =>
+                        {
+                            if !current.is_empty() {
+                                elems.push(self.lower_expr_sequence(&current));
+                                current.clear();
+                            }
+                        }
+                        _ => {
+                            if self.arena.kind(child).map(Self::is_expr_kind) == Some(true) {
+                                current.push(child);
+                            }
                         }
                     }
-                    _ => {
-                        if self.arena.kind(*child).map(Self::is_expr_kind) == Some(true) {
-                            current.push(*child);
-                        }
-                    }
-                }
+                    (elems, current)
+                },
+            );
+            if !current.is_empty() {
+                elems.push(self.lower_expr_sequence(&current));
             }
-        }
-        if !current.is_empty() {
-            elems.push(self.lower_expr_sequence(&current));
-        }
-        elems
+            elems
+        };
+
+        self.arena
+            .children(node)
+            .map_or_else(Vec::new, collect_elems)
     }
 
     fn is_expr_kind(kind: SyntaxKind) -> bool {

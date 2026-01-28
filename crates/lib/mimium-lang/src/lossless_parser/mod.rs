@@ -59,6 +59,8 @@ pub mod token;
 pub mod tokenizer;
 
 // Re-export main types and functions
+use crate::utils::error::{ReportableError, SimpleError};
+use crate::utils::metadata::Location;
 pub use cst_parser::parse_cst;
 pub use green::{GreenNodeArena, GreenNodeId, SyntaxKind};
 pub use lower::{add_global_context, parse_program_lossless, parse_to_expr};
@@ -66,8 +68,6 @@ pub use preparser::{PreParsedTokens, preparse};
 pub use red::{AstNode, RedNode, red_to_ast};
 pub use token::{LosslessToken, TokenKind};
 pub use tokenizer::tokenize;
-use crate::utils::error::{ReportableError, SimpleError};
-use crate::utils::metadata::Location;
 
 /// Convenience function to create a Red node from a Green node
 pub fn green_to_red(green_id: GreenNodeId, offset: usize) -> std::sync::Arc<RedNode> {
@@ -100,10 +100,7 @@ pub fn parser_errors_to_reportable(
     errors: Vec<cst_parser::ParserError>,
 ) -> Vec<Box<dyn ReportableError>> {
     let tokens = tokenize(source);
-    let fallback_span = tokens
-        .last()
-        .map(|t| t.start..t.end())
-        .unwrap_or(0..0);
+    let fallback_span = tokens.last().map(|t| t.start..t.end()).unwrap_or(0..0);
 
     errors
         .into_iter()
@@ -114,7 +111,10 @@ pub fn parser_errors_to_reportable(
                 .unwrap_or_else(|| fallback_span.clone());
             Box::new(SimpleError {
                 message: format!("Parse error: {err}"),
-                span: Location { span, path: file_path.clone() },
+                span: Location {
+                    span,
+                    path: file_path.clone(),
+                },
             }) as Box<dyn ReportableError>
         })
         .collect()
@@ -137,7 +137,7 @@ mod tests {
         }
 
         assert!(!tokens.is_empty());
-        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
     }
 
     #[test]
@@ -168,7 +168,7 @@ mod tests {
             _ => panic!("Expected Program node"),
         }
 
-        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
     }
 
     #[test]
@@ -193,7 +193,7 @@ mod tests {
             _ => panic!("Expected Program node"),
         }
 
-        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
     }
 
     #[test]
@@ -219,7 +219,7 @@ mod tests {
             _ => panic!("Expected Program node"),
         }
 
-        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
     }
 
     #[test]
