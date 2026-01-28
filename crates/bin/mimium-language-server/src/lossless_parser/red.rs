@@ -4,7 +4,7 @@
 /// Red nodes have absolute positions and are created from Green nodes.
 /// They represent the actual AST without comments and whitespace.
 
-use super::green::{GreenNode, SyntaxKind};
+use super::green::{GreenNodeArena, GreenNodeId, SyntaxKind};
 use super::token::{LosslessToken, TokenKind};
 use std::sync::Arc;
 
@@ -12,17 +12,17 @@ use std::sync::Arc;
 /// This is the "Red" part of Red-Green Syntax Tree
 #[derive(Debug, Clone)]
 pub struct RedNode {
-    /// The underlying green node
-    green: Arc<GreenNode>,
+    /// The underlying green node ID
+    green_id: GreenNodeId,
     /// Absolute position in the source
     offset: usize,
 }
 
 impl RedNode {
-    /// Create a new red node from a green node
-    pub fn new(green: Arc<GreenNode>, offset: usize) -> Arc<Self> {
+    /// Create a new red node from a green node ID
+    pub fn new(green_id: GreenNodeId, offset: usize) -> Arc<Self> {
         Arc::new(RedNode {
-            green,
+            green_id,
             offset,
         })
     }
@@ -33,38 +33,35 @@ impl RedNode {
     }
     
     /// Get the width (length) of this node
-    pub fn width(&self) -> usize {
-        self.green.width()
+    pub fn width(&self, arena: &GreenNodeArena) -> usize {
+        arena.width(self.green_id)
     }
     
     /// Get the end position of this node
-    pub fn end(&self) -> usize {
-        self.offset + self.width()
+    pub fn end(&self, arena: &GreenNodeArena) -> usize {
+        self.offset + self.width(arena)
     }
     
     /// Get the syntax kind of this node
-    pub fn kind(&self) -> Option<SyntaxKind> {
-        self.green.kind()
+    pub fn kind(&self, arena: &GreenNodeArena) -> Option<SyntaxKind> {
+        arena.kind(self.green_id)
     }
     
-    /// Get the underlying green node
-    pub fn green(&self) -> &Arc<GreenNode> {
-        &self.green
+    /// Get the underlying green node ID
+    pub fn green_id(&self) -> GreenNodeId {
+        self.green_id
     }
     
     /// Get children as red nodes
-    pub fn children(&self) -> Vec<Arc<RedNode>> {
-        if let Some(green_children) = self.green.children() {
+    pub fn children(&self, arena: &GreenNodeArena) -> Vec<Arc<RedNode>> {
+        if let Some(green_children) = arena.children(self.green_id) {
             let mut offset = self.offset;
             
             green_children
                 .iter()
-                .map(|green_child| {
-                    let child = RedNode::new(
-                        green_child.clone(),
-                        offset
-                    );
-                    offset += green_child.width();
+                .map(|&child_id| {
+                    let child = RedNode::new(child_id, offset);
+                    offset += arena.width(child_id);
                     child
                 })
                 .collect()
@@ -74,8 +71,8 @@ impl RedNode {
     }
     
     /// Get the text of this node from the source
-    pub fn text<'a>(&self, source: &'a str) -> &'a str {
-        &source[self.offset..self.end()]
+    pub fn text<'a>(&self, source: &'a str, arena: &GreenNodeArena) -> &'a str {
+        &source[self.offset..self.end(arena)]
     }
 }
 
@@ -132,35 +129,36 @@ pub enum AstNode {
 }
 
 /// Convert Red Tree to AST
-pub fn red_to_ast(red: &RedNode, source: &str, tokens: &[LosslessToken]) -> AstNode {
-    match red.kind() {
+pub fn red_to_ast(red: &RedNode, source: &str, tokens: &[LosslessToken], arena: &GreenNodeArena) -> AstNode {
+    match red.kind(arena) {
         Some(SyntaxKind::Program) => {
-            let children = red.children();
+            let children = red.children(arena);
             let statements = children
                 .iter()
-                .map(|child| red_to_ast(child, source, tokens))
+                .map(|child| red_to_ast(child, source, tokens, arena))
                 .collect();
             AstNode::Program { statements }
         }
         
         Some(SyntaxKind::Statement) => {
-            let children = red.children();
+            let children = red.children(arena);
             if let Some(first) = children.first() {
-                red_to_ast(first, source, tokens)
+                red_to_ast(first, source, tokens, arena)
             } else {
                 AstNode::Error
             }
         }
         
         Some(SyntaxKind::FunctionDecl) => {
-            let children = red.children();
+            let children = red.children(arena);
             let mut name = String::new();
             let mut params = Vec::new();
             let mut body = None;
             
             for (i, child) in children.iter().enumerate() {
-                match &**child.green() {
-                    GreenNode::Token { token_index, .. } => {
+                let green = arena.get(child.green_id());
+                match green {
+                    super::green::GreenNode::Token { token_index, .. } => {
                         if let Some(token) = tokens.get(*token_index) {
                             if token.kind == TokenKind::Ident && i == 1 {
                                 name = token.text(source).to_string();
@@ -168,10 +166,10 @@ pub fn red_to_ast(red: &RedNode, source: &str, tokens: &[LosslessToken]) -> AstN
                         }
                     }
                     _ => {
-                        if child.kind() == Some(SyntaxKind::ParamList) {
-                            params = extract_params(child, source, tokens);
-                        } else if child.kind() == Some(SyntaxKind::BlockExpr) {
-                            body = Some(Box::new(red_to_ast(child, source, tokens)));
+                        if child.kind(arena) == Some(SyntaxKind::ParamList) {
+                            params = extract_params(child, source, tokens, arena);
+                        } else if child.kind(arena) == Some(SyntaxKind::BlockExpr) {
+                            body = Some(Box::new(red_to_ast(child, source, tokens, arena)));
                         }
                     }
                 }
@@ -185,13 +183,14 @@ pub fn red_to_ast(red: &RedNode, source: &str, tokens: &[LosslessToken]) -> AstN
         }
         
         Some(SyntaxKind::LetDecl) => {
-            let children = red.children();
+            let children = red.children(arena);
             let mut name = String::new();
             let mut value = None;
             
             for (i, child) in children.iter().enumerate() {
-                match &**child.green() {
-                    GreenNode::Token { token_index, .. } => {
+                let green = arena.get(child.green_id());
+                match green {
+                    super::green::GreenNode::Token { token_index, .. } => {
                         if let Some(token) = tokens.get(*token_index) {
                             if token.kind == TokenKind::Ident && i == 1 {
                                 name = token.text(source).to_string();
@@ -200,7 +199,7 @@ pub fn red_to_ast(red: &RedNode, source: &str, tokens: &[LosslessToken]) -> AstN
                     }
                     _ => {
                         if value.is_none() {
-                            value = Some(Box::new(red_to_ast(child, source, tokens)));
+                            value = Some(Box::new(red_to_ast(child, source, tokens, arena)));
                         }
                     }
                 }
@@ -213,14 +212,15 @@ pub fn red_to_ast(red: &RedNode, source: &str, tokens: &[LosslessToken]) -> AstN
         }
         
         Some(SyntaxKind::BlockExpr) => {
-            let children = red.children();
+            let children = red.children(arena);
             let statements = children
                 .iter()
                 .filter_map(|child| {
-                    if matches!(&**child.green(), GreenNode::Token { .. }) {
+                    let green = arena.get(child.green_id());
+                    if matches!(green, super::green::GreenNode::Token { .. }) {
                         None
                     } else {
-                        Some(red_to_ast(child, source, tokens))
+                        Some(red_to_ast(child, source, tokens, arena))
                     }
                 })
                 .collect();
@@ -228,8 +228,10 @@ pub fn red_to_ast(red: &RedNode, source: &str, tokens: &[LosslessToken]) -> AstN
         }
         
         Some(SyntaxKind::IntLiteral) => {
-            if let Some(child) = red.children().first() {
-                if let GreenNode::Token { token_index, .. } = child.green().as_ref() {
+            let children = red.children(arena);
+            if let Some(child) = children.first() {
+                let green = arena.get(child.green_id());
+                if let super::green::GreenNode::Token { token_index, .. } = green {
                     if let Some(token) = tokens.get(*token_index) {
                         let text = token.text(source);
                         if let Ok(value) = text.parse::<i64>() {
@@ -242,8 +244,10 @@ pub fn red_to_ast(red: &RedNode, source: &str, tokens: &[LosslessToken]) -> AstN
         }
         
         Some(SyntaxKind::FloatLiteral) => {
-            if let Some(child) = red.children().first() {
-                if let GreenNode::Token { token_index, .. } = child.green().as_ref() {
+            let children = red.children(arena);
+            if let Some(child) = children.first() {
+                let green = arena.get(child.green_id());
+                if let super::green::GreenNode::Token { token_index, .. } = green {
                     if let Some(token) = tokens.get(*token_index) {
                         let text = token.text(source);
                         if let Ok(value) = text.parse::<f64>() {
@@ -256,8 +260,10 @@ pub fn red_to_ast(red: &RedNode, source: &str, tokens: &[LosslessToken]) -> AstN
         }
         
         Some(SyntaxKind::StringLiteral) => {
-            if let Some(child) = red.children().first() {
-                if let GreenNode::Token { token_index, .. } = child.green().as_ref() {
+            let children = red.children(arena);
+            if let Some(child) = children.first() {
+                let green = arena.get(child.green_id());
+                if let super::green::GreenNode::Token { token_index, .. } = green {
                     if let Some(token) = tokens.get(*token_index) {
                         let text = token.text(source);
                         // Remove quotes
@@ -270,8 +276,10 @@ pub fn red_to_ast(red: &RedNode, source: &str, tokens: &[LosslessToken]) -> AstN
         }
         
         Some(SyntaxKind::Identifier) => {
-            if let Some(child) = red.children().first() {
-                if let GreenNode::Token { token_index, .. } = child.green().as_ref() {
+            let children = red.children(arena);
+            if let Some(child) = children.first() {
+                let green = arena.get(child.green_id());
+                if let super::green::GreenNode::Token { token_index, .. } = green {
                     if let Some(token) = tokens.get(*token_index) {
                         return AstNode::Identifier(token.text(source).to_string());
                     }
@@ -285,11 +293,12 @@ pub fn red_to_ast(red: &RedNode, source: &str, tokens: &[LosslessToken]) -> AstN
 }
 
 /// Extract parameter names from ParamList node
-fn extract_params(red: &RedNode, source: &str, tokens: &[LosslessToken]) -> Vec<String> {
+fn extract_params(red: &RedNode, source: &str, tokens: &[LosslessToken], arena: &GreenNodeArena) -> Vec<String> {
     let mut params = Vec::new();
     
-    for child in red.children() {
-        if let GreenNode::Token { token_index, .. } = child.green().as_ref() {
+    for child in red.children(arena) {
+        let green = arena.get(child.green_id());
+        if let super::green::GreenNode::Token { token_index, .. } = green {
             if let Some(token) = tokens.get(*token_index) {
                 if token.kind == TokenKind::Ident {
                     params.push(token.text(source).to_string());
@@ -313,11 +322,11 @@ mod tests {
         let source = "42";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let green = parse_cst(&tokens, &preparsed);
-        let red = RedNode::new(green, 0);
+        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let red = RedNode::new(root_id, 0);
         
         assert_eq!(red.offset(), 0);
-        assert!(red.width() > 0);
+        assert!(red.width(&arena) > 0);
     }
     
     #[test]
@@ -325,9 +334,9 @@ mod tests {
         let source = "42";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let green = parse_cst(&tokens, &preparsed);
-        let red = RedNode::new(green, 0);
-        let ast = red_to_ast(&red, source, &tokens);
+        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let red = RedNode::new(root_id, 0);
+        let ast = red_to_ast(&red, source, &tokens, &arena);
         
         match ast {
             AstNode::Program { .. } => {}, // Expected
@@ -340,9 +349,9 @@ mod tests {
         let source = "fn add(x, y) { 42 }";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let green = parse_cst(&tokens, &preparsed);
-        let red = RedNode::new(green, 0);
-        let ast = red_to_ast(&red, source, &tokens);
+        let (root_id, arena) = parse_cst(&tokens, &preparsed);
+        let red = RedNode::new(root_id, 0);
+        let ast = red_to_ast(&red, source, &tokens, &arena);
         
         match ast {
             AstNode::Program { statements } => {

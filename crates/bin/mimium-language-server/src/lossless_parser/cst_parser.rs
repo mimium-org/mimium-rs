@@ -1,9 +1,8 @@
 /// CST Parser - parses token indices into Green Tree
 /// This is a simple recursive descent parser that produces a lossless CST
-use super::green::{GreenNode, GreenTreeBuilder, SyntaxKind};
+use super::green::{GreenNodeArena, GreenNodeId, GreenTreeBuilder, SyntaxKind};
 use super::preparser::PreParsedTokens;
 use super::token::{LosslessToken, TokenKind};
-use std::sync::Arc;
 
 /// Parser state
 pub struct Parser<'a> {
@@ -61,14 +60,16 @@ impl<'a> Parser<'a> {
     }
     
     /// Parse the entire program
-    pub fn parse(mut self) -> Arc<GreenNode> {
+    pub fn parse(mut self) -> (GreenNodeId, GreenNodeArena) {
         self.builder.start_node(SyntaxKind::Program);
         
         while !self.is_at_end() {
             self.parse_statement();
         }
         
-        self.builder.finish_node().unwrap()
+        let root_id = self.builder.finish_node().unwrap();
+        let arena = self.builder.into_arena();
+        (root_id, arena)
     }
     
     /// Check if we've reached the end
@@ -246,7 +247,7 @@ impl<'a> Parser<'a> {
 }
 
 /// Parse tokens into a Green Tree (CST)
-pub fn parse_cst(tokens: &[LosslessToken], preparsed: &PreParsedTokens) -> Arc<GreenNode> {
+pub fn parse_cst(tokens: &[LosslessToken], preparsed: &PreParsedTokens) -> (GreenNodeId, GreenNodeArena) {
     let parser = Parser::new(tokens, preparsed);
     parser.parse()
 }
@@ -262,10 +263,10 @@ mod tests {
         let source = "fn dsp() { 42 }";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let cst = parse_cst(&tokens, &preparsed);
+        let (root_id, arena) = parse_cst(&tokens, &preparsed);
         
-        assert_eq!(cst.kind(), Some(SyntaxKind::Program));
-        assert!(cst.children().is_some());
+        assert_eq!(arena.kind(root_id), Some(SyntaxKind::Program));
+        assert!(arena.children(root_id).is_some());
     }
     
     #[test]
@@ -273,9 +274,9 @@ mod tests {
         let source = "let x = 42";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let cst = parse_cst(&tokens, &preparsed);
+        let (root_id, arena) = parse_cst(&tokens, &preparsed);
         
-        let children = cst.children().unwrap();
+        let children = arena.children(root_id).unwrap();
         assert!(!children.is_empty());
     }
     
@@ -284,8 +285,8 @@ mod tests {
         let source = "fn add(x, y) { x }";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let cst = parse_cst(&tokens, &preparsed);
+        let (root_id, arena) = parse_cst(&tokens, &preparsed);
         
-        assert!(cst.width() > 0);
+        assert!(arena.width(root_id) > 0);
     }
 }

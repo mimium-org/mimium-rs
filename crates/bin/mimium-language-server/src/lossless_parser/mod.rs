@@ -58,24 +58,24 @@ pub mod red;
 pub use token::{LosslessToken, TokenKind};
 pub use tokenizer::tokenize;
 pub use preparser::{PreParsedTokens, preparse};
-pub use green::{GreenNode, SyntaxKind};
+pub use green::{GreenNodeArena, GreenNodeId, SyntaxKind};
 pub use cst_parser::parse_cst;
 pub use red::{RedNode, AstNode, red_to_ast};
 
 /// Convenience function to create a Red node from a Green node
-pub fn green_to_red(green: std::sync::Arc<GreenNode>, offset: usize) -> std::sync::Arc<RedNode> {
-    RedNode::new(green, offset)
+pub fn green_to_red(green_id: GreenNodeId, arena: &GreenNodeArena, offset: usize) -> std::sync::Arc<RedNode> {
+    RedNode::new(green_id, offset)
 }
 
 /// Complete parsing pipeline from source to AST
-pub fn parse(source: &str) -> (AstNode, Vec<LosslessToken>, PreParsedTokens) {
+pub fn parse(source: &str) -> (AstNode, Vec<LosslessToken>, PreParsedTokens, GreenNodeArena) {
     let tokens = tokenize(source);
     let preparsed = preparse(&tokens);
-    let green = parse_cst(&tokens, &preparsed);
-    let red = green_to_red(green, 0);
-    let ast = red_to_ast(&red, source, &tokens);
+    let (green_id, arena) = parse_cst(&tokens, &preparsed);
+    let red = green_to_red(green_id, &arena, 0);
+    let ast = red_to_ast(&red, source, &tokens, &arena);
     
-    (ast, tokens, preparsed)
+    (ast, tokens, preparsed, arena)
 }
 
 #[cfg(test)]
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn test_full_pipeline() {
         let source = "fn dsp() { 42 }";
-        let (ast, tokens, _preparsed) = parse(source);
+        let (ast, tokens, _preparsed, _arena) = parse(source);
         
         match ast {
             AstNode::Program { statements } => {
@@ -108,7 +108,7 @@ mod tests {
             }
         "#;
         
-        let (ast, tokens, _preparsed) = parse(source);
+        let (ast, tokens, _preparsed, _arena) = parse(source);
         
         // Check that comments are in the token stream
         let has_comments = tokens.iter().any(|t| 
@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn test_let_binding() {
         let source = "let x = 42";
-        let (ast, _tokens, _preparsed) = parse(source);
+        let (ast, _tokens, _preparsed, _arena) = parse(source);
         
         match ast {
             AstNode::Program { statements } => {
@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn test_function_with_params() {
         let source = "fn add(x, y) { x }";
-        let (ast, _tokens, _preparsed) = parse(source);
+        let (ast, _tokens, _preparsed, _arena) = parse(source);
         
         match ast {
             AstNode::Program { statements } => {

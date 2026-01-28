@@ -3,9 +3,14 @@
 /// 
 /// Green nodes are immutable and position-independent. They represent
 /// the structure of the syntax tree without absolute positions.
-/// Green trees can be shared and cached.
+/// Green trees use interning via SlotMap for efficient sharing and caching.
 
-use std::sync::Arc;
+use slotmap::{new_key_type, SlotMap};
+
+new_key_type! {
+    /// A handle to an interned GreenNode
+    pub struct GreenNodeId;
+}
 
 /// Green node - represents a CST node without position information
 /// This is the "Green" part of Red-Green Syntax Tree
@@ -20,23 +25,12 @@ pub enum GreenNode {
     /// An internal node with children
     Internal {
         kind: SyntaxKind,
-        children: Vec<Arc<GreenNode>>,
+        children: Vec<GreenNodeId>,
         width: usize, // Total width of all children
     },
 }
 
 impl GreenNode {
-    /// Create a new token node
-    pub fn new_token(token_index: usize, width: usize) -> Arc<Self> {
-        Arc::new(GreenNode::Token { token_index, width })
-    }
-    
-    /// Create a new internal node
-    pub fn new_internal(kind: SyntaxKind, children: Vec<Arc<GreenNode>>) -> Arc<Self> {
-        let width = children.iter().map(|c| c.width()).sum();
-        Arc::new(GreenNode::Internal { kind, children, width })
-    }
-    
     /// Get the width (length in bytes) of this node
     pub fn width(&self) -> usize {
         match self {
@@ -54,11 +48,57 @@ impl GreenNode {
     }
     
     /// Get children if this is an internal node
-    pub fn children(&self) -> Option<&[Arc<GreenNode>]> {
+    pub fn children(&self) -> Option<&[GreenNodeId]> {
         match self {
             GreenNode::Token { .. } => None,
             GreenNode::Internal { children, .. } => Some(children),
         }
+    }
+}
+
+/// Arena for interning Green nodes
+#[derive(Debug, Default)]
+pub struct GreenNodeArena {
+    nodes: SlotMap<GreenNodeId, GreenNode>,
+}
+
+impl GreenNodeArena {
+    /// Create a new arena
+    pub fn new() -> Self {
+        Self {
+            nodes: SlotMap::with_key(),
+        }
+    }
+    
+    /// Intern a token node
+    pub fn alloc_token(&mut self, token_index: usize, width: usize) -> GreenNodeId {
+        self.nodes.insert(GreenNode::Token { token_index, width })
+    }
+    
+    /// Intern an internal node
+    pub fn alloc_internal(&mut self, kind: SyntaxKind, children: Vec<GreenNodeId>) -> GreenNodeId {
+        let width = children.iter().map(|&id| self.nodes[id].width()).sum();
+        self.nodes.insert(GreenNode::Internal { kind, children, width })
+    }
+    
+    /// Get a node by its ID
+    pub fn get(&self, id: GreenNodeId) -> &GreenNode {
+        &self.nodes[id]
+    }
+    
+    /// Get the width of a node
+    pub fn width(&self, id: GreenNodeId) -> usize {
+        self.nodes[id].width()
+    }
+    
+    /// Get the kind of a node
+    pub fn kind(&self, id: GreenNodeId) -> Option<SyntaxKind> {
+        self.nodes[id].kind()
+    }
+    
+    /// Get children of a node
+    pub fn children(&self, id: GreenNodeId) -> Option<&[GreenNodeId]> {
+        self.nodes[id].children()
     }
 }
 
@@ -139,14 +179,28 @@ impl std::fmt::Display for SyntaxKind {
     }
 }
 
-/// A builder for constructing Green Trees
+/// A builder for constructing Green Trees with an arena
 pub struct GreenTreeBuilder {
-    stack: Vec<(SyntaxKind, Vec<Arc<GreenNode>>)>,
+    arena: GreenNodeArena,
+    stack: Vec<(SyntaxKind, Vec<GreenNodeId>)>,
 }
 
 impl GreenTreeBuilder {
     pub fn new() -> Self {
-        Self { stack: Vec::new() }
+        Self {
+            arena: GreenNodeArena::new(),
+            stack: Vec::new(),
+        }
+    }
+    
+    /// Get a reference to the arena
+    pub fn arena(&self) -> &GreenNodeArena {
+        &self.arena
+    }
+    
+    /// Take ownership of the arena
+    pub fn into_arena(self) -> GreenNodeArena {
+        self.arena
     }
     
     /// Start a new internal node
@@ -156,23 +210,23 @@ impl GreenTreeBuilder {
     
     /// Add a token as a child
     pub fn add_token(&mut self, token_index: usize, width: usize) {
-        let token = GreenNode::new_token(token_index, width);
+        let token_id = self.arena.alloc_token(token_index, width);
         if let Some((_, children)) = self.stack.last_mut() {
-            children.push(token);
+            children.push(token_id);
         }
     }
     
     /// Finish the current node and add it to its parent
-    pub fn finish_node(&mut self) -> Option<Arc<GreenNode>> {
+    pub fn finish_node(&mut self) -> Option<GreenNodeId> {
         if let Some((kind, children)) = self.stack.pop() {
-            let node = GreenNode::new_internal(kind, children);
+            let node_id = self.arena.alloc_internal(kind, children);
             
             // Add to parent if exists
             if let Some((_, parent_children)) = self.stack.last_mut() {
-                parent_children.push(node.clone());
+                parent_children.push(node_id);
             }
             
-            Some(node)
+            Some(node_id)
         } else {
             None
         }
@@ -196,23 +250,25 @@ mod tests {
     
     #[test]
     fn test_green_node_token() {
-        let token = GreenNode::new_token(0, 5);
-        assert_eq!(token.width(), 5);
-        assert_eq!(token.kind(), None);
+        let mut arena = GreenNodeArena::new();
+        let token_id = arena.alloc_token(0, 5);
+        assert_eq!(arena.width(token_id), 5);
+        assert_eq!(arena.kind(token_id), None);
     }
     
     #[test]
     fn test_green_node_internal() {
-        let token1 = GreenNode::new_token(0, 5);
-        let token2 = GreenNode::new_token(1, 3);
-        let internal = GreenNode::new_internal(
+        let mut arena = GreenNodeArena::new();
+        let token1 = arena.alloc_token(0, 5);
+        let token2 = arena.alloc_token(1, 3);
+        let internal = arena.alloc_internal(
             SyntaxKind::BinaryExpr,
             vec![token1, token2]
         );
         
-        assert_eq!(internal.width(), 8);
-        assert_eq!(internal.kind(), Some(SyntaxKind::BinaryExpr));
-        assert_eq!(internal.children().unwrap().len(), 2);
+        assert_eq!(arena.width(internal), 8);
+        assert_eq!(arena.kind(internal), Some(SyntaxKind::BinaryExpr));
+        assert_eq!(arena.children(internal).unwrap().len(), 2);
     }
     
     #[test]
@@ -223,10 +279,11 @@ mod tests {
         builder.start_node(SyntaxKind::IntLiteral);
         builder.add_token(0, 2); // "42"
         builder.finish_node();
-        let root = builder.finish_node().unwrap();
+        let root_id = builder.finish_node().unwrap();
         
-        assert_eq!(root.kind(), Some(SyntaxKind::Program));
-        assert_eq!(root.width(), 2);
+        let arena = builder.arena();
+        assert_eq!(arena.kind(root_id), Some(SyntaxKind::Program));
+        assert_eq!(arena.width(root_id), 2);
     }
     
     #[test]
@@ -237,9 +294,10 @@ mod tests {
         builder.add_token(0, 1); // "1"
         builder.add_token(1, 1); // "+"
         builder.add_token(2, 1); // "2"
-        let node = builder.finish_node().unwrap();
+        let node_id = builder.finish_node().unwrap();
         
-        assert_eq!(node.width(), 3);
-        assert_eq!(node.children().unwrap().len(), 3);
+        let arena = builder.arena();
+        assert_eq!(arena.width(node_id), 3);
+        assert_eq!(arena.children(node_id).unwrap().len(), 3);
     }
 }

@@ -1977,6 +1977,7 @@ dependencies = [
  "ropey",
  "serde",
  "serde_json",
+ "slotmap",
  "tokio",
  "tower-lsp",
 ]

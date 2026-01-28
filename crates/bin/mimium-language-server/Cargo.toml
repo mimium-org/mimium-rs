@@ -14,6 +14,7 @@ serde = { version = "1.0", features = ["derive"] }
 env_logger = "0.11.5"
 ropey = "1.5.0"
 chumsky = { version = "0.11", features = ["lexical-numbers"] }
+slotmap = "1.0"
 mimium-lang = { workspace = true }
 # these plugins are needed for obtaining type information of default plugins
 mimium-midi = { workspace = true }
