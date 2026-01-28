@@ -50,9 +50,19 @@ Parses token indices into a Green Tree (Concrete Syntax Tree).
 
 - **Input**: Token indices from pre-parser
 - **Output**: Green Tree (position-independent, immutable CST)
+- Green nodes use **SlotMap-based interning** for efficient memory management
+  - Nodes stored in `GreenNodeArena` with O(1) lookups
+  - Referenced via lightweight `GreenNodeId` handles
+  - Better cache locality compared to Arc-based sharing
+  - No reference counting overhead
 - Green nodes represent the complete syntactic structure
 - Can be shared and cached across multiple uses
 - Implements recursive descent parsing
+- **Tuple and Record Support**:
+  - Uses lookahead to distinguish tuples `(a, b)` from parenthesized expressions `(a)`
+  - Uses lookahead to distinguish records `{a = 1}` from blocks `{stmt}`
+  - Tuples require a comma (single element tuples need trailing comma)
+  - Records require field assignment pattern `ident = expr`
 
 ### 4. AST Parser (`red.rs`)
 
@@ -67,6 +77,10 @@ Converts Green Tree to Red Tree and AST.
   - Enables efficient upward navigation (e.g., finding enclosing function, scope)
   - Avoids circular references using `Weak<RedNode>`
   - Provides `parent()`, `ancestors()`, and `is_descendant_of()` methods
+- **Let-body-then Chain Transformation**: When converting to AST, flat statement lists are transformed into nested Let structures
+  - Green/Red Tree: Statements stored as a flat list for lossless representation
+  - AST: Let bindings nested as `Let(x, value, Let(y, value2, body))` for semantic analysis
+  - Matches the structure expected by the main mimium compiler
 - AST is suitable for semantic analysis
 
 ## Usage Example
