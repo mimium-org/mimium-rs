@@ -4,6 +4,24 @@ use super::green::{GreenNodeArena, GreenNodeId, GreenTreeBuilder, SyntaxKind};
 use super::preparser::PreParsedTokens;
 use super::token::{LosslessToken, TokenKind};
 
+/// Helper trait to reduce node boilerplate
+trait NodeBuilder {
+    fn emit_node<F>(&mut self, kind: SyntaxKind, f: F)
+    where
+        F: FnOnce(&mut Self);
+}
+
+impl NodeBuilder for Parser<'_> {
+    fn emit_node<F>(&mut self, kind: SyntaxKind, f: F)
+    where
+        F: FnOnce(&mut Self),
+    {
+        self.builder.start_node(kind);
+        f(self);
+        self.builder.finish_node();
+    }
+}
+
 /// Parser state
 pub struct Parser<'a> {
     tokens: Vec<LosslessToken>,
@@ -89,101 +107,92 @@ impl<'a> Parser<'a> {
 
     /// Parse a statement
     fn parse_statement(&mut self) {
-        self.builder.start_node(SyntaxKind::Statement);
-
-        match self.peek() {
-            Some(TokenKind::Function) => self.parse_function_decl(),
-            Some(TokenKind::Let) => self.parse_let_decl(),
-            Some(TokenKind::LetRec) => self.parse_letrec_decl(),
-            _ => {
-                // Try parsing as expression
-                self.parse_expr();
+        self.emit_node(SyntaxKind::Statement, |this| {
+            match this.peek() {
+                Some(TokenKind::Function) => this.parse_function_decl(),
+                Some(TokenKind::Let) => this.parse_let_decl(),
+                Some(TokenKind::LetRec) => this.parse_letrec_decl(),
+                _ => {
+                    // Try parsing as expression
+                    this.parse_expr();
+                }
             }
-        }
-
-        self.builder.finish_node();
+        });
     }
 
     /// Parse function declaration: fn name(params) { body }
     fn parse_function_decl(&mut self) {
-        self.builder.start_node(SyntaxKind::FunctionDecl);
+        self.emit_node(SyntaxKind::FunctionDecl, |this| {
+            this.expect(TokenKind::Function);
 
-        self.expect(TokenKind::Function);
-
-        // Mark function name with IdentFunction kind
-        if self.check(TokenKind::Ident) {
-            if let Some(&token_idx) = self.preparsed.token_indices.get(self.current) {
-                self.tokens[token_idx].kind = TokenKind::IdentFunction;
+            // Mark function name with IdentFunction kind
+            if this.check(TokenKind::Ident) {
+                if let Some(&token_idx) = this.preparsed.token_indices.get(this.current) {
+                    this.tokens[token_idx].kind = TokenKind::IdentFunction;
+                }
+                this.bump();
             }
-            self.bump();
-        }
 
-        // Parameters
-        if self.check(TokenKind::ParenBegin) {
-            self.parse_param_list();
-        }
+            // Parameters
+            if this.check(TokenKind::ParenBegin) {
+                this.parse_param_list();
+            }
 
-        // Body
-        if self.check(TokenKind::BlockBegin) {
-            self.parse_block_expr();
-        }
-
-        self.builder.finish_node();
+            // Body
+            if this.check(TokenKind::BlockBegin) {
+                this.parse_block_expr();
+            }
+        });
     }
 
     /// Parse let declaration: let name = expr
     fn parse_let_decl(&mut self) {
-        self.builder.start_node(SyntaxKind::LetDecl);
+        self.emit_node(SyntaxKind::LetDecl, |this| {
+            this.expect(TokenKind::Let);
+            this.expect(TokenKind::Ident); // variable name
 
-        self.expect(TokenKind::Let);
-        self.expect(TokenKind::Ident); // variable name
-
-        if self.expect(TokenKind::Assign) {
-            self.parse_expr();
-        }
-
-        self.builder.finish_node();
+            if this.expect(TokenKind::Assign) {
+                this.parse_expr();
+            }
+        });
     }
 
     /// Parse letrec declaration
     fn parse_letrec_decl(&mut self) {
-        self.builder.start_node(SyntaxKind::LetRecDecl);
+        self.emit_node(SyntaxKind::LetRecDecl, |this| {
+            this.expect(TokenKind::LetRec);
+            this.expect(TokenKind::Ident);
 
-        self.expect(TokenKind::LetRec);
-        self.expect(TokenKind::Ident);
-
-        if self.expect(TokenKind::Assign) {
-            self.parse_expr();
-        }
-
-        self.builder.finish_node();
+            if this.expect(TokenKind::Assign) {
+                this.parse_expr();
+            }
+        });
     }
 
     /// Parse parameter list: (param1, param2, ...)
     fn parse_param_list(&mut self) {
-        self.builder.start_node(SyntaxKind::ParamList);
+        self.emit_node(SyntaxKind::ParamList, |this| {
+            this.expect(TokenKind::ParenBegin);
 
-        self.expect(TokenKind::ParenBegin);
-
-        while !self.check(TokenKind::ParenEnd) && !self.is_at_end() {
-            // Mark parameter name with IdentParameter kind
-            if self.check(TokenKind::Ident) {
-                if let Some(&token_idx) = self.preparsed.token_indices.get(self.current) {
-                    // Change token kind to IdentParameter
-                    self.tokens[token_idx].kind = TokenKind::IdentParameter;
+            while !this.check(TokenKind::ParenEnd) && !this.is_at_end() {
+                // Mark parameter name with IdentParameter kind
+                if this.check(TokenKind::Ident) {
+                    if let Some(&token_idx) = this.preparsed.token_indices.get(this.current) {
+                        // Change token kind to IdentParameter
+                        this.tokens[token_idx].kind = TokenKind::IdentParameter;
+                    }
+                    this.bump();
                 }
-                self.bump();
+
+                if this.check(TokenKind::Comma) {
+                    this.bump();
+                } else {
+                    break;
+                }
             }
 
-            if self.check(TokenKind::Comma) {
-                self.bump();
-            } else {
-                break;
-            }
-        }
-
-        self.expect(TokenKind::ParenEnd);
-        self.builder.finish_node();
+            this.expect(TokenKind::ParenEnd);
+        });
     }
 
     /// Parse expression (simplified)
@@ -195,27 +204,27 @@ impl<'a> Parser<'a> {
     fn parse_primary(&mut self) {
         match self.peek() {
             Some(TokenKind::Int) => {
-                self.builder.start_node(SyntaxKind::IntLiteral);
-                self.bump();
-                self.builder.finish_node();
+                self.emit_node(SyntaxKind::IntLiteral, |this| {
+                    this.bump();
+                });
             }
             Some(TokenKind::Float) => {
-                self.builder.start_node(SyntaxKind::FloatLiteral);
-                self.bump();
-                self.builder.finish_node();
+                self.emit_node(SyntaxKind::FloatLiteral, |this| {
+                    this.bump();
+                });
             }
             Some(TokenKind::Str) => {
-                self.builder.start_node(SyntaxKind::StringLiteral);
-                self.bump();
-                self.builder.finish_node();
+                self.emit_node(SyntaxKind::StringLiteral, |this| {
+                    this.bump();
+                });
             }
             Some(TokenKind::LambdaArgBeginEnd) => {
                 self.parse_lambda_expr();
             }
             Some(TokenKind::Ident) => {
-                self.builder.start_node(SyntaxKind::Identifier);
-                self.bump();
-                self.builder.finish_node();
+                self.emit_node(SyntaxKind::Identifier, |this| {
+                    this.bump();
+                });
             }
             Some(TokenKind::ParenBegin) => {
                 // Need lookahead to distinguish tuple from parenthesized expression
@@ -254,59 +263,57 @@ impl<'a> Parser<'a> {
 
     /// Parse lambda expression: |x, y| expr
     fn parse_lambda_expr(&mut self) {
-        self.builder.start_node(SyntaxKind::LambdaExpr);
+        self.emit_node(SyntaxKind::LambdaExpr, |this| {
+            // Opening '|'
+            this.expect(TokenKind::LambdaArgBeginEnd);
 
-        // Opening '|'
-        self.expect(TokenKind::LambdaArgBeginEnd);
-
-        // Parameters
-        while !self.check(TokenKind::LambdaArgBeginEnd) && !self.is_at_end() {
-            if self.check(TokenKind::Ident) {
-                if let Some(&token_idx) = self.preparsed.token_indices.get(self.current) {
-                    self.tokens[token_idx].kind = TokenKind::IdentParameter;
+            // Parameters
+            while !this.check(TokenKind::LambdaArgBeginEnd) && !this.is_at_end() {
+                if this.check(TokenKind::Ident) {
+                    if let Some(&token_idx) = this.preparsed.token_indices.get(this.current) {
+                        this.tokens[token_idx].kind = TokenKind::IdentParameter;
+                    }
+                    this.bump();
+                } else {
+                    // Skip unexpected tokens in parameter list to recover
+                    this.bump();
                 }
-                self.bump();
-            } else {
-                // Skip unexpected tokens in parameter list to recover
-                self.bump();
-            }
 
-            if self.check(TokenKind::Comma) {
-                self.bump();
-            } else if !self.check(TokenKind::LambdaArgBeginEnd) {
-                // Invalid separator; try to recover by stopping params
-                break;
-            }
-        }
-
-        // Closing '|'
-        self.expect(TokenKind::LambdaArgBeginEnd);
-
-        // Optional return type annotation after '->'. We skip its tokens for now.
-        if self.check(TokenKind::Arrow) {
-            self.bump();
-            while !self.is_at_end() {
-                match self.peek() {
-                    // Stop before the lambda body expression
-                    Some(TokenKind::BlockBegin)
-                    | Some(TokenKind::ParenBegin)
-                    | Some(TokenKind::Ident)
-                    | Some(TokenKind::Int)
-                    | Some(TokenKind::Float)
-                    | Some(TokenKind::Str)
-                    | Some(TokenKind::If)
-                    | Some(TokenKind::LambdaArgBeginEnd) => break,
-                    _ => self.bump(),
+                if this.check(TokenKind::Comma) {
+                    this.bump();
+                } else if !this.check(TokenKind::LambdaArgBeginEnd) {
+                    // Invalid separator; try to recover by stopping params
+                    break;
                 }
             }
-        }
 
-        // Body expression
-        if !self.is_at_end() {
-            self.parse_expr();
-        }
+            // Closing '|'
+            this.expect(TokenKind::LambdaArgBeginEnd);
 
-        self.builder.finish_node();
+            // Optional return type annotation after '->'. We skip its tokens for now.
+            if this.check(TokenKind::Arrow) {
+                this.bump();
+                while !this.is_at_end() {
+                    match this.peek() {
+                        // Stop before the lambda body expression
+                        Some(TokenKind::BlockBegin)
+                        | Some(TokenKind::ParenBegin)
+                        | Some(TokenKind::Ident)
+                        | Some(TokenKind::Int)
+                        | Some(TokenKind::Float)
+                        | Some(TokenKind::Str)
+                        | Some(TokenKind::If)
+                        | Some(TokenKind::LambdaArgBeginEnd) => break,
+                        _ => this.bump(),
+                    }
+                }
+            }
+
+            // Body expression
+            if !this.is_at_end() {
+                this.parse_expr();
+            }
+        });
     }
 
     /// Check if current position is a tuple expression
@@ -356,81 +363,76 @@ impl<'a> Parser<'a> {
 
     /// Parse tuple expression: (a, b, c)
     fn parse_tuple_expr(&mut self) {
-        self.builder.start_node(SyntaxKind::TupleExpr);
+        self.emit_node(SyntaxKind::TupleExpr, |this| {
+            this.expect(TokenKind::ParenBegin);
 
-        self.expect(TokenKind::ParenBegin);
+            if !this.check(TokenKind::ParenEnd) {
+                this.parse_expr();
 
-        if !self.check(TokenKind::ParenEnd) {
-            self.parse_expr();
-
-            while self.check(TokenKind::Comma) {
-                self.bump(); // ,
-                if !self.check(TokenKind::ParenEnd) {
-                    self.parse_expr();
+                while this.check(TokenKind::Comma) {
+                    this.bump(); // ,
+                    if !this.check(TokenKind::ParenEnd) {
+                        this.parse_expr();
+                    }
                 }
             }
-        }
 
-        self.expect(TokenKind::ParenEnd);
-        self.builder.finish_node();
+            this.expect(TokenKind::ParenEnd);
+        });
     }
 
     /// Parse record expression: {field1 = expr1, field2 = expr2}
     fn parse_record_expr(&mut self) {
-        self.builder.start_node(SyntaxKind::RecordExpr);
+        self.emit_node(SyntaxKind::RecordExpr, |this| {
+            this.expect(TokenKind::BlockBegin);
 
-        self.expect(TokenKind::BlockBegin);
+            if !this.check(TokenKind::BlockEnd) {
+                // Parse field: name = expr
+                this.expect(TokenKind::Ident); // field name
+                this.expect(TokenKind::Assign);
+                this.parse_expr();
 
-        if !self.check(TokenKind::BlockEnd) {
-            // Parse field: name = expr
-            self.expect(TokenKind::Ident); // field name
-            self.expect(TokenKind::Assign);
-            self.parse_expr();
-
-            while self.check(TokenKind::Comma) {
-                self.bump(); // ,
-                if !self.check(TokenKind::BlockEnd) {
-                    self.expect(TokenKind::Ident); // field name
-                    self.expect(TokenKind::Assign);
-                    self.parse_expr();
+                while this.check(TokenKind::Comma) {
+                    this.bump(); // ,
+                    if !this.check(TokenKind::BlockEnd) {
+                        this.expect(TokenKind::Ident); // field name
+                        this.expect(TokenKind::Assign);
+                        this.parse_expr();
+                    }
                 }
             }
-        }
 
-        self.expect(TokenKind::BlockEnd);
-        self.builder.finish_node();
+            this.expect(TokenKind::BlockEnd);
+        });
     }
 
     /// Parse block expression: { statements }
     fn parse_block_expr(&mut self) {
-        self.builder.start_node(SyntaxKind::BlockExpr);
+        self.emit_node(SyntaxKind::BlockExpr, |this| {
+            this.expect(TokenKind::BlockBegin);
 
-        self.expect(TokenKind::BlockBegin);
+            while !this.check(TokenKind::BlockEnd) && !this.is_at_end() {
+                this.parse_statement();
+            }
 
-        while !self.check(TokenKind::BlockEnd) && !self.is_at_end() {
-            self.parse_statement();
-        }
-
-        self.expect(TokenKind::BlockEnd);
-        self.builder.finish_node();
+            this.expect(TokenKind::BlockEnd);
+        });
     }
 
     /// Parse if expression: if cond { then } else { else }
     fn parse_if_expr(&mut self) {
-        self.builder.start_node(SyntaxKind::IfExpr);
+        self.emit_node(SyntaxKind::IfExpr, |this| {
+            this.expect(TokenKind::If);
+            this.parse_expr(); // condition
 
-        self.expect(TokenKind::If);
-        self.parse_expr(); // condition
+            if this.check(TokenKind::BlockBegin) {
+                this.parse_block_expr(); // then branch
+            }
 
-        if self.check(TokenKind::BlockBegin) {
-            self.parse_block_expr(); // then branch
-        }
-
-        if self.expect(TokenKind::Else) && self.check(TokenKind::BlockBegin) {
-            self.parse_block_expr(); // else branch
-        }
-
-        self.builder.finish_node();
+            if this.expect(TokenKind::Else) && this.check(TokenKind::BlockBegin) {
+                this.parse_block_expr(); // else branch
+            }
+        });
     }
 }
 
