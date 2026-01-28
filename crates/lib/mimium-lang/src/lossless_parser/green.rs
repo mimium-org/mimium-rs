@@ -120,6 +120,7 @@ pub enum SyntaxKind {
     // Expressions
     BinaryExpr,
     UnaryExpr,
+    ParenExpr,
     CallExpr,
     FieldAccess,
     IndexExpr,
@@ -183,6 +184,7 @@ impl std::fmt::Display for SyntaxKind {
             SyntaxKind::LetRecDecl => write!(f, "LetRecDecl"),
             SyntaxKind::BinaryExpr => write!(f, "BinaryExpr"),
             SyntaxKind::UnaryExpr => write!(f, "UnaryExpr"),
+            SyntaxKind::ParenExpr => write!(f, "ParenExpr"),
             SyntaxKind::CallExpr => write!(f, "CallExpr"),
             SyntaxKind::FieldAccess => write!(f, "FieldAccess"),
             SyntaxKind::IndexExpr => write!(f, "IndexExpr"),

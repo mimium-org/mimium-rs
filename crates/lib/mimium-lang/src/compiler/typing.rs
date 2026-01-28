@@ -537,6 +537,12 @@ impl InferContext {
                 self.env.add_bind(&[(id, (pat_t, self.stage))]);
                 Ok::<TypeNodeId, Vec<Error>>(pat_t)
             }
+            Pattern::Placeholder => {
+                // Placeholder doesn't bind anything, just check the type
+                let pat_t = self.convert_unknown_to_intermediate(ty, loc_p);
+                log::trace!("bind _ (placeholder) : {}", pat_t.to_type().to_string());
+                Ok::<TypeNodeId, Vec<Error>>(pat_t)
+            }
             Pattern::Tuple(pats) => {
                 let elems = pats.iter().map(|p| bind_item(p.clone())).try_collect()?; //todo multiple errors
                 let res = Type::Tuple(elems).into_id_with_location(loc_p);

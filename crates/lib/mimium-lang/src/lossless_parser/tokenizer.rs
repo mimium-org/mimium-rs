@@ -113,7 +113,7 @@ where
         just(".").to(TokenKind::Dot),
         just(",").to(TokenKind::Comma),
         just(":").to(TokenKind::Colon),
-        just(";").to(TokenKind::SemiColon),
+        just(";").to(TokenKind::LineBreak), // Semicolon treated as linebreak
         just("(").to(TokenKind::ParenBegin),
         just(")").to(TokenKind::ParenEnd),
         just("[").to(TokenKind::ArrayBegin),

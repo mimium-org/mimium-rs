@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::ast::program::Program;
-use crate::compiler::parser::parse;
+use crate::lossless_parser::parse_program_lossless;
 use crate::utils::error::{ReportableError, SimpleError};
 use crate::utils::fileloader;
 use crate::utils::metadata::{Location, Span};
@@ -25,7 +25,19 @@ pub(super) fn resolve_include(
     let res = fileloader::load_mmmlibfile(mmm_filepath, target_path)
         .map_err(|e| make_vec_error(e, loc.clone()));
     match res {
-        Ok((content, path)) => parse(&content, Some(path)),
+        Ok((content, path)) => {
+            let (prog, parse_errs) = parse_program_lossless(&content, path);
+            let errs = parse_errs
+                .into_iter()
+                .map(|e| -> Box<dyn ReportableError> {
+                    Box::new(SimpleError {
+                        message: format!("Parse error: {:?}", e),
+                        span: loc.clone(),
+                    })
+                })
+                .collect();
+            (prog, errs)
+        }
         Err(err) => (Program::default(), err),
     }
 }

@@ -2,13 +2,12 @@ use std::path::PathBuf;
 
 use mimium_lang::{
     interner::ExprNodeId,
+    lossless_parser::{
+        green::GreenNode, GreenNodeArena, GreenNodeId, LosslessToken, SyntaxKind, TokenKind,
+    },
     utils::{error::ReportableError, metadata::Span},
 };
 use tower_lsp::lsp_types::SemanticTokenType;
-
-use mimium_lang::lossless_parser::{
-    GreenNodeArena, GreenNodeId, LosslessToken, SyntaxKind, TokenKind, green::GreenNode,
-};
 
 /// Same as lstp_types::SemanticToken but lacks some fields like token_modifiers_bitset.
 #[derive(Debug)]
@@ -37,7 +36,6 @@ pub struct ParseResult {
     pub semantic_tokens: Vec<ImCompleteSemanticToken>,
     pub errors: Vec<Box<dyn ReportableError>>,
 }
-use mimium_lang::compiler::parser::Token;
 
 fn get_token_id(semt: &SemanticTokenType) -> usize {
     LEGEND_TYPE.iter().position(|item| item == semt).unwrap()
@@ -113,48 +111,31 @@ fn token_kind_to_semantic_index(kind: TokenKind) -> Option<usize> {
     };
     Some(token_type)
 }
-fn token_to_semantic_token(token: &Token, span: &Span) -> Option<ImCompleteSemanticToken> {
-    let token_type = match token {
-        Token::Function
-        | Token::Let
-        | Token::LetRec
-        | Token::If
-        | Token::Else
-        | Token::SelfLit
-        | Token::Now
-        | Token::SampleRate => get_token_id(&SemanticTokenType::KEYWORD),
-        Token::Ident(_) => get_token_id(&SemanticTokenType::VARIABLE),
-        Token::Float(_) | Token::Int(_) => get_token_id(&SemanticTokenType::NUMBER),
-        Token::Str(_) => get_token_id(&SemanticTokenType::STRING),
-        Token::Comment(_) => get_token_id(&SemanticTokenType::COMMENT),
-        Token::Assign | Token::Dollar | Token::BackQuote | Token::Op(_) => {
-            get_token_id(&SemanticTokenType::OPERATOR)
-        }
-        Token::StringType | Token::IntegerType | Token::FloatType | Token::StructType => {
-            get_token_id(&SemanticTokenType::TYPE)
-        }
-        Token::MacroExpand(_) => get_token_id(&SemanticTokenType::MACRO),
 
-        _ => return None,
-    };
-    Some(ImCompleteSemanticToken {
-        start: span.start,
-        length: span.end - span.start,
-        token_type,
-    })
-}
-fn lossless_token_to_semantic_token(token: &LosslessToken) -> Option<ImCompleteSemanticToken> {
-    token_kind_to_semantic_index(token.kind).map(|token_type| ImCompleteSemanticToken {
-        start: token.start,
-        length: token.length,
-        token_type,
-    })
-}
+// Legacy function - no longer used with lossless parser
+// fn token_to_semantic_token(token: &Token, span: &Span) -> Option<ImCompleteSemanticToken> {
+//     ...
+// }
+
+// No longer needed - token_kind_to_semantic_index handles this directly
+// fn lossless_token_to_semantic_token(token: &LosslessToken) -> Option<ImCompleteSemanticToken> {
+//     token_kind_to_semantic_index(token.kind).map(|token_type| ImCompleteSemanticToken {
+//         start: token.start,
+//         length: token.length,
+//         token_type,
+//     })
+// }
 
 pub fn tokens_from_lossless(tokens: &[LosslessToken]) -> Vec<ImCompleteSemanticToken> {
     tokens
         .iter()
-        .filter_map(lossless_token_to_semantic_token)
+        .filter_map(|token| {
+            token_kind_to_semantic_index(token.kind).map(|token_type| ImCompleteSemanticToken {
+                start: token.start,
+                length: token.length,
+                token_type,
+            })
+        })
         .collect()
 }
 
@@ -310,20 +291,25 @@ pub fn tokens_from_green(
 }
 
 pub fn parse(src: &str, uri: &str) -> ParseResult {
-    let (tokens, mut errs) = mimium_lang::compiler::parser::lex(src, Some(PathBuf::from(uri)));
-    let semantic_token = if let Some(tks) = tokens {
-        tks.iter()
-            .filter_map(|(token, span)| token_to_semantic_token(token, &(span.start..span.end)))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let (ast, parse_errs) =
-        mimium_lang::compiler::parser::parse_to_expr(src, Some(PathBuf::from(uri)));
-    errs.extend(parse_errs);
+    use mimium_lang::lossless_parser::{parse_to_expr, tokenize};
+    let tokens = tokenize(src);
+    let semantic_tokens = tokens
+        .iter()
+        .filter_map(|token| {
+            let span = token.start..token.end();
+            token_kind_to_semantic_index(token.kind).map(|token_type| ImCompleteSemanticToken {
+                start: span.start,
+                length: span.end - span.start,
+                token_type,
+            })
+        })
+        .collect();
+    
+    let (ast, parse_errs) = parse_to_expr(src, Some(PathBuf::from(uri)));
+    
     ParseResult {
         ast,
-        semantic_tokens: semantic_token,
-        errors: errs,
+        semantic_tokens,
+        errors: parse_errs,
     }
 }

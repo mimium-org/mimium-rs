@@ -61,7 +61,7 @@ pub mod tokenizer;
 // Re-export main types and functions
 pub use cst_parser::parse_cst;
 pub use green::{GreenNodeArena, GreenNodeId, SyntaxKind};
-pub use lower::parse_program_lossless;
+pub use lower::{add_global_context, parse_program_lossless, parse_to_expr};
 pub use preparser::{PreParsedTokens, preparse};
 pub use red::{AstNode, RedNode, red_to_ast};
 pub use token::{LosslessToken, TokenKind};

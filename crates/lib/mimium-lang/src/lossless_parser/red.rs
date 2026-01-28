@@ -258,7 +258,26 @@ pub fn red_to_ast(
                         }
                     }
                     _ => {
-                        if value.is_none() {
+                        // Attempt to extract identifier from pattern subtree if name is empty
+                        if name.is_empty()
+                            && matches!(child.kind(arena), Some(SyntaxKind::Pattern) | Some(SyntaxKind::SinglePattern) | Some(SyntaxKind::TuplePattern) | Some(SyntaxKind::RecordPattern))
+                        {
+                            // DFS over subtree to find first identifier token
+                            let mut stack = vec![child.clone()];
+                            while let Some(node) = stack.pop() {
+                                let g = arena.get(node.green_id());
+                                if let super::green::GreenNode::Token { token_index, .. } = g {
+                                    if let Some(tok) = tokens.get(*token_index)
+                                        && matches!(tok.kind, TokenKind::Ident | TokenKind::IdentVariable)
+                                    {
+                                        name = tok.text(source).to_string();
+                                        break;
+                                    }
+                                } else {
+                                    stack.extend(node.children(arena));
+                                }
+                            }
+                        } else if value.is_none() {
                             value = Some(Box::new(red_to_ast(child, source, tokens, arena)));
                         }
                     }

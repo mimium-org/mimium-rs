@@ -255,6 +255,24 @@ impl<'a> Parser<'a> {
         self.peek().is_none_or(|k| k == TokenKind::Eof)
     }
 
+    /// Check if the previous token has a linebreak in its trailing trivia
+    fn has_trailing_linebreak(&self) -> bool {
+        if self.current == 0 {
+            return false;
+        }
+        let prev_idx = self.current - 1;
+        if let Some(trivia_indices) = self.preparsed.trailing_trivia_map.get(&prev_idx) {
+            for &trivia_idx in trivia_indices {
+                if let Some(token) = self.tokens.get(trivia_idx) {
+                    if token.kind == TokenKind::LineBreak {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Parse a statement
     fn parse_statement(&mut self) {
         self.emit_node(SyntaxKind::Statement, |this| {
@@ -361,6 +379,12 @@ impl<'a> Parser<'a> {
                 this.parse_param_list();
             }
 
+            // Optional return type annotation after '->'
+            if this.check(TokenKind::Arrow) {
+                this.bump();
+                this.parse_type();
+            }
+
             // Body
             if this.check(TokenKind::BlockBegin) {
                 this.parse_block_expr();
@@ -373,6 +397,11 @@ impl<'a> Parser<'a> {
         self.emit_node(SyntaxKind::LetDecl, |this| {
             this.expect(TokenKind::Let);
             this.parse_pattern(); // Parse pattern instead of just identifier
+
+            // Optional type annotation after ':'
+            if this.check(TokenKind::Colon) {
+                this.parse_type_annotation();
+            }
 
             if this.expect(TokenKind::Assign) {
                 this.parse_expr();
@@ -523,12 +552,22 @@ impl<'a> Parser<'a> {
     fn parse_expr_with_precedence(&mut self, min_prec: usize) {
         self.parse_prefix_expr();
 
+        // In statement context (min_prec == 0), stop at linebreak after prefix
+        if min_prec == 0 && self.has_trailing_linebreak() {
+            return;
+        }
+
         while let Some(token_kind) = self.peek() {
             if let Some(prec) = self.get_infix_precedence(token_kind) {
                 if prec < min_prec {
                     break;
                 }
                 self.parse_infix_expr(prec);
+                
+                // After parsing infix, check for linebreak in statement context
+                if min_prec == 0 && self.has_trailing_linebreak() {
+                    break;
+                }
             } else {
                 break;
             }
@@ -646,12 +685,13 @@ impl<'a> Parser<'a> {
             this.expect(TokenKind::ParenBegin);
 
             if !this.check(TokenKind::ParenEnd) {
-                this.parse_expr();
+                // Use precedence 1 to avoid statement boundary detection within argument list
+                this.parse_expr_with_precedence(1);
 
                 while this.check(TokenKind::Comma) {
                     this.bump(); // ,
                     if !this.check(TokenKind::ParenEnd) {
-                        this.parse_expr();
+                        this.parse_expr_with_precedence(1);
                     }
                 }
             }
@@ -849,9 +889,11 @@ impl<'a> Parser<'a> {
                 if self.is_tuple_expr() {
                     self.parse_tuple_expr();
                 } else {
-                    self.bump(); // (
-                    self.parse_expr();
-                    self.expect(TokenKind::ParenEnd);
+                    self.emit_node(SyntaxKind::ParenExpr, |this| {
+                        this.bump(); // (
+                        this.parse_expr();
+                        this.expect(TokenKind::ParenEnd);
+                    });
                 }
             }
             Some(TokenKind::BlockBegin) => {
@@ -1072,31 +1114,42 @@ impl<'a> Parser<'a> {
 
             while !this.check(TokenKind::BlockEnd) && !this.is_at_end() {
                 this.parse_statement();
+                
+                // After a statement, if there's trailing linebreak/semicolon, 
+                // prepare for next statement. Otherwise, assume statement continues
+                // (but note that parse_statement itself stops at natural boundaries)
+                if this.has_trailing_linebreak() {
+                    // Linebreak found - ready for next statement
+                    continue;
+                }
+                // If no linebreak and not at block end, something may be off
+                // but let parse_statement handle it in next iteration
             }
 
             this.expect(TokenKind::BlockEnd);
         });
     }
 
-    /// Parse if expression: if cond { then } else { else }
+    /// Parse if expression: if cond then-expr [else expr]
     fn parse_if_expr(&mut self) {
         self.emit_node(SyntaxKind::IfExpr, |this| {
             this.expect(TokenKind::If);
             this.parse_expr(); // condition
 
             if this.check(TokenKind::BlockBegin) {
-                this.parse_block_expr(); // then branch
+                this.parse_block_expr();
+            } else {
+                this.parse_expr();
             }
 
-            // Else branch: can be either block or if expression (for else-if chains)
             if this.check(TokenKind::Else) {
                 this.bump();
                 if this.check(TokenKind::If) {
-                    // Else-if: parse another if expression
                     this.parse_if_expr();
                 } else if this.check(TokenKind::BlockBegin) {
-                    // Regular else block
                     this.parse_block_expr();
+                } else {
+                    this.parse_expr();
                 }
             }
         });

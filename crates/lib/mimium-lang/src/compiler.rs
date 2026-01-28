@@ -1,7 +1,6 @@
 pub mod bytecodegen;
 pub(crate) mod intrinsics;
 pub mod mirgen;
-pub mod parser;
 pub mod typing;
 use crate::plugin::{ExtFunTypeInfo, MacroFunction};
 
@@ -125,6 +124,7 @@ use mirgen::recursecheck;
 
 use crate::{
     interner::{ExprNodeId, Symbol, TypeNodeId},
+    lossless_parser,
     mir::Mir,
     runtime::vm,
     types::Type,
@@ -134,9 +134,9 @@ pub fn emit_ast(
     src: &str,
     path: Option<PathBuf>,
 ) -> Result<ExprNodeId, Vec<Box<dyn ReportableError>>> {
-    let (ast, errs) = parser::parse_to_expr(src, path.clone());
+    let (ast, errs) = lossless_parser::parse_to_expr(src, path.clone());
     if errs.is_empty() {
-        let ast = parser::add_global_context(ast, path.clone().unwrap_or_default());
+        let ast = lossless_parser::add_global_context(ast, path.clone().unwrap_or_default());
         let (ast, _errs) =
             mirgen::convert_pronoun::convert_pronoun(ast, path.clone().unwrap_or_default());
         Ok(recursecheck::convert_recurse(
@@ -192,7 +192,7 @@ impl Context {
     }
     pub fn emit_mir(&self, src: &str) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
         let path = self.file_path.clone();
-        let (ast, mut parse_errs) = parser::parse_to_expr(src, path);
+        let (ast, mut parse_errs) = lossless_parser::parse_to_expr(src, path);
         // let ast = parser::add_global_context(ast, self.file_path.unwrap_or_default());
         let mir = mirgen::compile(
             ast,

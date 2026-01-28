@@ -101,6 +101,7 @@ mod patterns {
     {
         match pat {
             Pattern::Single(name) => allocator.text(name),
+            Pattern::Placeholder => allocator.text("_"),
             Pattern::Tuple(pats) => {
                 let docs = pats
                     .into_iter()
@@ -523,8 +524,20 @@ pub fn pretty_print(
     file_path: &Option<PathBuf>,
     width: usize,
 ) -> Result<String, Vec<Box<dyn ReportableError>>> {
-    use mimium_lang::compiler::parser::parse;
-    let (prog, errs) = parse(src, file_path.clone());
+    use mimium_lang::lossless_parser::parse_program_lossless;
+    let (prog, parse_errs) = parse_program_lossless(src, file_path.clone().unwrap_or_default());
+    let errs = parse_errs
+        .into_iter()
+        .map(|e| -> Box<dyn ReportableError> {
+            Box::new(mimium_lang::utils::error::SimpleError {
+                message: format!("Parse error: {:?}", e),
+                span: mimium_lang::utils::metadata::Location {
+                    span: 0..0,
+                    path: file_path.clone().unwrap_or_default(),
+                },
+            })
+        })
+        .collect::<Vec<_>>();
     if !errs.is_empty() {
         return Err(errs);
     }

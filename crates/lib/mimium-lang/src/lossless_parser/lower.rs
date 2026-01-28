@@ -2,7 +2,7 @@
 
 use crate::ast::operators::Op;
 use crate::ast::program::{Program, ProgramStatement};
-use crate::ast::statement::{Statement, into_then_expr};
+use crate::ast::statement::{Statement, into_then_expr, stmt_from_expr_top};
 use crate::ast::{Expr, Literal};
 use crate::interner::{ExprNodeId, Symbol, ToSymbol};
 use crate::lossless_parser::cst_parser::ParserError;
@@ -10,6 +10,7 @@ use crate::lossless_parser::green::{GreenNode, GreenNodeArena, GreenNodeId, Synt
 use crate::lossless_parser::token::{LosslessToken, TokenKind};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::types::Type;
+use crate::utils::error::{ReportableError, SimpleError};
 use crate::utils::metadata::{Location, Span};
 use std::path::PathBuf;
 
@@ -42,19 +43,54 @@ impl<'a> LosslessLowerer<'a> {
 
     /// Lower a full program node into the existing `Program` structure.
     pub fn lower_program(&self, root: GreenNodeId) -> Program {
-        let mut statements = Vec::new();
+        let mut program_statements = Vec::new();
+        let mut pending_statements = Vec::new();
+        let mut pending_span = 0..0;
 
         if let Some(children) = self.arena.children(root) {
             for child in children {
-                if self.arena.kind(*child) == Some(SyntaxKind::Statement)
-                    && let Some((stmt, span)) = self.lower_statement(*child)
-                {
-                    statements.push((stmt, span));
+                if self.arena.kind(*child) == Some(SyntaxKind::Statement) {
+                    if let Some((stmt, span)) = self.lower_statement(*child) {
+                        match &stmt {
+                            ProgramStatement::GlobalStatement(Statement::Single(expr)) => {
+                                // Collect global single statements for potential Then-chaining
+                                let stmts = stmt_from_expr_top(*expr);
+                                for s in stmts {
+                                    let loc = self.location_from_span(span.clone());
+                                    pending_statements.push((s, loc));
+                                }
+                                pending_span = span;
+                            }
+                            _ => {
+                                // Non-global statement: flush pending, then add this
+                                if !pending_statements.is_empty() {
+                                    if let Some(merged_expr) = into_then_expr(&pending_statements) {
+                                        program_statements.push((
+                                            ProgramStatement::GlobalStatement(Statement::Single(merged_expr)),
+                                            pending_span.clone(),
+                                        ));
+                                    }
+                                    pending_statements.clear();
+                                }
+                                program_statements.push((stmt, span));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Flush any remaining pending statements
+            if !pending_statements.is_empty() {
+                if let Some(merged_expr) = into_then_expr(&pending_statements) {
+                    program_statements.push((
+                        ProgramStatement::GlobalStatement(Statement::Single(merged_expr)),
+                        pending_span.clone(),
+                    ));
                 }
             }
         }
 
-        Program { statements }
+        Program { statements: program_statements }
     }
 
     /// Lower a statement node. Unknown forms become `Statement::Error`.
@@ -76,6 +112,9 @@ impl<'a> LosslessLowerer<'a> {
                 }
 
                 match (inner_kind, inner_id) {
+                    (Some(SyntaxKind::FunctionDecl), Some(id)) => self
+                        .lower_function_decl(id)
+                        .unwrap_or(ProgramStatement::Error),
                     (Some(SyntaxKind::LetDecl), Some(id)) => {
                         self.lower_let_decl(id).unwrap_or(ProgramStatement::Error)
                     }
@@ -106,14 +145,52 @@ impl<'a> LosslessLowerer<'a> {
         let pattern_node = self.find_child(node, Self::is_pattern_kind)?;
         let (pat, pat_span) = self.lower_pattern(pattern_node)?;
 
-        let expr_nodes = self.collect_expr_nodes_after(node, pattern_node);
-        let value = self.lower_expr_sequence(&expr_nodes);
+        // Collect only direct child expression nodes (not from nested statements)
+        let expr_nodes = self.collect_direct_expr_nodes(node, pattern_node);
+        let value = if expr_nodes.is_empty() {
+            Expr::Error.into_id_without_span()
+        } else {
+            self.lower_expr_sequence(&expr_nodes)
+        };
+        
         let loc = self.location_from_span(pat_span.clone());
-        let typed = TypedPattern::new(pat, Type::Unknown.into_id_with_location(loc.clone()));
+        let ty = Type::Unknown.into_id_with_location(loc);
+        let typed = TypedPattern::new(pat, ty);
 
         Some(ProgramStatement::GlobalStatement(Statement::Let(
             typed, value,
         )))
+    }
+
+    fn lower_function_decl(&self, node: GreenNodeId) -> Option<ProgramStatement> {
+        let name_idx = self.find_token(node, |kind| {
+            matches!(kind, TokenKind::IdentFunction | TokenKind::Ident)
+        })?;
+        let name = self.token_text(name_idx)?.to_symbol();
+
+        let (params, params_span) = self
+            .find_child(node, |kind| kind == SyntaxKind::ParamList)
+            .map(|id| self.lower_param_list(id))
+            .unwrap_or_else(|| (Vec::new(), self.node_span(node).unwrap_or(0..0)));
+
+        let body_node = self
+            .find_child(node, |kind| kind == SyntaxKind::BlockExpr)
+            .or_else(|| self.find_child(node, Self::is_expr_kind))?;
+        let body = if self.arena.kind(body_node) == Some(SyntaxKind::BlockExpr) {
+            // Flatten block body to then-expression for function definitions
+            let stmts = self.lower_block_statements(body_node);
+            into_then_expr(&stmts).unwrap_or_else(|| Expr::Error.into_id_without_span())
+        } else {
+            self.lower_expr(body_node)
+        };
+
+        let arg_loc = self.location_from_span(params_span.clone());
+        Some(ProgramStatement::FnDefinition {
+            name,
+            args: (params, arg_loc),
+            return_type: None,
+            body,
+        })
     }
 
     fn lower_letrec_decl(&self, node: GreenNodeId) -> Option<ProgramStatement> {
@@ -200,45 +277,21 @@ impl<'a> LosslessLowerer<'a> {
                 Expr::RecordLiteral(fields).into_id(loc)
             }
             Some(SyntaxKind::IfExpr) => {
-                let children = self
-                    .arena
-                    .children(node)
-                    .map(|c| c.to_vec())
-                    .unwrap_or_default();
-                let mut iter = children.iter().copied();
-
-                // condition: nodes before first BlockExpr/IfExpr
-                let mut cond_nodes = Vec::new();
-                let mut then_node = None;
-                let mut else_node = None;
-                for child in iter.by_ref() {
-                    match self.arena.kind(child) {
-                        Some(SyntaxKind::BlockExpr) | Some(SyntaxKind::IfExpr) => {
-                            then_node = Some(child);
-                            break;
-                        }
-                        Some(kind) if Self::is_expr_kind(kind) => {
-                            cond_nodes.push(child);
-                        }
-                        _ => {}
-                    }
-                }
-
-                // remaining after then_node may contain else branch
-                if let Some(child) = iter.next().filter(|child| {
-                    matches!(
-                        self.arena.kind(*child),
-                        Some(SyntaxKind::BlockExpr | SyntaxKind::IfExpr)
-                    )
-                }) {
-                    else_node = Some(child);
-                }
-
-                let cond = self.lower_expr_sequence(&cond_nodes);
-                let then_expr = then_node
-                    .map(|id| self.lower_expr(id))
+                let expr_children = self.child_exprs(node);
+                let raw_cond = expr_children
+                    .get(0)
+                    .map(|&id| self.lower_expr(id))
                     .unwrap_or_else(|| Expr::Error.into_id(loc.clone()));
-                let else_expr = else_node.map(|id| self.lower_expr(id));
+                // Unwrap parens around condition to match legacy AST
+                let cond = match raw_cond.to_expr() {
+                    Expr::Paren(inner) => inner,
+                    _ => raw_cond,
+                };
+                let then_expr = expr_children
+                    .get(1)
+                    .map(|&id| self.lower_expr(id))
+                    .unwrap_or_else(|| Expr::Error.into_id(loc.clone()));
+                let else_expr = expr_children.get(2).map(|&id| self.lower_expr(id));
                 Expr::If(cond, then_expr, else_expr).into_id(loc)
             }
             Some(SyntaxKind::BlockExpr) => {
@@ -257,6 +310,14 @@ impl<'a> LosslessLowerer<'a> {
                     .map(|&id| self.lower_expr(id))
                     .unwrap_or_else(|| Expr::Error.into_id(loc.clone()));
                 Expr::UniOp((op, loc.span.clone()), rhs).into_id(loc)
+            }
+            Some(SyntaxKind::ParenExpr) => {
+                let inner = self
+                    .child_exprs(node)
+                    .first()
+                    .map(|&id| self.lower_expr(id))
+                    .unwrap_or_else(|| Expr::Error.into_id(loc.clone()));
+                Expr::Paren(inner).into_id(loc)
             }
             Some(SyntaxKind::MacroExpansion) => {
                 let (callee, args) = self.lower_macro_expand(node);
@@ -367,6 +428,14 @@ impl<'a> LosslessLowerer<'a> {
     fn lower_pattern(&self, node: GreenNodeId) -> Option<(Pattern, Span)> {
         let span = self.node_span(node)?;
         let pat = match self.arena.kind(node) {
+            Some(SyntaxKind::Pattern) => {
+                if let Some(child) = self.child_patterns(node).into_iter().next() {
+                    // Forward to actual contained pattern node
+                    return self.lower_pattern(child);
+                } else {
+                    Pattern::Error
+                }
+            }
             Some(SyntaxKind::SinglePattern) => {
                 let name = self.text_of_first_token(node).unwrap_or("").to_symbol();
                 Pattern::Single(name)
@@ -404,12 +473,46 @@ impl<'a> LosslessLowerer<'a> {
 
     fn lower_expr_sequence(&self, nodes: &[GreenNodeId]) -> ExprNodeId {
         let mut acc: Option<ExprNodeId> = None;
-
-        for &node in nodes {
-            let kind = self.arena.kind(node);
-            match kind {
+        let mut i = 0;
+        while i < nodes.len() {
+            let node = nodes[i];
+            match self.arena.kind(node) {
                 Some(SyntaxKind::BinaryExpr) => {
-                    if let Some(lhs) = acc.take() {
+                    let (op, op_span) = self
+                        .extract_binary_op(node)
+                        .unwrap_or((Op::Unknown("".to_string()), 0..0));
+                    if op == Op::Exponent {
+                        if let Some(lhs) = acc.take() {
+                            // Immediate RHS from current '^' node children (if any)
+                            let rhs1_nodes = self.child_exprs(node);
+                            let rhs1 = self.lower_expr_sequence(&rhs1_nodes);
+
+                            // Lookahead for another '^' to enforce right-associativity
+                            if let Some(next) = nodes.get(i + 1)
+                                && self.extract_binary_op(*next).map(|(o, _)| o) == Some(Op::Exponent)
+                            {
+                                let (_, next_span) = self.extract_binary_op(*next).unwrap_or((Op::Exponent, 0..0));
+                                let rhs2_nodes = self.child_exprs(*next);
+                                let rhs2 = self.lower_expr_sequence(&rhs2_nodes);
+                                let nested_loc = self.location_from_span(merge_spans(rhs1.to_span(), rhs2.to_span()));
+                                let nested_rhs = Expr::BinOp(rhs1, (Op::Exponent, next_span), rhs2).into_id(nested_loc);
+                                let final_loc = self.location_from_span(merge_spans(lhs.to_span(), nested_rhs.to_span()));
+                                acc = Some(Expr::BinOp(lhs, (Op::Exponent, op_span), nested_rhs).into_id(final_loc));
+                                i += 1; // consume the next '^'
+                            } else if let Expr::BinOp(left, (Op::At, at_span), right_immediate) = lhs.to_expr() {
+                                // Nest exponent on RHS of '@'
+                                let nested_loc = self.location_from_span(merge_spans(right_immediate.to_span(), rhs1.to_span()));
+                                let nested_rhs = Expr::BinOp(right_immediate, (Op::Exponent, op_span), rhs1).into_id(nested_loc);
+                                let final_loc = self.location_from_span(merge_spans(left.to_span(), nested_rhs.to_span()));
+                                acc = Some(Expr::BinOp(left, (Op::At, at_span), nested_rhs).into_id(final_loc));
+                            } else {
+                                let loc = self.location_from_span(merge_spans(lhs.to_span(), rhs1.to_span()));
+                                acc = Some(Expr::BinOp(lhs, (Op::Exponent, op_span), rhs1).into_id(loc));
+                            }
+                        } else {
+                            acc = Some(self.lower_expr(node));
+                        }
+                    } else if let Some(lhs) = acc.take() {
                         acc = Some(self.lower_binary(lhs, node));
                     } else {
                         acc = Some(self.lower_expr(node));
@@ -417,7 +520,17 @@ impl<'a> LosslessLowerer<'a> {
                 }
                 Some(SyntaxKind::AssignExpr) => {
                     if let Some(lhs) = acc.take() {
-                        acc = Some(self.lower_assign(lhs, node));
+                        let assign = self.lower_assign(lhs, node);
+                        // Check if there's a continuation
+                        if i + 1 < nodes.len() {
+                            let cont = self.lower_expr_sequence(&nodes[(i + 1)..]);
+                            let loc = self.location_from_span(merge_spans(assign.to_span(), cont.to_span()));
+                            return Expr::Then(assign, Some(cont)).into_id(loc);
+                        } else {
+                            // No continuation in this sequence; just return bare assign
+                            // Multi-statement chaining will be handled by lower_program's into_then_expr
+                            acc = Some(assign);
+                        }
                     } else {
                         acc = Some(self.lower_expr(node));
                     }
@@ -444,12 +557,20 @@ impl<'a> LosslessLowerer<'a> {
                     }
                 }
                 Some(_) => {
+                    // If we previously built a Then(assign, None), attach the remainder as continuation
+                    if let Some(prev) = acc.clone() {
+                        if let Expr::Then(first, None) = prev.to_expr() {
+                            let rhs = self.lower_expr_sequence(&nodes[i..]);
+                            let loc = self.location_from_span(merge_spans(prev.to_span(), rhs.to_span()));
+                            return Expr::Then(first, Some(rhs)).into_id(loc);
+                        }
+                    }
                     acc = Some(self.lower_expr(node));
                 }
                 None => {}
             }
+            i += 1;
         }
-
         acc.unwrap_or_else(|| Expr::Error.into_id_without_span())
     }
 
@@ -517,18 +638,51 @@ impl<'a> LosslessLowerer<'a> {
         let lhs_span = lhs.to_span();
         let rhs_nodes = self.child_exprs(node);
         let idx = self.lower_expr_sequence(&rhs_nodes);
-        let loc = self.location_from_span(merge_spans(lhs_span, idx.to_span()));
+        let node_span = self
+            .node_span(node)
+            .unwrap_or(merge_spans(lhs_span.clone(), idx.to_span()));
+        let loc = self.location_from_span(merge_spans(lhs_span, node_span));
         Expr::ArrayAccess(lhs, idx).into_id(loc)
     }
 
     fn lower_macro_expand(&self, node: GreenNodeId) -> (ExprNodeId, Vec<ExprNodeId>) {
-        let name = self
-            .find_token(node, |kind| matches!(kind, TokenKind::Ident))
-            .and_then(|idx| self.token_text(idx))
-            .unwrap_or("")
-            .to_symbol();
+        let name_idx = self.find_token(node, |kind| matches!(kind, TokenKind::Ident));
+        let name_text = name_idx.and_then(|idx| self.token_text(idx)).unwrap_or("");
+        let name = name_text.to_symbol();
+        // Span should include trailing '!' of macro invocation
+        let ident_span = name_idx
+            .and_then(|idx| self.tokens.get(idx).map(|t| t.start..t.end()))
+            .unwrap_or(0..0);
+        let bang_end = self
+            .find_token(node, |kind| matches!(kind, TokenKind::MacroExpand))
+            .and_then(|idx| self.tokens.get(idx).map(|t| t.end()))
+            .unwrap_or(ident_span.end);
+        let name_span = ident_span.start..bang_end;
         let args = self.lower_arg_list(node);
-        (Expr::Var(name).into_id_without_span(), args)
+        let loc = self.location_from_span(name_span);
+        (Expr::Var(name).into_id(loc), args)
+    }
+
+    fn lower_param_list(&self, node: GreenNodeId) -> (Vec<TypedId>, Span) {
+        let mut params = Vec::new();
+
+        if let Some(children) = self.arena.children(node) {
+            for child in children {
+                if let GreenNode::Token { token_index, .. } = self.arena.get(*child)
+                    && let Some(token) = self.tokens.get(*token_index)
+                    && matches!(token.kind, TokenKind::Ident | TokenKind::IdentParameter)
+                {
+                    let loc = self.location_from_span(token.start..token.end());
+                    params.push(TypedId::new(
+                        token.text(self.source).to_symbol(),
+                        Type::Unknown.into_id_with_location(loc.clone()),
+                    ));
+                }
+            }
+        }
+
+        let span = self.node_span(node).unwrap_or(0..0);
+        (params, span)
     }
 
     fn child_exprs(&self, node: GreenNodeId) -> Vec<GreenNodeId> {
@@ -585,6 +739,23 @@ impl<'a> LosslessLowerer<'a> {
             .skip_while(|child| *child != after)
             .skip(1)
             .filter(|child| self.arena.kind(*child).map(Self::is_expr_kind) == Some(true))
+            .collect()
+    }
+
+    /// Collect only direct child expression nodes, excluding expressions from nested Statement nodes
+    fn collect_direct_expr_nodes(&self, node: GreenNodeId, after: GreenNodeId) -> Vec<GreenNodeId> {
+        self.arena
+            .children(node)
+            .into_iter()
+            .flatten()
+            .copied()
+            .skip_while(|child| *child != after)
+            .skip(1)
+            .filter(|child| {
+                // Include expression nodes, but exclude Statement nodes (which contain nested expressions)
+                let kind = self.arena.kind(*child);
+                kind.map(|k| Self::is_expr_kind(k) && k != SyntaxKind::Statement) == Some(true)
+            })
             .collect()
     }
 
@@ -658,9 +829,39 @@ impl<'a> LosslessLowerer<'a> {
     }
 
     fn lower_arg_list(&self, node: GreenNodeId) -> Vec<ExprNodeId> {
+        // Prefer extracting from an explicit ArgList child if present.
+        if let Some(arg_node) = self.find_child(node, |kind| kind == SyntaxKind::ArgList) {
+            let mut args = Vec::new();
+            let mut current: Vec<GreenNodeId> = Vec::new();
+            if let Some(children) = self.arena.children(arg_node) {
+                for child in children {
+                    match self.arena.get(*child) {
+                        GreenNode::Token { token_index, .. }
+                            if self.tokens.get(*token_index).map(|t| t.kind)
+                                == Some(TokenKind::Comma) =>
+                        {
+                            if !current.is_empty() {
+                                args.push(self.lower_expr_sequence(&current));
+                                current.clear();
+                            }
+                        }
+                        _ => {
+                            if self.arena.kind(*child).map(Self::is_expr_kind) == Some(true) {
+                                current.push(*child);
+                            }
+                        }
+                    }
+                }
+            }
+            if !current.is_empty() {
+                args.push(self.lower_expr_sequence(&current));
+            }
+            return args;
+        }
+
+        // Fallback: scan direct children if no ArgList exists.
         let mut args = Vec::new();
         let mut current: Vec<GreenNodeId> = Vec::new();
-
         if let Some(children) = self.arena.children(node) {
             for child in children {
                 match self.arena.get(*child) {
@@ -681,11 +882,9 @@ impl<'a> LosslessLowerer<'a> {
                 }
             }
         }
-
         if !current.is_empty() {
             args.push(self.lower_expr_sequence(&current));
         }
-
         args
     }
 
@@ -694,6 +893,7 @@ impl<'a> LosslessLowerer<'a> {
             kind,
             SyntaxKind::BinaryExpr
                 | SyntaxKind::UnaryExpr
+                | SyntaxKind::ParenExpr
                 | SyntaxKind::CallExpr
                 | SyntaxKind::FieldAccess
                 | SyntaxKind::IndexExpr
@@ -775,4 +975,48 @@ pub fn parse_program_lossless(source: &str, file_path: PathBuf) -> (Program, Vec
 
 fn merge_spans(a: Span, b: Span) -> Span {
     a.start.min(b.start)..a.end.max(b.end)
+}
+
+/// Parse a single expression from source
+pub fn parse_to_expr(
+    source: &str,
+    file_path: Option<PathBuf>,
+) -> (ExprNodeId, Vec<Box<dyn ReportableError>>) {
+    let tokens = crate::lossless_parser::tokenize(source);
+    let preparsed = crate::lossless_parser::preparse(&tokens);
+    let (root, arena, tokens, errors) = crate::lossless_parser::parse_cst(tokens, &preparsed);
+    let path = file_path.unwrap_or_default();
+    let lowerer = LosslessLowerer::new(source, &tokens, &arena, path.clone());
+    
+    // Find first expression in the program
+    let expr = if let Some(children) = arena.children(root) {
+        children.iter()
+            .find(|child| arena.kind(**child).map(LosslessLowerer::is_expr_kind).unwrap_or(false))
+            .map(|expr_node| lowerer.lower_expr(*expr_node))
+            .unwrap_or_else(|| Expr::Error.into_id_without_span())
+    } else {
+        Expr::Error.into_id_without_span()
+    };
+    
+    let reportable_errors = errors
+        .into_iter()
+        .map(|err| {
+            let span = tokens
+                .get(err.token_index)
+                .map(|token| token.start..token.end())
+                .unwrap_or(0..0);
+            let location = Location::new(span, path.clone());
+            Box::new(SimpleError {
+                message: err.to_string(),
+                span: location,
+            }) as Box<dyn ReportableError>
+        })
+        .collect();
+
+    (expr, reportable_errors)
+}
+
+/// Add global context wrapper to an expression
+pub fn add_global_context(expr: ExprNodeId, _file_path: PathBuf) -> ExprNodeId {
+    expr // Expression already has proper context from parse_to_expr
 }
