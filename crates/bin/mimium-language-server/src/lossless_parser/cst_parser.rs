@@ -3,6 +3,79 @@
 use super::green::{GreenNodeArena, GreenNodeId, GreenTreeBuilder, SyntaxKind};
 use super::preparser::PreParsedTokens;
 use super::token::{LosslessToken, TokenKind};
+use std::fmt;
+
+/// Error detail - structured error information
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ErrorDetail {
+    /// Expected token not found (e.g., expected `)` but found `}`)
+    UnexpectedToken { expected: String, found: String },
+    /// Unexpected end of input
+    UnexpectedEof { expected: String },
+    /// Invalid syntax with reason
+    InvalidSyntax { reason: String },
+}
+
+impl fmt::Display for ErrorDetail {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ErrorDetail::UnexpectedToken { expected, found } => {
+                write!(f, "Expected {expected}, found {found}")
+            }
+            ErrorDetail::UnexpectedEof { expected } => {
+                write!(f, "Unexpected end of input, expected {expected}")
+            }
+            ErrorDetail::InvalidSyntax { reason } => {
+                write!(f, "Invalid syntax: {reason}")
+            }
+        }
+    }
+}
+
+/// Parser error with recovery information
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParserError {
+    /// Token index where the error occurred
+    pub token_index: usize,
+    /// Error detail
+    pub detail: ErrorDetail,
+}
+
+impl fmt::Display for ParserError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}] {}", self.token_index, self.detail)
+    }
+}
+
+impl ParserError {
+    pub fn unexpected_token(token_index: usize, expected: &str, found: &str) -> Self {
+        Self {
+            token_index,
+            detail: ErrorDetail::UnexpectedToken {
+                expected: expected.to_string(),
+                found: found.to_string(),
+            },
+        }
+    }
+
+    pub fn unexpected_eof(token_index: usize, expected: &str) -> Self {
+        Self {
+            token_index,
+            detail: ErrorDetail::UnexpectedEof {
+                expected: expected.to_string(),
+            },
+        }
+    }
+
+    pub fn invalid_syntax(token_index: usize, reason: &str) -> Self {
+        Self {
+            token_index,
+            detail: ErrorDetail::InvalidSyntax {
+                reason: reason.to_string(),
+            },
+        }
+    }
+}
 
 /// Helper trait to reduce node boilerplate
 trait NodeBuilder {
@@ -28,6 +101,8 @@ pub struct Parser<'a> {
     preparsed: &'a PreParsedTokens,
     current: usize, // Index into preparsed.token_indices
     builder: GreenTreeBuilder,
+    /// Collected parser errors for error recovery
+    errors: Vec<ParserError>,
 }
 
 /// Maximum lookahead distance for disambiguation
@@ -40,7 +115,22 @@ impl<'a> Parser<'a> {
             preparsed,
             current: 0,
             builder: GreenTreeBuilder::new(),
+            errors: Vec::new(),
         }
+    }
+
+    /// Record a parser error
+    fn add_error(&mut self, error: ParserError) {
+        self.errors.push(error);
+    }
+
+    /// Get the current token index in the original token array
+    fn current_token_index(&self) -> usize {
+        self.preparsed
+            .token_indices
+            .get(self.current)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Get the current token kind
@@ -58,6 +148,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Get the current token
+    #[allow(dead_code)]
     fn current_token(&self) -> Option<&LosslessToken> {
         self.preparsed.get_token(self.current, &self.tokens)
     }
@@ -78,17 +169,30 @@ impl<'a> Parser<'a> {
     }
 
     /// Expect a specific token kind and consume it
+    /// Returns true if the token matched, false otherwise (and records error)
     fn expect(&mut self, kind: TokenKind) -> bool {
         if self.check(kind) {
             self.bump();
             true
+        } else if self.is_at_end() {
+            self.add_error(ParserError::unexpected_eof(
+                self.current_token_index(),
+                &format!("{kind:?}"),
+            ));
+            false
         } else {
+            let found = self.peek().map(|k| format!("{k:?}")).unwrap_or_default();
+            self.add_error(ParserError::unexpected_token(
+                self.current_token_index(),
+                &format!("{kind:?}"),
+                &found,
+            ));
             false
         }
     }
 
     /// Parse the entire program
-    pub fn parse(mut self) -> (GreenNodeId, GreenNodeArena, Vec<LosslessToken>) {
+    pub fn parse(mut self) -> (GreenNodeId, GreenNodeArena, Vec<LosslessToken>, Vec<ParserError>) {
         self.builder.start_node(SyntaxKind::Program);
 
         while !self.is_at_end() {
@@ -97,7 +201,8 @@ impl<'a> Parser<'a> {
 
         let root_id = self.builder.finish_node().unwrap();
         let arena = self.builder.into_arena();
-        (root_id, arena, self.tokens)
+        let errors = self.errors;
+        (root_id, arena, self.tokens, errors)
     }
 
     /// Check if we've reached the end
@@ -251,12 +356,25 @@ impl<'a> Parser<'a> {
             Some(TokenKind::If) => {
                 self.parse_if_expr();
             }
+            None | Some(TokenKind::Eof) => {
+                // EOF reached when expecting an expression
+                self.add_error(ParserError::unexpected_eof(
+                    self.current_token_index(),
+                    "expression",
+                ));
+            }
             _ => {
                 // Error: unexpected token
-                // For now, just skip it
-                if !self.is_at_end() {
-                    self.bump();
+                // Record the error and continue
+                if let Some(kind) = self.peek() {
+                    self.add_error(ParserError::unexpected_token(
+                        self.current_token_index(),
+                        "expression",
+                        &format!("{kind:?}"),
+                    ));
                 }
+                // Skip the unexpected token to recover
+                self.bump();
             }
         }
     }
@@ -436,11 +554,11 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Parse tokens into a Green Tree (CST)
+/// Parse tokens into a Green Tree (CST) with error collection
 pub fn parse_cst(
     tokens: Vec<LosslessToken>,
     preparsed: &PreParsedTokens,
-) -> (GreenNodeId, GreenNodeArena, Vec<LosslessToken>) {
+) -> (GreenNodeId, GreenNodeArena, Vec<LosslessToken>, Vec<ParserError>) {
     let parser = Parser::new(tokens, preparsed);
     parser.parse()
 }
@@ -456,10 +574,19 @@ mod tests {
         let source = "fn dsp() { 42 }";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
         assert_eq!(arena.kind(root_id), Some(SyntaxKind::Program));
         assert!(arena.children(root_id).is_some());
+        assert!(
+            errors.is_empty(),
+            "Expected no errors, got: {}",
+            errors
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
     }
 
     #[test]
@@ -467,10 +594,11 @@ mod tests {
         let source = "let x = 42";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
         let children = arena.children(root_id).unwrap();
         assert!(!children.is_empty());
+        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
     }
 
     #[test]
@@ -478,9 +606,10 @@ mod tests {
         let source = "fn add(x, y) { x }";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
         assert!(arena.width(root_id) > 0);
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
     }
 
     #[test]
@@ -488,10 +617,11 @@ mod tests {
         let source = "(1, 2, 3)";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
         let children = arena.children(root_id).unwrap();
         assert!(!children.is_empty());
+        assert!(errors.is_empty(), "Expected no Ïerrors, got {errors:?}");
     }
 
     #[test]
@@ -499,9 +629,40 @@ mod tests {
         let source = "{x = 1, y = 2}";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
 
         let children = arena.children(root_id).unwrap();
         assert!(!children.is_empty());
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
+    }
+
+    #[test]
+    fn test_parse_error_recovery_missing_paren() {
+        // Missing closing parenthesis in function
+        let source = "fn test(x { 42 }";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (_root_id, _arena, _tokens, errors) = parse_cst(tokens, &preparsed);
+
+        // Should have collected an error
+        assert!(!errors.is_empty(), "Expected parse errors");
+        assert!(matches!(errors[0].detail, ErrorDetail::UnexpectedToken { .. }));
+    }
+
+    #[test]
+    fn test_parse_error_recovery_missing_block() {
+        // Missing expression in let binding
+        let source = "let x =";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (_root_id, _arena, _tokens, errors) = parse_cst(tokens, &preparsed);
+
+        // Should have collected an error when EOF is reached after '='
+        assert!(!errors.is_empty(), "Expected parse errors for incomplete let binding");
+        // Error should be about unexpected EOF expecting an expression
+        assert!(matches!(&errors[0].detail, ErrorDetail::UnexpectedEof { expected } if expected == "expression"),
+                "Expected UnexpectedEof for 'expression', got: {:?}", errors[0].detail);
+        // Parser should continue without crashing
+        assert!(_arena.kind(_root_id).is_some());
     }
 }

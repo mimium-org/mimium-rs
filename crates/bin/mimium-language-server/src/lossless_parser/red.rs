@@ -478,11 +478,12 @@ mod tests {
         let source = "42";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
         let red = RedNode::new(root_id, 0);
 
         assert_eq!(red.offset(), 0);
         assert!(red.width(&arena) > 0);
+        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
     }
 
     #[test]
@@ -490,7 +491,7 @@ mod tests {
         let source = "42";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena, annotated_tokens) = parse_cst(tokens, &preparsed);
+        let (root_id, arena, annotated_tokens, errors) = parse_cst(tokens, &preparsed);
         let red = RedNode::new(root_id, 0);
         let ast = red_to_ast(&red, source, &annotated_tokens, &arena);
 
@@ -498,6 +499,8 @@ mod tests {
             AstNode::Program { .. } => {} // Expected
             _ => panic!("Expected Program node"),
         }
+
+        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
     }
 
     #[test]
@@ -505,7 +508,7 @@ mod tests {
         let source = "fn add(x, y) { 42 }";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena, annotated_tokens) = parse_cst(tokens, &preparsed);
+        let (root_id, arena, annotated_tokens, errors) = parse_cst(tokens, &preparsed);
         let red = RedNode::new(root_id, 0);
         let ast = red_to_ast(&red, source, &annotated_tokens, &arena);
 
@@ -515,6 +518,8 @@ mod tests {
             }
             _ => panic!("Expected Program node"),
         }
+
+        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
     }
 
     #[test]
@@ -522,7 +527,7 @@ mod tests {
         let source = "fn add(x, y) { 42 }";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
         let root = RedNode::new(root_id, 0);
 
         // Root should have no parent
@@ -540,6 +545,8 @@ mod tests {
             assert_eq!(parent.offset(), root.offset());
             assert_eq!(parent.green_id(), root.green_id());
         }
+
+        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
     }
 
     #[test]
@@ -547,7 +554,7 @@ mod tests {
         let source = "fn add(x, y) { let z = 42 }";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
         let root = RedNode::new(root_id, 0);
 
         // Get first child (statement)
@@ -564,6 +571,8 @@ mod tests {
                 assert_eq!(first_ancestor.offset(), root.offset());
             }
         }
+
+        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
     }
 
     #[test]
@@ -571,7 +580,7 @@ mod tests {
         let source = "fn add(x, y) { 42 }";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena, _tokens) = parse_cst(tokens, &preparsed);
+        let (root_id, arena, _tokens, errors) = parse_cst(tokens, &preparsed);
         let root = RedNode::new(root_id, 0);
 
         let children = root.children(&arena);
@@ -588,6 +597,8 @@ mod tests {
                 "Root should not be descendant of child"
             );
         }
+
+        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
     }
 
     #[test]
@@ -595,7 +606,7 @@ mod tests {
         let source = "let x = 1\nlet y = 2\nx";
         let tokens = tokenize(source);
         let preparsed = preparse(&tokens);
-        let (root_id, arena, annotated_tokens) = parse_cst(tokens, &preparsed);
+        let (root_id, arena, annotated_tokens, errors) = parse_cst(tokens, &preparsed);
         let red = RedNode::new(root_id, 0);
         let ast = red_to_ast(&red, source, &annotated_tokens, &arena);
 
@@ -608,5 +619,7 @@ mod tests {
             }
             _ => panic!("Expected Program node"),
         }
+
+        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
     }
 }

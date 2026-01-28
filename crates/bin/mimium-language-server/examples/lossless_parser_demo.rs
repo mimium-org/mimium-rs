@@ -51,9 +51,12 @@ fn dsp() {
 
     // Step 3: Parse to CST
     println!("Step 3: CST Parsing (Green Tree)");
-    let (root_id, arena, annotated_tokens) = lossless_parser::parse_cst(tokens, &preparsed);
+    let (root_id, arena, annotated_tokens, errors) = lossless_parser::parse_cst(tokens, &preparsed);
     println!("Root node kind: {:?}", arena.kind(root_id));
     println!("Root node width: {}", arena.width(root_id));
+    if !errors.is_empty() {
+        println!("Parse errors: {errors:?}");
+    }
     println!();
 
     // Step 4: Convert to AST

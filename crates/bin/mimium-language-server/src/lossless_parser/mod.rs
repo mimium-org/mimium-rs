@@ -43,8 +43,11 @@ pub mod red;
 /// // Step 2: Pre-parse (separate trivia)
 /// let preparsed = lossless_parser::preparse(&tokens);
 ///
-/// // Step 3: Parse to CST (Green Tree) and get annotated tokens
-/// let (green_id, arena, tokens) = lossless_parser::parse_cst(tokens, &preparsed);
+/// // Step 3: Parse to CST (Green Tree) and get annotated tokens with error collection
+/// let (green_id, arena, tokens, errors) = lossless_parser::parse_cst(tokens, &preparsed);
+/// if !errors.is_empty() {
+///     eprintln!("Parse errors: {:?}", errors);
+/// }
 ///
 /// // Step 4: Convert to AST (Red Tree)
 /// let red = lossless_parser::green_to_red(green_id, &arena, 0);
@@ -66,15 +69,15 @@ pub fn green_to_red(green_id: GreenNodeId, offset: usize) -> std::sync::Arc<RedN
     RedNode::new(green_id, offset)
 }
 
-/// Complete parsing pipeline from source to AST
-pub fn parse(source: &str) -> (AstNode, Vec<LosslessToken>, PreParsedTokens, GreenNodeArena) {
+/// Complete parsing pipeline from source to AST with error collection
+pub fn parse(source: &str) -> (AstNode, Vec<LosslessToken>, PreParsedTokens, GreenNodeArena, Vec<cst_parser::ParserError>) {
     let tokens = tokenize(source);
     let preparsed = preparse(&tokens);
-    let (green_id, arena, tokens) = parse_cst(tokens, &preparsed);
+    let (green_id, arena, tokens, errors) = parse_cst(tokens, &preparsed);
     let red = green_to_red(green_id, 0);
     let ast = red_to_ast(&red, source, &tokens, &arena);
 
-    (ast, tokens, preparsed, arena)
+    (ast, tokens, preparsed, arena, errors)
 }
 
 #[cfg(test)]
@@ -84,7 +87,7 @@ mod tests {
     #[test]
     fn test_full_pipeline() {
         let source = "fn dsp() { 42 }";
-        let (ast, tokens, _preparsed, _arena) = parse(source);
+        let (ast, tokens, _preparsed, _arena, errors) = parse(source);
 
         match ast {
             AstNode::Program { statements } => {
@@ -94,6 +97,7 @@ mod tests {
         }
 
         assert!(!tokens.is_empty());
+        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
     }
 
     #[test]
@@ -107,7 +111,7 @@ mod tests {
             }
         "#;
 
-        let (ast, tokens, _preparsed, _arena) = parse(source);
+        let (ast, tokens, _preparsed, _arena, errors) = parse(source);
 
         // Check that comments are in the token stream
         let has_comments = tokens.iter().any(|t| {
@@ -123,12 +127,14 @@ mod tests {
             AstNode::Program { .. } => {}
             _ => panic!("Expected Program node"),
         }
+
+        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
     }
 
     #[test]
     fn test_let_binding() {
         let source = "let x = 42";
-        let (ast, _tokens, _preparsed, _arena) = parse(source);
+        let (ast, _tokens, _preparsed, _arena, errors) = parse(source);
 
         match ast {
             AstNode::Program { statements } => {
@@ -146,12 +152,14 @@ mod tests {
             }
             _ => panic!("Expected Program node"),
         }
+
+        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
     }
 
     #[test]
     fn test_function_with_params() {
         let source = "fn add(x, y) { x }";
-        let (ast, _tokens, _preparsed, _arena) = parse(source);
+        let (ast, _tokens, _preparsed, _arena, errors) = parse(source);
 
         match ast {
             AstNode::Program { statements } => {
@@ -170,6 +178,8 @@ mod tests {
             }
             _ => panic!("Expected Program node"),
         }
+
+        assert!(errors.is_empty(), "Expected no errors, got {:?}", errors);
     }
 
     #[test]
