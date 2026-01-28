@@ -1,290 +1,207 @@
-/// Lossless tokenizer for mimium language
+/// Lossless tokenizer for mimium language using chumsky
 /// Converts source text into a sequence of position-aware tokens
 use super::token::{LosslessToken, TokenKind};
+use chumsky::prelude::*;
+use chumsky::input::StrInput;
+
+type LexerError<'src> = chumsky::extra::Err<Rich<'src, char, SimpleSpan>>;
+
+/// Parser for whitespace (not including newlines)
+fn whitespace_parser<'src, I>() -> impl Parser<'src, I, TokenKind, LexerError<'src>> + Clone
+where
+    I: StrInput<'src, Token = char, Span = SimpleSpan, Slice = &'src str>,
+{
+    one_of(" \t\r")
+        .repeated()
+        .at_least(1)
+        .to(TokenKind::Whitespace)
+}
+
+/// Parser for linebreaks
+fn linebreak_parser<'src, I>() -> impl Parser<'src, I, TokenKind, LexerError<'src>> + Clone
+where
+    I: StrInput<'src, Token = char, Span = SimpleSpan, Slice = &'src str>,
+{
+    text::newline()
+        .repeated()
+        .at_least(1)
+        .to(TokenKind::LineBreak)
+}
+
+/// Parser for comments
+fn comment_parser<'src, I>() -> impl Parser<'src, I, TokenKind, LexerError<'src>> + Clone
+where
+    I: StrInput<'src, Token = char, Span = SimpleSpan, Slice = &'src str>,
+{
+    let endline = text::newline().or(end());
+    let single_line = just("//")
+        .ignore_then(any().and_is(endline.not()).repeated())
+        .then_ignore(endline.rewind())
+        .to(TokenKind::SingleLineComment);
+
+    let multi_line = just("/*")
+        .ignore_then(any().and_is(just("*/").not()).repeated())
+        .then_ignore(just("*/"))
+        .to(TokenKind::MultiLineComment);
+
+    single_line.or(multi_line)
+}
+
+/// Parser for string literals
+fn string_parser<'src, I>() -> impl Parser<'src, I, TokenKind, LexerError<'src>> + Clone
+where
+    I: StrInput<'src, Token = char, Span = SimpleSpan, Slice = &'src str>,
+{
+    none_of('"')
+        .repeated()
+        .delimited_by(just('"'), just('"'))
+        .to(TokenKind::Str)
+}
+
+/// Parser for numbers
+fn number_parser<'src, I>() -> impl Parser<'src, I, TokenKind, LexerError<'src>> + Clone
+where
+    I: StrInput<'src, Token = char, Span = SimpleSpan, Slice = &'src str>,
+{
+    let float = text::int::<I, _>(10)
+        .then_ignore(just('.'))
+        .then(text::digits::<I, _>(10))
+        .then_ignore(just('.').not().ignored().or(end()).rewind())
+        .to(TokenKind::Float);
+
+    let int = text::int::<I, LexerError<'src>>(10).to(TokenKind::Int);
+
+    float.or(int)
+}
+
+/// Parser for operators
+fn operator_parser<'src, I>() -> impl Parser<'src, I, TokenKind, LexerError<'src>> + Clone
+where
+    I: StrInput<'src, Token = char, Span = SimpleSpan, Slice = &'src str>,
+{
+    choice((
+        just("->").to(TokenKind::Arrow),
+        just("<-").to(TokenKind::LeftArrow),
+        just("==").to(TokenKind::OpEqual),
+        just("!=").to(TokenKind::OpNotEqual),
+        just("<=").to(TokenKind::OpLessEqual),
+        just(">=").to(TokenKind::OpGreaterEqual),
+        just("&&").to(TokenKind::OpAnd),
+        just("||").to(TokenKind::OpOr),
+        just("|>").to(TokenKind::OpPipe),
+        just("+").to(TokenKind::OpSum),
+        just("-").to(TokenKind::OpMinus),
+        just("*").to(TokenKind::OpProduct),
+        just("/").to(TokenKind::OpDivide),
+        just("%").to(TokenKind::OpModulo),
+        just("^").to(TokenKind::OpExponent),
+        just("@").to(TokenKind::OpAt),
+        just("<").to(TokenKind::OpLessThan),
+        just(">").to(TokenKind::OpGreaterThan),
+        just("=").to(TokenKind::Assign),
+        just("!").to(TokenKind::OpUnknown),
+    ))
+}
+
+/// Parser for punctuation
+fn punctuation_parser<'src, I>() -> impl Parser<'src, I, TokenKind, LexerError<'src>> + Clone
+where
+    I: StrInput<'src, Token = char, Span = SimpleSpan, Slice = &'src str>,
+{
+    choice((
+        just("..").to(TokenKind::DoubleDot),
+        just(".").to(TokenKind::Dot),
+        just(",").to(TokenKind::Comma),
+        just(":").to(TokenKind::Colon),
+        just(";").to(TokenKind::SemiColon),
+        just("(").to(TokenKind::ParenBegin),
+        just(")").to(TokenKind::ParenEnd),
+        just("[").to(TokenKind::ArrayBegin),
+        just("]").to(TokenKind::ArrayEnd),
+        just("{").to(TokenKind::BlockBegin),
+        just("}").to(TokenKind::BlockEnd),
+        just("`").to(TokenKind::BackQuote),
+        just("$").to(TokenKind::Dollar),
+        just("#").to(TokenKind::Sharp),
+        just("|").to(TokenKind::LambdaArgBeginEnd),
+    ))
+}
+
+/// Parser for identifiers and keywords
+fn identifier_parser<'src, I>() -> impl Parser<'src, I, TokenKind, LexerError<'src>> + Clone
+where
+    I: StrInput<'src, Token = char, Span = SimpleSpan, Slice = &'src str>,
+{
+    // Macro expansion: identifier followed by !
+    let macro_expand = text::ident()
+        .then_ignore(just('!'))
+        .to(TokenKind::MacroExpand);
+
+    let ident = text::ident().to_slice().map(|ident: &'src str| match ident {
+        "fn" => TokenKind::Function,
+        "macro" => TokenKind::Macro,
+        "self" => TokenKind::SelfLit,
+        "now" => TokenKind::Now,
+        "samplerate" => TokenKind::SampleRate,
+        "let" => TokenKind::Let,
+        "letrec" => TokenKind::LetRec,
+        "if" => TokenKind::If,
+        "else" => TokenKind::Else,
+        "float" => TokenKind::FloatType,
+        "int" => TokenKind::IntegerType,
+        "string" => TokenKind::StringType,
+        "struct" => TokenKind::StructType,
+        "include" => TokenKind::Include,
+        "stage" => TokenKind::StageKwd,
+        "main" => TokenKind::Main,
+        "_" => TokenKind::PlaceHolder,
+        _ => TokenKind::Ident,
+    });
+
+    macro_expand.or(ident)
+}
+
+/// Main tokenizer that combines all parsers
+fn token_parser<'src, I>() -> impl Parser<'src, I, TokenKind, LexerError<'src>> + Clone
+where
+    I: StrInput<'src, Token = char, Span = SimpleSpan, Slice = &'src str>,
+{
+    choice((
+        comment_parser(),
+        linebreak_parser(),
+        whitespace_parser(),
+        string_parser(),
+        number_parser(),
+        identifier_parser(),
+        operator_parser(),  // Try operators before punctuation
+        punctuation_parser(),
+    ))
+}
 
 /// Tokenize the source text into a sequence of lossless tokens
 pub fn tokenize(source: &str) -> Vec<LosslessToken> {
-    let mut tokens = Vec::new();
-    let mut chars = source.char_indices().peekable();
-    
-    while let Some((start, ch)) = chars.next() {
-        let token = match ch {
-            // Whitespace (not including newlines)
-            ' ' | '\t' | '\r' => {
-                let mut end = start + ch.len_utf8();
-                while let Some(&(pos, c)) = chars.peek() {
-                    if c == ' ' || c == '\t' || c == '\r' {
-                        chars.next();
-                        end = pos + c.len_utf8();
-                    } else {
-                        break;
-                    }
-                }
-                LosslessToken::new(TokenKind::Whitespace, start, end - start)
-            }
-            
-            // Newlines
-            '\n' => {
-                let mut end = start + 1;
-                while let Some(&(pos, c)) = chars.peek() {
-                    if c == '\n' {
-                        chars.next();
-                        end = pos + 1;
-                    } else {
-                        break;
-                    }
-                }
-                LosslessToken::new(TokenKind::LineBreak, start, end - start)
-            }
-            
-            // Comments
-            '/' if chars.peek().map(|(_, c)| *c) == Some('/') => {
-                chars.next(); // consume second '/'
-                let mut end = start + 2;
-                while let Some(&(pos, c)) = chars.peek() {
-                    if c == '\n' {
-                        break;
-                    }
-                    chars.next();
-                    end = pos + c.len_utf8();
-                }
-                LosslessToken::new(TokenKind::SingleLineComment, start, end - start)
-            }
-            
-            '/' if chars.peek().map(|(_, c)| *c) == Some('*') => {
-                chars.next(); // consume '*'
-                let mut end = start + 2;
-                let mut prev = ' ';
-                while let Some((pos, c)) = chars.next() {
-                    end = pos + c.len_utf8();
-                    if prev == '*' && c == '/' {
-                        break;
-                    }
-                    prev = c;
-                }
-                LosslessToken::new(TokenKind::MultiLineComment, start, end - start)
-            }
-            
-            // String literals
-            '"' => {
-                let mut end = start + 1;
-                let mut escaped = false;
-                while let Some((pos, c)) = chars.next() {
-                    end = pos + c.len_utf8();
-                    if escaped {
-                        escaped = false;
-                    } else if c == '\\' {
-                        escaped = true;
-                    } else if c == '"' {
-                        break;
-                    }
-                }
-                LosslessToken::new(TokenKind::Str, start, end - start)
-            }
-            
-            // Numbers
-            '0'..='9' => {
-                let mut end = start + ch.len_utf8();
-                let mut has_dot = false;
-                
-                while let Some(&(pos, c)) = chars.peek() {
-                    match c {
-                        '0'..='9' => {
-                            chars.next();
-                            end = pos + c.len_utf8();
-                        }
-                        '.' => {
-                            // Look ahead one more character to see if it's a digit
-                            // We need to clone to peek further without consuming
-                            let mut chars_clone = chars.clone();
-                            chars_clone.next(); // Skip the '.'
-                            if let Some(&(_, next_c)) = chars_clone.peek() {
-                                if next_c.is_ascii_digit() && !has_dot {
-                                    has_dot = true;
-                                    chars.next();
-                                    end = pos + 1;
-                                } else {
-                                    break;
-                                }
-                            } else {
-                                break;
-                            }
-                        }
-                        _ => break,
-                    }
-                }
-                
-                let kind = if has_dot { TokenKind::Float } else { TokenKind::Int };
-                LosslessToken::new(kind, start, end - start)
-            }
-            
-            // Identifiers and keywords
-            'a'..='z' | 'A'..='Z' | '_' => {
-                let mut end = start + ch.len_utf8();
-                while let Some(&(pos, c)) = chars.peek() {
-                    if c.is_alphanumeric() || c == '_' {
-                        chars.next();
-                        end = pos + c.len_utf8();
-                    } else {
-                        break;
-                    }
-                }
-                
-                let text = &source[start..end];
-                let kind = match text {
-                    "float" => TokenKind::FloatType,
-                    "int" => TokenKind::IntegerType,
-                    "string" => TokenKind::StringType,
-                    "struct" => TokenKind::StructType,
-                    "self" => TokenKind::SelfLit,
-                    "now" => TokenKind::Now,
-                    "samplerate" => TokenKind::SampleRate,
-                    "let" => TokenKind::Let,
-                    "letrec" => TokenKind::LetRec,
-                    "fn" => TokenKind::Function,
-                    "macro" => TokenKind::Macro,
-                    "if" => TokenKind::If,
-                    "else" => TokenKind::Else,
-                    "include" => TokenKind::Include,
-                    "stage" => TokenKind::StageKwd,
-                    "main" => TokenKind::Main,
-                    "_" => TokenKind::PlaceHolder,
-                    _ => {
-                        // Check for macro expansion (identifier followed by !)
-                        if let Some(&(_, '!')) = chars.peek() {
-                            chars.next();
-                            end += 1;
-                            TokenKind::MacroExpand
-                        } else {
-                            TokenKind::Ident
-                        }
-                    }
-                };
-                
-                LosslessToken::new(kind, start, end - start)
-            }
-            
-            // Operators and punctuation
-            '+' => LosslessToken::new(TokenKind::OpSum, start, 1),
-            '*' => LosslessToken::new(TokenKind::OpProduct, start, 1),
-            '%' => LosslessToken::new(TokenKind::OpModulo, start, 1),
-            '^' => LosslessToken::new(TokenKind::OpExponent, start, 1),
-            
-            '-' => {
-                if chars.peek().map(|(_, c)| *c) == Some('>') {
-                    chars.next();
-                    LosslessToken::new(TokenKind::Arrow, start, 2)
-                } else {
-                    LosslessToken::new(TokenKind::OpMinus, start, 1)
-                }
-            }
-            
-            '/' => LosslessToken::new(TokenKind::OpDivide, start, 1),
-            
-            '=' => {
-                if chars.peek().map(|(_, c)| *c) == Some('=') {
-                    chars.next();
-                    LosslessToken::new(TokenKind::OpEqual, start, 2)
-                } else {
-                    LosslessToken::new(TokenKind::Assign, start, 1)
-                }
-            }
-            
-            '!' => {
-                if chars.peek().map(|(_, c)| *c) == Some('=') {
-                    chars.next();
-                    LosslessToken::new(TokenKind::OpNotEqual, start, 2)
-                } else {
-                    // Standalone '!' - treat as unknown operator for now
-                    // In actual mimium syntax, '!' is used for macro expansion
-                    // which is handled in the identifier pattern
-                    LosslessToken::new(TokenKind::OpUnknown, start, 1)
-                }
-            }
-            
-            '<' => {
-                match chars.peek().map(|(_, c)| *c) {
-                    Some('-') => {
-                        chars.next();
-                        LosslessToken::new(TokenKind::LeftArrow, start, 2)
-                    }
-                    Some('=') => {
-                        chars.next();
-                        LosslessToken::new(TokenKind::OpLessEqual, start, 2)
-                    }
-                    _ => LosslessToken::new(TokenKind::OpLessThan, start, 1),
-                }
-            }
-            
-            '>' => {
-                if chars.peek().map(|(_, c)| *c) == Some('=') {
-                    chars.next();
-                    LosslessToken::new(TokenKind::OpGreaterEqual, start, 2)
-                } else {
-                    LosslessToken::new(TokenKind::OpGreaterThan, start, 1)
-                }
-            }
-            
-            '&' => {
-                if chars.peek().map(|(_, c)| *c) == Some('&') {
-                    chars.next();
-                    LosslessToken::new(TokenKind::OpAnd, start, 2)
-                } else {
-                    LosslessToken::new(TokenKind::OpUnknown, start, 1)
-                }
-            }
-            
-            '|' => {
-                match chars.peek().map(|(_, c)| *c) {
-                    Some('|') => {
-                        chars.next();
-                        LosslessToken::new(TokenKind::OpOr, start, 2)
-                    }
-                    Some('>') => {
-                        chars.next();
-                        LosslessToken::new(TokenKind::OpPipe, start, 2)
-                    }
-                    _ => LosslessToken::new(TokenKind::LambdaArgBeginEnd, start, 1),
-                }
-            }
-            
-            '@' => LosslessToken::new(TokenKind::OpAt, start, 1),
-            
-            ',' => LosslessToken::new(TokenKind::Comma, start, 1),
-            
-            '.' => {
-                if chars.peek().map(|(_, c)| *c) == Some('.') {
-                    chars.next();
-                    LosslessToken::new(TokenKind::DoubleDot, start, 2)
-                } else {
-                    LosslessToken::new(TokenKind::Dot, start, 1)
-                }
-            }
-            
-            ':' => LosslessToken::new(TokenKind::Colon, start, 1),
-            ';' => LosslessToken::new(TokenKind::SemiColon, start, 1),
-            
-            '(' => LosslessToken::new(TokenKind::ParenBegin, start, 1),
-            ')' => LosslessToken::new(TokenKind::ParenEnd, start, 1),
-            '[' => LosslessToken::new(TokenKind::ArrayBegin, start, 1),
-            ']' => LosslessToken::new(TokenKind::ArrayEnd, start, 1),
-            '{' => LosslessToken::new(TokenKind::BlockBegin, start, 1),
-            '}' => LosslessToken::new(TokenKind::BlockEnd, start, 1),
-            
-            '`' => LosslessToken::new(TokenKind::BackQuote, start, 1),
-            '$' => LosslessToken::new(TokenKind::Dollar, start, 1),
-            '#' => LosslessToken::new(TokenKind::Sharp, start, 1),
-            
-            _ => continue, // Skip unknown characters
-        };
-        
-        tokens.push(token);
+    let lexer = token_parser()
+        .map_with(|kind, e| {
+            let span: SimpleSpan = e.span();
+            LosslessToken::new(kind, span.start, span.end - span.start)
+        })
+        .repeated()
+        .collect::<Vec<_>>()
+        .then_ignore(end());
+
+    match lexer.parse(source).into_result() {
+        Ok(tokens) => {
+            let mut result = tokens;
+            // Add EOF token
+            result.push(LosslessToken::new(TokenKind::Eof, source.len(), 0));
+            result
+        }
+        Err(_) => {
+            // On error, return empty vec with just EOF
+            // In a production implementation, we would handle errors more gracefully
+            vec![LosslessToken::new(TokenKind::Eof, source.len(), 0)]
+        }
     }
-    
-    // Add EOF token
-    tokens.push(LosslessToken::new(TokenKind::Eof, source.len(), 0));
-    
-    tokens
 }
 
 #[cfg(test)]
