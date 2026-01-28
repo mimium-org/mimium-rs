@@ -13,13 +13,13 @@ let test_record =
 let test_tuple =
     (100, 200,
     400)
-fn sec2samp(sec){
+fn sec2samp(sec){// the comment will be removed
     sec * 48000.0
 }
 fn countup(active){
     let r = (self +
         1.0)
-    let rr =
+    let rr = /*block comment*/
         if(active) r
         else 0.0
     rr

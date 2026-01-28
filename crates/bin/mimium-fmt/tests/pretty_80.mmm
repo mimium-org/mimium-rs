@@ -8,12 +8,12 @@ let _ =
 let test_record = {fuga = 200,
     hoge = 100}
 let test_tuple = (100, 200, 400)
-fn sec2samp(sec){
+fn sec2samp(sec){// the comment will be removed
     sec * 48000.0
 }
 fn countup(active){
     let r = (self + 1.0)
-    let rr = if(active) r else 0.0
+    let rr = /*block comment*/ if(active) r else 0.0
     rr
 }
 fn countupn(time, active){
