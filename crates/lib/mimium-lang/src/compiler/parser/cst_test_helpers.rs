@@ -163,10 +163,12 @@ pub fn assert_cst_depth_at_least(arena: &GreenNodeArena, node_id: GreenNodeId, m
 
 #[cfg(test)]
 mod tests {
+    use crate::compiler::parser::{cst_parser, preparser, tokenizer};
+
     use super::*;
-    use crate::parser_internal::cst_parser::parse_cst;
-    use crate::parser_internal::preparser::preparse;
-    use crate::parser_internal::tokenizer::tokenize;
+    use cst_parser::parse_cst;
+    use preparser::preparse;
+    use tokenizer::tokenize;
 
     #[test]
     fn test_find_node_by_kind() {

@@ -9,7 +9,7 @@ use dashmap::DashMap;
 use log::debug;
 use mimium_lang::compiler::mirgen;
 use mimium_lang::interner::{ExprNodeId, TypeNodeId};
-use mimium_lang::parser;
+use mimium_lang::compiler::parser;
 use mimium_lang::plugin::Plugin;
 use mimium_lang::utils::error::ReportableError;
 use mimium_lang::{Config, ExecContext};

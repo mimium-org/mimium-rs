@@ -1,7 +1,7 @@
 use super::intrinsics;
 use super::typing::{InferContext, infer_root};
 
-use crate::parser;
+use crate::compiler::parser;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::plugin::MacroFunction;

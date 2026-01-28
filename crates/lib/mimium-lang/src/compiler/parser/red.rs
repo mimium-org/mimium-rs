@@ -497,9 +497,9 @@ fn transform_let_chain(statements: Vec<AstNode>) -> AstNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser_internal::cst_parser::parse_cst;
-    use crate::parser_internal::preparser::preparse;
-    use crate::parser_internal::tokenizer::tokenize;
+    use crate::compiler::parser::cst_parser::parse_cst;
+    use crate::compiler::parser::preparser::preparse;
+    use crate::compiler::parser::tokenizer::tokenize;
 
     #[test]
     fn test_red_node_creation() {

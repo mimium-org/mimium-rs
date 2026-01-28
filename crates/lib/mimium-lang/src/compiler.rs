@@ -1,5 +1,6 @@
 pub mod bytecodegen;
 pub(crate) mod intrinsics;
+pub mod parser;
 pub mod mirgen;
 pub mod typing;
 use crate::plugin::{ExtFunTypeInfo, MacroFunction};
@@ -124,7 +125,6 @@ use mirgen::recursecheck;
 
 use crate::{
     interner::{ExprNodeId, Symbol, TypeNodeId},
-    parser,
     mir::Mir,
     runtime::vm,
     types::Type,

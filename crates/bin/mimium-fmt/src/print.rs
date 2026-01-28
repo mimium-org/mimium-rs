@@ -524,14 +524,10 @@ pub fn pretty_print(
     file_path: &Option<PathBuf>,
     width: usize,
 ) -> Result<String, Vec<Box<dyn ReportableError>>> {
-    use mimium_lang::parser::parse_program;
-    use mimium_lang::parser::parser_errors_to_reportable;
+    use mimium_lang::compiler::parser::parse_program;
+    use mimium_lang::compiler::parser::parser_errors_to_reportable;
     let (prog, parse_errs) = parse_program(src, file_path.clone().unwrap_or_default());
-    let errs = parser_errors_to_reportable(
-        src,
-        file_path.clone().unwrap_or_default(),
-        parse_errs,
-    );
+    let errs = parser_errors_to_reportable(src, file_path.clone().unwrap_or_default(), parse_errs);
     if !errs.is_empty() {
         return Err(errs);
     }

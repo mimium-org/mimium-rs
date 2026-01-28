@@ -152,7 +152,7 @@ pub fn preparse(tokens: &[Token]) -> PreParsedTokens {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser_internal::tokenizer::tokenize;
+    use crate::compiler::parser::tokenizer::tokenize;
 
     #[test]
     fn test_preparse_simple() {

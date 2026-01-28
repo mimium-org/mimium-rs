@@ -3,9 +3,6 @@
 pub mod ast;
 pub mod interner;
 pub mod interpreter;
-#[path = "lossless_parser/mod.rs"]
-mod parser_internal;
-pub mod parser;
 pub mod mir;
 pub mod pattern;
 pub mod types;

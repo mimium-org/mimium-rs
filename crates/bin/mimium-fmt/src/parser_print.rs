@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use mimium_lang::parser::{
+use mimium_lang::compiler::parser::{
     parse_program, parser_errors_to_reportable, preparse, tokenize, PreParsedTokens, Token,
     TokenKind,
 };

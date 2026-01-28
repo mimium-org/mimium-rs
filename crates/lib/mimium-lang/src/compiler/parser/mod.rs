@@ -1,9 +1,9 @@
-pub mod cst_parser;
-pub mod cst_test_helpers;
+mod cst_parser;
+mod cst_test_helpers;
 pub mod green;
-pub mod lower;
-pub mod preparser;
-pub mod red;
+mod lower;
+mod preparser;
+mod red;
 /// Parser for mimium Language Server
 ///
 /// This module implements a parser based on the Red-Green Syntax Tree pattern.
@@ -35,7 +35,7 @@ pub mod red;
 /// ## Usage Example
 ///
 /// ```rust
-/// use mimium_lang::parser;
+/// use mimium_lang::compiler::parser;
 ///
 /// let source = "fn dsp() { 42 }";
 ///

@@ -4,10 +4,10 @@ use crate::ast::operators::Op;
 use crate::ast::program::{Program, ProgramStatement};
 use crate::ast::statement::{Statement, into_then_expr, stmt_from_expr_top};
 use crate::ast::{Expr, Literal};
+use crate::compiler::parser::cst_parser::ParserError;
+use crate::compiler::parser::green::{GreenNode, GreenNodeArena, GreenNodeId, SyntaxKind};
+use crate::compiler::parser::token::{Token, TokenKind};
 use crate::interner::{ExprNodeId, Symbol, ToSymbol};
-use crate::parser_internal::cst_parser::ParserError;
-use crate::parser_internal::green::{GreenNode, GreenNodeArena, GreenNodeId, SyntaxKind};
-use crate::parser_internal::token::{Token, TokenKind};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::types::Type;
 use crate::utils::metadata::{Location, Span};
@@ -43,52 +43,51 @@ impl<'a> Lowerer<'a> {
 
     /// Lower a full program node into the existing `Program` structure.
     pub fn lower_program(&self, root: GreenNodeId) -> Program {
-        let (mut program_statements, pending_statements, pending_span) =
-            self.arena.children(root).map_or(
-                (Vec::new(), Vec::new(), 0..0),
-                |children| {
-                    children
-                        .iter()
-                        .copied()
-                        .filter(|child| self.arena.kind(*child) == Some(SyntaxKind::Statement))
-                        .filter_map(|child| self.lower_statement(child))
-                        .fold(
-                            (Vec::new(), Vec::new(), 0..0),
-                            |(mut program_statements, mut pending_statements, mut pending_span),
-                             (stmt, span)| {
-                                match &stmt {
-                                    ProgramStatement::GlobalStatement(Statement::Single(expr)) => {
-                                        // Collect global single statements for potential Then-chaining
-                                        let stmts = stmt_from_expr_top(*expr);
-                                        let new_pending = stmts
-                                            .into_iter()
-                                            .map(|s| (s, self.location_from_span(span.clone())));
-                                        pending_statements.extend(new_pending);
-                                        pending_span = span;
-                                    }
-                                    _ => {
-                                        // Non-global statement: flush pending, then add this
-                                        if !pending_statements.is_empty() {
-                                            if let Some(merged_expr) =
-                                                into_then_expr(&pending_statements)
-                                            {
-                                                program_statements.push((
-                                                    ProgramStatement::GlobalStatement(
-                                                        Statement::Single(merged_expr),
-                                                    ),
-                                                    pending_span.clone(),
-                                                ));
-                                            }
-                                            pending_statements.clear();
-                                        }
-                                        program_statements.push((stmt, span));
-                                    }
+        let (mut program_statements, pending_statements, pending_span) = self
+            .arena
+            .children(root)
+            .map_or((Vec::new(), Vec::new(), 0..0), |children| {
+                children
+                    .iter()
+                    .copied()
+                    .filter(|child| self.arena.kind(*child) == Some(SyntaxKind::Statement))
+                    .filter_map(|child| self.lower_statement(child))
+                    .fold(
+                        (Vec::new(), Vec::new(), 0..0),
+                        |(mut program_statements, mut pending_statements, mut pending_span),
+                         (stmt, span)| {
+                            match &stmt {
+                                ProgramStatement::GlobalStatement(Statement::Single(expr)) => {
+                                    // Collect global single statements for potential Then-chaining
+                                    let stmts = stmt_from_expr_top(*expr);
+                                    let new_pending = stmts
+                                        .into_iter()
+                                        .map(|s| (s, self.location_from_span(span.clone())));
+                                    pending_statements.extend(new_pending);
+                                    pending_span = span;
                                 }
-                                (program_statements, pending_statements, pending_span)
-                            },
-                        )
-                },
-            );
+                                _ => {
+                                    // Non-global statement: flush pending, then add this
+                                    if !pending_statements.is_empty() {
+                                        if let Some(merged_expr) =
+                                            into_then_expr(&pending_statements)
+                                        {
+                                            program_statements.push((
+                                                ProgramStatement::GlobalStatement(
+                                                    Statement::Single(merged_expr),
+                                                ),
+                                                pending_span.clone(),
+                                            ));
+                                        }
+                                        pending_statements.clear();
+                                    }
+                                    program_statements.push((stmt, span));
+                                }
+                            }
+                            (program_statements, pending_statements, pending_span)
+                        },
+                    )
+            });
 
         // Flush any remaining pending statements
         if !pending_statements.is_empty()
@@ -115,9 +114,10 @@ impl<'a> Lowerer<'a> {
                     .arena
                     .children(node)
                     .and_then(|children| {
-                        children.iter().copied().find_map(|child| {
-                            self.arena.kind(child).map(|kind| (kind, child))
-                        })
+                        children
+                            .iter()
+                            .copied()
+                            .find_map(|child| self.arena.kind(child).map(|kind| (kind, child)))
                     })
                     .map(|(kind, id)| (Some(kind), Some(id)))
                     .unwrap_or((None, None));
@@ -397,7 +397,10 @@ impl<'a> Lowerer<'a> {
                                 // Check if it's a valid identifier token (not |, commas, etc.)
                                 if let Some(token_index) = self.get_token_index(child)
                                     && let Some(token) = self.tokens.get(token_index)
-                                    && matches!(token.kind, TokenKind::Ident | TokenKind::IdentParameter)
+                                    && matches!(
+                                        token.kind,
+                                        TokenKind::Ident | TokenKind::IdentParameter
+                                    )
                                 {
                                     let ty = Type::Unknown.into_id_with_location(
                                         self.location_from_span(
@@ -427,9 +430,10 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_record_fields(&self, node: GreenNodeId) -> Vec<crate::ast::RecordField> {
-        let (mut fields, _) = self.arena.children(node).map_or(
-            (Vec::new(), None),
-            |children| {
+        let (mut fields, _) = self
+            .arena
+            .children(node)
+            .map_or((Vec::new(), None), |children| {
                 children.iter().copied().fold(
                     (Vec::new(), None),
                     |(mut fields, mut current), child| {
@@ -453,8 +457,7 @@ impl<'a> Lowerer<'a> {
                         (fields, current)
                     },
                 )
-            },
-        );
+            });
 
         fields.sort_by(|a, b| a.name.as_ref().cmp(b.name.as_ref()));
         fields
@@ -512,9 +515,10 @@ impl<'a> Lowerer<'a> {
                 Pattern::Tuple(elems)
             }
             Some(SyntaxKind::RecordPattern) => {
-                let (items, _) = self.arena.children(node).map_or(
-                    (Vec::new(), None),
-                    |children| {
+                let (items, _) = self
+                    .arena
+                    .children(node)
+                    .map_or((Vec::new(), None), |children| {
                         children.iter().copied().fold(
                             (Vec::new(), None),
                             |(mut items, mut current), child| {
@@ -538,8 +542,7 @@ impl<'a> Lowerer<'a> {
                                 (items, current)
                             },
                         )
-                    },
-                );
+                    });
                 Pattern::Record(items)
             }
             _ => Pattern::Error,
@@ -733,9 +736,7 @@ impl<'a> Lowerer<'a> {
             .into_iter()
             .filter_map(|idx| self.tokens.get(idx))
             .find_map(|tok| match tok.kind {
-                TokenKind::Ident => {
-                    Some(Expr::FieldAccess(lhs, tok.text(self.source).to_symbol()))
-                }
+                TokenKind::Ident => Some(Expr::FieldAccess(lhs, tok.text(self.source).to_symbol())),
                 TokenKind::Int => tok
                     .text(self.source)
                     .parse::<i64>()
@@ -973,8 +974,7 @@ impl<'a> Lowerer<'a> {
                     .fold(
                         (Option::<usize>::None, Option::<usize>::None),
                         |(start, end), span| {
-                            let next_start =
-                                Some(start.map_or(span.start, |s| s.min(span.start)));
+                            let next_start = Some(start.map_or(span.start, |s| s.min(span.start)));
                             let next_end = Some(end.map_or(span.end, |e| e.max(span.end)));
                             (next_start, next_end)
                         },
@@ -1151,9 +1151,9 @@ impl<'a> Lowerer<'a> {
 
 /// Full pipeline helper: tokenize, parse CST, then lower into `Program`.
 pub fn parse_program(source: &str, file_path: PathBuf) -> (Program, Vec<ParserError>) {
-    let tokens = crate::parser_internal::tokenize(source);
-    let preparsed = crate::parser_internal::preparse(&tokens);
-    let (root, arena, tokens, errors) = crate::parser_internal::parse_cst(tokens, &preparsed);
+    let tokens = crate::compiler::parser::tokenize(source);
+    let preparsed = crate::compiler::parser::preparse(&tokens);
+    let (root, arena, tokens, errors) = crate::compiler::parser::parse_cst(tokens, &preparsed);
     let lowerer = Lowerer::new(source, &tokens, &arena, file_path);
     let program = lowerer.lower_program(root);
     (program, errors)
@@ -1171,7 +1171,7 @@ pub fn parse_to_expr(
     let path = file_path.unwrap_or_default();
     let (prog, parse_errs) = parse_program(source, path.clone());
     let errs =
-        crate::parser_internal::parser_errors_to_reportable(source, path.clone(), parse_errs);
+        crate::compiler::parser::parser_errors_to_reportable(source, path.clone(), parse_errs);
 
     if prog.statements.is_empty() {
         return (Expr::Error.into_id_without_span(), errs);

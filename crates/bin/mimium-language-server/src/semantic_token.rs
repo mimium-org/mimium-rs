@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use mimium_lang::{
     interner::ExprNodeId,
-    parser::{green::GreenNode, GreenNodeArena, GreenNodeId, SyntaxKind, Token, TokenKind},
+    compiler::parser::{green::GreenNode, GreenNodeArena, GreenNodeId, SyntaxKind, Token, TokenKind},
     utils::error::ReportableError,
 };
 use tower_lsp::lsp_types::SemanticTokenType;
@@ -289,7 +289,7 @@ pub fn tokens_from_green(
 }
 
 pub fn parse(src: &str, uri: &str) -> ParseResult {
-    use mimium_lang::parser::{parse_to_expr, tokenize};
+    use mimium_lang::compiler::parser::{parse_to_expr, tokenize};
     let tokens = tokenize(src);
     let semantic_tokens = tokens
         .iter()
