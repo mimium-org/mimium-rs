@@ -64,11 +64,22 @@ fn extract_file_leading_comments(source: &str, tokens: &[Token]) -> String {
     output
 }
 
+/// Represents a comment with its kind and whether a linebreak precedes it
+#[derive(Debug, Clone)]
+struct CommentInfo {
+    kind: TokenKind,
+    text: String,
+    /// True if there was an explicit linebreak before this comment in source.
+    /// For comments after single-line comments, this is false since the newline
+    /// is implicit in the single-line comment itself.
+    needs_leading_newline: bool,
+}
+
 fn collect_gap_comments(
     source: &str,
     tokens: &[Token],
     preparsed: &PreParsedTokens,
-) -> Vec<Vec<(TokenKind, String)>> {
+) -> Vec<Vec<CommentInfo>> {
     let indices = &preparsed.token_indices;
     if indices.len() < 2 {
         return Vec::new();
@@ -82,11 +93,35 @@ fn collect_gap_comments(
             continue;
         }
 
-        let comments = tokens[start..end]
-            .iter()
-            .filter(|t| matches!(t.kind, TokenKind::SingleLineComment | TokenKind::MultiLineComment))
-            .map(|t| (t.kind, t.text(source).to_string()))
-            .collect::<Vec<_>>();
+        let gap_tokens = &tokens[start..end];
+        let mut comments = Vec::new();
+        let mut had_explicit_linebreak = false;
+        let mut after_single_line_comment = false;
+
+        for t in gap_tokens {
+            match t.kind {
+                TokenKind::LineBreak => {
+                    // Only count as explicit if not right after a single-line comment
+                    if !after_single_line_comment {
+                        had_explicit_linebreak = true;
+                    }
+                    after_single_line_comment = false;
+                }
+                TokenKind::SingleLineComment | TokenKind::MultiLineComment => {
+                    comments.push(CommentInfo {
+                        kind: t.kind,
+                        text: t.text(source).to_string(),
+                        needs_leading_newline: had_explicit_linebreak,
+                    });
+                    had_explicit_linebreak = false;
+                    after_single_line_comment = t.kind == TokenKind::SingleLineComment;
+                }
+                TokenKind::Whitespace => {
+                    // Don't reset linebreak state
+                }
+                _ => {}
+            }
+        }
 
         if !comments.is_empty() {
             result[gap_idx] = comments;
@@ -96,7 +131,7 @@ fn collect_gap_comments(
     result
 }
 
-fn insert_gap_comments(formatted: &str, gap_comments: &[Vec<(TokenKind, String)>]) -> String {
+fn insert_gap_comments(formatted: &str, gap_comments: &[Vec<CommentInfo>]) -> String {
     let fmt_tokens = tokenize(formatted);
     let fmt_preparsed = preparse(&fmt_tokens);
     let nontrivia_positions = &fmt_preparsed.token_indices;
@@ -113,66 +148,47 @@ fn insert_gap_comments(formatted: &str, gap_comments: &[Vec<(TokenKind, String)>
             output.push_str(token.text(formatted));
 
             if nontrivia_idx < gap_comments.len() && !gap_comments[nontrivia_idx].is_empty() {
+                // We need to insert comments after this token
+                let comments = &gap_comments[nontrivia_idx];
+                
+                // Look ahead to skip trailing trivia
                 let mut j = token_idx + 1;
-
-                for (kind, text) in &gap_comments[nontrivia_idx] {
-                    match kind {
-                        TokenKind::SingleLineComment => {
-                            output.push_str(text);
-                            // Skip whitespace until linebreak
-                            while j < fmt_tokens.len()
-                                && matches!(fmt_tokens[j].kind, TokenKind::Whitespace)
-                            {
-                                j += 1;
-                            }
-                            if j < fmt_tokens.len()
-                                && matches!(fmt_tokens[j].kind, TokenKind::LineBreak)
-                            {
-                                output.push_str(fmt_tokens[j].text(formatted));
-                                j += 1;
-                                while j < fmt_tokens.len()
-                                    && matches!(fmt_tokens[j].kind, TokenKind::Whitespace)
-                                {
-                                    output.push_str(fmt_tokens[j].text(formatted));
-                                    j += 1;
-                                }
-                            }
+                
+                while j < fmt_tokens.len() {
+                    let next = fmt_tokens[j];
+                    match next.kind {
+                        TokenKind::LineBreak | TokenKind::Whitespace => {
+                            j += 1;
                         }
-                        TokenKind::MultiLineComment => {
-                            if !ends_with_whitespace(&output) {
-                                output.push(' ');
-                            }
-                            output.push_str(text);
-
-                            while j < fmt_tokens.len()
-                                && matches!(fmt_tokens[j].kind, TokenKind::Whitespace)
-                            {
-                                j += 1;
-                            }
-                            if j < fmt_tokens.len()
-                                && matches!(fmt_tokens[j].kind, TokenKind::LineBreak)
-                            {
-                                output.push_str(fmt_tokens[j].text(formatted));
-                                j += 1;
-                                while j < fmt_tokens.len()
-                                    && matches!(fmt_tokens[j].kind, TokenKind::Whitespace)
-                                {
-                                    output.push_str(fmt_tokens[j].text(formatted));
-                                    j += 1;
-                                }
-                            } else {
-                                output.push(' ');
-                                while j < fmt_tokens.len()
-                                    && matches!(fmt_tokens[j].kind, TokenKind::Whitespace)
-                                {
-                                    j += 1;
-                                }
-                            }
-                        }
-                        _ => {}
+                        _ => break,
                     }
                 }
 
+                // Insert comments
+                for (ci, comment) in comments.iter().enumerate() {
+                    if comment.needs_leading_newline {
+                        // Explicit linebreak from source - add it
+                        output.push('\n');
+                    } else if ci == 0 {
+                        // First comment, no explicit linebreak
+                        // Add space if inline (trailing comment on same line)
+                        if !output.ends_with(' ') && !output.ends_with('\n') {
+                            output.push(' ');
+                        }
+                    }
+                    // For subsequent comments (ci > 0) without needs_leading_newline,
+                    // we don't add anything because the previous single-line comment
+                    // already includes implicit newline
+                    
+                    output.push_str(&comment.text);
+                    
+                    // Single-line comments implicitly end with newline
+                    if comment.kind == TokenKind::SingleLineComment {
+                        output.push('\n');
+                    }
+                }
+
+                // Skip past the trivia we've handled
                 token_idx = j;
                 nontrivia_idx += 1;
                 continue;
@@ -189,11 +205,4 @@ fn insert_gap_comments(formatted: &str, gap_comments: &[Vec<(TokenKind, String)>
     }
 
     output
-}
-
-fn ends_with_whitespace(value: &str) -> bool {
-    value
-        .chars()
-        .last()
-        .is_some_and(|ch| ch == ' ' || ch == '\t' || ch == '\n')
 }

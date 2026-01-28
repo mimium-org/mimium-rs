@@ -46,10 +46,11 @@ pub fn lib_main() {
     let code = match file_path.as_ref() {
         Some(path) => fs::read_to_string(path).expect("Unable to read file"),
         None => {
+            use std::io::Read;
             let mut buf = String::new();
             eprintln!("No file specified. Reading from stdin...");
             std::io::stdin()
-                .read_line(&mut buf)
+                .read_to_string(&mut buf)
                 .expect("Unable to read from stdin");
             buf
         }

@@ -141,6 +141,8 @@ mod typedpattern {
 }
 
 mod expr {
+    use std::ops::Add;
+
     use mimium_lang::ast::operators::Op;
 
     use super::*;
@@ -178,7 +180,7 @@ mod expr {
                     .parens()
             }
             Expr::Proj(e, idx) => pretty(e, allocator)
-                .append(allocator.text(".").append(allocator.text(idx.to_string())))
+                .append(allocator.text(".").add(allocator.text(idx.to_string())))
                 .group(),
             Expr::Apply(e1, e2) => {
                 let doc1 = pretty(e1, allocator);
@@ -250,9 +252,11 @@ mod expr {
 
             Expr::FieldAccess(expr_node_id, symbol) => {
                 let expr_doc = pretty(expr_node_id, allocator);
+                //concat without space
                 expr_doc
-                    .append(allocator.softline())
-                    .append(allocator.text(".").append(allocator.text(symbol)))
+                    // .append(allocator.softline_())
+                    .add(allocator.text("."))
+                    .add(allocator.text(symbol))
                     .group()
             }
             Expr::ArrayAccess(e, i) => pretty(e, allocator).append(pretty(i, allocator).brackets()),
