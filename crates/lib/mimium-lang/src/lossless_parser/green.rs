@@ -142,6 +142,7 @@ pub enum SyntaxKind {
     SelfLiteral,
     NowLiteral,
     SampleRateLiteral,
+    PlaceHolderLiteral,
 
     // Names and paths
     Identifier,
@@ -149,10 +150,12 @@ pub enum SyntaxKind {
     // Types
     TypeAnnotation,
     PrimitiveType,
+    UnitType,
     FunctionType,
     TupleType,
     RecordType,
     ArrayType,
+    CodeType,
     TypeIdent,
 
     // Patterns
@@ -169,6 +172,7 @@ pub enum SyntaxKind {
     ParamList,
     ArgList,
     ExprList,
+    ParamDefault,
 
     // Other
     Error, // For error recovery
@@ -204,13 +208,16 @@ impl std::fmt::Display for SyntaxKind {
             SyntaxKind::SelfLiteral => write!(f, "SelfLiteral"),
             SyntaxKind::NowLiteral => write!(f, "NowLiteral"),
             SyntaxKind::SampleRateLiteral => write!(f, "SampleRateLiteral"),
+            SyntaxKind::PlaceHolderLiteral => write!(f, "PlaceHolderLiteral"),
             SyntaxKind::Identifier => write!(f, "Identifier"),
             SyntaxKind::TypeAnnotation => write!(f, "TypeAnnotation"),
             SyntaxKind::PrimitiveType => write!(f, "PrimitiveType"),
+            SyntaxKind::UnitType => write!(f, "UnitType"),
             SyntaxKind::FunctionType => write!(f, "FunctionType"),
             SyntaxKind::TupleType => write!(f, "TupleType"),
             SyntaxKind::RecordType => write!(f, "RecordType"),
             SyntaxKind::ArrayType => write!(f, "ArrayType"),
+            SyntaxKind::CodeType => write!(f, "CodeType"),
             SyntaxKind::TypeIdent => write!(f, "TypeIdent"),
             SyntaxKind::Pattern => write!(f, "Pattern"),
             SyntaxKind::SinglePattern => write!(f, "SinglePattern"),
@@ -221,6 +228,7 @@ impl std::fmt::Display for SyntaxKind {
             SyntaxKind::ParamList => write!(f, "ParamList"),
             SyntaxKind::ArgList => write!(f, "ArgList"),
             SyntaxKind::ExprList => write!(f, "ExprList"),
+            SyntaxKind::ParamDefault => write!(f, "ParamDefault"),
             SyntaxKind::Error => write!(f, "Error"),
         }
     }

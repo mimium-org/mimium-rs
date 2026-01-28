@@ -7,5 +7,5 @@ fn bar(x = 100,y){
 }
 
 fn dsp(){
-    foo({}) + bar({y=300}) //should be 701
+    foo({..}) + bar({y=300}) //should be 701
 }

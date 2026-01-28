@@ -282,6 +282,36 @@ impl<'a> Parser<'a> {
         false
     }
 
+    /// Check if the token at current + offset has a leading linebreak in its trivia
+    fn has_leading_linebreak_at(&self, offset: usize) -> bool {
+        let idx = self.current + offset;
+        if let Some(trivia_indices) = self.preparsed.leading_trivia_map.get(&idx) {
+            for &trivia_idx in trivia_indices {
+                if let Some(token) = self.tokens.get(trivia_idx) {
+                    if token.kind == TokenKind::LineBreak {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if the token at current + offset has a trailing linebreak in its trivia
+    fn has_trailing_linebreak_at(&self, offset: usize) -> bool {
+        let idx = self.current + offset;
+        if let Some(trivia_indices) = self.preparsed.trailing_trivia_map.get(&idx) {
+            for &trivia_idx in trivia_indices {
+                if let Some(token) = self.tokens.get(trivia_idx) {
+                    if token.kind == TokenKind::LineBreak {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Parse a statement
     fn parse_statement(&mut self) {
         self.emit_node(SyntaxKind::Statement, |this| {
@@ -366,7 +396,7 @@ impl<'a> Parser<'a> {
     fn parse_escape_expr(&mut self) {
         self.emit_node(SyntaxKind::EscapeExpr, |this| {
             this.expect(TokenKind::Dollar);
-            this.parse_expr();
+            this.parse_prefix_expr();
         });
     }
 
@@ -446,6 +476,13 @@ impl<'a> Parser<'a> {
                 // Record pattern: {a = x, b = y}
                 self.parse_record_pattern();
             }
+            Some(TokenKind::BackQuote) => {
+                // Code type: `Type
+                self.emit_node(SyntaxKind::CodeType, |inner| {
+                    inner.expect(TokenKind::BackQuote);
+                    inner.parse_type();
+                });
+            }
             _ => {
                 // Error: unexpected token
                 if let Some(kind) = self.peek() {
@@ -521,6 +558,15 @@ impl<'a> Parser<'a> {
                     if this.check(TokenKind::Colon) {
                         this.parse_type_annotation();
                     }
+
+                    // Optional default value
+                    if this.check(TokenKind::Assign) {
+                        this.emit_node(SyntaxKind::ParamDefault, |inner| {
+                            inner.expect(TokenKind::Assign);
+                            // Use precedence 1 to avoid statement boundary detection within params
+                            inner.parse_expr_with_precedence(1);
+                        });
+                    }
                 }
 
                 if this.check(TokenKind::Comma) {
@@ -562,8 +608,11 @@ impl<'a> Parser<'a> {
         self.parse_prefix_expr();
 
         // In statement context (min_prec == 0), stop at linebreak after prefix
+        // unless the next token is an infix operator (e.g. leading '|>').
         if min_prec == 0 && self.has_trailing_linebreak() {
-            return;
+            if self.peek().and_then(|k| self.get_infix_precedence(k)).is_none() {
+                return;
+            }
         }
 
         while let Some(token_kind) = self.peek() {
@@ -575,7 +624,9 @@ impl<'a> Parser<'a> {
                 
                 // After parsing infix, check for linebreak in statement context
                 if min_prec == 0 && self.has_trailing_linebreak() {
-                    break;
+                    if self.peek().and_then(|k| self.get_infix_precedence(k)).is_none() {
+                        break;
+                    }
                 }
             } else {
                 break;
@@ -596,7 +647,8 @@ impl<'a> Parser<'a> {
             TokenKind::OpSum | TokenKind::OpMinus => Some(5),
             TokenKind::OpProduct | TokenKind::OpDivide | TokenKind::OpModulo => Some(6),
             TokenKind::OpExponent => Some(7),
-            TokenKind::OpPipe => Some(8),
+                // Pipe should have the lowest precedence to allow chaining with other operators
+                TokenKind::OpPipe => Some(0),
             TokenKind::OpAt => Some(9),
             _ => None,
         }
@@ -768,6 +820,13 @@ impl<'a> Parser<'a> {
                     inner.expect(TokenKind::ArrayEnd);
                 });
             }
+            Some(TokenKind::BackQuote) => {
+                // Code type: `Type
+                self.emit_node(SyntaxKind::CodeType, |inner| {
+                    inner.expect(TokenKind::BackQuote);
+                    inner.parse_type();
+                });
+            }
             Some(TokenKind::Ident) => {
                 // Type variable or named type
                 self.emit_node(SyntaxKind::TypeIdent, |inner| {
@@ -815,10 +874,17 @@ impl<'a> Parser<'a> {
                 inner.expect(TokenKind::ParenEnd);
             });
         } else {
-            // Just parenthesized type
-            self.bump(); // (
-            self.parse_type();
-            self.expect(TokenKind::ParenEnd);
+            // Parenthesized type or unit type
+            if self.peek_ahead(1) == Some(TokenKind::ParenEnd) {
+                self.emit_node(SyntaxKind::UnitType, |inner| {
+                    inner.expect(TokenKind::ParenBegin);
+                    inner.expect(TokenKind::ParenEnd);
+                });
+            } else {
+                self.bump(); // (
+                self.parse_type();
+                self.expect(TokenKind::ParenEnd);
+            }
         }
     }
 
@@ -924,9 +990,19 @@ impl<'a> Parser<'a> {
             }
             Some(TokenKind::PlaceHolder) => {
                 // Placeholder: _
-                self.emit_node(SyntaxKind::Identifier, |this| {
+                self.emit_node(SyntaxKind::PlaceHolderLiteral, |this| {
                     this.bump();
                 });
+            }
+            Some(TokenKind::BlockEnd) | Some(TokenKind::ParenEnd) | Some(TokenKind::ArrayEnd) => {
+                // Do not consume closing tokens here; let the enclosing parser handle them.
+                if let Some(kind) = self.peek() {
+                    self.add_error(ParserError::unexpected_token(
+                        self.current_token_index(),
+                        "expression",
+                        &format!("{kind:?}"),
+                    ));
+                }
             }
             None | Some(TokenKind::Eof) => {
                 // EOF reached when expecting an expression
@@ -993,7 +1069,11 @@ impl<'a> Parser<'a> {
 
             // Body expression
             if !this.is_at_end() {
-                this.parse_expr();
+                if this.check(TokenKind::BlockBegin) {
+                    this.parse_block_expr();
+                } else {
+                    this.parse_expr();
+                }
             }
         });
     }
@@ -1037,12 +1117,11 @@ impl<'a> Parser<'a> {
         let token1 = self.peek_ahead(1);
         let token2 = self.peek_ahead(2);
 
-        match (token1, token2) {
-            (Some(TokenKind::DoubleDot), _) => true, // .. (incomplete records)
-            (Some(TokenKind::Ident), Some(TokenKind::Assign)) => true, // field = value
-            (Some(TokenKind::Ident), Some(TokenKind::LeftArrow)) => true, // record <- field = value (update)
-            _ => false,
-        }
+        let is_record_key = matches!(token1, Some(TokenKind::Ident) | Some(TokenKind::IdentParameter));
+        let is_record_syntax = matches!(token1, Some(TokenKind::DoubleDot))
+            || (is_record_key && matches!(token2, Some(TokenKind::Assign) | Some(TokenKind::LeftArrow)));
+
+        is_record_syntax
     }
 
     /// Parse tuple expression: (a, b, c)
@@ -1080,24 +1159,29 @@ impl<'a> Parser<'a> {
                     this.expect(TokenKind::LeftArrow); // <-
 
                     // Parse updated fields
-                    this.expect(TokenKind::Ident);
+                    this.expects(&[TokenKind::Ident, TokenKind::IdentParameter]);
                     this.expect(TokenKind::Assign);
                     this.parse_expr();
 
                     while this.check(TokenKind::Comma) {
                         this.bump();
                         if !this.check(TokenKind::BlockEnd) {
-                            this.expect(TokenKind::Ident);
+                            this.expects(&[TokenKind::Ident, TokenKind::IdentParameter]);
                             this.expect(TokenKind::Assign);
                             this.parse_expr();
                         }
                     }
                 } else {
                     // Regular record: {field = expr, ...} or {field = expr, ..}
-                    // Parse field: name = expr
-                    this.expect(TokenKind::Ident);
-                    this.expect(TokenKind::Assign);
-                    this.parse_expr();
+                    // Allow incomplete record: {..}
+                    if this.check(TokenKind::DoubleDot) {
+                        this.bump(); // ..
+                    } else {
+                        // Parse field: name = expr
+                        this.expects(&[TokenKind::Ident, TokenKind::IdentParameter]);
+                        this.expect(TokenKind::Assign);
+                        this.parse_expr();
+                    }
 
                     while this.check(TokenKind::Comma) {
                         this.bump();
@@ -1107,7 +1191,7 @@ impl<'a> Parser<'a> {
                                 this.bump(); // ..
                                 break;
                             } else {
-                                this.expect(TokenKind::Ident);
+                                this.expects(&[TokenKind::Ident, TokenKind::IdentParameter]);
                                 this.expect(TokenKind::Assign);
                                 this.parse_expr();
                             }
