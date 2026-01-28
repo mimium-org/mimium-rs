@@ -222,8 +222,8 @@ where
             allocator.text(" ").append(allocator.text(text.to_string())).append(allocator.text(" "))
         }
         TokenKind::LineBreak => {
-            // Line break - convert to hardline
-            allocator.hardline()
+            // Skip linebreaks - we control line separation in block/program contexts
+            allocator.nil()
         }
         TokenKind::Whitespace => {
             // Skip whitespace trivia - let the formatting logic handle spacing
@@ -666,6 +666,8 @@ where
     let mut current_param = allocator.nil();
     let mut has_param_content = false;
     let mut after_params = false;
+    let mut after_arrow = false;
+    let mut has_return_type = false;
     let mut body_started = false;
     
     for &child in children.iter() {
@@ -715,11 +717,29 @@ where
                 TokenKind::Arrow if after_params => {
                     // Return type annotation
                     result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
+                    after_arrow = true;
                     continue;
                 }
                 _ => {}
             }
         }
+        
+        // Check if this is a type node
+        let is_type_node = if let mimium_lang::compiler::parser::green::GreenNode::Internal { kind, .. } = node {
+            matches!(
+                kind,
+                SyntaxKind::PrimitiveType
+                    | SyntaxKind::UnitType
+                    | SyntaxKind::TypeIdent
+                    | SyntaxKind::FunctionType
+                    | SyntaxKind::TupleType
+                    | SyntaxKind::RecordType
+                    | SyntaxKind::ArrayType
+                    | SyntaxKind::CodeType
+            )
+        } else {
+            false
+        };
         
         let child_doc = cst_to_doc(child, ctx, allocator);
         
@@ -728,14 +748,20 @@ where
             current_param = current_param.append(child_doc);
             has_param_content = true;
         } else if after_params {
-            // Body expression(s) - add space only before the FIRST body child
-            if !body_started {
-                result = result.append(allocator.space()).append(child_doc);
-                body_started = true;
-            } else {
-                // Subsequent body children are concatenated without extra space
-                // (they're part of the same logical expression)
+            if after_arrow && !has_return_type && is_type_node {
+                // Return type after ->
                 result = result.append(child_doc);
+                has_return_type = true;
+            } else {
+                // Body expression(s) - add space only before the FIRST body child
+                if !body_started {
+                    result = result.append(allocator.space()).append(child_doc);
+                    body_started = true;
+                } else {
+                    // Subsequent body children are concatenated without extra space
+                    // (they're part of the same logical expression)
+                    result = result.append(child_doc);
+                }
             }
         }
     }
@@ -828,15 +854,14 @@ where
             let token = &ctx.tokens[*token_index];
             match token.kind {
                 TokenKind::BlockBegin => {
-                    result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
+                    result = result.append(allocator.text("{"));
                     in_body = true;
                     continue;
                 }
                 TokenKind::BlockEnd => {
                     // Build body with indentation
                     if !body_docs.is_empty() {
-                        let body = allocator.concat(body_docs.clone());
-                        // Put hardline + body inside nest so indentation applies
+                        let body = allocator.intersperse(body_docs.clone(), allocator.hardline());
                         result = result.append(
                             allocator.hardline()
                                 .append(body)
@@ -844,7 +869,7 @@ where
                         );
                         result = result.append(allocator.hardline());
                     }
-                    result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
+                    result = result.append(allocator.text("}"));
                     in_body = false;
                     continue;
                 }
@@ -885,8 +910,87 @@ where
     D::Doc: Clone + Pretty<'a, D, A>,
     A: Clone,
 {
-    // {field = val, ...}
-    print_grouped_list(children, ctx, allocator, "{", "}")
+    // {field = val, field2 = val2, ...}
+    // Record children are: {, ident, =, expr, comma, ident, =, expr, ..., }
+    // We need to group them as: {, [ident = expr], comma, [ident = expr], }
+    
+    let mut result = allocator.nil();
+    let mut fields: Vec<DocBuilder<'a, D, A>> = Vec::new();
+    let mut current_field = allocator.nil();
+    let mut has_current_field = false;
+    let mut open_doc = allocator.nil();
+    let mut close_doc = allocator.nil();
+    let mut in_body = false;
+
+    for &child in children.iter() {
+        let node = ctx.arena.get(child);
+
+        if let mimium_lang::compiler::parser::green::GreenNode::Token { token_index, .. } = node {
+            let token = &ctx.tokens[*token_index];
+
+            match token.kind {
+                TokenKind::BlockBegin => {
+                    open_doc = emit_token_with_trivia(*token_index, ctx, allocator);
+                    in_body = true;
+                    continue;
+                }
+                TokenKind::BlockEnd => {
+                    // Push current field if any
+                    if has_current_field {
+                        fields.push(current_field.clone());
+                    }
+                    close_doc = emit_token_with_trivia(*token_index, ctx, allocator);
+                    in_body = false;
+                    continue;
+                }
+                TokenKind::Comma if in_body => {
+                    // End of current field, push it
+                    if has_current_field {
+                        fields.push(current_field.clone());
+                        current_field = allocator.nil();
+                        has_current_field = false;
+                    }
+                    continue;
+                }
+                TokenKind::Assign if in_body => {
+                    // Add = with spaces
+                    current_field = current_field
+                        .append(allocator.space())
+                        .append(emit_token_with_trivia(*token_index, ctx, allocator))
+                        .append(allocator.space());
+                    has_current_field = true;
+                    continue;
+                }
+                TokenKind::LeftArrow if in_body => {
+                    // Record update: base <- field = expr
+                    current_field = current_field
+                        .append(allocator.space())
+                        .append(emit_token_with_trivia(*token_index, ctx, allocator))
+                        .append(allocator.space());
+                    has_current_field = true;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        if in_body {
+            current_field = current_field.append(cst_to_doc(child, ctx, allocator));
+            has_current_field = true;
+        }
+    }
+
+    // Build the result
+    if fields.is_empty() {
+        result = open_doc.append(close_doc);
+    } else {
+        let fields_doc = allocator.intersperse(fields, breakable_comma(allocator));
+        result = open_doc
+            .append(fields_doc.nest(get_indent_size() as isize).group())
+            .append(close_doc);
+    }
+
+    result
 }
 
 fn print_array_expr<'a, D, A>(
@@ -1262,6 +1366,20 @@ where
 mod tests {
     use super::*;
 
+    /// Helper function to format and normalize output
+    fn format(src: &str) -> String {
+        pretty_print(src, &None, 80).expect("formatting failed")
+    }
+
+    /// Helper to format with custom width
+    fn format_width(src: &str, width: usize) -> String {
+        pretty_print(src, &None, width).expect("formatting failed")
+    }
+
+    // ========================================================================
+    // Basic tests
+    // ========================================================================
+
     #[test]
     fn test_simple_function() {
         let src = "fn dsp() { 42 }";
@@ -1276,5 +1394,472 @@ mod tests {
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("// comment"));
+    }
+
+    // ========================================================================
+    // Literal tests
+    // ========================================================================
+
+    #[test]
+    fn test_int_literal() {
+        let output = format("let x = 42");
+        assert!(output.contains("42"));
+    }
+
+    #[test]
+    fn test_float_literal() {
+        let output = format("let x = 3.14");
+        assert!(output.contains("3.14"));
+    }
+
+    #[test]
+    fn test_string_literal() {
+        let output = format("let x = \"hello\"");
+        assert!(output.contains("\"hello\""));
+    }
+
+    #[test]
+    fn test_self_literal() {
+        let output = format("let x = self");
+        assert!(output.contains("self"));
+    }
+
+    #[test]
+    fn test_now_literal() {
+        let output = format("let x = now");
+        assert!(output.contains("now"));
+    }
+
+    #[test]
+    fn test_samplerate_literal() {
+        let output = format("let x = samplerate");
+        assert!(output.contains("samplerate"));
+    }
+
+    // ========================================================================
+    // Declaration tests
+    // ========================================================================
+
+    #[test]
+    fn test_let_simple() {
+        let output = format("let x = 1");
+        assert_eq!(output, "let x = 1\n");
+    }
+
+    #[test]
+    fn test_let_with_type() {
+        let output = format("let x:float = 1.0");
+        assert!(output.contains(":float"));
+    }
+
+    #[test]
+    fn test_letrec() {
+        let output = format("letrec x = self + 1");
+        assert!(output.contains("letrec"));
+    }
+
+    #[test]
+    fn test_function_decl() {
+        let output = format("fn add(a, b) { a + b }");
+        assert!(output.contains("fn add"));
+        assert!(output.contains("a + b"));
+    }
+
+    #[test]
+    fn test_function_with_return_type() {
+        let output = format("fn double(x)->float { x * 2.0 }");
+        assert!(output.contains("->float"));
+    }
+
+    // ========================================================================
+    // Binary expression tests
+    // ========================================================================
+
+    #[test]
+    fn test_binary_add() {
+        let output = format("let x = 1 + 2");
+        assert!(output.contains("1 + 2"));
+    }
+
+    #[test]
+    fn test_binary_sub() {
+        let output = format("let x = 5 - 3");
+        assert!(output.contains("5 - 3"));
+    }
+
+    #[test]
+    fn test_binary_mul() {
+        let output = format("let x = 2 * 3");
+        assert!(output.contains("2 * 3"));
+    }
+
+    #[test]
+    fn test_binary_div() {
+        let output = format("let x = 10 / 2");
+        assert!(output.contains("10 / 2"));
+    }
+
+    #[test]
+    fn test_binary_mod() {
+        let output = format("let x = 10 % 3");
+        assert!(output.contains("10 % 3"));
+    }
+
+    #[test]
+    fn test_binary_exp() {
+        let output = format("let x = 2 ^ 3");
+        assert!(output.contains("2 ^ 3"));
+    }
+
+    #[test]
+    fn test_binary_and() {
+        let output = format("let x = true && false");
+        assert!(output.contains("&&"));
+    }
+
+    #[test]
+    fn test_binary_or() {
+        let output = format("let x = true || false");
+        assert!(output.contains("||"));
+    }
+
+    #[test]
+    fn test_comparison_ops() {
+        let output = format("let a = x == y\nlet b = x != y\nlet c = x < y\nlet d = x > y");
+        assert!(output.contains("=="));
+        assert!(output.contains("!="));
+        assert!(output.contains("<"));
+        assert!(output.contains(">"));
+    }
+
+    #[test]
+    fn test_pipe_operator() {
+        let output = format("let x = a |> b |> c");
+        assert!(output.contains("|>"));
+    }
+
+    #[test]
+    fn test_at_operator() {
+        let output = format("let x = f(y) @ 1000");
+        assert!(output.contains("@"));
+    }
+
+    // ========================================================================
+    // Unary expression tests
+    // ========================================================================
+
+    #[test]
+    fn test_unary_minus() {
+        let output = format("let x = -5");
+        assert!(output.contains("-5"));
+    }
+
+    #[test]
+    fn test_unary_plus() {
+        let output = format("let x = +5");
+        assert!(output.contains("+5"));
+    }
+
+    // ========================================================================
+    // Lambda tests
+    // ========================================================================
+
+    #[test]
+    fn test_lambda_simple() {
+        let output = format("let f = |x| x + 1");
+        assert!(output.contains("|x|"));
+    }
+
+    #[test]
+    fn test_lambda_multiple_params() {
+        let output = format("let f = |x, y| x + y");
+        assert!(output.contains("|x, y|"));
+    }
+
+    #[test]
+    fn test_lambda_with_type() {
+        let output = format("let f = |x:float| x * 2.0");
+        assert!(output.contains(":float"));
+    }
+
+    #[test]
+    fn test_lambda_with_return_type() {
+        let output = format("let f = |x|->float x * 2.0");
+        assert!(output.contains("->float"));
+    }
+
+    #[test]
+    fn test_lambda_with_block() {
+        let output = format("let f = |x| { x + 1 }");
+        assert!(output.contains("{"));
+        assert!(output.contains("}"));
+    }
+
+    // ========================================================================
+    // If expression tests
+    // ========================================================================
+
+    #[test]
+    fn test_if_simple() {
+        let output = format("let x = if (a > 0) 1 else 0");
+        assert!(output.contains("if"));
+        assert!(output.contains("else"));
+    }
+
+    #[test]
+    fn test_if_with_block() {
+        let output = format("let x = if (a > 0) { 1 } else { 0 }");
+        assert!(output.contains("if"));
+        assert!(output.contains("{"));
+    }
+
+    #[test]
+    fn test_if_else_if() {
+        let output = format("let x = if (a > 0) {1} else if (a < 0) {2} else {0}");
+        assert!(output.contains("else if"));
+    }
+
+    // ========================================================================
+    // Block expression tests
+    // ========================================================================
+
+    #[test]
+    fn test_block_single_expr() {
+        let output = format("fn f() { 42 }");
+        assert!(output.contains("42"));
+    }
+
+    #[test]
+    fn test_block_multiple_statements() {
+        let output = format("fn f() {\nlet x = 1\nlet y = 2\nx + y\n}");
+        assert!(output.contains("let x = 1"));
+        assert!(output.contains("let y = 2"));
+    }
+
+    // ========================================================================
+    // Tuple tests
+    // ========================================================================
+
+    #[test]
+    fn test_tuple_expr() {
+        let output = format("let x = (1, 2, 3)");
+        assert!(output.contains("(1, 2, 3)") || output.contains("(1,"));
+    }
+
+    #[test]
+    fn test_tuple_pattern() {
+        let output = format("let (a, b) = x");
+        assert!(output.contains("(a, b)") || output.contains("(a,"));
+    }
+
+    // ========================================================================
+    // Record tests
+    // ========================================================================
+
+    #[test]
+    fn test_record_expr() {
+        let output = format("let r = {a = 1, b = 2}");
+        assert!(output.contains("{"));
+        assert!(output.contains("a = 1"));
+    }
+
+    // ========================================================================
+    // Array tests
+    // ========================================================================
+
+    #[test]
+    fn test_array_expr() {
+        let output = format("let arr = [1, 2, 3]");
+        assert!(output.contains("["));
+        assert!(output.contains("]"));
+    }
+
+    // ========================================================================
+    // Call expression tests
+    // ========================================================================
+
+    #[test]
+    fn test_call_no_args() {
+        let output = format("let x = f()");
+        assert!(output.contains("f()"));
+    }
+
+    #[test]
+    fn test_call_with_args() {
+        let output = format("let x = f(1, 2, 3)");
+        assert!(output.contains("f("));
+    }
+
+    #[test]
+    fn test_call_chained() {
+        let output = format("let x = f(1)(2)");
+        assert!(output.contains("f(1)"));
+    }
+
+    // ========================================================================
+    // Field access tests
+    // ========================================================================
+
+    #[test]
+    fn test_field_access() {
+        let output = format("let x = obj.field");
+        assert!(output.contains("obj.field"));
+    }
+
+    #[test]
+    fn test_tuple_projection() {
+        let output = format("let x = t.0");
+        assert!(output.contains(".0"));
+    }
+
+    // ========================================================================
+    // Index expression tests
+    // ========================================================================
+
+    #[test]
+    fn test_index_expr() {
+        let output = format("let x = arr[0]");
+        assert!(output.contains("[0]"));
+    }
+
+    // ========================================================================
+    // Include statement tests
+    // ========================================================================
+
+    #[test]
+    fn test_include() {
+        let output = format("include(\"file.mmm\")");
+        assert!(output.contains("include"));
+    }
+
+    // ========================================================================
+    // Quote/escape tests
+    // ========================================================================
+
+    #[test]
+    fn test_quote_expr() {
+        let output = format("let x = `y");
+        assert!(output.contains("`"));
+    }
+
+    #[test]
+    fn test_escape_expr() {
+        let output = format("let x = $y");
+        assert!(output.contains("$"));
+    }
+
+    // ========================================================================
+    // Type annotation tests
+    // ========================================================================
+
+    #[test]
+    fn test_type_float() {
+        let output = format("let x:float = 1.0");
+        assert!(output.contains(":float"));
+    }
+
+    #[test]
+    fn test_type_int() {
+        let output = format("let x:int = 1");
+        assert!(output.contains(":int"));
+    }
+
+    #[test]
+    fn test_type_string() {
+        let output = format("let x:string = \"hello\"");
+        assert!(output.contains(":string"));
+    }
+
+    #[test]
+    fn test_function_type() {
+        let output = format("let f:(float)->float = |x| x");
+        assert!(output.contains("->"));
+    }
+
+    // ========================================================================
+    // Width tests
+    // ========================================================================
+
+    #[test]
+    fn test_narrow_width_breaks_lines() {
+        let src = "let x = very_long_function_call(argument1, argument2, argument3)";
+        let narrow = format_width(src, 20);
+        let wide = format_width(src, 200);
+        // Narrow output should have more characters due to line breaks
+        assert!(narrow.lines().count() >= wide.lines().count());
+    }
+
+    // ========================================================================
+    // Comment preservation tests
+    // ========================================================================
+
+    #[test]
+    fn test_single_line_comment_preserved() {
+        let src = "let x = 1 // this is a comment";
+        let output = format(src);
+        assert!(output.contains("// this is a comment"));
+    }
+
+    #[test]
+    fn test_block_comment_preserved() {
+        let src = "let x = /* comment */ 1";
+        let output = format(src);
+        assert!(output.contains("/* comment */"));
+    }
+
+    // ========================================================================
+    // Idempotency tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_idempotent() {
+        let src = "fn dsp() {\n    let x = 1\n    x + 1\n}";
+        let first = format(src);
+        let second = format(&first);
+        assert_eq!(first, second, "Formatting should be idempotent");
+    }
+
+    #[test]
+    fn test_format_idempotent_complex() {
+        let src = r#"fn adsr(a, b) {
+    let s = self
+    let x = a + b
+    x
+}"#;
+        let first = format(src);
+        let second = format(&first);
+        assert_eq!(first, second, "Complex formatting should be idempotent");
+    }
+
+    #[test]
+    fn test_format_idempotent_nested_blocks() {
+        let src = r#"fn test(x) {
+    if (x > 0) {
+        let a = 1
+        a
+    } else {
+        let b = 2
+        b
+    }
+}"#;
+        let first = format(src);
+        let second = format(&first);
+        assert_eq!(first, second, "Nested blocks should be idempotent");
+    }
+
+    #[test]
+    fn test_format_idempotent_if_else_if() {
+        let src = r#"fn test(x) {
+    if (x > 0) {
+        1
+    } else if (x < 0) {
+        2
+    } else {
+        0
+    }
+}"#;
+        let first = format(src);
+        let second = format(&first);
+        assert_eq!(first, second, "if-else-if should be idempotent");
     }
 }
