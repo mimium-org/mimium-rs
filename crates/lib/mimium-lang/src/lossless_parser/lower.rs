@@ -5,31 +5,31 @@ use crate::ast::program::{Program, ProgramStatement};
 use crate::ast::statement::{Statement, into_then_expr, stmt_from_expr_top};
 use crate::ast::{Expr, Literal};
 use crate::interner::{ExprNodeId, Symbol, ToSymbol};
-use crate::lossless_parser::cst_parser::ParserError;
-use crate::lossless_parser::green::{GreenNode, GreenNodeArena, GreenNodeId, SyntaxKind};
-use crate::lossless_parser::token::{LosslessToken, TokenKind};
+use crate::parser_internal::cst_parser::ParserError;
+use crate::parser_internal::green::{GreenNode, GreenNodeArena, GreenNodeId, SyntaxKind};
+use crate::parser_internal::token::{Token, TokenKind};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::types::Type;
 use crate::utils::metadata::{Location, Span};
 use std::ops::ControlFlow;
 use std::path::PathBuf;
 
-/// Lossless CST -> existing `Program`/`Expr` lowering.
+/// CST -> existing `Program`/`Expr` lowering.
 /// This is an initial, incomplete bridge used to incrementally replace
 /// the legacy chumsky parser. It intentionally handles a subset of
 /// syntax; unsupported constructs currently lower to `Expr::Error` to
 /// keep the compiler stable while we flesh out coverage.
-pub struct LosslessLowerer<'a> {
+pub struct Lowerer<'a> {
     source: &'a str,
-    tokens: &'a [LosslessToken],
+    tokens: &'a [Token],
     arena: &'a GreenNodeArena,
     file_path: PathBuf,
 }
 
-impl<'a> LosslessLowerer<'a> {
+impl<'a> Lowerer<'a> {
     pub fn new(
         source: &'a str,
-        tokens: &'a [LosslessToken],
+        tokens: &'a [Token],
         arena: &'a GreenNodeArena,
         file_path: PathBuf,
     ) -> Self {
@@ -1150,11 +1150,11 @@ impl<'a> LosslessLowerer<'a> {
 }
 
 /// Full pipeline helper: tokenize, parse CST, then lower into `Program`.
-pub fn parse_program_lossless(source: &str, file_path: PathBuf) -> (Program, Vec<ParserError>) {
-    let tokens = crate::lossless_parser::tokenize(source);
-    let preparsed = crate::lossless_parser::preparse(&tokens);
-    let (root, arena, tokens, errors) = crate::lossless_parser::parse_cst(tokens, &preparsed);
-    let lowerer = LosslessLowerer::new(source, &tokens, &arena, file_path);
+pub fn parse_program(source: &str, file_path: PathBuf) -> (Program, Vec<ParserError>) {
+    let tokens = crate::parser_internal::tokenize(source);
+    let preparsed = crate::parser_internal::preparse(&tokens);
+    let (root, arena, tokens, errors) = crate::parser_internal::parse_cst(tokens, &preparsed);
+    let lowerer = Lowerer::new(source, &tokens, &arena, file_path);
     let program = lowerer.lower_program(root);
     (program, errors)
 }
@@ -1169,9 +1169,9 @@ pub fn parse_to_expr(
     Vec<Box<dyn crate::utils::error::ReportableError>>,
 ) {
     let path = file_path.unwrap_or_default();
-    let (prog, parse_errs) = parse_program_lossless(source, path.clone());
+    let (prog, parse_errs) = parse_program(source, path.clone());
     let errs =
-        crate::lossless_parser::parser_errors_to_reportable(source, path.clone(), parse_errs);
+        crate::parser_internal::parser_errors_to_reportable(source, path.clone(), parse_errs);
 
     if prog.statements.is_empty() {
         return (Expr::Error.into_id_without_span(), errs);
@@ -1203,7 +1203,7 @@ pub fn add_global_context(ast: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
 }
 
 /// Check if a SyntaxKind represents a type node
-impl<'a> LosslessLowerer<'a> {
+impl<'a> Lowerer<'a> {
     fn is_type_kind(kind: SyntaxKind) -> bool {
         matches!(
             kind,

@@ -1,4 +1,4 @@
-/// Green Tree - Concrete Syntax Tree (CST) for lossless representation
+/// Green Tree - Concrete Syntax Tree (CST) for full-fidelity representation
 /// Based on the Red-Green Syntax Tree pattern
 ///
 /// Green nodes are immutable and position-independent. They represent

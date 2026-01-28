@@ -2,9 +2,7 @@ use std::path::PathBuf;
 
 use mimium_lang::{
     interner::ExprNodeId,
-    lossless_parser::{
-        GreenNodeArena, GreenNodeId, LosslessToken, SyntaxKind, TokenKind, green::GreenNode,
-    },
+    parser::{green::GreenNode, GreenNodeArena, GreenNodeId, SyntaxKind, Token, TokenKind},
     utils::error::ReportableError,
 };
 use tower_lsp::lsp_types::SemanticTokenType;
@@ -112,13 +110,13 @@ fn token_kind_to_semantic_index(kind: TokenKind) -> Option<usize> {
     Some(token_type)
 }
 
-// Legacy function - no longer used with lossless parser
+// Legacy function - no longer used with parser
 // fn token_to_semantic_token(token: &Token, span: &Span) -> Option<ImCompleteSemanticToken> {
 //     ...
 // }
 
 // No longer needed - token_kind_to_semantic_index handles this directly
-// fn lossless_token_to_semantic_token(token: &LosslessToken) -> Option<ImCompleteSemanticToken> {
+// fn parser_token_to_semantic_token(token: &Token) -> Option<ImCompleteSemanticToken> {
 //     token_kind_to_semantic_index(token.kind).map(|token_type| ImCompleteSemanticToken {
 //         start: token.start,
 //         length: token.length,
@@ -126,7 +124,7 @@ fn token_kind_to_semantic_index(kind: TokenKind) -> Option<usize> {
 //     })
 // }
 
-pub fn tokens_from_lossless(tokens: &[LosslessToken]) -> Vec<ImCompleteSemanticToken> {
+pub fn tokens_from_parser(tokens: &[Token]) -> Vec<ImCompleteSemanticToken> {
     tokens
         .iter()
         .filter_map(|token| {
@@ -139,14 +137,14 @@ pub fn tokens_from_lossless(tokens: &[LosslessToken]) -> Vec<ImCompleteSemanticT
         .collect()
 }
 
-fn is_trivia_node(node_id: GreenNodeId, arena: &GreenNodeArena, tokens: &[LosslessToken]) -> bool {
+fn is_trivia_node(node_id: GreenNodeId, arena: &GreenNodeArena, tokens: &[Token]) -> bool {
     matches!(arena.get(node_id), GreenNode::Token { token_index, .. } if tokens[*token_index].is_trivia())
 }
 
 fn mark_identifiers_as_function(
     node_id: GreenNodeId,
     arena: &GreenNodeArena,
-    tokens: &[LosslessToken],
+    tokens: &[Token],
     token_types: &mut [Option<usize>],
     function_id: usize,
 ) {
@@ -173,7 +171,7 @@ fn mark_identifiers_as_function(
 fn node_contains_pipe(
     node_id: GreenNodeId,
     arena: &GreenNodeArena,
-    tokens: &[LosslessToken],
+    tokens: &[Token],
 ) -> bool {
     match arena.get(node_id) {
         GreenNode::Token { token_index, .. } => tokens[*token_index].kind == TokenKind::OpPipe,
@@ -187,7 +185,7 @@ fn find_prev_non_trivia(
     children: &[GreenNodeId],
     idx: usize,
     arena: &GreenNodeArena,
-    tokens: &[LosslessToken],
+    tokens: &[Token],
 ) -> Option<GreenNodeId> {
     children
         .iter()
@@ -200,7 +198,7 @@ fn find_prev_non_trivia(
 fn mark_function_decl_name(
     children: &[GreenNodeId],
     arena: &GreenNodeArena,
-    tokens: &[LosslessToken],
+    tokens: &[Token],
     token_types: &mut [Option<usize>],
     function_id: usize,
 ) {
@@ -222,7 +220,7 @@ fn mark_function_decl_name(
 fn apply_contextual_semantics(
     node_id: GreenNodeId,
     arena: &GreenNodeArena,
-    tokens: &[LosslessToken],
+    tokens: &[Token],
     token_types: &mut [Option<usize>],
     function_id: usize,
 ) {
@@ -267,7 +265,7 @@ fn apply_contextual_semantics(
 pub fn tokens_from_green(
     root: GreenNodeId,
     arena: &GreenNodeArena,
-    tokens: &[LosslessToken],
+    tokens: &[Token],
 ) -> Vec<ImCompleteSemanticToken> {
     let mut token_types: Vec<Option<usize>> = tokens
         .iter()
@@ -291,7 +289,7 @@ pub fn tokens_from_green(
 }
 
 pub fn parse(src: &str, uri: &str) -> ParseResult {
-    use mimium_lang::lossless_parser::{parse_to_expr, tokenize};
+    use mimium_lang::parser::{parse_to_expr, tokenize};
     let tokens = tokenize(src);
     let semantic_tokens = tokens
         .iter()

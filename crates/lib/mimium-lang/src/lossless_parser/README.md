@@ -1,10 +1,10 @@
-# Lossless Parser for mimium Language Server
+# Parser for mimium Language Server
 
-This directory contains a prototype implementation of a lossless parser for the mimium Language Server, based on the Red-Green Syntax Tree pattern.
+This directory contains a prototype implementation of a parser for the mimium Language Server, based on the Red-Green Syntax Tree pattern.
 
 ## Overview
 
-The lossless parser preserves all information from the source code, including comments, whitespace, and exact positions. This makes it suitable for IDE features like:
+The parser preserves all information from the source code, including comments, whitespace, and exact positions. This makes it suitable for IDE features like:
 
 - Code formatting
 - Refactoring
@@ -21,7 +21,7 @@ The parser consists of four main stages:
 Converts source text into position-aware tokens using chumsky parser combinators.
 
 - **Input**: Source text (String)
-- **Output**: Sequence of `LosslessToken`s
+- **Output**: Sequence of `Token`s
 - Each token stores:
   - `kind`: Type of token (identifier, keyword, literal, etc.)
   - `start`: Byte offset in source
@@ -78,7 +78,7 @@ Converts Green Tree to Red Tree and AST.
   - Avoids circular references using `Weak<RedNode>`
   - Provides `parent()`, `ancestors()`, and `is_descendant_of()` methods
 - **Let-body-then Chain Transformation**: When converting to AST, flat statement lists are transformed into nested Let structures
-  - Green/Red Tree: Statements stored as a flat list for lossless representation
+  - Green/Red Tree: Statements stored as a flat list for full-fidelity representation
   - AST: Let bindings nested as `Let(x, value, Let(y, value2, body))` for semantic analysis
   - Matches the structure expected by the main mimium compiler
 - AST is suitable for semantic analysis
@@ -86,26 +86,26 @@ Converts Green Tree to Red Tree and AST.
 ## Usage Example
 
 ```rust
-use mimium_language_server::lossless_parser;
+use mimium_language_server::parser;
 
 let source = "fn dsp() { 42 }";
 
 // Complete pipeline
-let (ast, tokens, preparsed, arena) = lossless_parser::parse(source);
+let (ast, tokens, preparsed, arena) = parser::parse(source);
 
 // Or step by step:
-let tokens = lossless_parser::tokenize(source);
-let preparsed = lossless_parser::preparse(&tokens);
-let (cst, arena, annotated_tokens) = lossless_parser::parse_cst(tokens, &preparsed);
-let red = lossless_parser::green_to_red(cst, &arena, 0);
-let ast = lossless_parser::red_to_ast(&red, source, &annotated_tokens, &arena);
+let tokens = parser::tokenize(source);
+let preparsed = parser::preparse(&tokens);
+let (cst, arena, annotated_tokens) = parser::parse_cst(tokens, &preparsed);
+let red = parser::green_to_red(cst, &arena, 0);
+let ast = parser::red_to_ast(&red, source, &annotated_tokens, &arena);
 ```
 
 Run the demos:
 
 ```bash
 # Main demo showing the full pipeline
-cargo run --package mimium-language-server --example lossless_parser_demo
+cargo run --package mimium-language-server --example parser_demo
 
 # Error recovery demo showing continued parsing after errors
 cargo run --package mimium-language-server --example error_recovery_demo
@@ -117,7 +117,7 @@ The tokenizer can recover from invalid characters and continue parsing:
 
 ```rust
 let source = "fn dsp() { let x = 42 § let y = 3.14 © }";
-let tokens = lossless_parser::tokenize(source);
+let tokens = parser::tokenize(source);
 
 // The parser continues and marks invalid characters as Error tokens
 // Valid tokens: fn, dsp, (, ), {, let, x, =, 42, let, y, =, 3.14, }
@@ -163,7 +163,7 @@ This is a prototype implementation. Future work could include:
 3. **Incremental parsing**: Reuse unchanged parts of the tree
 4. **Performance optimization**: Profile and optimize hot paths
 5. **Source maps**: Better tracking of macro expansions and includes
-6. **IDE features**: Implement code actions, refactorings using the lossless tree
+6. **IDE features**: Implement code actions, refactorings using the full-fidelity tree
 
 ## References
 

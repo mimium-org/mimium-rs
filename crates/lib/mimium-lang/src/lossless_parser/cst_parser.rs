@@ -1,8 +1,8 @@
 /// CST Parser - parses token indices into Green Tree
-/// This is a simple recursive descent parser that produces a lossless CST
+/// This is a simple recursive descent parser that produces a CST
 use super::green::{GreenNodeArena, GreenNodeId, GreenTreeBuilder, SyntaxKind};
 use super::preparser::PreParsedTokens;
-use super::token::{LosslessToken, TokenKind};
+use super::token::{Token, TokenKind};
 use std::fmt;
 
 /// Error detail - structured error information
@@ -96,7 +96,7 @@ impl NodeBuilder for Parser<'_> {
 }
 /// Parser state
 pub struct Parser<'a> {
-    tokens: Vec<LosslessToken>,
+    tokens: Vec<Token>,
     preparsed: &'a PreParsedTokens,
     current: usize, // Index into preparsed.token_indices
     builder: GreenTreeBuilder,
@@ -108,7 +108,7 @@ pub struct Parser<'a> {
 const MAX_LOOKAHEAD: usize = 20;
 
 impl<'a> Parser<'a> {
-    pub fn new(tokens: Vec<LosslessToken>, preparsed: &'a PreParsedTokens) -> Self {
+    pub fn new(tokens: Vec<Token>, preparsed: &'a PreParsedTokens) -> Self {
         Self {
             tokens,
             preparsed,
@@ -148,7 +148,7 @@ impl<'a> Parser<'a> {
 
     /// Get the current token
     #[allow(dead_code)]
-    fn current_token(&self) -> Option<&LosslessToken> {
+    fn current_token(&self) -> Option<&Token> {
         self.preparsed.get_token(self.current, &self.tokens)
     }
 
@@ -235,7 +235,7 @@ impl<'a> Parser<'a> {
     ) -> (
         GreenNodeId,
         GreenNodeArena,
-        Vec<LosslessToken>,
+        Vec<Token>,
         Vec<ParserError>,
     ) {
         self.builder.start_node(SyntaxKind::Program);
@@ -1308,12 +1308,12 @@ impl<'a> Parser<'a> {
 
 /// Parse tokens into a Green Tree (CST) with error collection
 pub fn parse_cst(
-    tokens: Vec<LosslessToken>,
+    tokens: Vec<Token>,
     preparsed: &PreParsedTokens,
 ) -> (
     GreenNodeId,
     GreenNodeArena,
-    Vec<LosslessToken>,
+    Vec<Token>,
     Vec<ParserError>,
 ) {
     let parser = Parser::new(tokens, preparsed);

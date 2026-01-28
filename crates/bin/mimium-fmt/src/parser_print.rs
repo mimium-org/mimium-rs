@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use mimium_lang::lossless_parser::{
-    parse_program_lossless, parser_errors_to_reportable, preparse, tokenize, LosslessToken,
-    PreParsedTokens, TokenKind,
+use mimium_lang::parser::{
+    parse_program, parser_errors_to_reportable, preparse, tokenize, PreParsedTokens, Token,
+    TokenKind,
 };
 use mimium_lang::utils::error::ReportableError;
 use pretty::Arena;
@@ -17,7 +17,7 @@ pub fn pretty_print(
     let tokens = tokenize(src);
     let preparsed = preparse(&tokens);
     let leading_comments = extract_file_leading_comments(src, &tokens);
-    let (prog, parse_errs) = parse_program_lossless(src, file_path.clone().unwrap_or_default());
+    let (prog, parse_errs) = parse_program(src, file_path.clone().unwrap_or_default());
     let errs = parser_errors_to_reportable(
         src,
         file_path.clone().unwrap_or_default(),
@@ -46,7 +46,7 @@ pub fn pretty_print(
     }
 }
 
-fn extract_file_leading_comments(source: &str, tokens: &[LosslessToken]) -> String {
+fn extract_file_leading_comments(source: &str, tokens: &[Token]) -> String {
     let mut output = String::new();
     for token in tokens {
         if token.is_trivia() {
@@ -66,7 +66,7 @@ fn extract_file_leading_comments(source: &str, tokens: &[LosslessToken]) -> Stri
 
 fn collect_gap_comments(
     source: &str,
-    tokens: &[LosslessToken],
+    tokens: &[Token],
     preparsed: &PreParsedTokens,
 ) -> Vec<Vec<(TokenKind, String)>> {
     let indices = &preparsed.token_indices;

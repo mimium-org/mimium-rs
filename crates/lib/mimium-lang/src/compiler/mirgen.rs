@@ -1,7 +1,7 @@
 use super::intrinsics;
 use super::typing::{InferContext, infer_root};
 
-use crate::lossless_parser;
+use crate::parser;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::plugin::MacroFunction;
@@ -1349,7 +1349,7 @@ pub fn typecheck(
 }
 
 /// Generate MIR from AST.
-/// The input ast (`root_expr_id`) should contain global context. (See [[lossless_parser::add_global_context]].)
+/// The input ast (`root_expr_id`) should contain global context. (See [[parser::add_global_context]].)
 /// MIR generator itself does not emit any error, the any compile errors are analyzed before generating MIR, mostly in type checker.
 /// Note that the AST may contain partial error nodes, to do type check and report them as possible.
 pub fn compile(
@@ -1368,7 +1368,7 @@ pub fn compile(
             "ast after macro expansion: {:?}",
             expr.to_expr().simple_print()
         );
-        let expr = lossless_parser::add_global_context(expr, file_path.clone().unwrap_or_default());
+        let expr = parser::add_global_context(expr, file_path.clone().unwrap_or_default());
         let mut ctx = Context::new(infer_ctx, file_path.clone());
         let _res = ctx.eval_expr(expr);
         ctx.program.file_path = file_path.clone();

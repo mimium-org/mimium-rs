@@ -4,9 +4,9 @@ pub mod green;
 pub mod lower;
 pub mod preparser;
 pub mod red;
-/// Lossless Parser for mimium Language Server
+/// Parser for mimium Language Server
 ///
-/// This module implements a lossless parser based on the Red-Green Syntax Tree pattern.
+/// This module implements a parser based on the Red-Green Syntax Tree pattern.
 /// The parser preserves all information from the source code including comments and whitespace.
 ///
 /// ## Architecture
@@ -35,25 +35,25 @@ pub mod red;
 /// ## Usage Example
 ///
 /// ```rust
-/// use mimium_lang::lossless_parser;
+/// use mimium_lang::parser;
 ///
 /// let source = "fn dsp() { 42 }";
 ///
 /// // Step 1: Tokenize
-/// let tokens = lossless_parser::tokenize(source);
+/// let tokens = parser::tokenize(source);
 ///
 /// // Step 2: Pre-parse (separate trivia)
-/// let preparsed = lossless_parser::preparse(&tokens);
+/// let preparsed = parser::preparse(&tokens);
 ///
 /// // Step 3: Parse to CST (Green Tree) and get annotated tokens with error collection
-/// let (green_id, arena, tokens, errors) = lossless_parser::parse_cst(tokens, &preparsed);
+/// let (green_id, arena, tokens, errors) = parser::parse_cst(tokens, &preparsed);
 /// if !errors.is_empty() {
 ///     eprintln!("Parse errors: {:?}", errors);
 /// }
 ///
 /// // Step 4: Convert to AST (Red Tree)
-/// let red = lossless_parser::green_to_red(green_id, 0);
-/// let ast = lossless_parser::red_to_ast(&red, source, &tokens, &arena);
+/// let red = parser::green_to_red(green_id, 0);
+/// let ast = parser::red_to_ast(&red, source, &tokens, &arena);
 /// ```
 pub mod token;
 pub mod tokenizer;
@@ -63,10 +63,10 @@ use crate::utils::error::{ReportableError, SimpleError};
 use crate::utils::metadata::Location;
 pub use cst_parser::parse_cst;
 pub use green::{GreenNodeArena, GreenNodeId, SyntaxKind};
-pub use lower::{add_global_context, parse_program_lossless, parse_to_expr};
+pub use lower::{add_global_context, parse_program, parse_to_expr};
 pub use preparser::{PreParsedTokens, preparse};
 pub use red::{AstNode, RedNode, red_to_ast};
-pub use token::{LosslessToken, TokenKind};
+pub use token::{Token, TokenKind};
 pub use tokenizer::tokenize;
 
 /// Convenience function to create a Red node from a Green node
@@ -79,7 +79,7 @@ pub fn parse(
     source: &str,
 ) -> (
     AstNode,
-    Vec<LosslessToken>,
+    Vec<Token>,
     PreParsedTokens,
     GreenNodeArena,
     Vec<cst_parser::ParserError>,

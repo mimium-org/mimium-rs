@@ -5,7 +5,7 @@
 /// They represent the actual AST without comments and whitespace.
 /// Red nodes maintain parent references for bottom-up traversal.
 use super::green::{GreenNodeArena, GreenNodeId, SyntaxKind};
-use super::token::{LosslessToken, TokenKind};
+use super::token::{Token, TokenKind};
 use std::sync::{Arc, Weak};
 
 /// Red node - represents an AST node with position information
@@ -181,7 +181,7 @@ pub enum AstNode {
 pub fn red_to_ast(
     red: &Arc<RedNode>,
     source: &str,
-    tokens: &[LosslessToken],
+    tokens: &[Token],
     arena: &GreenNodeArena,
 ) -> AstNode {
     match red.kind(arena) {
@@ -427,7 +427,7 @@ pub fn red_to_ast(
 fn extract_params(
     red: &Arc<RedNode>,
     source: &str,
-    tokens: &[LosslessToken],
+    tokens: &[Token],
     arena: &GreenNodeArena,
 ) -> Vec<String> {
     let mut params = Vec::new();
@@ -497,9 +497,9 @@ fn transform_let_chain(statements: Vec<AstNode>) -> AstNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lossless_parser::cst_parser::parse_cst;
-    use crate::lossless_parser::preparser::preparse;
-    use crate::lossless_parser::tokenizer::tokenize;
+    use crate::parser_internal::cst_parser::parse_cst;
+    use crate::parser_internal::preparser::preparse;
+    use crate::parser_internal::tokenizer::tokenize;
 
     #[test]
     fn test_red_node_creation() {

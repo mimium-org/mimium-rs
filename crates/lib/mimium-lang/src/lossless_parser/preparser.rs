@@ -1,6 +1,6 @@
 /// Pre-parser for handling trivia (comments, whitespace, linebreaks)
 /// Converts token sequence into index sequence with trivia maps
-use super::token::{LosslessToken, TokenKind};
+use super::token::{Token, TokenKind};
 use std::collections::HashMap;
 
 /// Trivia information - comments and whitespace
@@ -34,8 +34,8 @@ impl PreParsedTokens {
     pub fn get_token<'a>(
         &self,
         idx: usize,
-        tokens: &'a [LosslessToken],
-    ) -> Option<&'a LosslessToken> {
+        tokens: &'a [Token],
+    ) -> Option<&'a Token> {
         self.token_indices.get(idx).and_then(|&i| tokens.get(i))
     }
 
@@ -43,8 +43,8 @@ impl PreParsedTokens {
     pub fn get_leading_trivia<'a>(
         &self,
         idx: usize,
-        tokens: &'a [LosslessToken],
-    ) -> Vec<&'a LosslessToken> {
+        tokens: &'a [Token],
+    ) -> Vec<&'a Token> {
         self.leading_trivia_map
             .get(&idx)
             .map(|indices| indices.iter().filter_map(|&i| tokens.get(i)).collect())
@@ -55,8 +55,8 @@ impl PreParsedTokens {
     pub fn get_trailing_trivia<'a>(
         &self,
         idx: usize,
-        tokens: &'a [LosslessToken],
-    ) -> Vec<&'a LosslessToken> {
+        tokens: &'a [Token],
+    ) -> Vec<&'a Token> {
         self.trailing_trivia_map
             .get(&idx)
             .map(|indices| indices.iter().filter_map(|&i| tokens.get(i)).collect())
@@ -77,7 +77,7 @@ impl Default for PreParsedTokens {
 /// - Whitespace and comments before a syntax token are leading trivia
 /// - LineBreaks act as separators: trivia before a linebreak is trailing,
 ///   trivia after a linebreak is leading
-pub fn preparse(tokens: &[LosslessToken]) -> PreParsedTokens {
+pub fn preparse(tokens: &[Token]) -> PreParsedTokens {
     let mut result = PreParsedTokens::new();
     let mut pending_trivia = Vec::new();
     let mut last_was_linebreak = false;
@@ -152,7 +152,7 @@ pub fn preparse(tokens: &[LosslessToken]) -> PreParsedTokens {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lossless_parser::tokenizer::tokenize;
+    use crate::parser_internal::tokenizer::tokenize;
 
     #[test]
     fn test_preparse_simple() {

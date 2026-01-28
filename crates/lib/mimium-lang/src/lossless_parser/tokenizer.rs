@@ -1,6 +1,6 @@
-/// Lossless tokenizer for mimium language using chumsky
+/// Tokenizer for mimium language using chumsky
 /// Converts source text into a sequence of position-aware tokens
-use super::token::{LosslessToken, TokenKind};
+use super::token::{Token, TokenKind};
 use chumsky::input::StrInput;
 use chumsky::prelude::*;
 
@@ -175,19 +175,19 @@ where
     ))
 }
 
-/// Tokenize the source text into a sequence of lossless tokens
+/// Tokenize the source text into a sequence of tokens
 /// Uses chumsky's error recovery to continue parsing after errors
-pub fn tokenize(source: &str) -> Vec<LosslessToken> {
+pub fn tokenize(source: &str) -> Vec<Token> {
     // Error token parser - matches any character and creates an error token
     let error_token = any().map_with(|_, e| {
         let span: SimpleSpan = e.span();
-        LosslessToken::new(TokenKind::Error, span.start, span.end - span.start)
+        Token::new(TokenKind::Error, span.start, span.end - span.start)
     });
 
     let lexer = token_parser()
         .map_with(|kind, e| {
             let span: SimpleSpan = e.span();
-            LosslessToken::new(kind, span.start, span.end - span.start)
+            Token::new(kind, span.start, span.end - span.start)
         })
         // Try normal parsing, if it fails, create an error token for the invalid character
         .or(error_token)
@@ -209,12 +209,12 @@ pub fn tokenize(source: &str) -> Vec<LosslessToken> {
     match tokens {
         Some(mut tokens) => {
             // Add EOF token
-            tokens.push(LosslessToken::new(TokenKind::Eof, source.len(), 0));
+            tokens.push(Token::new(TokenKind::Eof, source.len(), 0));
             tokens
         }
         None => {
             // If parsing completely failed, return just EOF
-            vec![LosslessToken::new(TokenKind::Eof, source.len(), 0)]
+            vec![Token::new(TokenKind::Eof, source.len(), 0)]
         }
     }
 }

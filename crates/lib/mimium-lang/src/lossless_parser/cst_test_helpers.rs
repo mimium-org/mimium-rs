@@ -4,7 +4,7 @@
 //! enabling reuse of original parser tests with minimal adaptation.
 
 use super::green::{GreenNodeArena, GreenNodeId, SyntaxKind};
-use super::token::{LosslessToken, TokenKind};
+use super::token::{Token, TokenKind};
 
 /// Search the CST tree for the first node with the given kind.
 ///
@@ -122,7 +122,7 @@ pub fn assert_node_count(
 }
 
 /// Check if a token list contains at least one token of the given kind.
-pub fn assert_tokens_present(tokens: &[LosslessToken], expected_kinds: &[TokenKind]) {
+pub fn assert_tokens_present(tokens: &[Token], expected_kinds: &[TokenKind]) {
     for expected_kind in expected_kinds {
         if !tokens.iter().any(|t| t.kind == *expected_kind) {
             panic!(
@@ -164,9 +164,9 @@ pub fn assert_cst_depth_at_least(arena: &GreenNodeArena, node_id: GreenNodeId, m
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lossless_parser::cst_parser::parse_cst;
-    use crate::lossless_parser::preparser::preparse;
-    use crate::lossless_parser::tokenizer::tokenize;
+    use crate::parser_internal::cst_parser::parse_cst;
+    use crate::parser_internal::preparser::preparse;
+    use crate::parser_internal::tokenizer::tokenize;
 
     #[test]
     fn test_find_node_by_kind() {

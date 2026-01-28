@@ -1,4 +1,4 @@
-/// Token definition for lossless parsing
+/// Token definition for parsing
 /// Each token stores its kind, start position (byte offset), and length
 use std::fmt;
 
@@ -170,16 +170,16 @@ impl fmt::Display for TokenKind {
     }
 }
 
-/// A lossless token with position information
+/// A token with position information
 /// The actual value can be retrieved from the source text using start and length
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LosslessToken {
+pub struct Token {
     pub kind: TokenKind,
     pub start: usize,  // byte offset in source
     pub length: usize, // length in bytes
 }
 
-impl LosslessToken {
+impl Token {
     pub fn new(kind: TokenKind, start: usize, length: usize) -> Self {
         Self {
             kind,
@@ -215,7 +215,7 @@ impl LosslessToken {
     }
 }
 
-impl fmt::Display for LosslessToken {
+impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}@{}:{}", self.kind, self.start, self.length)
     }
