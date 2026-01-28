@@ -10,7 +10,6 @@ use crate::lossless_parser::green::{GreenNode, GreenNodeArena, GreenNodeId, Synt
 use crate::lossless_parser::token::{LosslessToken, TokenKind};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::types::Type;
-use crate::utils::error::{ReportableError, SimpleError};
 use crate::utils::metadata::{Location, Span};
 use std::path::PathBuf;
 
@@ -145,16 +144,25 @@ impl<'a> LosslessLowerer<'a> {
         let pattern_node = self.find_child(node, Self::is_pattern_kind)?;
         let (pat, pat_span) = self.lower_pattern(pattern_node)?;
 
-        // Collect only direct child expression nodes (not from nested statements)
-        let expr_nodes = self.collect_direct_expr_nodes(node, pattern_node);
-        let value = if expr_nodes.is_empty() {
-            Expr::Error.into_id_without_span()
+        // Check for type annotation
+        let type_annotation = if let Some(type_anno_node) = self.find_child(node, |kind| kind == SyntaxKind::TypeAnnotation) {
+            // Find the actual type node within the TypeAnnotation
+            if let Some(type_children) = self.arena.children(type_anno_node) {
+                type_children.iter()
+                    .find(|c| self.arena.kind(**c).map(Self::is_type_kind).unwrap_or(false))
+                    .map(|type_node| self.lower_type(*type_node))
+            } else {
+                None
+            }
         } else {
-            self.lower_expr_sequence(&expr_nodes)
+            None
         };
-        
+
+        let expr_nodes = self.collect_expr_nodes_after(node, pattern_node);
+        let value = self.lower_expr_sequence(&expr_nodes);
         let loc = self.location_from_span(pat_span.clone());
-        let ty = Type::Unknown.into_id_with_location(loc);
+        
+        let ty = type_annotation.unwrap_or_else(|| Type::Unknown.into_id_with_location(loc.clone()));
         let typed = TypedPattern::new(pat, ty);
 
         Some(ProgramStatement::GlobalStatement(Statement::Let(
@@ -173,6 +181,11 @@ impl<'a> LosslessLowerer<'a> {
             .map(|id| self.lower_param_list(id))
             .unwrap_or_else(|| (Vec::new(), self.node_span(node).unwrap_or(0..0)));
 
+        // Check for return type annotation
+        let return_type = self.find_child(node, Self::is_type_kind).map(|type_node| {
+            self.lower_type(type_node)
+        });
+
         let body_node = self
             .find_child(node, |kind| kind == SyntaxKind::BlockExpr)
             .or_else(|| self.find_child(node, Self::is_expr_kind))?;
@@ -188,7 +201,7 @@ impl<'a> LosslessLowerer<'a> {
         Some(ProgramStatement::FnDefinition {
             name,
             args: (params, arg_loc),
-            return_type: None,
+            return_type,
             body,
         })
     }
@@ -359,11 +372,16 @@ impl<'a> LosslessLowerer<'a> {
             for child in children {
                 match self.arena.kind(*child) {
                     None => {
-                        if let Some(token_text) = self.text_of_token_node(*child) {
-                            let ty = Type::Unknown.into_id_with_location(
-                                self.location_from_span(self.node_span(node).unwrap_or(0..0)),
-                            );
-                            params.push(TypedId::new(token_text.to_symbol(), ty));
+                        // Check if it's a valid identifier token (not |, commas, etc.)
+                        if let Some(token_index) = self.get_token_index(*child) {
+                            if let Some(token) = self.tokens.get(token_index) {
+                                if matches!(token.kind, TokenKind::Ident | TokenKind::IdentParameter) {
+                                    let ty = Type::Unknown.into_id_with_location(
+                                        self.location_from_span(self.node_span(node).unwrap_or(0..0)),
+                                    );
+                                    params.push(TypedId::new(token.text(self.source).to_symbol(), ty));
+                                }
+                            }
                         }
                     }
                     Some(kind) if Self::is_expr_kind(kind) => {
@@ -385,9 +403,13 @@ impl<'a> LosslessLowerer<'a> {
 
         if let Some(children) = self.arena.children(node) {
             for child in children {
-                if let Some(text) = self.text_of_token_node(*child) {
-                    // Ident before '='
-                    current = Some(text.to_symbol());
+                // Check if it's an identifier token (not =, comma, etc.)
+                if let Some(token_index) = self.get_token_index(*child) {
+                    if let Some(token) = self.tokens.get(token_index) {
+                        if matches!(token.kind, TokenKind::Ident) {
+                            current = Some(token.text(self.source).to_symbol());
+                        }
+                    }
                 } else if self.arena.kind(*child).map(Self::is_expr_kind) == Some(true)
                     && let Some(name) = current.take()
                 {
@@ -437,8 +459,12 @@ impl<'a> LosslessLowerer<'a> {
                 }
             }
             Some(SyntaxKind::SinglePattern) => {
-                let name = self.text_of_first_token(node).unwrap_or("").to_symbol();
-                Pattern::Single(name)
+                let name_text = self.text_of_first_token(node).unwrap_or("");
+                if name_text == "_" {
+                    Pattern::Placeholder
+                } else {
+                    Pattern::Single(name_text.to_symbol())
+                }
             }
             Some(SyntaxKind::TuplePattern) => {
                 let elems = self
@@ -667,17 +693,42 @@ impl<'a> LosslessLowerer<'a> {
         let mut params = Vec::new();
 
         if let Some(children) = self.arena.children(node) {
-            for child in children {
-                if let GreenNode::Token { token_index, .. } = self.arena.get(*child)
+            let mut i = 0;
+            while i < children.len() {
+                let child = children[i];
+                
+                // Check for identifier token
+                if let GreenNode::Token { token_index, .. } = self.arena.get(child)
                     && let Some(token) = self.tokens.get(*token_index)
                     && matches!(token.kind, TokenKind::Ident | TokenKind::IdentParameter)
                 {
+                    let name = token.text(self.source).to_symbol();
                     let loc = self.location_from_span(token.start..token.end());
-                    params.push(TypedId::new(
-                        token.text(self.source).to_symbol(),
-                        Type::Unknown.into_id_with_location(loc.clone()),
-                    ));
+                    
+                    // Check if next child is a TypeAnnotation node
+                    let ty = if i + 1 < children.len() 
+                        && self.arena.kind(children[i + 1]) == Some(SyntaxKind::TypeAnnotation)
+                    {
+                        // Find the type node within TypeAnnotation
+                        if let Some(type_children) = self.arena.children(children[i + 1]) {
+                            type_children
+                                .iter()
+                                .find(|c| self.arena.kind(**c).map(Self::is_type_kind).unwrap_or(false))
+                                .map(|type_node| {
+                                    i += 1; // Skip TypeAnnotation node in next iteration
+                                    self.lower_type(*type_node)
+                                })
+                                .unwrap_or_else(|| Type::Unknown.into_id_with_location(loc.clone()))
+                        } else {
+                            Type::Unknown.into_id_with_location(loc.clone())
+                        }
+                    } else {
+                        Type::Unknown.into_id_with_location(loc.clone())
+                    };
+                    
+                    params.push(TypedId::new(name, ty));
                 }
+                i += 1;
             }
         }
 
@@ -742,23 +793,6 @@ impl<'a> LosslessLowerer<'a> {
             .collect()
     }
 
-    /// Collect only direct child expression nodes, excluding expressions from nested Statement nodes
-    fn collect_direct_expr_nodes(&self, node: GreenNodeId, after: GreenNodeId) -> Vec<GreenNodeId> {
-        self.arena
-            .children(node)
-            .into_iter()
-            .flatten()
-            .copied()
-            .skip_while(|child| *child != after)
-            .skip(1)
-            .filter(|child| {
-                // Include expression nodes, but exclude Statement nodes (which contain nested expressions)
-                let kind = self.arena.kind(*child);
-                kind.map(|k| Self::is_expr_kind(k) && k != SyntaxKind::Statement) == Some(true)
-            })
-            .collect()
-    }
-
     fn find_token(
         &self,
         node: GreenNodeId,
@@ -792,6 +826,13 @@ impl<'a> LosslessLowerer<'a> {
     fn text_of_token_node(&self, node: GreenNodeId) -> Option<&'a str> {
         match self.arena.get(node) {
             GreenNode::Token { token_index, .. } => self.token_text(*token_index),
+            _ => None,
+        }
+    }
+
+    fn get_token_index(&self, node: GreenNodeId) -> Option<usize> {
+        match self.arena.get(node) {
+            GreenNode::Token { token_index, .. } => Some(*token_index),
             _ => None,
         }
     }
@@ -973,50 +1014,152 @@ pub fn parse_program_lossless(source: &str, file_path: PathBuf) -> (Program, Vec
     (program, errors)
 }
 
-fn merge_spans(a: Span, b: Span) -> Span {
-    a.start.min(b.start)..a.end.max(b.end)
-}
-
-/// Parse a single expression from source
+/// Parse source to ExprNodeId with error collection.
+/// This is a compatibility function for the old parser API.
 pub fn parse_to_expr(
     source: &str,
     file_path: Option<PathBuf>,
-) -> (ExprNodeId, Vec<Box<dyn ReportableError>>) {
-    let tokens = crate::lossless_parser::tokenize(source);
-    let preparsed = crate::lossless_parser::preparse(&tokens);
-    let (root, arena, tokens, errors) = crate::lossless_parser::parse_cst(tokens, &preparsed);
+) -> (ExprNodeId, Vec<Box<dyn crate::utils::error::ReportableError>>) {
     let path = file_path.unwrap_or_default();
-    let lowerer = LosslessLowerer::new(source, &tokens, &arena, path.clone());
-    
-    // Find first expression in the program
-    let expr = if let Some(children) = arena.children(root) {
-        children.iter()
-            .find(|child| arena.kind(**child).map(LosslessLowerer::is_expr_kind).unwrap_or(false))
-            .map(|expr_node| lowerer.lower_expr(*expr_node))
-            .unwrap_or_else(|| Expr::Error.into_id_without_span())
-    } else {
-        Expr::Error.into_id_without_span()
-    };
-    
-    let reportable_errors = errors
+    let (prog, parse_errs) = parse_program_lossless(source, path.clone());
+    let errs = parse_errs
         .into_iter()
-        .map(|err| {
-            let span = tokens
-                .get(err.token_index)
-                .map(|token| token.start..token.end())
-                .unwrap_or(0..0);
-            let location = Location::new(span, path.clone());
-            Box::new(SimpleError {
-                message: err.to_string(),
-                span: location,
-            }) as Box<dyn ReportableError>
+        .map(|e| -> Box<dyn crate::utils::error::ReportableError> {
+            Box::new(crate::utils::error::SimpleError {
+                message: format!("Parse error: {:?}", e),
+                span: crate::utils::metadata::Location {
+                    span: 0..0,
+                    path: path.clone(),
+                },
+            })
         })
-        .collect();
+        .collect::<Vec<_>>();
 
-    (expr, reportable_errors)
+    if prog.statements.is_empty() {
+        return (Expr::Error.into_id_without_span(), errs);
+    }
+
+    let (expr, mut new_errs) = crate::ast::program::expr_from_program(prog, path);
+    let mut all_errs = errs;
+    all_errs.append(&mut new_errs);
+    (expr, all_errs)
 }
 
-/// Add global context wrapper to an expression
-pub fn add_global_context(expr: ExprNodeId, _file_path: PathBuf) -> ExprNodeId {
-    expr // Expression already has proper context from parse_to_expr
+/// Add global context wrapper around AST.
+/// This is a compatibility function for the old parser API.
+pub fn add_global_context(ast: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
+    let span = ast.to_span();
+    let loc = crate::utils::metadata::Location {
+        span: span.clone(),
+        path: file_path,
+    };
+    let res = Expr::Let(
+        TypedPattern::new(
+            Pattern::Single(crate::utils::metadata::GLOBAL_LABEL.to_symbol()),
+            Type::Unknown.into_id_with_location(loc.clone()),
+        ),
+        Expr::Lambda(vec![], None, ast).into_id(loc.clone()),
+        None,
+    );
+    res.into_id(loc)
+}
+
+/// Check if a SyntaxKind represents a type node
+impl<'a> LosslessLowerer<'a> {
+    fn is_type_kind(kind: SyntaxKind) -> bool {
+        matches!(
+            kind,
+            SyntaxKind::PrimitiveType
+                | SyntaxKind::TupleType
+                | SyntaxKind::RecordType
+                | SyntaxKind::FunctionType
+                | SyntaxKind::ArrayType
+                | SyntaxKind::TypeIdent
+        )
+    }
+
+    /// Lower a type node to TypeNodeId
+    fn lower_type(&self, node: GreenNodeId) -> crate::interner::TypeNodeId {
+        use crate::types::{PType, RecordTypeField, Type};
+        
+        let span = self.node_span(node).unwrap_or(0..0);
+        let loc = self.location_from_span(span);
+        
+        match self.arena.kind(node) {
+            Some(SyntaxKind::PrimitiveType) => {
+                let text = self.text_of_first_token(node).unwrap_or("float");
+                let ptype = match text {
+                    "float" => PType::Numeric,
+                    "int" => PType::Int,
+                    "string" => PType::String,
+                    _ => PType::Numeric,
+                };
+                Type::Primitive(ptype).into_id_with_location(loc)
+            }
+            Some(SyntaxKind::TupleType) => {
+                let elem_types = self
+                    .arena
+                    .children(node)
+                    .into_iter()
+                    .flatten()
+                    .filter(|child| self.arena.kind(**child).map(Self::is_type_kind).unwrap_or(false))
+                    .map(|child| self.lower_type(*child))
+                    .collect::<Vec<_>>();
+                Type::Tuple(elem_types).into_id_with_location(loc)
+            }
+            Some(SyntaxKind::FunctionType) => {
+                // Function type: (T1, T2) -> R
+                let children: Vec<_> = self
+                    .arena
+                    .children(node)
+                    .into_iter()
+                    .flatten()
+                    .filter(|child| self.arena.kind(**child).map(Self::is_type_kind).unwrap_or(false))
+                    .collect();
+                
+                if children.len() >= 2 {
+                    let param_type = self.lower_type(*children[0]);
+                    let return_type = self.lower_type(*children[1]);
+                    Type::Function {
+                        arg: param_type,
+                        ret: return_type,
+                    }.into_id_with_location(loc)
+                } else {
+                    Type::Unknown.into_id_with_location(loc)
+                }
+            }
+            Some(SyntaxKind::RecordType) => {
+                // Record type: {field: Type, ...}
+                let mut fields = Vec::new();
+                let mut current_field: Option<Symbol> = None;
+                
+                if let Some(children) = self.arena.children(node) {
+                    for child in children {
+                        // Check if it's an identifier token (not :, comma, etc.)
+                        if let Some(token_index) = self.get_token_index(*child) {
+                            if let Some(token) = self.tokens.get(token_index) {
+                                if matches!(token.kind, TokenKind::Ident) {
+                                    current_field = Some(token.text(self.source).to_symbol());
+                                }
+                            }
+                        } else if let Some(name) = current_field.take() {
+                            if self.arena.kind(*child).map(Self::is_type_kind).unwrap_or(false) {
+                                fields.push(RecordTypeField {
+                                    key: name,
+                                    ty: self.lower_type(*child),
+                                    has_default: false,
+                                });
+                            }
+                        }
+                    }
+                }
+                Type::Record(fields).into_id_with_location(loc)
+            }
+            _ => Type::Unknown.into_id_with_location(loc),
+        }
+    }
+}
+
+fn merge_spans(a: Span, b: Span) -> Span {
+    a.start.min(b.start)..a.end.max(b.end)
 }
