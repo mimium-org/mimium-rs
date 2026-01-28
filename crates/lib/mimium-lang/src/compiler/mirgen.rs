@@ -247,6 +247,7 @@ impl Context {
         let TypedPattern { pat, .. } = pattern;
         let span = pattern.to_span();
         match (pat, ty.to_type()) {
+            (Pattern::Placeholder, _) => {}
             (Pattern::Single(id), t) => {
                 if is_global && !matches!(v.as_ref(), Value::Function(_)) {
                     let gv = Arc::new(Value::Global(v.clone()));
