@@ -835,8 +835,9 @@ where
                     continue;
                 }
                 TokenKind::Else => {
+                    // Add softline before else to allow breaking there
                     result = result
-                        .append(allocator.space())
+                        .append(allocator.softline())
                         .append(emit_token_with_trivia(*token_index, ctx, allocator));
                     seen_else = true;
                     continue;
@@ -849,12 +850,15 @@ where
         let child_doc = cst_to_doc(child, ctx, allocator);
 
         if !seen_cond && seen_if {
-            // This is the condition expression (already includes parens if present in source)
+            // This is the condition expression - keep it flat (don't break inside)
+            // We use group() on the condition to try to keep it on one line
             result = result.append(child_doc.group());
             seen_cond = true;
         } else if !seen_then && seen_cond {
-            // This is the then branch
-            result = result.append(allocator.space()).append(child_doc.group());
+            // This is the then branch - use softline before to allow breaking
+            result = result
+                .append(allocator.softline())
+                .append(child_doc.group());
             seen_then = true;
         } else if seen_else {
             // This is the else branch (could be nested IfExpr for else if)
@@ -1081,8 +1085,8 @@ where
     D::Doc: Clone + Pretty<'a, D, A>,
     A: Clone,
 {
-    // (expr)
-    print_leaf_children(children, ctx, allocator)
+    // (expr) - wrap in group to avoid breaking inside parentheses when possible
+    print_leaf_children(children, ctx, allocator).group()
 }
 
 fn print_field_access<'a, D, A>(
@@ -1419,16 +1423,12 @@ where
     if items.is_empty() {
         open_doc.append(close_doc)
     } else {
+        // Use softline between items (after comma), but not after opening delimiter
+        // This prioritizes breaking at binary operators over breaking at function call boundaries
         let items_doc = allocator.intersperse(items, breakable_comma(allocator));
         // Wrap in group for proper line breaking
         open_doc
-            .append(
-                allocator
-                    .softline_()
-                    .append(items_doc)
-                    .nest(get_indent_size() as isize),
-            )
-            .append(allocator.softline_())
+            .append(items_doc.nest(get_indent_size() as isize))
             .append(close_doc)
             .group()
     }
