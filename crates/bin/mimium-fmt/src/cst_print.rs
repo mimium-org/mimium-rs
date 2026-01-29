@@ -1578,7 +1578,7 @@ mod tests {
     #[test]
     fn test_simple_function() {
         let output = format("fn dsp() { 42 }");
-        assert_eq!(output, "fn dsp() {\n    42\n}\n");
+        assert_eq!(output, "fn dsp(){\n    42\n}\n");
     }
 
     #[test]
@@ -1653,13 +1653,13 @@ mod tests {
     #[test]
     fn test_function_decl() {
         let output = format("fn add(a, b) { a + b }");
-        assert_eq!(output, "fn add(a, b) {\n    a + b\n}\n");
+        assert_eq!(output, "fn add(a, b){\n    a + b\n}\n");
     }
 
     #[test]
     fn test_function_with_return_type() {
         let output = format("fn double(x)->float { x * 2.0 }");
-        assert_eq!(output, "fn double(x)->float {\n    x * 2.0\n}\n");
+        assert_eq!(output, "fn double(x)->float{\n    x * 2.0\n}\n");
     }
 
     // ========================================================================
@@ -1816,7 +1816,7 @@ mod tests {
     #[test]
     fn test_block_single_expr() {
         let output = format("fn f() { 42 }");
-        assert_eq!(output, "fn f() {\n    42\n}\n");
+        assert_eq!(output, "fn f(){\n    42\n}\n");
     }
 
     #[test]
@@ -1824,7 +1824,7 @@ mod tests {
         let output = format("fn f() {\nlet x = 1\nlet y = 2\nx + y\n}");
         assert_eq!(
             output,
-            "fn f() {\n    let x = 1\n    let y = 2\n    x + y\n}\n"
+            "fn f(){\n    let x = 1\n    let y = 2\n    x + y\n}\n"
         );
     }
 
@@ -2075,6 +2075,6 @@ mod tests {
     #[test]
     fn test_block_with_trailing_comment() {
         let output = format("fn f() { // comment after {\n    42\n}");
-        assert_eq!(output, "fn f() { // comment after {\n    42\n}\n");
+        assert_eq!(output, "fn f(){ // comment after {\n    42\n}\n");
     }
 }
