@@ -161,7 +161,7 @@ impl Type {
             _ => false,
         }
     }
-    
+
     pub fn contains_type_scheme(&self) -> bool {
         match self {
             Type::TypeScheme(_) => true,

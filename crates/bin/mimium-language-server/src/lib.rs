@@ -250,10 +250,7 @@ impl LanguageServer for Backend {
         let formatted = match mimium_fmt::pretty_print(&text, &None, width) {
             Ok(result) => result,
             Err(errs) => {
-                let error_messages: Vec<String> = errs
-                    .iter()
-                    .map(|e| e.get_message())
-                    .collect();
+                let error_messages: Vec<String> = errs.iter().map(|e| e.get_message()).collect();
                 return Err(server_error(&format!(
                     "formatter error: {}",
                     error_messages.join(", ")

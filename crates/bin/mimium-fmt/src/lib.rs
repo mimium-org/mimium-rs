@@ -15,9 +15,9 @@ impl Default for GlobalConfig {
 pub static GLOBAL_DATA: LazyLock<Mutex<GlobalConfig>> =
     LazyLock::new(|| Mutex::new(GlobalConfig::default()));
 
-pub use parser_print::pretty_print;
 /// CST-based pretty print (experimental - includes comments in width calculation)
 pub use cst_print::pretty_print as pretty_print_cst;
+pub use parser_print::pretty_print;
 
 use clap::Parser;
 use mimium_lang::utils::error::report;
@@ -61,13 +61,13 @@ pub fn lib_main() {
             buf
         }
     };
-    
+
     let res = if args.cst {
         pretty_print_cst(code.as_str(), &file_path, args.width)
     } else {
         pretty_print(code.as_str(), &file_path, args.width)
     };
-    
+
     match res {
         Ok(rendered) => {
             println!("{rendered}");

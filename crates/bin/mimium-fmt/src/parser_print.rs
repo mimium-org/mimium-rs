@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use mimium_lang::compiler::parser::{
-    parse_program, parser_errors_to_reportable, preparse, tokenize, PreParsedTokens, Token,
-    TokenKind,
+    PreParsedTokens, Token, TokenKind, parse_program, parser_errors_to_reportable, preparse,
+    tokenize,
 };
 use mimium_lang::utils::error::ReportableError;
 use pretty::Arena;
@@ -18,11 +18,7 @@ pub fn pretty_print(
     let preparsed = preparse(&tokens);
     let leading_comments = extract_file_leading_comments(src, &tokens);
     let (prog, parse_errs) = parse_program(src, file_path.clone().unwrap_or_default());
-    let errs = parser_errors_to_reportable(
-        src,
-        file_path.clone().unwrap_or_default(),
-        parse_errs,
-    );
+    let errs = parser_errors_to_reportable(src, file_path.clone().unwrap_or_default(), parse_errs);
     if !errs.is_empty() {
         return Err(errs);
     }
@@ -153,12 +149,12 @@ fn insert_gap_comments(formatted: &str, gap_comments: &[Vec<CommentInfo>]) -> St
             if nontrivia_idx < gap_comments.len() && !gap_comments[nontrivia_idx].is_empty() {
                 // We need to insert comments after this token
                 let comments = &gap_comments[nontrivia_idx];
-                
+
                 // Look ahead to skip trailing trivia on the same line only
                 // We need to preserve indentation whitespace on the next line
                 let mut j = token_idx + 1;
                 let mut found_linebreak = false;
-                
+
                 while j < fmt_tokens.len() {
                     let next = fmt_tokens[j];
                     match next.kind {
@@ -194,9 +190,9 @@ fn insert_gap_comments(formatted: &str, gap_comments: &[Vec<CommentInfo>]) -> St
                     // For subsequent comments (ci > 0) without needs_leading_newline,
                     // we don't add anything because the previous single-line comment
                     // already includes implicit newline
-                    
+
                     output.push_str(&comment.text);
-                    
+
                     // Single-line comments implicitly end with newline
                     if comment.kind == TokenKind::SingleLineComment {
                         output.push('\n');

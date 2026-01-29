@@ -31,20 +31,12 @@ impl PreParsedTokens {
     }
 
     /// Get the non-trivia token at the given index
-    pub fn get_token<'a>(
-        &self,
-        idx: usize,
-        tokens: &'a [Token],
-    ) -> Option<&'a Token> {
+    pub fn get_token<'a>(&self, idx: usize, tokens: &'a [Token]) -> Option<&'a Token> {
         self.token_indices.get(idx).and_then(|&i| tokens.get(i))
     }
 
     /// Get leading trivia for a token
-    pub fn get_leading_trivia<'a>(
-        &self,
-        idx: usize,
-        tokens: &'a [Token],
-    ) -> Vec<&'a Token> {
+    pub fn get_leading_trivia<'a>(&self, idx: usize, tokens: &'a [Token]) -> Vec<&'a Token> {
         self.leading_trivia_map
             .get(&idx)
             .map(|indices| indices.iter().filter_map(|&i| tokens.get(i)).collect())
@@ -52,11 +44,7 @@ impl PreParsedTokens {
     }
 
     /// Get trailing trivia for a token
-    pub fn get_trailing_trivia<'a>(
-        &self,
-        idx: usize,
-        tokens: &'a [Token],
-    ) -> Vec<&'a Token> {
+    pub fn get_trailing_trivia<'a>(&self, idx: usize, tokens: &'a [Token]) -> Vec<&'a Token> {
         self.trailing_trivia_map
             .get(&idx)
             .map(|indices| indices.iter().filter_map(|&i| tokens.get(i)).collect())

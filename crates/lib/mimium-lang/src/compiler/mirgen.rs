@@ -434,7 +434,7 @@ impl Context {
             arg_type.to_mangled_string(),
             ret_type.to_mangled_string()
         );
-        
+
         let key = MonomorphKey {
             original_name,
             type_signature: type_signature.clone(),
@@ -445,8 +445,9 @@ impl Context {
         }
 
         // Create a new specialized function name
-        let specialized_name = format!("{}_mono_{}", original_name.as_str(), type_signature).to_symbol();
-        
+        let specialized_name =
+            format!("{}_mono_{}", original_name.as_str(), type_signature).to_symbol();
+
         log::debug!(
             "Creating monomorphized function: {} for types ({} -> {})",
             specialized_name,
@@ -457,13 +458,13 @@ impl Context {
         // Clone the original function and specialize it
         let original_fn = self.program.functions[original_fid.0 as usize].clone();
         let new_fid = FunctionId(self.program.functions.len() as u64);
-        
+
         let mut specialized_fn = original_fn.clone();
         specialized_fn.label = specialized_name;
-        
+
         self.program.functions.push(specialized_fn);
         self.monomorph_map.insert(key, new_fid);
-        
+
         new_fid
     }
 
@@ -884,7 +885,7 @@ impl Context {
                 if let Some((d, states)) = del {
                     return (d, numeric!(), states);
                 }
-                
+
                 // Get function parameter info
                 let (at, rt) = if let Type::Function { arg, ret } = ft.to_type() {
                     (arg, ret)
@@ -893,43 +894,51 @@ impl Context {
                 };
 
                 // Check if this is a generic function that needs monomorphization
-                let needs_monomorphization = at.to_type().contains_type_scheme() 
-                    || rt.to_type().contains_type_scheme();
+                let needs_monomorphization =
+                    at.to_type().contains_type_scheme() || rt.to_type().contains_type_scheme();
 
                 // If we have a generic external function (like `map`), we need to monomorphize it
                 let (f_to_call, monomorphized_rt) = if needs_monomorphization {
                     if let Value::ExtFunction(fn_name, _fn_ty) = f_val.as_ref() {
                         // Infer the concrete types from the arguments and expected return type
                         // For now, use the types from type inference (ty for return, args types for arguments)
-                        let concrete_arg_ty = self.typeenv.infer_type(*args.first().expect("map needs args")).unwrap_or(at);
+                        let concrete_arg_ty = self
+                            .typeenv
+                            .infer_type(*args.first().expect("map needs args"))
+                            .unwrap_or(at);
                         let concrete_ret_ty = ty;
-                        
+
                         log::debug!(
                             "Monomorphizing generic function '{}' with arg type: {}, ret type: {}",
                             fn_name,
                             concrete_arg_ty.to_type(),
                             concrete_ret_ty.to_type()
                         );
-                        
+
                         // Create a monomorphized version of the external function
                         let mangled_name = format!(
                             "{}_mono_{}_{}",
                             fn_name.as_str(),
                             concrete_arg_ty.to_mangled_string(),
                             concrete_ret_ty.to_mangled_string()
-                        ).to_symbol();
-                        
+                        )
+                        .to_symbol();
+
                         let concrete_fn_ty = Type::Function {
                             arg: concrete_arg_ty,
                             ret: concrete_ret_ty,
-                        }.into_id();
-                        
-                        let monomorphized_fn = Arc::new(Value::ExtFunction(mangled_name, concrete_fn_ty));
+                        }
+                        .into_id();
+
+                        let monomorphized_fn =
+                            Arc::new(Value::ExtFunction(mangled_name, concrete_fn_ty));
                         (monomorphized_fn, concrete_ret_ty)
                     } else {
                         // For non-external functions, we would need to clone and specialize the function body
                         // This is more complex and might be implemented later
-                        log::warn!("Monomorphization of non-external generic functions not yet implemented");
+                        log::warn!(
+                            "Monomorphization of non-external generic functions not yet implemented"
+                        );
                         (f_val.clone(), rt)
                     }
                 } else {
@@ -1021,9 +1030,15 @@ impl Context {
 
                 let (res, state) = match f_to_call.as_ref() {
                     Value::Global(v) => match v.as_ref() {
-                        Value::Function(idx) => self.emit_fncall(*idx as u64, atvvec.clone(), monomorphized_rt),
+                        Value::Function(idx) => {
+                            self.emit_fncall(*idx as u64, atvvec.clone(), monomorphized_rt)
+                        }
                         Value::Register(_) => (
-                            self.push_inst(Instruction::CallCls(v.clone(), atvvec.clone(), monomorphized_rt)),
+                            self.push_inst(Instruction::CallCls(
+                                v.clone(),
+                                atvvec.clone(),
+                                monomorphized_rt,
+                            )),
                             vec![],
                         ),
                         _ => {
@@ -1034,30 +1049,43 @@ impl Context {
                         //closure
                         //do not increment state size for closure
                         (
-                            self.push_inst(Instruction::CallCls(f_to_call.clone(), atvvec.clone(), monomorphized_rt)),
+                            self.push_inst(Instruction::CallCls(
+                                f_to_call.clone(),
+                                atvvec.clone(),
+                                monomorphized_rt,
+                            )),
                             vec![],
                         )
                     }
-                    Value::Function(idx) => self.emit_fncall(*idx as u64, atvvec.clone(), monomorphized_rt),
+                    Value::Function(idx) => {
+                        self.emit_fncall(*idx as u64, atvvec.clone(), monomorphized_rt)
+                    }
                     Value::ExtFunction(label, _ty) => {
-                        let (res, states) = if let (Some(res), states) =
-                            self.make_intrinsics(*label, &atvvec)
-                        {
-                            (res, states)
-                        } else {
-                            // we assume non-builtin external functions are stateless for now
-                            (
-                                self.push_inst(Instruction::Call(f_to_call.clone(), atvvec.clone(), monomorphized_rt)),
-                                vec![],
-                            )
-                        };
+                        let (res, states) =
+                            if let (Some(res), states) = self.make_intrinsics(*label, &atvvec) {
+                                (res, states)
+                            } else {
+                                // we assume non-builtin external functions are stateless for now
+                                (
+                                    self.push_inst(Instruction::Call(
+                                        f_to_call.clone(),
+                                        atvvec.clone(),
+                                        monomorphized_rt,
+                                    )),
+                                    vec![],
+                                )
+                            };
                         (res, states)
                     }
                     // Value::ExternalClosure(i) => todo!(),
                     Value::None => unreachable!(),
                     _ => todo!(),
                 };
-                (res, monomorphized_rt, [app_state, arg_states, state].concat())
+                (
+                    res,
+                    monomorphized_rt,
+                    [app_state, arg_states, state].concat(),
+                )
             }
 
             Expr::Lambda(ids, _rett, body) => {

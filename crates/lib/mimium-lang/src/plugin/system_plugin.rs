@@ -102,7 +102,7 @@ pub struct DynSystemPlugin {
     pub macroinfos: Vec<MacroInfo>,
 }
 
-impl DynSystemPlugin{
+impl DynSystemPlugin {
     pub fn take_audioworker(&mut self) -> Option<Box<dyn SystemPluginAudioWorker>> {
         self.audioworker.take()
     }
@@ -179,4 +179,3 @@ where
         }
     }
 }
-

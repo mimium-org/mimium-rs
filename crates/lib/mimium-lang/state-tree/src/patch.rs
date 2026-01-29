@@ -1,5 +1,5 @@
 /// A patch to be applied to a flat state storage from old storage.
-/// 
+///
 /// A patch represents a flat array copy operation from the source data storage
 /// to the destination data storage.
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
@@ -26,7 +26,7 @@ pub fn apply_patches(new_storage: &mut [u64], old_storage: &[u64], patches: &[Co
     for patch in patches {
         let src_end = patch.src_addr + patch.size;
         let dst_end = patch.dst_addr + patch.size;
-        
+
         debug_assert!(
             src_end <= old_storage.len(),
             "Source address range [{}, {}) exceeds old storage size {}",
@@ -41,9 +41,8 @@ pub fn apply_patches(new_storage: &mut [u64], old_storage: &[u64], patches: &[Co
             dst_end,
             new_storage.len()
         );
-        
+
         // Perform flat array copy
-        new_storage[patch.dst_addr..dst_end]
-            .copy_from_slice(&old_storage[patch.src_addr..src_end]);
+        new_storage[patch.dst_addr..dst_end].copy_from_slice(&old_storage[patch.src_addr..src_end]);
     }
 }

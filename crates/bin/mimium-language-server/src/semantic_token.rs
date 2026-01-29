@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 
 use mimium_lang::{
+    compiler::parser::{
+        GreenNodeArena, GreenNodeId, SyntaxKind, Token, TokenKind, green::GreenNode,
+    },
     interner::ExprNodeId,
-    compiler::parser::{green::GreenNode, GreenNodeArena, GreenNodeId, SyntaxKind, Token, TokenKind},
     utils::error::ReportableError,
 };
 use tower_lsp::lsp_types::SemanticTokenType;
@@ -168,11 +170,7 @@ fn mark_identifiers_as_function(
     }
 }
 
-fn node_contains_pipe(
-    node_id: GreenNodeId,
-    arena: &GreenNodeArena,
-    tokens: &[Token],
-) -> bool {
+fn node_contains_pipe(node_id: GreenNodeId, arena: &GreenNodeArena, tokens: &[Token]) -> bool {
     match arena.get(node_id) {
         GreenNode::Token { token_index, .. } => tokens[*token_index].kind == TokenKind::OpPipe,
         GreenNode::Internal { children, .. } => children
