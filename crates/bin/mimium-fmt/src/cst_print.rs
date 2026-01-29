@@ -404,8 +404,8 @@ where
                     result = result.append(child_doc);
                 }
                 SyntaxKind::BlockExpr => {
-                    // Add space before block
-                    result = result.append(allocator.space()).append(child_doc);
+                    // Block comes right after param list or return type (no space)
+                    result = result.append(child_doc);
                 }
                 _ => {
                     // Type nodes, etc.
@@ -438,7 +438,7 @@ where
     let mut seen_let = false;
     let mut seen_pattern = false;
     let mut seen_eq = false;
-    let mut rhs_started = false;
+    let mut rhs_docs = Vec::new();
 
     for &child in children.iter() {
         let node = ctx.arena.get(child);
@@ -467,7 +467,7 @@ where
         let child_doc = cst_to_doc(child, ctx, allocator);
 
         if seen_let && !seen_eq {
-            // Pattern - just concatenate (pattern might have multiple children due to CST structure)
+            // Pattern - just concatenate
             if !seen_pattern {
                 result = result.append(child_doc);
                 seen_pattern = true;
@@ -475,17 +475,18 @@ where
                 result = result.append(child_doc);
             }
         } else if seen_eq {
-            // RHS expression(s) - concatenate without extra spacing
-            if !rhs_started {
-                result = result.append(child_doc);
-                rhs_started = true;
-            } else {
-                result = result.append(child_doc);
-            }
+            // Collect RHS expressions
+            rhs_docs.push(child_doc);
         }
     }
 
-    result.group()
+    // Build RHS - let the group control breaking
+    if !rhs_docs.is_empty() {
+        let rhs = allocator.concat(rhs_docs);
+        result = result.append(rhs.group());
+    }
+
+    result
 }
 
 fn print_letrec_decl<'a, D, A>(
@@ -504,7 +505,7 @@ where
     let mut seen_letrec = false;
     let mut seen_name = false;
     let mut seen_eq = false;
-    let mut rhs_started = false;
+    let mut rhs_docs = Vec::new();
 
     for &child in children.iter() {
         let node = ctx.arena.get(child);
@@ -541,17 +542,18 @@ where
                 result = result.append(child_doc);
             }
         } else if seen_eq {
-            // RHS expression(s)
-            if !rhs_started {
-                result = result.append(child_doc);
-                rhs_started = true;
-            } else {
-                result = result.append(child_doc);
-            }
+            // Collect RHS expressions
+            rhs_docs.push(child_doc);
         }
     }
 
-    result.group()
+    // Build RHS - let the group control breaking
+    if !rhs_docs.is_empty() {
+        let rhs = allocator.concat(rhs_docs);
+        result = result.append(rhs.group());
+    }
+
+    result
 }
 
 fn print_assign_expr<'a, D, A>(
@@ -565,7 +567,29 @@ where
     A: Clone,
 {
     // lhs = rhs
-    print_leaf_children(children, ctx, allocator)
+    // Add spaces around =
+    let mut result = allocator.nil();
+    let mut seen_eq = false;
+
+    for &child in children.iter() {
+        let node = ctx.arena.get(child);
+
+        if let mimium_lang::compiler::parser::green::GreenNode::Token { token_index, .. } = node {
+            let token = &ctx.tokens[*token_index];
+            if token.kind == TokenKind::Assign {
+                result = result
+                    .append(allocator.space())
+                    .append(emit_token_with_trivia(*token_index, ctx, allocator))
+                    .append(allocator.space());
+                seen_eq = true;
+                continue;
+            }
+        }
+
+        result = result.append(cst_to_doc(child, ctx, allocator));
+    }
+
+    result
 }
 
 // ============================================================================
@@ -583,7 +607,12 @@ where
     A: Clone,
 {
     // lhs op rhs - add spaces around operator with breakable newline before operator
-    let mut result = allocator.nil();
+    // For pipe operator, break before operator and indent the continuation
+    let mut lhs_doc = allocator.nil();
+    let mut op_doc = allocator.nil();
+    let mut rhs_doc = allocator.nil();
+    let mut is_pipe = false;
+    let mut seen_op = false;
 
     for &child in children.iter() {
         let node = ctx.arena.get(child);
@@ -612,21 +641,51 @@ where
             );
 
             if is_operator {
-                // Add softline before operator (will break if needed), space after
-                result = result
-                    .append(allocator.softline())
-                    .append(emit_token_with_trivia(*token_index, ctx, allocator))
-                    .append(allocator.space());
+                is_pipe = token.kind == TokenKind::OpPipe;
+                op_doc = emit_token_with_trivia(*token_index, ctx, allocator);
+                seen_op = true;
                 continue;
             }
         }
 
-        // For expressions, just append
+        // For expressions
         let child_doc = cst_to_doc(child, ctx, allocator);
-        result = result.append(child_doc);
+        if !seen_op {
+            lhs_doc = lhs_doc.append(child_doc);
+        } else {
+            rhs_doc = rhs_doc.append(child_doc);
+        }
     }
 
-    result.group()
+    if is_pipe {
+        // Pipe operator: break before operator
+        // Structure: lhs
+        //     |> rhs
+        lhs_doc
+            .append(
+                allocator
+                    .line()
+                    .append(op_doc)
+                    .append(allocator.space())
+                    .append(rhs_doc)
+                    .nest(get_indent_size() as isize),
+            )
+            .group()
+    } else {
+        // Other operators: operator stays with lhs, break before rhs with indent
+        // Structure: lhs +
+        //     rhs
+        lhs_doc
+            .append(allocator.space())
+            .append(op_doc)
+            .append(
+                allocator
+                    .line()
+                    .append(rhs_doc)
+                    .nest(get_indent_size() as isize),
+            )
+            .group()
+    }
 }
 
 fn print_unary_expr<'a, D, A>(
@@ -639,8 +698,15 @@ where
     D::Doc: Clone + Pretty<'a, D, A>,
     A: Clone,
 {
-    // op expr
-    print_leaf_children(children, ctx, allocator)
+    // op expr (e.g., -x, !b)
+    // Simply concatenate operator and expression without space
+    let mut result = allocator.nil();
+
+    for &child in children.iter() {
+        result = result.append(cst_to_doc(child, ctx, allocator));
+    }
+
+    result
 }
 
 fn print_call_expr<'a, D, A>(
@@ -1128,7 +1194,64 @@ where
     A: Clone,
 {
     // macro!(args)
-    print_leaf_children(children, ctx, allocator)
+    // Structure: identifier, !, (, args..., )
+    let mut result = allocator.nil();
+    let mut args = Vec::new();
+    let mut in_args = false;
+    let mut open_doc = allocator.nil();
+    let mut close_doc = allocator.nil();
+
+    for &child in children.iter() {
+        let node = ctx.arena.get(child);
+
+        if let mimium_lang::compiler::parser::green::GreenNode::Token { token_index, .. } = node {
+            let token = &ctx.tokens[*token_index];
+
+            match token.kind {
+                TokenKind::Ident | TokenKind::IdentFunction => {
+                    if !in_args {
+                        // Macro name
+                        result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
+                        continue;
+                    }
+                }
+                TokenKind::MacroExpand => {
+                    // The ! token
+                    result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
+                    continue;
+                }
+                TokenKind::ParenBegin => {
+                    open_doc = emit_token_with_trivia(*token_index, ctx, allocator);
+                    in_args = true;
+                    continue;
+                }
+                TokenKind::ParenEnd => {
+                    close_doc = emit_token_with_trivia(*token_index, ctx, allocator);
+                    in_args = false;
+                    continue;
+                }
+                TokenKind::Comma if in_args => {
+                    // Skip comma - we'll add our own with proper spacing
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        if in_args {
+            args.push(cst_to_doc(child, ctx, allocator));
+        } else {
+            result = result.append(cst_to_doc(child, ctx, allocator));
+        }
+    }
+
+    // Build args with comma + space
+    if args.is_empty() {
+        result.append(open_doc).append(close_doc)
+    } else {
+        let args_doc = allocator.intersperse(args, allocator.text(", "));
+        result.append(open_doc).append(args_doc).append(close_doc)
+    }
 }
 
 fn print_escape_expr<'a, D, A>(
