@@ -6,8 +6,8 @@
 use std::path::PathBuf;
 
 use mimium_lang::compiler::parser::{
-    parse_cst, preparse, tokenize, GreenNodeArena, GreenNodeId, PreParsedTokens, SyntaxKind,
-    Token, TokenKind,
+    GreenNodeArena, GreenNodeId, PreParsedTokens, SyntaxKind, Token, TokenKind, parse_cst,
+    preparse, tokenize,
 };
 use mimium_lang::utils::error::ReportableError;
 use pretty::{Arena, DocAllocator, DocBuilder, Pretty};
@@ -30,6 +30,7 @@ pub fn pretty_print(
 ) -> Result<String, Vec<Box<dyn ReportableError>>> {
     let tokens = tokenize(src);
     let preparsed = preparse(&tokens);
+    let leading_comments = extract_file_leading_comments(src, &tokens);
 
     let (cst_root, arena, _tokens, errors) = parse_cst(tokens.clone(), &preparsed);
 
@@ -52,13 +53,37 @@ pub fn pretty_print(
     let mut output = Vec::new();
     doc.render(width, &mut output).unwrap();
     let mut formatted = String::from_utf8(output).unwrap();
-    
+
     // Ensure output ends with a trailing newline
     if !formatted.ends_with('\n') {
         formatted.push('\n');
     }
-    
-    Ok(formatted)
+
+    // Prepend file leading comments
+    if leading_comments.is_empty() {
+        Ok(formatted)
+    } else {
+        Ok(format!("{leading_comments}{formatted}"))
+    }
+}
+
+/// Extract comments at the start of the file (before any non-trivia token)
+fn extract_file_leading_comments(source: &str, tokens: &[Token]) -> String {
+    let mut output = String::new();
+    for token in tokens {
+        if token.is_trivia() {
+            if matches!(
+                token.kind,
+                TokenKind::SingleLineComment | TokenKind::MultiLineComment
+            ) {
+                output.push_str(token.text(source));
+                output.push('\n');
+            }
+            continue;
+        }
+        break;
+    }
+    output
 }
 
 /// Context for CST printing
@@ -75,11 +100,15 @@ where
     D: DocAllocator<'a, A>,
     D::Doc: Clone,
 {
-    allocator.text(",").append(allocator.line())
+    allocator.text(",").append(allocator.softline())
 }
 
 /// Convert a CST node to a pretty document
-fn cst_to_doc<'a, D, A>(node_id: GreenNodeId, ctx: &PrintContext, allocator: &'a D) -> DocBuilder<'a, D, A>
+fn cst_to_doc<'a, D, A>(
+    node_id: GreenNodeId,
+    ctx: &PrintContext,
+    allocator: &'a D,
+) -> DocBuilder<'a, D, A>
 where
     D: DocAllocator<'a, A>,
     D::Doc: Clone + Pretty<'a, D, A>,
@@ -133,9 +162,9 @@ where
                 | SyntaxKind::PlaceHolderLiteral
                 | SyntaxKind::Identifier => print_leaf_children(children, ctx, allocator),
                 // Types
-                SyntaxKind::PrimitiveType
-                | SyntaxKind::UnitType
-                | SyntaxKind::TypeIdent => print_leaf_children(children, ctx, allocator),
+                SyntaxKind::PrimitiveType | SyntaxKind::UnitType | SyntaxKind::TypeIdent => {
+                    print_leaf_children(children, ctx, allocator)
+                }
                 SyntaxKind::FunctionType => print_function_type(children, ctx, allocator),
                 SyntaxKind::TupleType => print_tuple_type(children, ctx, allocator),
                 SyntaxKind::RecordType => print_record_type(children, ctx, allocator),
@@ -201,11 +230,7 @@ where
 }
 
 /// Emit a trivia token (comment or whitespace)
-fn emit_trivia<'a, D, A>(
-    trivia: &Token,
-    source: &str,
-    allocator: &'a D,
-) -> DocBuilder<'a, D, A>
+fn emit_trivia<'a, D, A>(trivia: &Token, source: &str, allocator: &'a D) -> DocBuilder<'a, D, A>
 where
     D: DocAllocator<'a, A>,
     D::Doc: Clone,
@@ -214,12 +239,18 @@ where
         TokenKind::SingleLineComment => {
             // Single-line comment - include the text and add hardline
             let text = trivia.text(source);
-            allocator.text(" ").append(allocator.text(text.to_string())).append(allocator.hardline())
+            allocator
+                .text(" ")
+                .append(allocator.text(text.to_string()))
+                .append(allocator.hardline())
         }
         TokenKind::MultiLineComment => {
             // Block comment - include as-is with surrounding space
             let text = trivia.text(source);
-            allocator.text(" ").append(allocator.text(text.to_string())).append(allocator.text(" "))
+            allocator
+                .text(" ")
+                .append(allocator.text(text.to_string()))
+                .append(allocator.text(" "))
         }
         TokenKind::LineBreak => {
             // Skip linebreaks - we control line separation in block/program contexts
@@ -333,13 +364,13 @@ where
     let mut result = allocator.nil();
     let mut seen_fn = false;
     let mut seen_name = false;
-    
+
     for &child in children.iter() {
         let node = ctx.arena.get(child);
-        
+
         if let mimium_lang::compiler::parser::green::GreenNode::Token { token_index, .. } = node {
             let token = &ctx.tokens[*token_index];
-            
+
             match token.kind {
                 TokenKind::Function => {
                     result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
@@ -349,7 +380,8 @@ where
                 }
                 TokenKind::Ident | TokenKind::IdentFunction => {
                     if seen_fn && !seen_name {
-                        result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
+                        result =
+                            result.append(emit_token_with_trivia(*token_index, ctx, allocator));
                         seen_name = true;
                         continue;
                     }
@@ -361,11 +393,11 @@ where
                 _ => {}
             }
         }
-        
+
         // For internal nodes (ParamList, BlockExpr, type nodes)
         if let mimium_lang::compiler::parser::green::GreenNode::Internal { kind, .. } = node {
             let child_doc = cst_to_doc(child, ctx, allocator);
-            
+
             match kind {
                 SyntaxKind::ParamList => {
                     // Param list comes right after function name (no space)
@@ -382,11 +414,11 @@ where
             }
             continue;
         }
-        
+
         // Default: just append
         result = result.append(cst_to_doc(child, ctx, allocator));
     }
-    
+
     result
 }
 
@@ -407,13 +439,13 @@ where
     let mut seen_pattern = false;
     let mut seen_eq = false;
     let mut rhs_started = false;
-    
+
     for &child in children.iter() {
         let node = ctx.arena.get(child);
-        
+
         if let mimium_lang::compiler::parser::green::GreenNode::Token { token_index, .. } = node {
             let token = &ctx.tokens[*token_index];
-            
+
             match token.kind {
                 TokenKind::Let => {
                     result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
@@ -431,9 +463,9 @@ where
                 _ => {}
             }
         }
-        
+
         let child_doc = cst_to_doc(child, ctx, allocator);
-        
+
         if seen_let && !seen_eq {
             // Pattern - just concatenate (pattern might have multiple children due to CST structure)
             if !seen_pattern {
@@ -452,7 +484,7 @@ where
             }
         }
     }
-    
+
     result.group()
 }
 
@@ -473,13 +505,13 @@ where
     let mut seen_name = false;
     let mut seen_eq = false;
     let mut rhs_started = false;
-    
+
     for &child in children.iter() {
         let node = ctx.arena.get(child);
-        
+
         if let mimium_lang::compiler::parser::green::GreenNode::Token { token_index, .. } = node {
             let token = &ctx.tokens[*token_index];
-            
+
             match token.kind {
                 TokenKind::LetRec => {
                     result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
@@ -497,9 +529,9 @@ where
                 _ => {}
             }
         }
-        
+
         let child_doc = cst_to_doc(child, ctx, allocator);
-        
+
         if seen_letrec && !seen_eq {
             // Name/pattern
             if !seen_name {
@@ -518,7 +550,7 @@ where
             }
         }
     }
-    
+
     result.group()
 }
 
@@ -550,12 +582,12 @@ where
     D::Doc: Clone + Pretty<'a, D, A>,
     A: Clone,
 {
-    // lhs op rhs - add spaces around operator
+    // lhs op rhs - add spaces around operator with breakable newline before operator
     let mut result = allocator.nil();
-    
+
     for &child in children.iter() {
         let node = ctx.arena.get(child);
-        
+
         // Check if this is an operator token
         if let mimium_lang::compiler::parser::green::GreenNode::Token { token_index, .. } = node {
             let token = &ctx.tokens[*token_index];
@@ -578,22 +610,22 @@ where
                     | TokenKind::OpAt
                     | TokenKind::OpPipe
             );
-            
+
             if is_operator {
-                // Add space before and after operator
+                // Add softline before operator (will break if needed), space after
                 result = result
-                    .append(allocator.space())
+                    .append(allocator.softline())
                     .append(emit_token_with_trivia(*token_index, ctx, allocator))
                     .append(allocator.space());
                 continue;
             }
         }
-        
+
         // For expressions, just append
         let child_doc = cst_to_doc(child, ctx, allocator);
         result = result.append(child_doc);
     }
-    
+
     result.group()
 }
 
@@ -624,10 +656,10 @@ where
     // callee(args) or callee(args) @ time
     // Structure: callee, ArgList, (optional: @, time_expr)
     let mut result = allocator.nil();
-    
+
     for &child in children.iter() {
         let node = ctx.arena.get(child);
-        
+
         // Check if this is an ArgList node - format specially
         if let mimium_lang::compiler::parser::green::GreenNode::Internal { kind, .. } = node {
             if *kind == SyntaxKind::ArgList {
@@ -635,11 +667,11 @@ where
                 continue;
             }
         }
-        
+
         // For other children (callee, @, time), concatenate directly
         result = result.append(cst_to_doc(child, ctx, allocator));
     }
-    
+
     result.group()
 }
 
@@ -659,7 +691,7 @@ where
     // Note: Due to CST parser structure, body expressions may be split into multiple children.
     // For example, `x+1` becomes Identifier(x) followed by BinaryExpr(+, 1) as siblings.
     // We need to concatenate all body children without adding extra spaces between them.
-    
+
     let mut result = allocator.nil();
     let mut in_params = false;
     let mut params_docs = Vec::new();
@@ -669,34 +701,36 @@ where
     let mut after_arrow = false;
     let mut has_return_type = false;
     let mut body_started = false;
-    
+
     for &child in children.iter() {
         let node = ctx.arena.get(child);
-        
+
         if let mimium_lang::compiler::parser::green::GreenNode::Token { token_index, .. } = node {
             let token = &ctx.tokens[*token_index];
-            
+
             match token.kind {
                 TokenKind::LambdaArgBeginEnd => {
                     if !in_params && !after_params {
                         // Opening |
-                        result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
+                        result =
+                            result.append(emit_token_with_trivia(*token_index, ctx, allocator));
                         in_params = true;
                     } else if in_params {
                         // Closing | - flush the current param if any
                         if has_param_content {
                             params_docs.push(current_param.clone());
                         }
-                        
+
                         // Join params with comma and space
                         let params_combined = if params_docs.is_empty() {
                             allocator.nil()
                         } else {
                             allocator.intersperse(params_docs.clone(), allocator.text(", "))
                         };
-                        
+
                         result = result.append(params_combined);
-                        result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
+                        result =
+                            result.append(emit_token_with_trivia(*token_index, ctx, allocator));
                         in_params = false;
                         after_params = true;
                         params_docs.clear();
@@ -723,26 +757,27 @@ where
                 _ => {}
             }
         }
-        
+
         // Check if this is a type node
-        let is_type_node = if let mimium_lang::compiler::parser::green::GreenNode::Internal { kind, .. } = node {
-            matches!(
-                kind,
-                SyntaxKind::PrimitiveType
-                    | SyntaxKind::UnitType
-                    | SyntaxKind::TypeIdent
-                    | SyntaxKind::FunctionType
-                    | SyntaxKind::TupleType
-                    | SyntaxKind::RecordType
-                    | SyntaxKind::ArrayType
-                    | SyntaxKind::CodeType
-            )
-        } else {
-            false
-        };
-        
+        let is_type_node =
+            if let mimium_lang::compiler::parser::green::GreenNode::Internal { kind, .. } = node {
+                matches!(
+                    kind,
+                    SyntaxKind::PrimitiveType
+                        | SyntaxKind::UnitType
+                        | SyntaxKind::TypeIdent
+                        | SyntaxKind::FunctionType
+                        | SyntaxKind::TupleType
+                        | SyntaxKind::RecordType
+                        | SyntaxKind::ArrayType
+                        | SyntaxKind::CodeType
+                )
+            } else {
+                false
+            };
+
         let child_doc = cst_to_doc(child, ctx, allocator);
-        
+
         if in_params {
             // Accumulate parameter tokens
             current_param = current_param.append(child_doc);
@@ -765,7 +800,7 @@ where
             }
         }
     }
-    
+
     result.group()
 }
 
@@ -786,13 +821,13 @@ where
     let mut seen_cond = false;
     let mut seen_then = false;
     let mut seen_else = false;
-    
+
     for &child in children.iter() {
         let node = ctx.arena.get(child);
-        
+
         if let mimium_lang::compiler::parser::green::GreenNode::Token { token_index, .. } = node {
             let token = &ctx.tokens[*token_index];
-            
+
             match token.kind {
                 TokenKind::If => {
                     result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
@@ -809,10 +844,10 @@ where
                 _ => {}
             }
         }
-        
+
         // Process expression children
         let child_doc = cst_to_doc(child, ctx, allocator);
-        
+
         if !seen_cond && seen_if {
             // This is the condition expression (already includes parens if present in source)
             result = result.append(child_doc.group());
@@ -826,7 +861,7 @@ where
             result = result.append(allocator.space()).append(child_doc.group());
         }
     }
-    
+
     result.group()
 }
 
@@ -842,10 +877,12 @@ where
 {
     // { stmts }
     // Structure: {, statements..., }
-    
+
     let mut result = allocator.nil();
     let mut in_body = false;
     let mut body_docs = Vec::new();
+    let mut open_brace_trivia = allocator.nil();
+    let mut has_open_trivia = false;
 
     for &child in children.iter() {
         if let mimium_lang::compiler::parser::green::GreenNode::Token { token_index, .. } =
@@ -854,7 +891,24 @@ where
             let token = &ctx.tokens[*token_index];
             match token.kind {
                 TokenKind::BlockBegin => {
+                    // Emit { with trailing trivia (comments after {)
                     result = result.append(allocator.text("{"));
+                    // Capture trailing trivia for { (like // comment after {)
+                    if let Some(idx) = find_preparsed_index(*token_index, ctx.preparsed) {
+                        let trailing = ctx.preparsed.get_trailing_trivia(idx, ctx.tokens);
+                        for trivia in trailing {
+                            // Only mark has_open_trivia for actual comments
+                            let is_comment = matches!(
+                                trivia.kind,
+                                TokenKind::SingleLineComment | TokenKind::MultiLineComment
+                            );
+                            open_brace_trivia = open_brace_trivia
+                                .append(emit_trivia(trivia, ctx.source, allocator));
+                            if is_comment {
+                                has_open_trivia = true;
+                            }
+                        }
+                    }
                     in_body = true;
                     continue;
                 }
@@ -862,12 +916,25 @@ where
                     // Build body with indentation
                     if !body_docs.is_empty() {
                         let body = allocator.intersperse(body_docs.clone(), allocator.hardline());
-                        result = result.append(
-                            allocator.hardline()
-                                .append(body)
-                                .nest(get_indent_size() as isize)
-                        );
+                        // Add trivia from { before the body (if any)
+                        // Trivia like single-line comments already include hardline at the end
+                        if has_open_trivia {
+                            // When there's trivia (e.g., // comment), it already ends with hardline
+                            // We nest everything including the trivia so indentation applies after the hardline
+                            let content = open_brace_trivia.clone().append(body);
+                            result = result.append(content.nest(get_indent_size() as isize));
+                        } else {
+                            result = result.append(
+                                allocator
+                                    .hardline()
+                                    .append(body)
+                                    .nest(get_indent_size() as isize),
+                            );
+                        }
                         result = result.append(allocator.hardline());
+                    } else if has_open_trivia {
+                        // Empty block but has trailing comment on {
+                        result = result.append(open_brace_trivia.clone());
                     }
                     result = result.append(allocator.text("}"));
                     in_body = false;
@@ -913,8 +980,7 @@ where
     // {field = val, field2 = val2, ...}
     // Record children are: {, ident, =, expr, comma, ident, =, expr, ..., }
     // We need to group them as: {, [ident = expr], comma, [ident = expr], }
-    
-    let mut result = allocator.nil();
+
     let mut fields: Vec<DocBuilder<'a, D, A>> = Vec::new();
     let mut current_field = allocator.nil();
     let mut has_current_field = false;
@@ -982,15 +1048,13 @@ where
 
     // Build the result
     if fields.is_empty() {
-        result = open_doc.append(close_doc);
+        open_doc.append(close_doc)
     } else {
         let fields_doc = allocator.intersperse(fields, breakable_comma(allocator));
-        result = open_doc
+        open_doc
             .append(fields_doc.nest(get_indent_size() as isize).group())
-            .append(close_doc);
+            .append(close_doc)
     }
-
-    result
 }
 
 fn print_array_expr<'a, D, A>(
@@ -1356,9 +1420,17 @@ where
         open_doc.append(close_doc)
     } else {
         let items_doc = allocator.intersperse(items, breakable_comma(allocator));
+        // Wrap in group for proper line breaking
         open_doc
-            .append(items_doc.nest(get_indent_size() as isize).group())
+            .append(
+                allocator
+                    .softline_()
+                    .append(items_doc)
+                    .nest(get_indent_size() as isize),
+            )
+            .append(allocator.softline_())
             .append(close_doc)
+            .group()
     }
 }
 
@@ -1608,7 +1680,10 @@ mod tests {
     #[test]
     fn test_if_else_if() {
         let output = format("let x = if (a > 0) {1} else if (a < 0) {2} else {0}");
-        assert_eq!(output, "let x = if(a > 0) {\n    1\n} else if(a < 0) {\n    2\n} else {\n    0\n}\n");
+        assert_eq!(
+            output,
+            "let x = if(a > 0) {\n    1\n} else if(a < 0) {\n    2\n} else {\n    0\n}\n"
+        );
     }
 
     // ========================================================================
@@ -1624,7 +1699,10 @@ mod tests {
     #[test]
     fn test_block_multiple_statements() {
         let output = format("fn f() {\nlet x = 1\nlet y = 2\nx + y\n}");
-        assert_eq!(output, "fn f() {\n    let x = 1\n    let y = 2\n    x + y\n}\n");
+        assert_eq!(
+            output,
+            "fn f() {\n    let x = 1\n    let y = 2\n    x + y\n}\n"
+        );
     }
 
     // ========================================================================
@@ -1849,5 +1927,31 @@ mod tests {
         let first = format(src);
         let second = format(&first);
         assert_eq!(first, second, "if-else-if should be idempotent");
+    }
+
+    // ========================================================================
+    // File leading comment tests
+    // ========================================================================
+
+    #[test]
+    fn test_file_leading_comment() {
+        let output = format("// file header comment\nlet x = 1");
+        assert_eq!(output, "// file header comment\nlet x = 1\n");
+    }
+
+    #[test]
+    fn test_file_leading_multiple_comments() {
+        let output = format("// comment 1\n// comment 2\nlet x = 1");
+        assert_eq!(output, "// comment 1\n// comment 2\nlet x = 1\n");
+    }
+
+    // ========================================================================
+    // Block with comment tests
+    // ========================================================================
+
+    #[test]
+    fn test_block_with_trailing_comment() {
+        let output = format("fn f() { // comment after {\n    42\n}");
+        assert_eq!(output, "fn f() { // comment after {\n    42\n}\n");
     }
 }
