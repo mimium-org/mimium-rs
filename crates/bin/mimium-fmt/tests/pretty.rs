@@ -1,8 +1,8 @@
-// CST-based pretty print tests
+// CST-based pretty print tests (now default)
 // To regenerate expected files:
-//   cargo run -p mimium-fmt -- --cst tests/dirty.mmm --width 80 > tests/pretty_80.mmm
-//   cargo run -p mimium-fmt -- --cst tests/dirty.mmm --width 50 > tests/pretty_50.mmm
-//   cargo run -p mimium-fmt -- --cst tests/dirty.mmm --width 20 > tests/pretty_20.mmm
+//   cargo run -p mimium-fmt -- tests/dirty.mmm --width 80 > tests/pretty_80.mmm
+//   cargo run -p mimium-fmt -- tests/dirty.mmm --width 50 > tests/pretty_50.mmm
+//   cargo run -p mimium-fmt -- tests/dirty.mmm --width 20 > tests/pretty_20.mmm
 mod main {
 
     use mimium_fmt::pretty_print_cst;
