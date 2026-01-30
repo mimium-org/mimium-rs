@@ -7,6 +7,7 @@ use crate::utils::miniprint::MiniPrint;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     Single(Symbol),
+    Placeholder, // Represents '_' pattern that ignores the value
     Tuple(Vec<Self>),
     Record(Vec<(Symbol, Self)>),
     Error,
@@ -16,6 +17,7 @@ impl std::fmt::Display for Pattern {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Pattern::Single(id) => write!(f, "{id}"),
+            Pattern::Placeholder => write!(f, "_"),
             Pattern::Tuple(vec) => {
                 let s = vec
                     .iter()

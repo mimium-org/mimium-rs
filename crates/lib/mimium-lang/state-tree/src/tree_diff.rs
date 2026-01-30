@@ -109,7 +109,7 @@ fn get_node_at_path<'a, T: SizedType>(
     if path.is_empty() {
         return Some(skeleton);
     }
-    
+
     match skeleton {
         StateTreeSkeleton::FnCall(children) => {
             let child = children.get(path[0])?;
@@ -128,7 +128,7 @@ fn build_patches_recursive<T: SizedType>(
     // Retrieve the current node from the path
     let old_node = get_node_at_path(old_skeleton, &old_path).expect("Invalid old_path");
     let new_node = get_node_at_path(new_skeleton, &new_path).expect("Invalid new_path");
-    
+
     // If the nodes are completely matched, return a single patch
     if nodes_match(old_node, new_node) {
         // Convert path to address

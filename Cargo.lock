@@ -1965,9 +1965,11 @@ dependencies = [
 name = "mimium-language-server"
 version = "3.1.2"
 dependencies = [
+ "chumsky",
  "dashmap 6.1.0",
  "env_logger",
  "log",
+ "mimium-fmt",
  "mimium-guitools",
  "mimium-lang",
  "mimium-midi",
@@ -1976,6 +1978,7 @@ dependencies = [
  "ropey",
  "serde",
  "serde_json",
+ "slotmap",
  "tokio",
  "tower-lsp",
 ]

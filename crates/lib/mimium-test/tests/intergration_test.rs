@@ -468,7 +468,7 @@ fn shadowing_assign() {
 fn many_errors() {
     let res = run_error_test("many_errors.mmm", false);
     //todo! check error types
-    assert_eq!(res.len(), 6);
+    assert_eq!(res.len(), 9);
 }
 #[wasm_bindgen_test(unsupported = test)]
 fn hof_typefail() {

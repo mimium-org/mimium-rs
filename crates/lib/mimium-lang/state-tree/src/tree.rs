@@ -190,10 +190,10 @@ impl<T: SizedType> StateTreeSkeleton<T> {
     }
 
     /// Convert a path (position in the tree) to an address (offset) in a flat array.
-    /// 
+    ///
     /// # Arguments
     /// * `path` - Path in the tree. Empty means root, [0] is the first child, [0, 1] is the second child of the first child.
-    /// 
+    ///
     /// # Returns
     /// Returns the start address of the node pointed to by the path and the size of that node.
     /// Returns None if the path is invalid.

@@ -1,3 +1,5 @@
+mod cst_print;
+mod parser_print;
 mod print;
 
 use std::sync::LazyLock;
@@ -13,10 +15,12 @@ impl Default for GlobalConfig {
 pub static GLOBAL_DATA: LazyLock<Mutex<GlobalConfig>> =
     LazyLock::new(|| Mutex::new(GlobalConfig::default()));
 
-pub use print::pretty_print;
+/// CST-based pretty print (default)
+pub use cst_print::pretty_print as pretty_print_cst;
+/// AST-based pretty print (legacy)
+pub use parser_print::pretty_print;
 
 use clap::Parser;
-use mimium_lang::interner::ToSymbol;
 use mimium_lang::utils::error::report;
 use std::fs;
 use std::path::PathBuf;
@@ -33,6 +37,9 @@ pub struct Args {
     /// Indentation size
     #[arg(long, default_value = "4")]
     indent_size: usize,
+    /// Use legacy AST-based formatter
+    #[arg(long)]
+    ast: bool,
 }
 
 pub fn lib_main() {
@@ -46,15 +53,22 @@ pub fn lib_main() {
     let code = match file_path.as_ref() {
         Some(path) => fs::read_to_string(path).expect("Unable to read file"),
         None => {
+            use std::io::Read;
             let mut buf = String::new();
             eprintln!("No file specified. Reading from stdin...");
             std::io::stdin()
-                .read_line(&mut buf)
+                .read_to_string(&mut buf)
                 .expect("Unable to read from stdin");
             buf
         }
     };
-    let res = pretty_print(code.as_str(), &file_path, args.width);
+
+    let res = if args.ast {
+        pretty_print(code.as_str(), &file_path, args.width)
+    } else {
+        pretty_print_cst(code.as_str(), &file_path, args.width)
+    };
+
     match res {
         Ok(rendered) => {
             println!("{rendered}");

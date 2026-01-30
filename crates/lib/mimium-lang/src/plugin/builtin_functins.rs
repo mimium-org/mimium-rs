@@ -466,16 +466,18 @@ mod prepend {
 mod map {
     use super::*;
     use crate::interner::ToSymbol;
+    use crate::interner::TypeNodeId;
     use crate::interpreter::Value;
     use crate::plugin::MacroInfo;
     use crate::types::{RecordTypeField, Type, TypeSchemeId};
-    use crate::interner::TypeNodeId;
 
     fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
         // This is a placeholder. The `map` function's logic should be handled
         // by monomorphization in the MIR generation stage, so this macro
         // should not be called directly.
-        panic!("'map' function is not implemented as a macro. It should be handled by the compiler.");
+        panic!(
+            "'map' function is not implemented as a macro. It should be handled by the compiler."
+        );
     }
 
     pub(super) fn signature() -> MacroInfo {
@@ -493,7 +495,7 @@ mod map {
             RecordTypeField::new("f".to_symbol(), f_ty, false),
         ])
         .into_id();
-        
+
         let map_fn_ty = Type::Function {
             arg: arg_record,
             ret: arr_b_ty,

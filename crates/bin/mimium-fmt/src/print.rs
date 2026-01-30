@@ -101,6 +101,7 @@ mod patterns {
     {
         match pat {
             Pattern::Single(name) => allocator.text(name),
+            Pattern::Placeholder => allocator.text("_"),
             Pattern::Tuple(pats) => {
                 let docs = pats
                     .into_iter()
@@ -140,6 +141,8 @@ mod typedpattern {
 }
 
 mod expr {
+    use std::ops::Add;
+
     use mimium_lang::ast::operators::Op;
 
     use super::*;
@@ -174,10 +177,12 @@ mod expr {
                     .collect::<Vec<_>>();
                 allocator
                     .intersperse(docs, breakable_comma(allocator))
+                    .nest(get_indent_size() as isize)
+                    .group()
                     .parens()
             }
             Expr::Proj(e, idx) => pretty(e, allocator)
-                .append(allocator.text(".").append(allocator.text(idx.to_string())))
+                .append(allocator.text(".").add(allocator.text(idx.to_string())))
                 .group(),
             Expr::Apply(e1, e2) => {
                 let doc1 = pretty(e1, allocator);
@@ -188,6 +193,7 @@ mod expr {
                 doc1.append(
                     allocator
                         .intersperse(docs2, breakable_comma(allocator))
+                        .nest(get_indent_size() as isize)
                         .group()
                         .parens(),
                 )
@@ -205,6 +211,7 @@ mod expr {
                     .collect::<Vec<_>>();
                 allocator
                     .intersperse(docs, breakable_comma(allocator))
+                    .nest(get_indent_size() as isize)
                     .group()
                     .braces()
             }
@@ -249,9 +256,11 @@ mod expr {
 
             Expr::FieldAccess(expr_node_id, symbol) => {
                 let expr_doc = pretty(expr_node_id, allocator);
+                //concat without space
                 expr_doc
-                    .append(allocator.softline())
-                    .append(allocator.text(".").append(allocator.text(symbol)))
+                    // .append(allocator.softline_())
+                    .add(allocator.text("."))
+                    .add(allocator.text(symbol))
                     .group()
             }
             Expr::ArrayAccess(e, i) => pretty(e, allocator).append(pretty(i, allocator).brackets()),
@@ -422,11 +431,8 @@ mod statement {
                 allocator
                     .text("let ")
                     .append(pat_doc)
-                    .append(allocator.text(" ="))
-                    .append(allocator.softline())
+                    .append(allocator.text(" = "))
                     .append(body_doc.group())
-                    .group()
-                    .nest(get_indent_size() as isize)
             }
             Statement::LetRec(id, body) => {
                 let body_doc = expr::pretty(body, allocator);
@@ -501,7 +507,7 @@ pub mod program {
             }
             ProgramStatement::GlobalStatement(stmt) => statement::pretty(stmt, allocator),
             ProgramStatement::Import(symbol) => allocator
-                .text("import")
+                .text("include")
                 .append(allocator.text(symbol).double_quotes().parens()),
             ProgramStatement::Comment(symbol) => {
                 allocator.text("//").append(allocator.text(symbol))
@@ -523,8 +529,10 @@ pub fn pretty_print(
     file_path: &Option<PathBuf>,
     width: usize,
 ) -> Result<String, Vec<Box<dyn ReportableError>>> {
-    use mimium_lang::compiler::parser::parse;
-    let (prog, errs) = parse(src, file_path.clone());
+    use mimium_lang::compiler::parser::parse_program;
+    use mimium_lang::compiler::parser::parser_errors_to_reportable;
+    let (prog, parse_errs) = parse_program(src, file_path.clone().unwrap_or_default());
+    let errs = parser_errors_to_reportable(src, file_path.clone().unwrap_or_default(), parse_errs);
     if !errs.is_empty() {
         return Err(errs);
     }

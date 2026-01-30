@@ -82,7 +82,9 @@ impl ExecContext {
     pub fn get_system_plugins(&self) -> impl ExactSizeIterator<Item = &DynSystemPlugin> {
         self.sys_plugins.iter()
     }
-    pub fn get_system_plugins_mut(&mut self) -> impl ExactSizeIterator<Item = &mut DynSystemPlugin> {
+    pub fn get_system_plugins_mut(
+        &mut self,
+    ) -> impl ExactSizeIterator<Item = &mut DynSystemPlugin> {
         self.sys_plugins.iter_mut()
     }
     //todo: make it to builder pattern

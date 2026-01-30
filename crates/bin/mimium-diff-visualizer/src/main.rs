@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Result};
-use mimium_lang::mir::StateType;
+use anyhow::{Result, anyhow};
 use mimium_lang::ExecContext;
+use mimium_lang::mir::StateType;
 use state_tree::patch::CopyFromPatch;
 use state_tree::tree::StateTreeSkeleton;
 use state_tree::tree_diff::take_diff;
@@ -88,9 +88,9 @@ fn build_memory_blocks(skeleton: &StateTreeSkeleton<StateType>) -> Vec<MemBlock>
 /// Group blocks by their common path prefix to create hierarchical structure
 fn group_blocks_by_path(blocks: &[MemBlock]) -> Vec<(Vec<usize>, Vec<MemBlock>)> {
     use std::collections::BTreeMap;
-    
+
     let mut groups: BTreeMap<Vec<usize>, Vec<MemBlock>> = BTreeMap::new();
-    
+
     for block in blocks {
         // For paths with length > 2, group by taking first N-2 elements
         // This creates more meaningful hierarchical groups
@@ -103,7 +103,7 @@ fn group_blocks_by_path(blocks: &[MemBlock]) -> Vec<(Vec<usize>, Vec<MemBlock>)>
         };
         groups.entry(prefix).or_default().push(block.clone());
     }
-    
+
     groups.into_iter().collect()
 }
 
@@ -111,7 +111,7 @@ fn group_blocks_by_path(blocks: &[MemBlock]) -> Vec<(Vec<usize>, Vec<MemBlock>)>
 fn blocks_to_mermaid_hierarchical(blocks: &[MemBlock], prefix: &str) -> String {
     let mut out = String::new();
     let groups = group_blocks_by_path(blocks);
-    
+
     for (group_path, group_blocks) in groups {
         let group_name = if group_path.is_empty() {
             "root".to_string()
@@ -125,7 +125,7 @@ fn blocks_to_mermaid_hierarchical(blocks: &[MemBlock], prefix: &str) -> String {
                     .join(", ")
             )
         };
-        
+
         let subgraph_id = format!(
             "{}_group_{}",
             prefix,
@@ -135,12 +135,15 @@ fn blocks_to_mermaid_hierarchical(blocks: &[MemBlock], prefix: &str) -> String {
                 .collect::<Vec<_>>()
                 .join("_")
         );
-        
+
         if group_blocks.len() > 1 {
             out.push_str(&format!("    subgraph {subgraph_id} [\"{group_name}\"]\n"));
             for block in &group_blocks {
                 let id = format!("{}_{}", prefix, block.addr);
-                let label = format!("Addr: {}\\nSize: {}\\n{}", block.addr, block.size, block.node_type);
+                let label = format!(
+                    "Addr: {}\\nSize: {}\\n{}",
+                    block.addr, block.size, block.node_type
+                );
                 out.push_str(&format!("      {id}[\"{label}\"]\n"));
             }
             out.push_str("    end\n");
@@ -156,7 +159,7 @@ fn blocks_to_mermaid_hierarchical(blocks: &[MemBlock], prefix: &str) -> String {
             }
         }
     }
-    
+
     out
 }
 
@@ -199,11 +202,13 @@ fn get_state_tree_from_file(file_path: &str) -> Result<StateTreeSkeleton<StateTy
         .get_compiler_mut()
         .ok_or(anyhow!("compiler not found"))?;
     let bytecode = compiler.emit_bytecode(&source).map_err(|errors| {
-        anyhow!(errors
-            .iter()
-            .map(|e| e.to_string())
-            .collect::<Vec<_>>()
-            .join("\n"))
+        anyhow!(
+            errors
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
     })?;
     let dspfn = bytecode.get_dsp_fn().ok_or(anyhow!("dsp not found"))?;
     Ok(dspfn.state_skeleton.clone())
@@ -222,7 +227,7 @@ fn main() -> Result<()> {
     let old_state_skeleton = get_state_tree_from_file(old_file)?;
     let new_state_skeleton = get_state_tree_from_file(new_file)?;
     let patches = take_diff(&old_state_skeleton, &new_state_skeleton);
-    
+
     eprintln!(
         "Computed patches:\n{}",
         patches
@@ -231,7 +236,7 @@ fn main() -> Result<()> {
             .collect::<Vec<_>>()
             .join("\n")
     );
-    
+
     let old_blocks = build_memory_blocks(&old_state_skeleton);
     let new_blocks = build_memory_blocks(&new_state_skeleton);
     let mermaid = patches_to_mermaid(&old_blocks, &new_blocks, patches.into_iter());

@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use state_tree::{
     patch::{CopyFromPatch, apply_patches},
-    tree::{StateTree, StateTreeSkeleton, serialize_tree_untagged, deserialize_tree_untagged},
+    tree::{StateTree, StateTreeSkeleton, deserialize_tree_untagged, serialize_tree_untagged},
     tree_diff::take_diff,
 };
 
@@ -95,7 +95,7 @@ fn test_apply_simple_patch() {
         writeidx: 0,
         data: vec![0, 0, 0],
     };
-    
+
     let old_storage = serialize_tree_untagged(old_tree.clone());
     let mut new_storage = serialize_tree_untagged(new_tree.clone());
 
@@ -146,7 +146,7 @@ fn test_apply_with_structural_changes() {
 
     let old_storage = serialize_tree_untagged(old_tree.clone());
     let mut new_storage = serialize_tree_untagged(new_tree.clone());
-    
+
     let patches = take_diff_from_trees(&old_tree, &new_tree);
     assert_eq!(
         patches,
@@ -179,11 +179,11 @@ fn test_complex() {
         ]))])),
         Box::new(Skeleton::FnCall(vec![
             Box::new(Skeleton::Delay { len: 4 }), // Delay, addr: 2, size: 6 (2 + 4)
-            Box::new(Skeleton::Feed(1)),           // Feed(1), addr: 8, size: 1
+            Box::new(Skeleton::Feed(1)),          // Feed(1), addr: 8, size: 1
         ])),
     ]);
     // 旧構造の合計サイズ: 1 + 1 + 6 + 1 = 9
-    
+
     let new_tree = Skeleton::FnCall(vec![
         Box::new(Skeleton::FnCall(vec![Box::new(Skeleton::Feed(1))])), // Feed(1), addr: 0, size: 1
         Box::new(Skeleton::FnCall(vec![
@@ -194,16 +194,16 @@ fn test_complex() {
         ])),
         Box::new(Skeleton::FnCall(vec![
             Box::new(Skeleton::Delay { len: 4 }), // Delay, addr: 3, size: 6
-            Box::new(Skeleton::Feed(1)),           // Feed(1), addr: 9, size: 1
+            Box::new(Skeleton::Feed(1)),          // Feed(1), addr: 9, size: 1
         ])),
         Box::new(Skeleton::FnCall(vec![
             Box::new(Skeleton::Delay { len: 4 }), // Delay, addr: 10, size: 6
-            Box::new(Skeleton::Feed(1)),           // Feed(1), addr: 16, size: 1
+            Box::new(Skeleton::Feed(1)),          // Feed(1), addr: 16, size: 1
         ])),
     ]);
-    
+
     let patches = take_diff(&old_tree, &new_tree);
-    
+
     // 期待されるパッチ:
     // 1. old[1, 0] (old addr: 1, size: 1) -> new[1, 0] (new addr: 1, size: 1)
     // 2. old[0] (old addr: 0, size: 1) -> new[0] (new addr: 0, size: 1)

@@ -45,6 +45,12 @@ impl PatternDestructor {
                 )
                 .into_id(loc),
             ),
+            Pattern::Placeholder => {
+                // For placeholder, we don't create a binding, just evaluate the value and continue
+                // This is essentially: let _ = value; body
+                // We can simplify by just returning the body since we don't need to bind anything
+                then_body
+            }
             Pattern::Tuple(patterns) => patterns.iter().enumerate().rfold(
                 then_body,
                 |acc: Option<ExprNodeId>, (i, sub_pat)| {
@@ -80,7 +86,9 @@ impl PatternDestructor {
                 let desugard_v = self.destruct_top(value);
                 let desugard_body = body.map(|b| self.destruct_top(b));
                 match tpat.pat {
-                    Pattern::Single(_) => Expr::Let(tpat, desugard_v, desugard_body),
+                    Pattern::Single(_) | Pattern::Placeholder => {
+                        Expr::Let(tpat, desugard_v, desugard_body)
+                    }
                     Pattern::Tuple(_) | Pattern::Record(_) => {
                         let new_name = self.get_new_name();
                         let new_rvar = Expr::Var(new_name).into_id(expr.to_location());
