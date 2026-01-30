@@ -103,6 +103,49 @@ impl GreenNodeArena {
     pub fn children(&self, id: GreenNodeId) -> Option<&[GreenNodeId]> {
         self.nodes[id].children()
     }
+
+    /// Pretty-print the CST tree structure with indentation.
+    ///
+    /// # Arguments
+    /// * `node_id` - The root node to print from
+    /// * `tokens` - Token slice for extracting token text
+    /// * `source` - Original source code
+    /// * `indent` - Current indentation level
+    ///
+    /// # Returns
+    /// A formatted string representation of the tree
+    pub fn print_tree(
+        &self,
+        node_id: GreenNodeId,
+        tokens: &[crate::compiler::parser::Token],
+        source: &str,
+        indent: usize,
+    ) -> String {
+        use std::fmt::Write;
+        let mut result = String::new();
+        let indent_str = "  ".repeat(indent);
+
+        match self.get(node_id) {
+            GreenNode::Token { token_index, .. } => {
+                let token = &tokens[*token_index];
+                let text = token.text(source);
+                // Escape newlines and special characters for display
+                let escaped_text = text
+                    .replace('\\', "\\\\")
+                    .replace('\n', "\\n")
+                    .replace('\r', "\\r")
+                    .replace('\t', "\\t");
+                let _ = writeln!(result, "{indent_str}{:?} \"{}\"", token.kind, escaped_text);
+            }
+            GreenNode::Internal { kind, children, .. } => {
+                let _ = writeln!(result, "{indent_str}{kind}");
+                for &child in children {
+                    result.push_str(&self.print_tree(child, tokens, source, indent + 1));
+                }
+            }
+        }
+        result
+    }
 }
 
 /// Syntax kinds - types of CST nodes

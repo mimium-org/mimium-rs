@@ -63,7 +63,7 @@ pub mod tokenizer;
 // Re-export main types and functions
 use crate::utils::error::{ReportableError, SimpleError};
 use crate::utils::metadata::Location;
-pub use cst_parser::parse_cst;
+pub use cst_parser::{ParserError, parse_cst};
 pub use green::{GreenNodeArena, GreenNodeId, SyntaxKind};
 pub use lower::{add_global_context, parse_program, parse_to_expr};
 pub use preparser::{PreParsedTokens, preparse};
