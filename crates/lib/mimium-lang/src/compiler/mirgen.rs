@@ -1,7 +1,6 @@
 use super::intrinsics;
 use super::typing::{InferContext, infer_root};
 
-use crate::ast::program::resolve_qualified_path;
 use crate::compiler::parser;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
@@ -9,6 +8,7 @@ use crate::plugin::MacroFunction;
 use crate::utils::miniprint::MiniPrint;
 use crate::{function, interpreter, numeric, unit};
 pub mod convert_pronoun;
+pub mod convert_qualified_names;
 pub(crate) mod pattern_destructor;
 pub(crate) mod recursecheck;
 
@@ -70,8 +70,6 @@ struct Context {
     monomorph_map: BTreeMap<MonomorphKey, FunctionId>,
     data: Vec<ContextData>,
     data_i: usize,
-    /// Current module context for relative path resolution
-    current_module_context: Vec<Symbol>,
 }
 enum AssignDestination {
     Local(VPtr),
@@ -91,7 +89,6 @@ impl Context {
             monomorph_map: BTreeMap::new(),
             data: vec![ContextData::default()],
             data_i: 0,
-            current_module_context: Vec::new(),
         }
     }
     fn get_loc_from_span(&self, span: &Span) -> Location {
@@ -112,37 +109,6 @@ impl Context {
         });
         self.fn_label = None;
         res
-    }
-
-    /// Resolve a qualified path, trying relative resolution from current module context.
-    /// Returns the resolved mangled name.
-    fn resolve_path(&self, path_segments: &[Symbol], absolute_mangled: Symbol) -> Symbol {
-        resolve_qualified_path(
-            path_segments,
-            absolute_mangled,
-            &self.current_module_context,
-            |name| self.valenv.lookup(name).is_some(),
-        )
-        .0
-    }
-
-    /// Try to resolve a simple variable name through wildcard imports.
-    /// Returns the mangled name if found through a wildcard import.
-    fn resolve_through_wildcards(&self, name: Symbol) -> Option<Symbol> {
-        for base in self.typeenv.get_wildcard_imports() {
-            // Build mangled name: base$name
-            let mangled = if base.as_str().is_empty() {
-                name
-            } else {
-                format!("{}${}", base.as_str(), name.as_str()).to_symbol()
-            };
-            
-            // Check if this name exists
-            if self.valenv.lookup(&mangled).is_some() {
-                return Some(mangled);
-            }
-        }
-        None
     }
 
     fn get_current_fn(&mut self) -> &mut mir::Function {
@@ -531,37 +497,12 @@ impl Context {
     fn eval_rvar(&mut self, e: ExprNodeId, t: TypeNodeId) -> VPtr {
         let span = &e.to_span();
         let loc = self.get_loc_from_span(span);
+        // After convert_qualified_names, all module names are resolved to simple Var.
+        // QualifiedVar should have been converted to Var with mangled name.
         let name = match e.to_expr() {
-            Expr::Var(name) => {
-                // Check if the name is an alias from a use statement
-                let resolved = self.typeenv.resolve_alias(name);
-                // If not an alias, try wildcard imports
-                if resolved == name {
-                    self.resolve_through_wildcards(name).unwrap_or(resolved)
-                } else {
-                    resolved
-                }
-            }
+            Expr::Var(name) => name,
             Expr::QualifiedVar(path) => {
-                // Convert qualified path to mangled name (e.g., foo::bar -> foo$bar)
-                let mangled_name = if path.segments.len() == 1 {
-                    path.segments[0]
-                } else {
-                    let path_str = path
-                        .segments
-                        .iter()
-                        .map(|s| s.as_str())
-                        .collect::<Vec<_>>()
-                        .join("$");
-                    path_str.to_symbol()
-                };
-                
-                // Try to resolve the path with relative path fallback
-                let resolved = self.resolve_path(&path.segments, mangled_name);
-                
-                // Check if the resolved name is a re-exported alias (from pub use)
-                // If so, use the aliased target name for lookup
-                self.typeenv.resolve_alias(resolved)
+                unreachable!("Qualified Var should be removed in the previous step.")
             }
             _ => unreachable!("eval_rvar called on non-variable expr"),
         };
@@ -856,9 +797,7 @@ impl Context {
             }
             Expr::Var(_name) => (self.eval_rvar(e, ty), ty, vec![]),
             Expr::QualifiedVar(_path) => {
-                // TODO: Implement qualified variable resolution in MIR generation
-                // For now, treat as a simple variable reference after name resolution
-                (self.eval_rvar(e, ty), ty, vec![])
+                unreachable!("Qualified Var should be removed in the previous step.")
             }
             Expr::Block(b) => {
                 if let Some(block) = b {
@@ -1258,14 +1197,6 @@ impl Context {
                 )
             }
             Expr::Let(pat, body, then) => {
-                // Set module context for relative path resolution within this function
-                let prev_context = std::mem::take(&mut self.current_module_context);
-                if let Pattern::Single(name) = &pat.pat {
-                    if let Some(context) = self.typeenv.get_module_context(name) {
-                        self.current_module_context = context.clone();
-                    }
-                }
-                
                 if let Ok(tid) = TypedId::try_from(pat.clone()) {
                     self.fn_label = Some(tid.id);
                     log::trace!(
@@ -1281,9 +1212,6 @@ impl Context {
                 // };
                 let (bodyv, t, states) = self.eval_expr(*body);
                 self.fn_label = None;
-                
-                // Restore previous context
-                self.current_module_context = prev_context;
 
                 let is_global = self.get_ctxdata().func_i.0 == 0;
                 let is_function = matches!(bodyv.as_ref(), Value::Function(_));
@@ -1306,12 +1234,6 @@ impl Context {
                 }
             }
             Expr::LetRec(id, body, then) => {
-                // Set module context for relative path resolution within this function
-                let prev_context = std::mem::take(&mut self.current_module_context);
-                if let Some(context) = self.typeenv.get_module_context(&id.id) {
-                    self.current_module_context = context.clone();
-                }
-                
                 let is_global = self.get_ctxdata().func_i.0 == 0;
                 self.fn_label = Some(id.id);
                 let nextfunid = self.program.functions.len();
@@ -1329,10 +1251,7 @@ impl Context {
                 let bind = (id.id, v.clone());
                 self.add_bind(bind);
                 let (b, _bt, states) = self.eval_expr(*body);
-                
-                // Restore previous context
-                self.current_module_context = prev_context;
-                
+
                 if !is_global {
                     let _ = self.push_inst(Instruction::Store(v.clone(), b.clone(), t));
                 }
@@ -1473,21 +1392,26 @@ pub fn typecheck_with_module_info(
     file_path: Option<PathBuf>,
     module_info: crate::ast::program::ModuleInfo,
 ) -> (ExprNodeId, InferContext, Vec<Box<dyn ReportableError>>) {
-    let (expr, convert_errs) =
-        convert_pronoun::convert_pronoun(root_expr_id, file_path.clone().unwrap_or_default());
+    // Extract builtin names to pass to qualified name resolution
+    let builtin_names: Vec<Symbol> = builtin_types.iter().map(|(name, _)| *name).collect();
+    // Use the extended version that resolves qualified names
+    let (expr, convert_errs) = convert_pronoun::convert_pronoun_with_module(
+        root_expr_id,
+        file_path.clone().unwrap_or_default(),
+        &module_info,
+        &builtin_names,
+    );
     let expr = recursecheck::convert_recurse(expr, file_path.clone().unwrap_or_default());
-    // let expr = destruct_let_pattern(expr);
-    let infer_ctx = super::typing::infer_root_with_module_info(expr, builtin_types, file_path.clone().unwrap_or_default(), module_info);
+    // After convert_qualified_names, all module-related names are resolved.
+    // Type checker no longer needs module_info.
+    let infer_ctx =
+        super::typing::infer_root(expr, builtin_types, file_path.clone().unwrap_or_default());
     let errors = infer_ctx
         .errors
         .iter()
         .cloned()
         .map(|e| -> Box<dyn ReportableError> { Box::new(e) })
-        .chain(
-            convert_errs
-                .into_iter()
-                .map(|e| -> Box<dyn ReportableError> { Box::new(e) }),
-        )
+        .chain(convert_errs)
         .collect::<Vec<_>>();
     (expr, infer_ctx, errors)
 }
@@ -1502,7 +1426,13 @@ pub fn compile(
     macro_env: &[Box<dyn MacroFunction>],
     file_path: Option<PathBuf>,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
-    compile_with_module_info(root_expr_id, builtin_types, macro_env, file_path, crate::ast::program::ModuleInfo::new())
+    compile_with_module_info(
+        root_expr_id,
+        builtin_types,
+        macro_env,
+        file_path,
+        crate::ast::program::ModuleInfo::new(),
+    )
 }
 
 /// Generate MIR from AST with module information (visibility and use aliases).
@@ -1514,7 +1444,8 @@ pub fn compile_with_module_info(
     module_info: crate::ast::program::ModuleInfo,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
     let expr = root_expr_id.wrap_to_staged_expr();
-    let (expr, mut infer_ctx, errors) = typecheck_with_module_info(expr, builtin_types, file_path.clone(), module_info);
+    let (expr, mut infer_ctx, errors) =
+        typecheck_with_module_info(expr, builtin_types, file_path.clone(), module_info);
     if errors.is_empty() {
         let top_type = infer_ctx.infer_type(expr).unwrap();
         let expr = interpreter::expand_macro(expr, top_type, macro_env);
