@@ -292,16 +292,93 @@ impl<'a> Parser<'a> {
     /// Parse a statement
     fn parse_statement(&mut self) {
         self.emit_node(SyntaxKind::Statement, |this| {
+            // Check for visibility modifier first
+            let has_pub = this.check(TokenKind::Pub);
+            if has_pub {
+                this.emit_node(SyntaxKind::VisibilityPub, |this| {
+                    this.bump(); // consume 'pub'
+                });
+            }
+
             match this.peek() {
                 Some(TokenKind::Function) => this.parse_function_decl(),
+                Some(TokenKind::Macro) => this.parse_macro_decl(),
                 Some(TokenKind::Let) => this.parse_let_decl(),
                 Some(TokenKind::LetRec) => this.parse_letrec_decl(),
                 Some(TokenKind::Include) => this.parse_include_stmt(),
                 Some(TokenKind::Sharp) => this.parse_stage_decl(),
+                Some(TokenKind::Mod) => this.parse_module_decl(),
+                Some(TokenKind::Use) => this.parse_use_stmt(),
                 _ => {
                     // Try parsing as expression
                     this.parse_expr();
                 }
+            }
+        });
+    }
+
+    /// Parse module declaration: mod name { ... }
+    fn parse_module_decl(&mut self) {
+        self.emit_node(SyntaxKind::ModuleDecl, |this| {
+            this.expect(TokenKind::Mod);
+            this.expect(TokenKind::Ident);
+            this.expect(TokenKind::BlockBegin);
+
+            // Parse module body (statements)
+            while !this.check(TokenKind::BlockEnd) && !this.is_at_end() {
+                this.parse_statement();
+            }
+
+            this.expect(TokenKind::BlockEnd);
+        });
+    }
+
+    /// Parse use statement: use path::to::module
+    fn parse_use_stmt(&mut self) {
+        self.emit_node(SyntaxKind::UseStmt, |this| {
+            this.expect(TokenKind::Use);
+            this.parse_qualified_path();
+        });
+    }
+
+    /// Parse qualified path: ident (:: ident)*
+    fn parse_qualified_path(&mut self) {
+        self.emit_node(SyntaxKind::QualifiedPath, |this| {
+            this.expect(TokenKind::Ident);
+            while this.check(TokenKind::DoubleColon) {
+                this.bump(); // consume '::'
+                this.expect(TokenKind::Ident);
+            }
+        });
+    }
+
+    /// Parse macro declaration: macro name(params) { body }
+    fn parse_macro_decl(&mut self) {
+        self.emit_node(SyntaxKind::FunctionDecl, |this| {
+            this.expect(TokenKind::Macro);
+
+            // Mark macro name with IdentFunction kind
+            if this.check(TokenKind::Ident) {
+                if let Some(&token_idx) = this.preparsed.token_indices.get(this.current) {
+                    this.tokens[token_idx].kind = TokenKind::IdentFunction;
+                }
+                this.bump();
+            }
+
+            // Parameters
+            if this.check(TokenKind::ParenBegin) {
+                this.parse_param_list();
+            }
+
+            // Optional return type annotation after '->'
+            if this.check(TokenKind::Arrow) {
+                this.bump();
+                this.parse_type();
+            }
+
+            // Body
+            if this.check(TokenKind::BlockBegin) {
+                this.parse_block_expr();
             }
         });
     }

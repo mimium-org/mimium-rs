@@ -210,6 +210,12 @@ pub enum SyntaxKind {
     // Top-level statements
     IncludeStmt,
     StageDecl,
+    ModuleDecl,
+    UseStmt,
+
+    // Module-related
+    QualifiedPath,
+    VisibilityPub,
 
     // Lists and sequences
     ParamList,
@@ -268,6 +274,10 @@ impl std::fmt::Display for SyntaxKind {
             SyntaxKind::RecordPattern => write!(f, "RecordPattern"),
             SyntaxKind::IncludeStmt => write!(f, "IncludeStmt"),
             SyntaxKind::StageDecl => write!(f, "StageDecl"),
+            SyntaxKind::ModuleDecl => write!(f, "ModuleDecl"),
+            SyntaxKind::UseStmt => write!(f, "UseStmt"),
+            SyntaxKind::QualifiedPath => write!(f, "QualifiedPath"),
+            SyntaxKind::VisibilityPub => write!(f, "VisibilityPub"),
             SyntaxKind::ParamList => write!(f, "ParamList"),
             SyntaxKind::ArgList => write!(f, "ArgList"),
             SyntaxKind::ExprList => write!(f, "ExprList"),

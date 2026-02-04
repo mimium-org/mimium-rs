@@ -12,6 +12,37 @@ use crate::utils::metadata::{Location, Span};
 
 use super::StageKind;
 
+/// Visibility modifier for module members
+#[derive(Clone, Debug, PartialEq)]
+pub enum Visibility {
+    Private,
+    Public,
+}
+
+impl Default for Visibility {
+    fn default() -> Self {
+        Visibility::Private
+    }
+}
+
+/// Qualified path for module references (e.g., modA::modB::func)
+#[derive(Clone, Debug, PartialEq)]
+pub struct QualifiedPath {
+    pub segments: Vec<Symbol>,
+}
+
+impl QualifiedPath {
+    pub fn new(segments: Vec<Symbol>) -> Self {
+        Self { segments }
+    }
+
+    pub fn single(name: Symbol) -> Self {
+        Self {
+            segments: vec![name],
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProgramStatement {
     FnDefinition {
@@ -25,9 +56,19 @@ pub enum ProgramStatement {
     },
     GlobalStatement(Statement),
     Import(Symbol),
+    /// Module definition: mod name { ... }
+    ModuleDefinition {
+        visibility: Visibility,
+        name: Symbol,
+        body: Vec<(ProgramStatement, Span)>,
+    },
+    /// Use statement: use path::to::module
+    UseStatement {
+        path: QualifiedPath,
+    },
     Comment(Symbol),
     DocComment(Symbol),
-    Error, //ModuleDefinition(Symbol),
+    Error,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -85,6 +126,12 @@ fn stmts_from_program(
                 Statement::DeclareStage(stage),
                 Location::new(span, file_path.clone()),
             )]),
+            // Module definitions and use statements are handled during module resolution phase
+            // For now, they are skipped in the expression conversion
+            ProgramStatement::ModuleDefinition { .. } | ProgramStatement::UseStatement { .. } => {
+                // TODO: Implement module environment resolution
+                None
+            }
             ProgramStatement::Error => Some(vec![(
                 Statement::Error,
                 Location::new(span, file_path.clone()),
