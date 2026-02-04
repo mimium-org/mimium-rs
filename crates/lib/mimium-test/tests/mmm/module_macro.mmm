@@ -5,7 +5,8 @@ mod test{
     }
 }
 
-#stage(main)
+// module ends in macro stage but it should be enclosed in local.
+// global declaration still starts from main stage.
 fn dsp(){
     $(test::macrofn1(`1))
 }

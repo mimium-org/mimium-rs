@@ -14,14 +14,12 @@ use crate::utils::metadata::{Location, Span};
 use super::StageKind;
 
 /// Visibility modifier for module members
-#[derive(Clone, Debug, PartialEq)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub enum Visibility {
     #[default]
     Private,
     Public,
 }
-
 
 /// Qualified path for module references (e.g., modA::modB::func)
 #[derive(Clone, Debug, PartialEq)]
@@ -271,9 +269,13 @@ fn stmts_from_program_with_prefix(
                 let mangled_name = mangle_qualified_name(module_prefix, name);
                 // Track visibility for module members
                 if !module_prefix.is_empty() {
-                    module_info.visibility_map.insert(mangled_name, visibility == Visibility::Public);
+                    module_info
+                        .visibility_map
+                        .insert(mangled_name, visibility == Visibility::Public);
                     // Track module context for relative path resolution
-                    module_info.module_context_map.insert(mangled_name, module_prefix.to_vec());
+                    module_info
+                        .module_context_map
+                        .insert(mangled_name, module_prefix.to_vec());
                 }
                 Some(vec![(
                     Statement::LetRec(
@@ -291,7 +293,8 @@ fn stmts_from_program_with_prefix(
                 let (imported_program, mut new_errs) =
                     resolve_include(file_path.to_str().unwrap(), filename.as_str(), span.clone());
                 errs.append(&mut new_errs);
-                let res = stmts_from_program(imported_program, file_path.clone(), errs, module_info);
+                let res =
+                    stmts_from_program(imported_program, file_path.clone(), errs, module_info);
                 Some(res)
             }
             ProgramStatement::StageDeclaration { stage } => Some(vec![(
@@ -306,29 +309,46 @@ fn stmts_from_program_with_prefix(
                 // Flatten module contents with qualified names
                 let mut new_prefix = module_prefix.to_vec();
                 new_prefix.push(name);
-                
-                match body {
+
+                let inner_stmts = match body {
                     Some(inline_body) => {
                         // Inline module: mod foo { ... }
-                        let inner_stmts =
-                            stmts_from_program_with_prefix(inline_body, file_path.clone(), errs, &new_prefix, module_info);
-                        Some(inner_stmts)
-                    }
-                    None => {
-                        // External file module: mod foo;
-                        let inner_stmts = resolve_external_module(
-                            name,
-                            &file_path,
-                            span,
+                        stmts_from_program_with_prefix(
+                            inline_body,
+                            file_path.clone(),
                             errs,
                             &new_prefix,
                             module_info,
-                        );
-                        Some(inner_stmts)
+                        )
                     }
-                }
+                    None => {
+                        // External file module: mod foo;
+                        resolve_external_module(
+                            name,
+                            &file_path,
+                            span.clone(),
+                            errs,
+                            &new_prefix,
+                            module_info,
+                        )
+                    }
+                };
+
+                // Wrap module contents with stage boundary:
+                // - Start with implicit #stage(main)
+                // - End with #stage(main) to restore default stage
+                // This ensures stage declarations inside modules don't leak out
+                let module_loc = Location::new(span, file_path.clone());
+                let maindecl = (Statement::DeclareStage(StageKind::Main), module_loc.clone());
+                let result = [vec![maindecl.clone()], inner_stmts, vec![maindecl]].concat();
+
+                Some(result)
             }
-            ProgramStatement::UseStatement { visibility, path, target } => {
+            ProgramStatement::UseStatement {
+                visibility,
+                path,
+                target,
+            } => {
                 process_use_statement(&visibility, &path, &target, module_prefix, module_info);
                 None
             }
@@ -356,7 +376,7 @@ fn process_use_statement(
     // Helper to register an alias and optionally mark as public
     let mut register_alias = |alias_name: Symbol, mangled: Symbol| {
         module_info.use_alias_map.insert(alias_name, mangled);
-        
+
         // If pub use, register the re-exported name as public in the current module
         if *visibility == Visibility::Public {
             let exported_name = mangle_qualified_name(module_prefix, alias_name);
@@ -399,11 +419,11 @@ fn process_use_statement(
             } else {
                 mangle_qualified_path(&path.segments).as_str().to_string()
             };
-            
+
             // Store wildcard import for later resolution
             // The key is the base path (e.g., "foo"), value is the prefix for resolving members
             module_info.wildcard_imports.push(base_mangled.to_symbol());
-            
+
             // Note: For pub use foo::*, we can't know all exported names at this point.
             // Wildcard re-exports would require a second pass or runtime resolution.
             // For now, wildcard imports with pub are stored but individual re-exports
