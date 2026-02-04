@@ -146,6 +146,34 @@ impl<'a> Parser<'a> {
             .map(|t| t.kind)
     }
 
+    /// Check if current position starts a path (possibly qualified) followed by macro expansion (!)
+    /// Returns the offset where MacroExpand is found, or None if not a macro expansion
+    fn find_macro_expand_after_path(&self) -> Option<usize> {
+        let mut offset = 0;
+        
+        // First must be Ident
+        if self.peek_ahead(offset) != Some(TokenKind::Ident) {
+            return None;
+        }
+        offset += 1;
+        
+        // Consume :: Ident pairs
+        while self.peek_ahead(offset) == Some(TokenKind::DoubleColon) {
+            offset += 1; // ::
+            if self.peek_ahead(offset) != Some(TokenKind::Ident) {
+                return None; // Malformed path
+            }
+            offset += 1; // Ident
+        }
+        
+        // Check if followed by MacroExpand
+        if self.peek_ahead(offset) == Some(TokenKind::MacroExpand) {
+            Some(offset)
+        } else {
+            None
+        }
+    }
+
     /// Get the current token
     #[allow(dead_code)]
     fn current_token(&self) -> Option<&Token> {
@@ -458,12 +486,19 @@ impl<'a> Parser<'a> {
         });
     }
 
-    /// Parse macro expansion: MacroName!(args)
+    /// Parse macro expansion: MacroName!(args) or Qualified::Path!(args)
     fn parse_macro_expansion(&mut self) {
         self.emit_node(SyntaxKind::MacroExpansion, |this| {
-            // Macro name (identifier) and '!('
+            // Parse the macro name which can be a simple identifier or qualified path
+            // Check if it's a qualified path
+            if this.peek_ahead(1) == Some(TokenKind::DoubleColon) {
+                this.parse_qualified_path();
+            } else {
+                this.expect(TokenKind::Ident);
+            }
+            
+            // '!(' 
             this.expect_all(&[
-                TokenKind::Ident,
                 TokenKind::MacroExpand,
                 TokenKind::ParenBegin,
             ]);
@@ -1137,8 +1172,8 @@ impl<'a> Parser<'a> {
                 self.parse_lambda_expr();
             }
             Some(TokenKind::Ident) => {
-                // Check if next token is ! for macro expansion
-                if self.peek_ahead(1) == Some(TokenKind::MacroExpand) {
+                // Check if this is a macro expansion (including qualified paths)
+                if self.find_macro_expand_after_path().is_some() {
                     self.parse_macro_expansion();
                 } else if self.peek_ahead(1) == Some(TokenKind::DoubleColon) {
                     // Qualified path: mod::submod::name

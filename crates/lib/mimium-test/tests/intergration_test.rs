@@ -799,6 +799,20 @@ fn module_pub_use() {
     let ans = vec![42.0, 42.0, 42.0];  // api::helper() returns 42.0
     assert_eq!(res, ans);
 }
+#[wasm_bindgen_test(unsupported = test)]
+fn module_macro() {
+    // Test pub use for re-exporting
+    let res = run_file_test_mono("module_macro.mmm", 3).unwrap();
+    let ans = vec![2.0, 2.0, 2.0]; 
+    assert_eq!(res, ans);
+}
+#[wasm_bindgen_test(unsupported = test)]
+fn module_macro_sugar() {
+    // Test pub use for re-exporting
+    let res = run_file_test_mono("module_macro_sugar.mmm", 3).unwrap();
+    let ans = vec![2.0, 2.0, 2.0]; 
+    assert_eq!(res, ans);
+}
 
 // #[wasm_bindgen_test(unsupported = test)]
 // fn map_record() {

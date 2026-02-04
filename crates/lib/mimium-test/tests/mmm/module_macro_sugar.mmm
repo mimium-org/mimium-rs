@@ -1,0 +1,11 @@
+mod test{
+    #stage(macro)
+    pub fn macrofn1(x){
+        `{$x+$x}
+    }
+}
+
+#stage(main)
+fn dsp(){
+    test::macrofn1!(`1)
+}

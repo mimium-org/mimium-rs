@@ -117,18 +117,15 @@ impl<'a> Lowerer<'a> {
                     .arena
                     .children(node)
                     .and_then(|children| {
-                        children
-                            .iter()
-                            .copied()
-                            .find_map(|child| {
-                                let kind = self.arena.kind(child)?;
-                                // Skip VisibilityPub when looking for the main statement kind
-                                if kind == SyntaxKind::VisibilityPub {
-                                    None
-                                } else {
-                                    Some((kind, child))
-                                }
-                            })
+                        children.iter().copied().find_map(|child| {
+                            let kind = self.arena.kind(child)?;
+                            // Skip VisibilityPub when looking for the main statement kind
+                            if kind == SyntaxKind::VisibilityPub {
+                                None
+                            } else {
+                                Some((kind, child))
+                            }
+                        })
                     })
                     .map(|(kind, id)| (Some(kind), Some(id)))
                     .unwrap_or((None, None));
@@ -152,9 +149,9 @@ impl<'a> Lowerer<'a> {
                     (Some(SyntaxKind::ModuleDecl), Some(id)) => self
                         .lower_module_decl(id, visibility)
                         .unwrap_or(ProgramStatement::Error),
-                    (Some(SyntaxKind::UseStmt), Some(id)) => {
-                        self.lower_use_stmt(id, visibility).unwrap_or(ProgramStatement::Error)
-                    }
+                    (Some(SyntaxKind::UseStmt), Some(id)) => self
+                        .lower_use_stmt(id, visibility)
+                        .unwrap_or(ProgramStatement::Error),
                     (Some(_), _) => {
                         let expr_nodes = self.collect_expr_nodes(node);
                         let expr = self.lower_expr_sequence(&expr_nodes);
@@ -192,8 +189,10 @@ impl<'a> Lowerer<'a> {
         let name = self.token_text(name_idx)?.to_symbol();
 
         // Check if module has a body (inline) or not (external file)
-        let has_block = self.find_token(node, |kind| matches!(kind, TokenKind::BlockBegin)).is_some();
-        
+        let has_block = self
+            .find_token(node, |kind| matches!(kind, TokenKind::BlockBegin))
+            .is_some();
+
         let body = if has_block {
             // Inline module: lower the body statements
             let stmts: Vec<(ProgramStatement, Span)> = self
@@ -226,26 +225,34 @@ impl<'a> Lowerer<'a> {
     /// - `use path::{a, b, c}` (multiple imports)
     /// - `use path::*` (wildcard import)
     /// - `pub use ...` (re-export)
-    fn lower_use_stmt(&self, node: GreenNodeId, visibility: Visibility) -> Option<ProgramStatement> {
+    fn lower_use_stmt(
+        &self,
+        node: GreenNodeId,
+        visibility: Visibility,
+    ) -> Option<ProgramStatement> {
         let path_node = self.find_child(node, |kind| kind == SyntaxKind::QualifiedPath)?;
-        
+
         // Check for wildcard or multiple import targets within the QualifiedPath
         let (path, target) = self.lower_use_path(path_node)?;
-        
-        Some(ProgramStatement::UseStatement { visibility, path, target })
+
+        Some(ProgramStatement::UseStatement {
+            visibility,
+            path,
+            target,
+        })
     }
 
     /// Lower use path, extracting the base path and target type
     fn lower_use_path(&self, node: GreenNodeId) -> Option<(QualifiedPath, UseTarget)> {
         use crate::ast::program::UseTarget;
-        
+
         let mut segments: Vec<Symbol> = Vec::new();
         let mut target = UseTarget::Single;
 
         if let Some(children) = self.arena.children(node) {
             for child in children.iter() {
                 let child_kind = self.arena.kind(*child);
-                
+
                 match child_kind {
                     Some(SyntaxKind::UseTargetWildcard) => {
                         target = UseTarget::Wildcard;
@@ -280,7 +287,7 @@ impl<'a> Lowerer<'a> {
     /// Extract identifiers from a UseTargetMultiple node: {a, b, c}
     fn lower_use_target_multiple(&self, node: GreenNodeId) -> Vec<Symbol> {
         let mut symbols = Vec::new();
-        
+
         if let Some(children) = self.arena.children(node) {
             for child in children.iter() {
                 if let Some(token_idx) = self.get_token_index(*child)
@@ -293,7 +300,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
-        
+
         symbols
     }
 
@@ -365,7 +372,11 @@ impl<'a> Lowerer<'a> {
         )))
     }
 
-    fn lower_function_decl(&self, node: GreenNodeId, visibility: Visibility) -> Option<ProgramStatement> {
+    fn lower_function_decl(
+        &self,
+        node: GreenNodeId,
+        visibility: Visibility,
+    ) -> Option<ProgramStatement> {
         let name_idx = self.find_token(node, |kind| {
             matches!(kind, TokenKind::IdentFunction | TokenKind::Ident)
         })?;
@@ -938,21 +949,35 @@ impl<'a> Lowerer<'a> {
         Expr::Assign(lhs, rhs).into_id(loc)
     }
 
-    fn lower_macro_expand(&self, node: GreenNodeId) -> (ExprNodeId, Vec<ExprNodeId>) {
-        let name_idx = self.find_token(node, |kind| matches!(kind, TokenKind::Ident));
-        let name_text = name_idx.and_then(|idx| self.token_text(idx)).unwrap_or("");
-        let name = name_text.to_symbol();
-        // Span should include trailing '!' of macro invocation
-        let ident_span = name_idx
-            .and_then(|idx| self.tokens.get(idx).map(|t| t.start..t.end()))
-            .unwrap_or(0..0);
+    /// Calculate span for macro expansion, extending base_span to include the `!` token
+    fn macro_expand_span(&self, node: GreenNodeId, base_span: Span) -> Span {
         let bang_end = self
             .find_token(node, |kind| matches!(kind, TokenKind::MacroExpand))
             .and_then(|idx| self.tokens.get(idx).map(|t| t.end()))
-            .unwrap_or(ident_span.end);
-        let name_span = ident_span.start..bang_end;
+            .unwrap_or(base_span.end);
+        base_span.start..bang_end
+    }
+
+    fn lower_macro_expand(&self, node: GreenNodeId) -> (ExprNodeId, Vec<ExprNodeId>) {
         let args = self.lower_arg_list(node);
-        let loc = self.location_from_span(name_span);
+
+        // Check for qualified path first (e.g., mod::macrofn!())
+        if let Some(path_node) = self.find_child(node, |kind| kind == SyntaxKind::QualifiedPath)
+            && let Some(path) = self.lower_qualified_path(path_node)
+        {
+            let path_span = self.node_span(path_node).unwrap_or(0..0);
+            let loc = self.location_from_span(self.macro_expand_span(node, path_span));
+            return (Expr::QualifiedVar(path).into_id(loc), args);
+        }
+
+        // Simple identifier macro (e.g., macrofn!())
+        let name_idx = self.find_token(node, |kind| matches!(kind, TokenKind::Ident));
+        let name_text = name_idx.and_then(|idx| self.token_text(idx)).unwrap_or("");
+        let name = name_text.to_symbol();
+        let ident_span = name_idx
+            .and_then(|idx| self.tokens.get(idx).map(|t| t.start..t.end()))
+            .unwrap_or(0..0);
+        let loc = self.location_from_span(self.macro_expand_span(node, ident_span));
         (Expr::Var(name).into_id(loc), args)
     }
 
@@ -1577,7 +1602,11 @@ mod tests {
 
         let stmt = &prog.statements[0].0;
         match stmt {
-            ProgramStatement::UseStatement { visibility, path, target } => {
+            ProgramStatement::UseStatement {
+                visibility,
+                path,
+                target,
+            } => {
                 assert_eq!(*visibility, Visibility::Private);
                 assert_eq!(path.segments.len(), 2);
                 assert_eq!(path.segments[0].as_str(), "modA");
@@ -1597,7 +1626,11 @@ mod tests {
 
         let stmt = &prog.statements[0].0;
         match stmt {
-            ProgramStatement::UseStatement { visibility, path, target } => {
+            ProgramStatement::UseStatement {
+                visibility,
+                path,
+                target,
+            } => {
                 assert_eq!(*visibility, Visibility::Private);
                 assert_eq!(path.segments.len(), 1);
                 assert_eq!(path.segments[0].as_str(), "modA");
@@ -1623,7 +1656,11 @@ mod tests {
 
         let stmt = &prog.statements[0].0;
         match stmt {
-            ProgramStatement::UseStatement { visibility, path, target } => {
+            ProgramStatement::UseStatement {
+                visibility,
+                path,
+                target,
+            } => {
                 assert_eq!(*visibility, Visibility::Private);
                 assert_eq!(path.segments.len(), 1);
                 assert_eq!(path.segments[0].as_str(), "modA");
@@ -1752,7 +1789,7 @@ fn dsp() { add(1.0, 2.0) }
 "#;
         let inline_prog = parse_source(inline_source);
         let (expr, module_info, errs) = expr_from_program(inline_prog, PathBuf::from("test.mmm"));
-        
+
         // Check that module_info has the use alias
         assert!(
             module_info.use_alias_map.contains_key(&"add".to_symbol()),
@@ -1762,14 +1799,19 @@ fn dsp() { add(1.0, 2.0) }
             module_info.use_alias_map.get(&"add".to_symbol()).copied(),
             Some("mymod$add".to_symbol())
         );
-        
+
         // Check that visibility_map has the function
         assert!(
-            module_info.visibility_map.contains_key(&"mymod$add".to_symbol()),
+            module_info
+                .visibility_map
+                .contains_key(&"mymod$add".to_symbol()),
             "visibility_map should contain 'mymod$add'"
         );
         assert!(
-            *module_info.visibility_map.get(&"mymod$add".to_symbol()).unwrap(),
+            *module_info
+                .visibility_map
+                .get(&"mymod$add".to_symbol())
+                .unwrap(),
             "mymod$add should be public"
         );
 
@@ -1777,7 +1819,8 @@ fn dsp() { add(1.0, 2.0) }
         let ast_string = format!("{:?}", expr.to_expr());
         assert!(
             ast_string.contains("mymod$add"),
-            "AST should contain mymod$add, but got: {}", ast_string
+            "AST should contain mymod$add, but got: {}",
+            ast_string
         );
     }
 
@@ -1790,7 +1833,11 @@ fn dsp() { add(1.0, 2.0) }
 
         let stmt = &prog.statements[0].0;
         match stmt {
-            ProgramStatement::UseStatement { visibility, path, target } => {
+            ProgramStatement::UseStatement {
+                visibility,
+                path,
+                target,
+            } => {
                 assert_eq!(*visibility, Visibility::Public);
                 assert_eq!(path.segments.len(), 2);
                 assert_eq!(path.segments[0].as_str(), "modA");
