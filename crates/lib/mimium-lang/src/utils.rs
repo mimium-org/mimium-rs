@@ -1,4 +1,5 @@
 pub mod environment;
+pub mod module_env;
 pub mod error;
 pub mod fileloader;
 pub mod half_float;
