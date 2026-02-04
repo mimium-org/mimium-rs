@@ -317,19 +317,29 @@ impl<'a> Parser<'a> {
         });
     }
 
-    /// Parse module declaration: mod name { ... }
+    /// Parse module declaration: mod name { ... } or mod name;
     fn parse_module_decl(&mut self) {
         self.emit_node(SyntaxKind::ModuleDecl, |this| {
             this.expect(TokenKind::Mod);
             this.expect(TokenKind::Ident);
-            this.expect(TokenKind::BlockBegin);
+            
+            // Check if this is an external file module (mod foo;) or inline module (mod foo { ... })
+            if this.check(TokenKind::LineBreak) {
+                // External file module: mod foo;
+                // Just consume the line break, no body
+                this.bump();
+            } else if this.check(TokenKind::BlockBegin) {
+                // Inline module: mod foo { ... }
+                this.expect(TokenKind::BlockBegin);
 
-            // Parse module body (statements)
-            while !this.check(TokenKind::BlockEnd) && !this.is_at_end() {
-                this.parse_statement();
+                // Parse module body (statements)
+                while !this.check(TokenKind::BlockEnd) && !this.is_at_end() {
+                    this.parse_statement();
+                }
+
+                this.expect(TokenKind::BlockEnd);
             }
-
-            this.expect(TokenKind::BlockEnd);
+            // If neither, error recovery will handle it
         });
     }
 
@@ -1262,11 +1272,11 @@ impl<'a> Parser<'a> {
             token1,
             Some(TokenKind::Ident) | Some(TokenKind::IdentParameter)
         );
-        let is_record_syntax = matches!(token1, Some(TokenKind::DoubleDot))
-            || (is_record_key
-                && matches!(token2, Some(TokenKind::Assign) | Some(TokenKind::LeftArrow)));
+        
 
-        is_record_syntax
+        (matches!(token1, Some(TokenKind::DoubleDot))
+            || (is_record_key
+                && matches!(token2, Some(TokenKind::Assign) | Some(TokenKind::LeftArrow))))
     }
 
     /// Parse tuple expression: (a, b, c)

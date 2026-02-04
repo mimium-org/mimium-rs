@@ -127,7 +127,10 @@ impl ModuleEnv {
                     name,
                     body,
                 } => {
-                    let inner = Self::build_namespace(body);
+                    let inner = body
+                        .as_ref()
+                        .map(|b| Self::build_namespace(b))
+                        .unwrap_or_else(ModuleNamespace::new);
                     self.root.items.insert(
                         *name,
                         ModuleItem::SubModule {
@@ -164,7 +167,10 @@ impl ModuleEnv {
                     name,
                     body,
                 } => {
-                    let inner = Self::build_namespace(body);
+                    let inner = body
+                        .as_ref()
+                        .map(|b| Self::build_namespace(b))
+                        .unwrap_or_else(ModuleNamespace::new);
                     namespace.items.insert(
                         *name,
                         ModuleItem::SubModule {

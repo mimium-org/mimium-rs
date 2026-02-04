@@ -182,7 +182,7 @@ impl<'a> Lowerer<'a> {
             .unwrap_or(Visibility::Private)
     }
 
-    /// Lower module declaration: mod name { ... }
+    /// Lower module declaration: mod name { ... } or mod name;
     fn lower_module_decl(
         &self,
         node: GreenNodeId,
@@ -191,19 +191,28 @@ impl<'a> Lowerer<'a> {
         let name_idx = self.find_token(node, |kind| matches!(kind, TokenKind::Ident))?;
         let name = self.token_text(name_idx)?.to_symbol();
 
-        // Lower the body statements
-        let body: Vec<(ProgramStatement, Span)> = self
-            .arena
-            .children(node)
-            .map(|children| {
-                children
-                    .iter()
-                    .copied()
-                    .filter(|child| self.arena.kind(*child) == Some(SyntaxKind::Statement))
-                    .filter_map(|child| self.lower_statement(child))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Check if module has a body (inline) or not (external file)
+        let has_block = self.find_token(node, |kind| matches!(kind, TokenKind::BlockBegin)).is_some();
+        
+        let body = if has_block {
+            // Inline module: lower the body statements
+            let stmts: Vec<(ProgramStatement, Span)> = self
+                .arena
+                .children(node)
+                .map(|children| {
+                    children
+                        .iter()
+                        .copied()
+                        .filter(|child| self.arena.kind(*child) == Some(SyntaxKind::Statement))
+                        .filter_map(|child| self.lower_statement(child))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(stmts)
+        } else {
+            // External file module: body is None
+            None
+        };
 
         Some(ProgramStatement::ModuleDefinition {
             visibility,
@@ -1468,7 +1477,7 @@ mod tests {
             } => {
                 assert_eq!(*visibility, Visibility::Private);
                 assert_eq!(name.as_str(), "mymod");
-                assert!(!body.is_empty());
+                assert!(body.as_ref().map(|b| !b.is_empty()).unwrap_or(false));
             }
             _ => panic!("Expected ModuleDefinition, got {:?}", stmt),
         }
@@ -1490,7 +1499,7 @@ mod tests {
             } => {
                 assert_eq!(*visibility, Visibility::Public);
                 assert_eq!(name.as_str(), "mymod");
-                assert!(!body.is_empty());
+                assert!(body.as_ref().map(|b| !b.is_empty()).unwrap_or(false));
             }
             _ => panic!("Expected ModuleDefinition, got {:?}", stmt),
         }
@@ -1530,6 +1539,7 @@ mod tests {
             } => {
                 assert_eq!(*visibility, Visibility::Private);
                 assert_eq!(name.as_str(), "outer");
+                let body = body.as_ref().expect("Expected inline module body");
                 assert!(!body.is_empty());
 
                 // Check inner module
@@ -1583,10 +1593,81 @@ mod mymod {
         let stmt = &prog.statements[0].0;
         match stmt {
             ProgramStatement::ModuleDefinition { body, .. } => {
-                // Should have at least 3 items
+                // Should have at least 2 items
+                let body = body.as_ref().expect("Expected inline module body");
                 assert!(body.len() >= 2);
             }
             _ => panic!("Expected ModuleDefinition"),
         }
+    }
+
+    #[test]
+    fn test_parse_external_module() {
+        // External file module: mod foo; (no body)
+        let source = "mod external_module";
+        let prog = parse_source(source);
+
+        assert!(!prog.statements.is_empty());
+
+        let stmt = &prog.statements[0].0;
+        match stmt {
+            ProgramStatement::ModuleDefinition {
+                visibility,
+                name,
+                body,
+            } => {
+                assert_eq!(*visibility, Visibility::Private);
+                assert_eq!(name.as_str(), "external_module");
+                // External module should have None body
+                assert!(body.is_none(), "External module should have None body");
+            }
+            _ => panic!("Expected ModuleDefinition, got {:?}", stmt),
+        }
+    }
+
+    #[test]
+    fn test_external_module_with_use_generates_correct_ast() {
+        // Simulate external module + use statement
+        // This test verifies that the AST is correctly generated when combining
+        // external file modules with use statements
+        use crate::ast::program::expr_from_program;
+
+        // First, test an inline module with use statement (this should work)
+        let inline_source = r#"
+mod mymod {
+    pub fn add(x, y) { x + y }
+}
+use mymod::add
+fn dsp() { add(1.0, 2.0) }
+"#;
+        let inline_prog = parse_source(inline_source);
+        let (expr, module_info, errs) = expr_from_program(inline_prog, PathBuf::from("test.mmm"));
+        
+        // Check that module_info has the use alias
+        assert!(
+            module_info.use_alias_map.contains_key(&"add".to_symbol()),
+            "use_alias_map should contain 'add'"
+        );
+        assert_eq!(
+            module_info.use_alias_map.get(&"add".to_symbol()).copied(),
+            Some("mymod$add".to_symbol())
+        );
+        
+        // Check that visibility_map has the function
+        assert!(
+            module_info.visibility_map.contains_key(&"mymod$add".to_symbol()),
+            "visibility_map should contain 'mymod$add'"
+        );
+        assert!(
+            *module_info.visibility_map.get(&"mymod$add".to_symbol()).unwrap(),
+            "mymod$add should be public"
+        );
+
+        // The AST should contain 'mymod$add' as a LetRec
+        let ast_string = format!("{:?}", expr.to_expr());
+        assert!(
+            ast_string.contains("mymod$add"),
+            "AST should contain mymod$add, but got: {}", ast_string
+        );
     }
 }

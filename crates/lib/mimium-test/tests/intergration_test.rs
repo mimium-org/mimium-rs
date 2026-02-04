@@ -750,6 +750,23 @@ fn module_use_private_fail() {
     );
 }
 
+#[wasm_bindgen_test(unsupported = test)]
+fn module_external() {
+    // Test external file module: mod foo; syntax (Rust-like)
+    // Loads module_external_math.mmm from same directory
+    let res = run_file_test_mono("module_external.mmm", 3).unwrap();
+    let ans = vec![15.0, 15.0, 15.0];  // add(1,2) + mul(3,4) = 3 + 12 = 15
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_external_use() {
+    // Test external file module with use statement
+    let res = run_file_test_mono("module_external_use.mmm", 3).unwrap();
+    let ans = vec![12.0, 12.0, 12.0];  // add(5, 7) = 12
+    assert_eq!(res, ans);
+}
+
 // #[wasm_bindgen_test(unsupported = test)]
 // fn map_record() {
 //     let res = run_file_test_stereo("map_record.mmm", 1).unwrap();

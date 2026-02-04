@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::resolve_include::resolve_include;
 use super::statement::Statement;
@@ -15,16 +15,13 @@ use super::StageKind;
 
 /// Visibility modifier for module members
 #[derive(Clone, Debug, PartialEq)]
+#[derive(Default)]
 pub enum Visibility {
+    #[default]
     Private,
     Public,
 }
 
-impl Default for Visibility {
-    fn default() -> Self {
-        Visibility::Private
-    }
-}
 
 /// Qualified path for module references (e.g., modA::modB::func)
 #[derive(Clone, Debug, PartialEq)]
@@ -58,11 +55,12 @@ pub enum ProgramStatement {
     },
     GlobalStatement(Statement),
     Import(Symbol),
-    /// Module definition: mod name { ... }
+    /// Module definition: mod name { ... } (inline) or mod name; (external file)
     ModuleDefinition {
         visibility: Visibility,
         name: Symbol,
-        body: Vec<(ProgramStatement, Span)>,
+        /// Body of the module. None means external file module (mod foo;)
+        body: Option<Vec<(ProgramStatement, Span)>>,
     },
     /// Use statement: use path::to::module
     UseStatement {
@@ -104,6 +102,37 @@ fn mangle_qualified_path(segments: &[Symbol]) -> Symbol {
         .collect::<Vec<_>>()
         .join("$")
         .to_symbol()
+}
+
+/// Resolve an external file module (`mod foo;` syntax).
+/// Looks for `{name}.mmm` in the same directory as the current file.
+fn resolve_external_module(
+    name: Symbol,
+    file_path: &Path,
+    span: Span,
+    errs: &mut Vec<Box<dyn ReportableError>>,
+    module_prefix: &[Symbol],
+    module_info: &mut ModuleInfo,
+) -> Vec<(Statement, Location)> {
+    let module_filename = format!("{}.mmm", name.as_str());
+    let (imported_program, mut new_errs) =
+        resolve_include(file_path.to_str().unwrap(), &module_filename, span);
+    errs.append(&mut new_errs);
+
+    // Get the actual file path for the imported module
+    let module_file_path = file_path
+        .parent()
+        .map(|p| p.join(&module_filename))
+        .unwrap_or_else(|| PathBuf::from(&module_filename));
+
+    // Process imported program with the module prefix
+    stmts_from_program_with_prefix(
+        imported_program.statements,
+        module_file_path,
+        errs,
+        module_prefix,
+        module_info,
+    )
 }
 
 /// Map from mangled symbol name to whether it's public.
@@ -206,9 +235,27 @@ fn stmts_from_program_with_prefix(
                 // Flatten module contents with qualified names
                 let mut new_prefix = module_prefix.to_vec();
                 new_prefix.push(name);
-                let inner_stmts =
-                    stmts_from_program_with_prefix(body, file_path.clone(), errs, &new_prefix, module_info);
-                Some(inner_stmts)
+                
+                match body {
+                    Some(inline_body) => {
+                        // Inline module: mod foo { ... }
+                        let inner_stmts =
+                            stmts_from_program_with_prefix(inline_body, file_path.clone(), errs, &new_prefix, module_info);
+                        Some(inner_stmts)
+                    }
+                    None => {
+                        // External file module: mod foo;
+                        let inner_stmts = resolve_external_module(
+                            name,
+                            &file_path,
+                            span,
+                            errs,
+                            &new_prefix,
+                            module_info,
+                        );
+                        Some(inner_stmts)
+                    }
+                }
             }
             ProgramStatement::UseStatement { path } => {
                 // use foo::bar creates an alias: bar -> foo$bar

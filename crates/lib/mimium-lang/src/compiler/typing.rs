@@ -8,12 +8,10 @@ use crate::utils::metadata::Location;
 use crate::utils::{environment::Environment, error::ReportableError};
 use crate::{function, integer, numeric, unit};
 use itertools::Itertools;
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 mod unification;
 use unification::{Error as UnificationError, Relation, unify_types};
@@ -604,7 +602,7 @@ impl InferContext {
     fn instantiate(&mut self, t: TypeNodeId) -> TypeNodeId {
         match t.to_type() {
             Type::TypeScheme(id) => {
-                log::debug!("instantiate typescheme id: {:?}", id);
+                log::debug!("instantiate typescheme id: {id:?}");
                 if let Some(tvar) = self.instantiated_map.get(&id) {
                     *tvar
                 } else {
@@ -637,14 +635,14 @@ impl InferContext {
         let pat_t = match pat {
             Pattern::Single(id) => {
                 let pat_t = self.convert_unknown_to_intermediate(ty, loc_p);
-                log::trace!("bind {} : {}", id, pat_t.to_type().to_string());
+                log::trace!("bind {} : {}", id, pat_t.to_type());
                 self.env.add_bind(&[(id, (pat_t, self.stage))]);
                 Ok::<TypeNodeId, Vec<Error>>(pat_t)
             }
             Pattern::Placeholder => {
                 // Placeholder doesn't bind anything, just check the type
                 let pat_t = self.convert_unknown_to_intermediate(ty, loc_p);
-                log::trace!("bind _ (placeholder) : {}", pat_t.to_type().to_string());
+                log::trace!("bind _ (placeholder) : {}", pat_t.to_type());
                 Ok::<TypeNodeId, Vec<Error>>(pat_t)
             }
             Pattern::Tuple(pats) => {
@@ -684,7 +682,8 @@ impl InferContext {
 
     pub fn lookup(&self, name: Symbol, loc: Location) -> Result<TypeNodeId, Error> {
         use crate::utils::environment::LookupRes;
-        match self.env.lookup_cls(&name) {
+        let lookup_res = self.env.lookup_cls(&name);
+        match lookup_res {
             LookupRes::Local((ty, bound_stage)) if self.stage == *bound_stage => Ok(*ty),
             LookupRes::UpValue(_, (ty, bound_stage)) if self.stage == *bound_stage => Ok(*ty),
             LookupRes::Global((ty, bound_stage))
@@ -762,7 +761,7 @@ impl InferContext {
                     Type::Array(elem_t).into_id_with_location(loc_e.clone()),
                     arr_t,
                 );
-                let _ = self.merge_rel_result(rel1, rel2, arr_t, idx_t)?;
+                self.merge_rel_result(rel1, rel2, arr_t, idx_t)?;
                 Ok(elem_t)
             }
             Expr::Proj(e, idx) => {
@@ -985,6 +984,7 @@ impl InferContext {
             Expr::Var(name) => {
                 // Check if this name is a use alias
                 if let Some(&mangled_name) = self.module_info.use_alias_map.get(name) {
+                    log::trace!("visibility_map keys: {:?}", self.module_info.visibility_map.keys().map(|k| k.as_str()).collect::<Vec<_>>());
                     // Check visibility for the aliased name (it's always a module member)
                     if let Some(&is_public) = self.module_info.visibility_map.get(&mangled_name) {
                         if !is_public {
