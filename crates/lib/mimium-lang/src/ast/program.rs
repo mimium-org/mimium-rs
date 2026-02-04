@@ -94,17 +94,49 @@ fn mangle_qualified_name(prefix: &[Symbol], name: Symbol) -> Symbol {
     }
 }
 
+/// Convert a full qualified path (all segments) to a mangled symbol name.
+/// For example, `[foo, bar, baz]` becomes `foo$bar$baz`.
+fn mangle_qualified_path(segments: &[Symbol]) -> Symbol {
+    use crate::interner::ToSymbol;
+    segments
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join("$")
+        .to_symbol()
+}
+
 /// Map from mangled symbol name to whether it's public.
 /// Only contains entries for module members (not top-level definitions).
 pub type VisibilityMap = HashMap<Symbol, bool>;
+
+/// Map from alias name to the mangled name it refers to.
+/// Created from `use` statements, e.g., `use foo::bar` creates `bar -> foo$bar`.
+pub type UseAliasMap = HashMap<Symbol, Symbol>;
+
+/// Module-related information collected during parsing.
+/// Contains visibility information for module members and use aliases.
+#[derive(Clone, Debug, Default)]
+pub struct ModuleInfo {
+    /// Map from mangled symbol name to whether it's public (only for module members)
+    pub visibility_map: VisibilityMap,
+    /// Map from alias name to mangled name (from use statements)
+    pub use_alias_map: UseAliasMap,
+}
+
+impl ModuleInfo {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 
 fn stmts_from_program(
     program: Program,
     file_path: PathBuf,
     errs: &mut Vec<Box<dyn ReportableError>>,
-    visibility_map: &mut VisibilityMap,
+    module_info: &mut ModuleInfo,
 ) -> Vec<(Statement, Location)> {
-    stmts_from_program_with_prefix(program.statements, file_path, errs, &[], visibility_map)
+    stmts_from_program_with_prefix(program.statements, file_path, errs, &[], module_info)
 }
 
 fn stmts_from_program_with_prefix(
@@ -112,7 +144,7 @@ fn stmts_from_program_with_prefix(
     file_path: PathBuf,
     errs: &mut Vec<Box<dyn ReportableError>>,
     module_prefix: &[Symbol],
-    visibility_map: &mut VisibilityMap,
+    module_info: &mut ModuleInfo,
 ) -> Vec<(Statement, Location)> {
     statements
         .into_iter()
@@ -141,7 +173,7 @@ fn stmts_from_program_with_prefix(
                 let mangled_name = mangle_qualified_name(module_prefix, name);
                 // Track visibility for module members
                 if !module_prefix.is_empty() {
-                    visibility_map.insert(mangled_name, visibility == Visibility::Public);
+                    module_info.visibility_map.insert(mangled_name, visibility == Visibility::Public);
                 }
                 Some(vec![(
                     Statement::LetRec(
@@ -159,7 +191,7 @@ fn stmts_from_program_with_prefix(
                 let (imported_program, mut new_errs) =
                     resolve_include(file_path.to_str().unwrap(), filename.as_str(), span.clone());
                 errs.append(&mut new_errs);
-                let res = stmts_from_program(imported_program, file_path.clone(), errs, visibility_map);
+                let res = stmts_from_program(imported_program, file_path.clone(), errs, module_info);
                 Some(res)
             }
             ProgramStatement::StageDeclaration { stage } => Some(vec![(
@@ -175,12 +207,16 @@ fn stmts_from_program_with_prefix(
                 let mut new_prefix = module_prefix.to_vec();
                 new_prefix.push(name);
                 let inner_stmts =
-                    stmts_from_program_with_prefix(body, file_path.clone(), errs, &new_prefix, visibility_map);
+                    stmts_from_program_with_prefix(body, file_path.clone(), errs, &new_prefix, module_info);
                 Some(inner_stmts)
             }
-            ProgramStatement::UseStatement { .. } => {
-                // Use statements are handled during qualified name resolution
-                // They don't generate any statements directly
+            ProgramStatement::UseStatement { path } => {
+                // use foo::bar creates an alias: bar -> foo$bar
+                // The last segment becomes the alias name
+                if let Some(alias_name) = path.segments.last().copied() {
+                    let mangled = mangle_qualified_path(&path.segments);
+                    module_info.use_alias_map.insert(alias_name, mangled);
+                }
                 None
             }
             ProgramStatement::Error => Some(vec![(
@@ -191,15 +227,16 @@ fn stmts_from_program_with_prefix(
         .flatten()
         .collect()
 }
+
 pub(crate) fn expr_from_program(
     program: Program,
     file_path: PathBuf,
-) -> (ExprNodeId, VisibilityMap, Vec<Box<dyn ReportableError>>) {
+) -> (ExprNodeId, ModuleInfo, Vec<Box<dyn ReportableError>>) {
     let mut errs = vec![];
-    let mut visibility_map = VisibilityMap::new();
-    let stmts = stmts_from_program(program, file_path.clone(), &mut errs, &mut visibility_map);
+    let mut module_info = ModuleInfo::new();
+    let stmts = stmts_from_program(program, file_path.clone(), &mut errs, &mut module_info);
 
     let res = into_then_expr(stmts.as_slice()).unwrap_or(Expr::Error.into_id_without_span());
 
-    (res, visibility_map, errs)
+    (res, module_info, errs)
 }

@@ -305,7 +305,7 @@ pub fn parse(src: &str, uri: &str) -> ParseResult {
         })
         .collect();
 
-    let (ast, _module_env, _visibility_map, parse_errs) = parse_to_expr(src, Some(PathBuf::from(uri)));
+    let (ast, _module_env, _module_info, parse_errs) = parse_to_expr(src, Some(PathBuf::from(uri)));
 
     ParseResult {
         ast,

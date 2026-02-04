@@ -730,6 +730,26 @@ fn module_visibility_fail() {
     );
 }
 
+#[wasm_bindgen_test(unsupported = test)]
+fn module_use() {
+    // Test that `use mymath::add` allows using `add` without qualification
+    let res = run_file_test_mono("module_use.mmm", 3).unwrap();
+    let ans = vec![15.0, 15.0, 15.0];  // add(10.0, 5.0) = 15.0
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_use_private_fail() {
+    // Test that `use` statement respects visibility - using private function should fail
+    let res = run_error_test("module_use_private_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+    assert!(
+        res[0].get_message().contains("is private"),
+        "Expected 'is private' error message, got: {:?}",
+        res[0].get_message()
+    );
+}
+
 // #[wasm_bindgen_test(unsupported = test)]
 // fn map_record() {
 //     let res = run_file_test_stereo("map_record.mmm", 1).unwrap();

@@ -497,7 +497,10 @@ impl Context {
         let span = &e.to_span();
         let loc = self.get_loc_from_span(span);
         let name = match e.to_expr() {
-            Expr::Var(name) => name,
+            Expr::Var(name) => {
+                // Check if the name is an alias from a use statement
+                self.typeenv.resolve_alias(name)
+            }
             Expr::QualifiedVar(path) => {
                 // Convert qualified path to mangled name (e.g., foo::bar -> foo$bar)
                 if path.segments.len() == 1 {
@@ -1395,17 +1398,17 @@ pub fn typecheck(
     (expr, infer_ctx, errors)
 }
 
-pub fn typecheck_with_visibility(
+pub fn typecheck_with_module_info(
     root_expr_id: ExprNodeId,
     builtin_types: &[(Symbol, TypeNodeId)],
     file_path: Option<PathBuf>,
-    visibility_map: crate::ast::program::VisibilityMap,
+    module_info: crate::ast::program::ModuleInfo,
 ) -> (ExprNodeId, InferContext, Vec<Box<dyn ReportableError>>) {
     let (expr, convert_errs) =
         convert_pronoun::convert_pronoun(root_expr_id, file_path.clone().unwrap_or_default());
     let expr = recursecheck::convert_recurse(expr, file_path.clone().unwrap_or_default());
     // let expr = destruct_let_pattern(expr);
-    let infer_ctx = super::typing::infer_root_with_visibility(expr, builtin_types, file_path.clone().unwrap_or_default(), visibility_map);
+    let infer_ctx = super::typing::infer_root_with_module_info(expr, builtin_types, file_path.clone().unwrap_or_default(), module_info);
     let errors = infer_ctx
         .errors
         .iter()
@@ -1430,19 +1433,19 @@ pub fn compile(
     macro_env: &[Box<dyn MacroFunction>],
     file_path: Option<PathBuf>,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
-    compile_with_visibility(root_expr_id, builtin_types, macro_env, file_path, crate::ast::program::VisibilityMap::new())
+    compile_with_module_info(root_expr_id, builtin_types, macro_env, file_path, crate::ast::program::ModuleInfo::new())
 }
 
-/// Generate MIR from AST with visibility checking.
-pub fn compile_with_visibility(
+/// Generate MIR from AST with module information (visibility and use aliases).
+pub fn compile_with_module_info(
     root_expr_id: ExprNodeId,
     builtin_types: &[(Symbol, TypeNodeId)],
     macro_env: &[Box<dyn MacroFunction>],
     file_path: Option<PathBuf>,
-    visibility_map: crate::ast::program::VisibilityMap,
+    module_info: crate::ast::program::ModuleInfo,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
     let expr = root_expr_id.wrap_to_staged_expr();
-    let (expr, mut infer_ctx, errors) = typecheck_with_visibility(expr, builtin_types, file_path.clone(), visibility_map);
+    let (expr, mut infer_ctx, errors) = typecheck_with_module_info(expr, builtin_types, file_path.clone(), module_info);
     if errors.is_empty() {
         let top_type = infer_ctx.infer_type(expr).unwrap();
         let expr = interpreter::expand_macro(expr, top_type, macro_env);

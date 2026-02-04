@@ -1,4 +1,4 @@
-use crate::ast::program::VisibilityMap;
+use crate::ast::program::ModuleInfo;
 use crate::ast::{Expr, Literal, RecordField};
 use crate::compiler::{EvalStage, intrinsics};
 use crate::interner::{ExprKey, ExprNodeId, Symbol, ToSymbol, TypeNodeId};
@@ -385,17 +385,17 @@ pub struct InferContext {
     generalize_map: BTreeMap<IntermediateId, TypeSchemeId>,
     result_memo: BTreeMap<ExprKey, TypeNodeId>,
     file_path: PathBuf,
-    /// Map from mangled symbol name to whether it's public (only for module members)
-    visibility_map: VisibilityMap,
+    /// Module information containing visibility and use aliases
+    module_info: ModuleInfo,
     pub env: Environment<(TypeNodeId, EvalStage)>,
     pub errors: Vec<Error>,
 }
 impl InferContext {
     pub fn new(builtins: &[(Symbol, TypeNodeId)], file_path: PathBuf) -> Self {
-        Self::new_with_visibility(builtins, file_path, VisibilityMap::new())
+        Self::new_with_module_info(builtins, file_path, ModuleInfo::new())
     }
     
-    pub fn new_with_visibility(builtins: &[(Symbol, TypeNodeId)], file_path: PathBuf, visibility_map: VisibilityMap) -> Self {
+    pub fn new_with_module_info(builtins: &[(Symbol, TypeNodeId)], file_path: PathBuf, module_info: ModuleInfo) -> Self {
         let mut res = Self {
             interm_idx: Default::default(),
             typescheme_idx: Default::default(),
@@ -405,7 +405,7 @@ impl InferContext {
             generalize_map: Default::default(),
             result_memo: Default::default(),
             file_path,
-            visibility_map,
+            module_info,
             env: Environment::<(TypeNodeId, EvalStage)>::default(),
             errors: Default::default(),
         };
@@ -423,6 +423,12 @@ impl InferContext {
             .collect::<Vec<_>>();
         res.env.add_bind(&builtins);
         res
+    }
+
+    /// Resolve a variable name through the use alias map.
+    /// Returns the mangled name if the name is an alias, otherwise returns the original name.
+    pub fn resolve_alias(&self, name: Symbol) -> Symbol {
+        self.module_info.use_alias_map.get(&name).copied().unwrap_or(name)
     }
 }
 impl InferContext {
@@ -977,9 +983,33 @@ impl InferContext {
                 then.map_or(Ok(unit!()), |t| self.infer_type(t))
             }
             Expr::Var(name) => {
-                let res = self.unwrap_result(self.lookup(*name, loc).map_err(|e| vec![e]));
-                // log::trace!("{} {} /level{}", name.as_str(), res.to_type(), self.level);
-                Ok(self.instantiate(res))
+                // Check if this name is a use alias
+                if let Some(&mangled_name) = self.module_info.use_alias_map.get(name) {
+                    // Check visibility for the aliased name (it's always a module member)
+                    if let Some(&is_public) = self.module_info.visibility_map.get(&mangled_name) {
+                        if !is_public {
+                            // Extract module path from the mangled name for error reporting
+                            let parts: Vec<&str> = mangled_name.as_str().split('$').collect();
+                            let module_path: Vec<Symbol> = parts[..parts.len() - 1]
+                                .iter()
+                                .map(|s| s.to_symbol())
+                                .collect();
+                            let member = parts.last().unwrap().to_symbol();
+                            return Err(vec![Error::PrivateMemberAccess {
+                                module_path,
+                                member,
+                                location: loc.clone(),
+                            }]);
+                        }
+                    }
+                    // Resolve the aliased name
+                    let res = self.unwrap_result(self.lookup(mangled_name, loc).map_err(|e| vec![e]));
+                    Ok(self.instantiate(res))
+                } else {
+                    let res = self.unwrap_result(self.lookup(*name, loc).map_err(|e| vec![e]));
+                    // log::trace!("{} {} /level{}", name.as_str(), res.to_type(), self.level);
+                    Ok(self.instantiate(res))
+                }
             }
             Expr::QualifiedVar(path) => {
                 // Convert qualified path to mangled name (e.g., foo::bar -> foo$bar)
@@ -998,7 +1028,7 @@ impl InferContext {
 
                 // Check visibility for module members (paths with more than one segment)
                 if path.segments.len() > 1 {
-                    if let Some(&is_public) = self.visibility_map.get(&mangled_name) {
+                    if let Some(&is_public) = self.module_info.visibility_map.get(&mangled_name) {
                         if !is_public {
                             return Err(vec![Error::PrivateMemberAccess {
                                 module_path: path.segments[..path.segments.len() - 1].to_vec(),
@@ -1123,16 +1153,16 @@ pub fn infer_root(
     builtin_types: &[(Symbol, TypeNodeId)],
     file_path: PathBuf,
 ) -> InferContext {
-    infer_root_with_visibility(e, builtin_types, file_path, VisibilityMap::new())
+    infer_root_with_module_info(e, builtin_types, file_path, ModuleInfo::new())
 }
 
-pub fn infer_root_with_visibility(
+pub fn infer_root_with_module_info(
     e: ExprNodeId,
     builtin_types: &[(Symbol, TypeNodeId)],
     file_path: PathBuf,
-    visibility_map: VisibilityMap,
+    module_info: ModuleInfo,
 ) -> InferContext {
-    let mut ctx = InferContext::new_with_visibility(builtin_types, file_path.clone(), visibility_map);
+    let mut ctx = InferContext::new_with_module_info(builtin_types, file_path.clone(), module_info);
     let _t = ctx
         .infer_type(e)
         .unwrap_or(Type::Failure.into_id_with_location(e.to_location()));
@@ -1353,15 +1383,15 @@ fn dsp() {
     mymath::add(1.0, 2.0)
 }
 "#;
-        let (ast, _module_env, visibility_map, errs) = parse_to_expr(src, Some(std::path::PathBuf::from("test")));
+        let (ast, _module_env, module_info, errs) = parse_to_expr(src, Some(std::path::PathBuf::from("test")));
         assert!(errs.is_empty(), "Parse errors: {:?}", errs);
 
         // Run type inference
-        let ctx = crate::compiler::typing::infer_root_with_visibility(
+        let ctx = crate::compiler::typing::infer_root_with_module_info(
             ast,
             &[],
             std::path::PathBuf::from("test"),
-            visibility_map,
+            module_info,
         );
 
         // Check for type errors

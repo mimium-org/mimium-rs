@@ -1271,7 +1271,7 @@ pub fn parse_to_expr(
 ) -> (
     ExprNodeId,
     crate::utils::module_env::ModuleEnv,
-    crate::ast::program::VisibilityMap,
+    crate::ast::program::ModuleInfo,
     Vec<Box<dyn crate::utils::error::ReportableError>>,
 ) {
     let path = file_path.unwrap_or_default();
@@ -1283,7 +1283,7 @@ pub fn parse_to_expr(
         return (
             Expr::Error.into_id_without_span(),
             crate::utils::module_env::ModuleEnv::new(),
-            crate::ast::program::VisibilityMap::new(),
+            crate::ast::program::ModuleInfo::new(),
             errs,
         );
     }
@@ -1291,10 +1291,10 @@ pub fn parse_to_expr(
     // Build module environment from the program before converting to expressions
     let module_env = crate::utils::module_env::ModuleEnv::from_program(&prog);
 
-    let (expr, visibility_map, mut new_errs) = crate::ast::program::expr_from_program(prog, path);
+    let (expr, module_info, mut new_errs) = crate::ast::program::expr_from_program(prog, path);
     let mut all_errs = errs;
     all_errs.append(&mut new_errs);
-    (expr, module_env, visibility_map, all_errs)
+    (expr, module_env, module_info, all_errs)
 }
 
 /// Add global context wrapper around AST.
