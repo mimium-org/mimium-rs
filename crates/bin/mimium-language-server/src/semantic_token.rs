@@ -36,6 +36,7 @@ pub struct ParseResult {
     pub ast: ExprNodeId,
     pub semantic_tokens: Vec<ImCompleteSemanticToken>,
     pub errors: Vec<Box<dyn ReportableError>>,
+    pub module_info: mimium_lang::ast::program::ModuleInfo,
 }
 
 fn get_token_id(semt: &SemanticTokenType) -> usize {
@@ -399,11 +400,12 @@ pub fn parse(src: &str, uri: &str) -> ParseResult {
         })
         .collect();
 
-    let (ast, _module_env, _module_info, parse_errs) = parse_to_expr(src, Some(PathBuf::from(uri)));
+    let (ast, _module_env, module_info, parse_errs) = parse_to_expr(src, Some(PathBuf::from(uri)));
 
     ParseResult {
         ast,
         semantic_tokens,
         errors: parse_errs,
+        module_info,
     }
 }
