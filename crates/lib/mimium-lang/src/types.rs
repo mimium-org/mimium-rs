@@ -98,6 +98,8 @@ pub enum Type {
     Ref(TypeNodeId),
     //(experimental) code-type for multi-stage computation that will be evaluated on the next stage
     Code(TypeNodeId),
+    /// Union (sum) type: A | B | C
+    Union(Vec<TypeNodeId>),
     Intermediate(Arc<RwLock<TypeVar>>),
     TypeScheme(TypeSchemeId),
     /// Any type is the top level, it can be unified with anything.
@@ -123,6 +125,7 @@ impl PartialEq for Type {
             }
             (Type::Ref(a), Type::Ref(b)) => a == b,
             (Type::Code(a), Type::Code(b)) => a == b,
+            (Type::Union(a), Type::Union(b)) => a == b,
             (Type::TypeScheme(a), Type::TypeScheme(b)) => a == b,
             (Type::Any, Type::Any) => true,
             (Type::Failure, Type::Failure) => true,
@@ -145,6 +148,7 @@ impl Type {
             Type::Record(t) => t
                 .iter()
                 .any(|RecordTypeField { ty, .. }| ty.to_type().contains_function()),
+            Type::Union(t) => t.iter().any(|t| t.to_type().contains_function()),
             _ => false,
         }
     }
@@ -158,6 +162,7 @@ impl Type {
             Type::Record(t) => t
                 .iter()
                 .any(|RecordTypeField { ty, .. }| ty.to_type().contains_code()),
+            Type::Union(t) => t.iter().any(|t| t.to_type().contains_code()),
             _ => false,
         }
     }
@@ -175,6 +180,7 @@ impl Type {
             }
             Type::Ref(t) => t.to_type().contains_type_scheme(),
             Type::Code(t) => t.to_type().contains_type_scheme(),
+            Type::Union(t) => t.iter().any(|t| t.to_type().contains_type_scheme()),
             _ => false,
         }
     }
@@ -444,6 +450,13 @@ impl fmt::Display for Type {
             Type::Ref(x) => write!(f, "&{}", x.to_type()),
 
             Type::Code(c) => write!(f, "<{}>", c.to_type()),
+            Type::Union(v) => {
+                let vf = format_vec!(
+                    v.iter().map(|x| x.to_type().clone()).collect::<Vec<_>>(),
+                    " | "
+                );
+                write!(f, "{vf}")
+            }
             Type::Intermediate(id) => {
                 write!(f, "{}", id.read().unwrap())
             }

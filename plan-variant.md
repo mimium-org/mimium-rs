@@ -13,9 +13,9 @@ The plan should be separated into the following steps.
 ### Phase Dependencies
 
 ```
-Phase 1: Integer Match     (foundation)
+Phase 1: Integer Match     (foundation)  ✅ COMPLETED
     ↓
-Phase 2: Sum Type `A|B`    (type system extension)
+Phase 2: Sum Type `A|B`    (type system extension)  ← NEXT
     ↓
 Phase 3: Type Declaration  (custom types)
     ↓
@@ -28,25 +28,48 @@ Phase 5-6: Complex patterns
 
 | Phase | Parser | Type System | MIR | VM/Bytecode |
 |-------|--------|-------------|-----|-------------|
-| 1 | `green.rs`, `cst_parser.rs`, `lower.rs` | `typing.rs` | `mirgen.rs` | `bytecodegen.rs`, `vm.rs` |
+| 1 ✅ | `green.rs`, `cst_parser.rs`, `lower.rs` | `typing.rs` | `mirgen.rs` | `bytecodegen.rs`, `vm.rs` |
 | 2 | (type annotation parser) | `types/mod.rs`, `typing.rs` | `mirgen.rs` | `vm.rs` (tagged union) |
 | 3 | `cst_parser.rs` (type decl) | type environment | - | - |
 | 4+ | pattern parser | pattern typing | pattern MIR | - |
 
-### Phase 1 Implementation Steps
+### Phase 1 Implementation Summary ✅
 
-1. **Tokenizer**: Add `match` keyword and `=>` token
-2. **Parser**: Add `MatchExpr` CST parsing  
-3. **AST**: Define `Expr::Match` and `MatchPattern`
-4. **Lower**: CST → AST conversion
-5. **Typing**: Type inference for match (reference if-else)
-6. **MIR**: Extend `JmpIf` pattern to implement Switch
-7. **Bytecode/VM**: Sequential comparison implementation
-8. **Test**: Verify with `match_int.mmm`
+**Completed: 2026-02-05**
+
+#### Implementation Details
+
+1. **Parser**: Added `match` keyword, `=>` token (FatArrow), `MatchExpr` CST parsing
+2. **AST**: Defined `Expr::Match`, `MatchArm`, `MatchPattern` (Literal/Wildcard)
+3. **Lower**: CST → AST conversion for match expressions
+4. **Typing**: Type inference for match expressions (all arms must have same type)
+5. **MIR**: Added `Switch` instruction with cases and `PhiSwitch` for merge blocks
+6. **Bytecode**: Added `JmpTable(Reg, u8)` instruction with dense jump table
+7. **VM**: O(1) jump table lookup using `clamp` for index bounds
+
+#### Key Data Structures
+
+```rust
+// MIR
+Instruction::Switch { scrutinee: VPtr, cases: Vec<(i64, u64)>, default_block: u64, merge_block: u64 }
+Instruction::PhiSwitch(Vec<VPtr>)
+
+// Bytecode
+Instruction::JmpTable(Reg, u8)  // 16 bits: scrutinee register + table index
+
+// VM Program
+pub struct JumpTable {
+    pub min: i64,           // minimum case value
+    pub offsets: Vec<i16>,  // dense array, last element is default
+}
+```
+
+#### Test Result
+- `match_int` test: ✅ PASSED (returns 100.0 + 200.0 + 300.0 + 300.0 = 900.0)
 
 ---
 
-## step.1 integer match expression
+## step.1 integer match expression ✅ COMPLETED
 
 First, we add `match` syntax. In the first implementation, it will be match only to the numeric type.
 
@@ -75,7 +98,7 @@ The developer should add
 - add switch operation for MIR
 - add jump table mechanism to bytecode and VM
 
-## step 2. primitive sum type
+## step 2. primitive sum type ← IN PROGRESS
 
 The variant type with explicit type annotation should be added.
 
@@ -95,6 +118,49 @@ fn dsp(){
     x+y //the result should be 3
 }
 ```
+
+### Phase 2 Implementation Steps
+
+1. **Type System Extension** ✅ COMPLETED (2026-02-05)
+   - ✅ Add `Type::Union(Vec<TypeNodeId>)` variant to `types.rs`
+   - ✅ Parser for `A | B` type syntax in type annotations (`parse_type_union`)
+   - ✅ `SyntaxKind::UnionType` added to `green.rs`
+   - ✅ `lower_type` handles `UnionType` in `lower.rs`
+   - ✅ `Display` implementation for union types (formats as `A | B`)
+   - ✅ Updated `contains_*` methods for union types
+   - ⏳ Subtype relationship: `A` is subtype of `A | B` (TODO in typing)
+
+2. **Tagged Union Representation** ⏳ IN PROGRESS
+   - Memory layout: `[tag: u64][value: N words]`
+   - Tag values: 0, 1, 2, ... for each variant
+   - Value size: max of all variant sizes
+
+3. **Type Constructor Patterns** ⏳ TODO
+   - Add `MatchPattern::Constructor(TypeName, Option<Symbol>)` to AST
+   - Parser for `Float(x)`, `String(x)` patterns
+   - Binding captured variable in pattern scope
+
+4. **MIR Changes** ⏳ TODO
+   - Extend `Switch` to extract tag from tagged union
+   - Add instruction for extracting value from tagged union
+
+5. **VM Changes** ⏳ TODO
+   - Tagged union allocation and access
+   - Pattern match with tag comparison + value extraction
+
+### Key Challenges
+
+- **Implicit conversion**: `let x: float | string = 42.0` should auto-wrap
+- **Type checking**: Ensure all union variants are covered in match
+- **Memory layout**: Fixed size for tagged union (tag + max variant size)
+
+### Implementation Notes
+
+- Parser changes complete: Union types can now be parsed in type annotations
+- Next step: Implement constructor patterns for `Float(x)`, `String(x)` in match expressions
+- Need to handle primitive type constructors as special built-in constructors
+
+---
 
 - parser and formatter for sum type with `|` operator should be added.
 - Primnitive type constructor(String and Float) pattern should be added.

@@ -203,6 +203,7 @@ pub enum SyntaxKind {
     RecordType,
     ArrayType,
     CodeType,
+    UnionType,
     TypeIdent,
 
     // Patterns
@@ -277,6 +278,7 @@ impl std::fmt::Display for SyntaxKind {
             SyntaxKind::RecordType => write!(f, "RecordType"),
             SyntaxKind::ArrayType => write!(f, "ArrayType"),
             SyntaxKind::CodeType => write!(f, "CodeType"),
+            SyntaxKind::UnionType => write!(f, "UnionType"),
             SyntaxKind::TypeIdent => write!(f, "TypeIdent"),
             SyntaxKind::Pattern => write!(f, "Pattern"),
             SyntaxKind::SinglePattern => write!(f, "SinglePattern"),

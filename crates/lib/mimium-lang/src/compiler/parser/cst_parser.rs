@@ -1015,7 +1015,21 @@ impl<'a> Parser<'a> {
             }
         }
 
+        self.parse_type_union();
+    }
+
+    /// Parse union type: A | B | C
+    fn parse_type_union(&mut self) {
         self.parse_type_primary();
+        
+        if self.check(TokenKind::Pipe) {
+            self.emit_node_at_pos(SyntaxKind::UnionType, self.builder.checkpoint(), |inner| {
+                while inner.check(TokenKind::Pipe) {
+                    inner.bump(); // consume |
+                    inner.parse_type_primary();
+                }
+            });
+        }
     }
 
     /// Parse primary type (primitive, tuple, etc.)

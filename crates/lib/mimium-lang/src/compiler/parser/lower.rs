@@ -1530,6 +1530,7 @@ impl<'a> Lowerer<'a> {
                 | SyntaxKind::FunctionType
                 | SyntaxKind::ArrayType
                 | SyntaxKind::CodeType
+                | SyntaxKind::UnionType
                 | SyntaxKind::TypeIdent
         )
     }
@@ -1631,6 +1632,22 @@ impl<'a> Lowerer<'a> {
                     .map(|child| self.lower_type(*child))
                     .unwrap_or_else(|| Type::Unknown.into_id_with_location(loc.clone()));
                 Type::Code(inner).into_id_with_location(loc)
+            }
+            Some(SyntaxKind::UnionType) => {
+                let elem_types = self
+                    .arena
+                    .children(node)
+                    .into_iter()
+                    .flatten()
+                    .filter(|child| {
+                        self.arena
+                            .kind(**child)
+                            .map(Self::is_type_kind)
+                            .unwrap_or(false)
+                    })
+                    .map(|child| self.lower_type(*child))
+                    .collect::<Vec<_>>();
+                Type::Union(elem_types).into_id_with_location(loc)
             }
             _ => Type::Unknown.into_id_with_location(loc),
         }
