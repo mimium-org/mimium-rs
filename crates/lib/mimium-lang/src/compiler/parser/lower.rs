@@ -1342,13 +1342,11 @@ pub fn parse_program(source: &str, file_path: PathBuf) -> (Program, Vec<ParserEr
 
 /// Parse source to ExprNodeId with error collection.
 /// This is a compatibility function for the old parser API.
-/// Also returns the ModuleEnv built from the parsed program.
 pub fn parse_to_expr(
     source: &str,
     file_path: Option<PathBuf>,
 ) -> (
     ExprNodeId,
-    crate::utils::module_env::ModuleEnv,
     crate::ast::program::ModuleInfo,
     Vec<Box<dyn crate::utils::error::ReportableError>>,
 ) {
@@ -1360,19 +1358,15 @@ pub fn parse_to_expr(
     if prog.statements.is_empty() {
         return (
             Expr::Error.into_id_without_span(),
-            crate::utils::module_env::ModuleEnv::new(),
             crate::ast::program::ModuleInfo::new(),
             errs,
         );
     }
 
-    // Build module environment from the program before converting to expressions
-    let module_env = crate::utils::module_env::ModuleEnv::from_program(&prog);
-
     let (expr, module_info, mut new_errs) = crate::ast::program::expr_from_program(prog, path);
     let mut all_errs = errs;
     all_errs.append(&mut new_errs);
-    (expr, module_env, module_info, all_errs)
+    (expr, module_info, all_errs)
 }
 
 /// Add global context wrapper around AST.

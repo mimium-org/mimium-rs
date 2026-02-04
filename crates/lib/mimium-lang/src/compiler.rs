@@ -134,7 +134,7 @@ pub fn emit_ast(
     src: &str,
     path: Option<PathBuf>,
 ) -> Result<ExprNodeId, Vec<Box<dyn ReportableError>>> {
-    let (ast, _module_env, _module_info, errs) = parser::parse_to_expr(src, path.clone());
+    let (ast, _module_info, errs) = parser::parse_to_expr(src, path.clone());
     if errs.is_empty() {
         let ast = parser::add_global_context(ast, path.clone().unwrap_or_default());
         let (ast, _errs) =
@@ -192,7 +192,7 @@ impl Context {
     }
     pub fn emit_mir(&self, src: &str) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
         let path = self.file_path.clone();
-        let (ast, _module_env, module_info, mut parse_errs) = parser::parse_to_expr(src, path);
+        let (ast, module_info, mut parse_errs) = parser::parse_to_expr(src, path);
         // let ast = parser::add_global_context(ast, self.file_path.unwrap_or_default());
         let mir = mirgen::compile_with_module_info(
             ast,

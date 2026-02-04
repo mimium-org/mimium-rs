@@ -400,7 +400,7 @@ pub fn parse(src: &str, uri: &str) -> ParseResult {
         })
         .collect();
 
-    let (ast, _module_env, module_info, parse_errs) = parse_to_expr(src, Some(PathBuf::from(uri)));
+    let (ast, module_info, parse_errs) = parse_to_expr(src, Some(PathBuf::from(uri)));
 
     ParseResult {
         ast,
