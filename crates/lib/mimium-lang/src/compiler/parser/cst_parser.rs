@@ -150,13 +150,13 @@ impl<'a> Parser<'a> {
     /// Returns the offset where MacroExpand is found, or None if not a macro expansion
     fn find_macro_expand_after_path(&self) -> Option<usize> {
         let mut offset = 0;
-        
+
         // First must be Ident
         if self.peek_ahead(offset) != Some(TokenKind::Ident) {
             return None;
         }
         offset += 1;
-        
+
         // Consume :: Ident pairs
         while self.peek_ahead(offset) == Some(TokenKind::DoubleColon) {
             offset += 1; // ::
@@ -165,7 +165,7 @@ impl<'a> Parser<'a> {
             }
             offset += 1; // Ident
         }
-        
+
         // Check if followed by MacroExpand
         if self.peek_ahead(offset) == Some(TokenKind::MacroExpand) {
             Some(offset)
@@ -350,7 +350,7 @@ impl<'a> Parser<'a> {
         self.emit_node(SyntaxKind::ModuleDecl, |this| {
             this.expect(TokenKind::Mod);
             this.expect(TokenKind::Ident);
-            
+
             // Check if this is an external file module (mod foo;) or inline module (mod foo { ... })
             if this.check(TokenKind::LineBreak) {
                 // External file module: mod foo;
@@ -496,12 +496,9 @@ impl<'a> Parser<'a> {
             } else {
                 this.expect(TokenKind::Ident);
             }
-            
-            // '!(' 
-            this.expect_all(&[
-                TokenKind::MacroExpand,
-                TokenKind::ParenBegin,
-            ]);
+
+            // '!('
+            this.expect_all(&[TokenKind::MacroExpand, TokenKind::ParenBegin]);
 
             // Parse arguments as expression list
             if !this.check(TokenKind::ParenEnd) {
@@ -1348,7 +1345,6 @@ impl<'a> Parser<'a> {
             token1,
             Some(TokenKind::Ident) | Some(TokenKind::IdentParameter)
         );
-        
 
         (matches!(token1, Some(TokenKind::DoubleDot))
             || (is_record_key

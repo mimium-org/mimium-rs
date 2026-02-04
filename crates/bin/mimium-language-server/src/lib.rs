@@ -348,7 +348,12 @@ impl Backend {
         // Note: semantic_token_map is already populated above with parser tokens
         let errs = {
             let ast = ast.wrap_to_staged_expr();
-            let (_, _, typeerrs) = mirgen::typecheck_with_module_info(ast, &self.compiler_ctx.builtin_types, None, module_info);
+            let (_, _, typeerrs) = mirgen::typecheck_with_module_info(
+                ast,
+                &self.compiler_ctx.builtin_types,
+                None,
+                module_info,
+            );
             errors.into_iter().chain(typeerrs).collect::<Vec<_>>()
         };
 

@@ -734,7 +734,7 @@ fn module_visibility_fail() {
 fn module_use() {
     // Test that `use mymath::add` allows using `add` without qualification
     let res = run_file_test_mono("module_use.mmm", 3).unwrap();
-    let ans = vec![15.0, 15.0, 15.0];  // add(10.0, 5.0) = 15.0
+    let ans = vec![15.0, 15.0, 15.0]; // add(10.0, 5.0) = 15.0
     assert_eq!(res, ans);
 }
 
@@ -755,7 +755,7 @@ fn module_external() {
     // Test external file module: mod foo; syntax (Rust-like)
     // Loads module_external_math.mmm from same directory
     let res = run_file_test_mono("module_external.mmm", 3).unwrap();
-    let ans = vec![15.0, 15.0, 15.0];  // add(1,2) + mul(3,4) = 3 + 12 = 15
+    let ans = vec![15.0, 15.0, 15.0]; // add(1,2) + mul(3,4) = 3 + 12 = 15
     assert_eq!(res, ans);
 }
 
@@ -763,7 +763,7 @@ fn module_external() {
 fn module_external_use() {
     // Test external file module with use statement
     let res = run_file_test_mono("module_external_use.mmm", 3).unwrap();
-    let ans = vec![12.0, 12.0, 12.0];  // add(5, 7) = 12
+    let ans = vec![12.0, 12.0, 12.0]; // add(5, 7) = 12
     assert_eq!(res, ans);
 }
 
@@ -780,7 +780,7 @@ fn module_relative_path() {
 fn module_use_multiple() {
     // Test multiple imports: use math::{double, triple}
     let res = run_file_test_mono("module_use_multiple.mmm", 3).unwrap();
-    let ans = vec![50.0, 50.0, 50.0];  // double(10) + triple(10) = 20 + 30 = 50
+    let ans = vec![50.0, 50.0, 50.0]; // double(10) + triple(10) = 20 + 30 = 50
     assert_eq!(res, ans);
 }
 
@@ -788,7 +788,7 @@ fn module_use_multiple() {
 fn module_use_wildcard() {
     // Test wildcard import: use math::*
     let res = run_file_test_mono("module_use_wildcard.mmm", 3).unwrap();
-    let ans = vec![50.0, 50.0, 50.0];  // double(10) + triple(10) = 20 + 30 = 50
+    let ans = vec![50.0, 50.0, 50.0]; // double(10) + triple(10) = 20 + 30 = 50
     assert_eq!(res, ans);
 }
 
@@ -796,21 +796,21 @@ fn module_use_wildcard() {
 fn module_pub_use() {
     // Test pub use for re-exporting
     let res = run_file_test_mono("module_pub_use.mmm", 3).unwrap();
-    let ans = vec![42.0, 42.0, 42.0];  // api::helper() returns 42.0
+    let ans = vec![42.0, 42.0, 42.0]; // api::helper() returns 42.0
     assert_eq!(res, ans);
 }
 #[wasm_bindgen_test(unsupported = test)]
 fn module_macro() {
     // Test pub use for re-exporting
     let res = run_file_test_mono("module_macro.mmm", 3).unwrap();
-    let ans = vec![2.0, 2.0, 2.0]; 
+    let ans = vec![2.0, 2.0, 2.0];
     assert_eq!(res, ans);
 }
 #[wasm_bindgen_test(unsupported = test)]
 fn module_macro_sugar() {
     // Test pub use for re-exporting
     let res = run_file_test_mono("module_macro_sugar.mmm", 3).unwrap();
-    let ans = vec![2.0, 2.0, 2.0]; 
+    let ans = vec![2.0, 2.0, 2.0];
     assert_eq!(res, ans);
 }
 

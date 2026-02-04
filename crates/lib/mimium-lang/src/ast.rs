@@ -215,13 +215,12 @@ impl MiniPrint for Expr {
         match self {
             Expr::Literal(l) => l.simple_print(),
             Expr::Var(v) => format!("{v}"),
-            Expr::QualifiedVar(path) => {
-                path.segments
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>()
-                    .join("::")
-            }
+            Expr::QualifiedVar(path) => path
+                .segments
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join("::"),
             Expr::Block(e) => e.map_or("".to_string(), |eid| {
                 format!("(block {})", eid.simple_print())
             }),

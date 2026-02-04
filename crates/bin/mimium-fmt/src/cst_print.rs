@@ -179,8 +179,12 @@ where
                 SyntaxKind::ModuleDecl => print_module_decl(children, ctx, allocator),
                 SyntaxKind::UseStmt => print_use_stmt(children, ctx, allocator),
                 SyntaxKind::QualifiedPath => print_qualified_path(children, ctx, allocator),
-                SyntaxKind::UseTargetMultiple => print_use_target_multiple(children, ctx, allocator),
-                SyntaxKind::UseTargetWildcard => print_use_target_wildcard(children, ctx, allocator),
+                SyntaxKind::UseTargetMultiple => {
+                    print_use_target_multiple(children, ctx, allocator)
+                }
+                SyntaxKind::UseTargetWildcard => {
+                    print_use_target_wildcard(children, ctx, allocator)
+                }
                 SyntaxKind::VisibilityPub => print_visibility_pub(children, ctx, allocator),
                 SyntaxKind::Error => allocator.text("/* error */"),
             }
@@ -1218,7 +1222,8 @@ where
                 TokenKind::Ident | TokenKind::IdentFunction => {
                     if !in_args {
                         // Macro name
-                        result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
+                        result =
+                            result.append(emit_token_with_trivia(*token_index, ctx, allocator));
                         continue;
                     }
                 }

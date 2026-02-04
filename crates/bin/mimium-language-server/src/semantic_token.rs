@@ -266,8 +266,9 @@ impl<'a> SemanticContext<'a> {
 
     /// Mark the module name identifier as namespace in module declarations.
     fn mark_module_name(&mut self, children: &[GreenNodeId]) {
-        if let Some(token_index) = children.iter().find_map(|child| {
-            match self.arena.get(*child) {
+        if let Some(token_index) = children
+            .iter()
+            .find_map(|child| match self.arena.get(*child) {
                 GreenNode::Token { token_index, .. }
                     if matches!(
                         self.tokens[*token_index].kind,
@@ -277,16 +278,17 @@ impl<'a> SemanticContext<'a> {
                     Some(*token_index)
                 }
                 _ => None,
-            }
-        }) {
+            })
+        {
             self.token_types[token_index] = Some(self.namespace_id);
         }
     }
 
     /// Mark the function name in function declarations.
     fn mark_function_decl_name(&mut self, children: &[GreenNodeId]) {
-        if let Some(token_index) = children.iter().find_map(|child| {
-            match self.arena.get(*child) {
+        if let Some(token_index) = children
+            .iter()
+            .find_map(|child| match self.arena.get(*child) {
                 GreenNode::Token { token_index, .. }
                     if matches!(
                         self.tokens[*token_index].kind,
@@ -296,8 +298,8 @@ impl<'a> SemanticContext<'a> {
                     Some(*token_index)
                 }
                 _ => None,
-            }
-        }) {
+            })
+        {
             self.token_types[token_index] = Some(self.function_id);
         }
     }

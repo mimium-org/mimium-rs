@@ -88,9 +88,9 @@ pub enum TokenKind {
     Main,     // main
 
     // Module keywords
-    Mod,  // mod
-    Use,  // use
-    Pub,  // pub
+    Mod, // mod
+    Use, // use
+    Pub, // pub
 
     // Trivia (whitespace and comments)
     LineBreak,

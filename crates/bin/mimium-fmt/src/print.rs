@@ -162,7 +162,9 @@ mod expr {
             Expr::Literal(Literal::PlaceHolder) => allocator.text("_"),
             Expr::Var(name) => allocator.text(name),
             Expr::QualifiedVar(path) => {
-                let path_str = path.segments.iter()
+                let path_str = path
+                    .segments
+                    .iter()
                     .map(|s| s.to_string())
                     .collect::<Vec<_>>()
                     .join("::");
@@ -527,29 +529,43 @@ pub mod program {
             ProgramStatement::StageDeclaration { stage } => allocator
                 .text(format!("#stage({stage})"))
                 .append(allocator.softline()),
-            ProgramStatement::ModuleDefinition { visibility, name, body: _ } => {
+            ProgramStatement::ModuleDefinition {
+                visibility,
+                name,
+                body: _,
+            } => {
                 let vis_doc = if visibility == mimium_lang::ast::program::Visibility::Public {
                     allocator.text("pub ")
                 } else {
                     allocator.nil()
                 };
-                vis_doc.append(allocator.text("mod ")).append(allocator.text(name.to_string())).append(allocator.text(" { /* ... */ }"))
+                vis_doc
+                    .append(allocator.text("mod "))
+                    .append(allocator.text(name.to_string()))
+                    .append(allocator.text(" { /* ... */ }"))
             }
-            ProgramStatement::UseStatement { visibility, path, target } => {
+            ProgramStatement::UseStatement {
+                visibility,
+                path,
+                target,
+            } => {
                 use mimium_lang::ast::program::UseTarget;
                 let vis_doc = if visibility == mimium_lang::ast::program::Visibility::Public {
                     allocator.text("pub ")
                 } else {
                     allocator.nil()
                 };
-                let path_str = path.segments.iter()
+                let path_str = path
+                    .segments
+                    .iter()
                     .map(|s| s.to_string())
                     .collect::<Vec<_>>()
                     .join("::");
                 let target_str = match target {
                     UseTarget::Single => String::new(),
                     UseTarget::Multiple(names) => {
-                        let names_str = names.iter()
+                        let names_str = names
+                            .iter()
                             .map(|s| s.to_string())
                             .collect::<Vec<_>>()
                             .join(", ");
@@ -557,7 +573,10 @@ pub mod program {
                     }
                     UseTarget::Wildcard => "::*".to_string(),
                 };
-                vis_doc.append(allocator.text("use ")).append(allocator.text(path_str)).append(allocator.text(target_str))
+                vis_doc
+                    .append(allocator.text("use "))
+                    .append(allocator.text(path_str))
+                    .append(allocator.text(target_str))
             }
         });
         allocator.intersperse(stmt_docs, "\n")
