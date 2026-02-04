@@ -343,11 +343,12 @@ impl Backend {
             ast,
             errors,
             semantic_tokens: _, // Ignore semantic tokens from old parser
+            module_info,
         } = parse(src, url.as_str());
         // Note: semantic_token_map is already populated above with parser tokens
         let errs = {
             let ast = ast.wrap_to_staged_expr();
-            let (_, _, typeerrs) = mirgen::typecheck(ast, &self.compiler_ctx.builtin_types, None);
+            let (_, _, typeerrs) = mirgen::typecheck_with_module_info(ast, &self.compiler_ctx.builtin_types, None, module_info);
             errors.into_iter().chain(typeerrs).collect::<Vec<_>>()
         };
 
