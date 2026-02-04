@@ -535,12 +535,29 @@ pub mod program {
                 };
                 vis_doc.append(allocator.text("mod ")).append(allocator.text(name.to_string())).append(allocator.text(" { /* ... */ }"))
             }
-            ProgramStatement::UseStatement { path } => {
+            ProgramStatement::UseStatement { visibility, path, target } => {
+                use mimium_lang::ast::program::UseTarget;
+                let vis_doc = if visibility == mimium_lang::ast::program::Visibility::Public {
+                    allocator.text("pub ")
+                } else {
+                    allocator.nil()
+                };
                 let path_str = path.segments.iter()
                     .map(|s| s.to_string())
                     .collect::<Vec<_>>()
                     .join("::");
-                allocator.text("use ").append(allocator.text(path_str))
+                let target_str = match target {
+                    UseTarget::Single => String::new(),
+                    UseTarget::Multiple(names) => {
+                        let names_str = names.iter()
+                            .map(|s| s.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("::{{{}}}", names_str)
+                    }
+                    UseTarget::Wildcard => "::*".to_string(),
+                };
+                vis_doc.append(allocator.text("use ")).append(allocator.text(path_str)).append(allocator.text(target_str))
             }
         });
         allocator.intersperse(stmt_docs, "\n")

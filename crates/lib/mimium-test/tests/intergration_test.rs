@@ -767,6 +767,39 @@ fn module_external_use() {
     assert_eq!(res, ans);
 }
 
+#[wasm_bindgen_test(unsupported = test)]
+fn module_relative_path() {
+    // Test relative path resolution: inner::secret() from within outer module
+    // resolves to outer::inner::secret()
+    let res = run_file_test_mono("module_relative_path.mmm", 3).unwrap();
+    let ans = vec![42.0, 42.0, 42.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_use_multiple() {
+    // Test multiple imports: use math::{double, triple}
+    let res = run_file_test_mono("module_use_multiple.mmm", 3).unwrap();
+    let ans = vec![50.0, 50.0, 50.0];  // double(10) + triple(10) = 20 + 30 = 50
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_use_wildcard() {
+    // Test wildcard import: use math::*
+    let res = run_file_test_mono("module_use_wildcard.mmm", 3).unwrap();
+    let ans = vec![50.0, 50.0, 50.0];  // double(10) + triple(10) = 20 + 30 = 50
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_pub_use() {
+    // Test pub use for re-exporting
+    let res = run_file_test_mono("module_pub_use.mmm", 3).unwrap();
+    let ans = vec![42.0, 42.0, 42.0];  // api::helper() returns 42.0
+    assert_eq!(res, ans);
+}
+
 // #[wasm_bindgen_test(unsupported = test)]
 // fn map_record() {
 //     let res = run_file_test_stereo("map_record.mmm", 1).unwrap();

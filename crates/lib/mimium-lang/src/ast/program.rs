@@ -5,7 +5,7 @@ use super::resolve_include::resolve_include;
 use super::statement::Statement;
 use crate::ast::Expr;
 use crate::ast::statement::into_then_expr;
-use crate::interner::{ExprNodeId, Symbol, TypeNodeId};
+use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::TypedId;
 use crate::types::{RecordTypeField, Type};
 use crate::utils::error::ReportableError;
@@ -41,6 +41,17 @@ impl QualifiedPath {
     }
 }
 
+/// Target of a use statement: single symbol, multiple symbols, or wildcard
+#[derive(Clone, Debug, PartialEq)]
+pub enum UseTarget {
+    /// Single import: `use foo::bar`
+    Single,
+    /// Multiple imports: `use foo::{bar, baz}`
+    Multiple(Vec<Symbol>),
+    /// Wildcard import: `use foo::*`
+    Wildcard,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProgramStatement {
     FnDefinition {
@@ -62,9 +73,15 @@ pub enum ProgramStatement {
         /// Body of the module. None means external file module (mod foo;)
         body: Option<Vec<(ProgramStatement, Span)>>,
     },
-    /// Use statement: use path::to::module
+    /// Use statement: `use path::to::item`, `use path::{a, b}`, or `use path::*`
+    /// Can be prefixed with `pub` for re-exporting
     UseStatement {
+        /// Visibility of the re-export (pub use for re-exporting)
+        visibility: Visibility,
+        /// The base path (for `use foo::bar`, this is `[foo, bar]`; for `use foo::{a, b}`, this is `[foo]`)
         path: QualifiedPath,
+        /// The import target type
+        target: UseTarget,
     },
     Comment(Symbol),
     DocComment(Symbol),
@@ -143,6 +160,10 @@ pub type VisibilityMap = HashMap<Symbol, bool>;
 /// Created from `use` statements, e.g., `use foo::bar` creates `bar -> foo$bar`.
 pub type UseAliasMap = HashMap<Symbol, Symbol>;
 
+/// Map from mangled function name to its module context (prefix).
+/// Used for relative path resolution within modules.
+pub type ModuleContextMap = HashMap<Symbol, Vec<Symbol>>;
+
 /// Module-related information collected during parsing.
 /// Contains visibility information for module members and use aliases.
 #[derive(Clone, Debug, Default)]
@@ -151,12 +172,60 @@ pub struct ModuleInfo {
     pub visibility_map: VisibilityMap,
     /// Map from alias name to mangled name (from use statements)
     pub use_alias_map: UseAliasMap,
+    /// Map from mangled function name to its module context (for relative path resolution)
+    pub module_context_map: ModuleContextMap,
+    /// List of wildcard import base paths (e.g., `use foo::*` stores "foo")
+    pub wildcard_imports: Vec<Symbol>,
 }
 
 impl ModuleInfo {
     pub fn new() -> Self {
         Self::default()
     }
+}
+
+/// Resolve a qualified path, trying relative resolution from current module context.
+/// Returns `(mangled_name, resolved_path_segments)`.
+///
+/// For example, if current context is `[outer]` and path is `[inner, secret]`:
+/// 1. First tries `inner$secret` (absolute path)
+/// 2. If not found, tries `outer$inner$secret` (relative path from current module)
+///
+/// The `exists` closure should return `true` if the given mangled name exists in the environment.
+pub fn resolve_qualified_path<F>(
+    path_segments: &[Symbol],
+    absolute_mangled: Symbol,
+    current_module_context: &[Symbol],
+    exists: F,
+) -> (Symbol, Vec<Symbol>)
+where
+    F: Fn(&Symbol) -> bool,
+{
+    // First, try the absolute path
+    if exists(&absolute_mangled) {
+        return (absolute_mangled, path_segments.to_vec());
+    }
+
+    // If not found and we have a module context, try relative path
+    if !current_module_context.is_empty() {
+        // Build the relative path: context + path_segments
+        let mut relative_path = current_module_context.to_vec();
+        relative_path.extend(path_segments.iter().copied());
+
+        let relative_mangled = relative_path
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("$")
+            .to_symbol();
+
+        if exists(&relative_mangled) {
+            return (relative_mangled, relative_path);
+        }
+    }
+
+    // Return absolute path if relative resolution failed
+    (absolute_mangled, path_segments.to_vec())
 }
 
 fn stmts_from_program(
@@ -203,6 +272,8 @@ fn stmts_from_program_with_prefix(
                 // Track visibility for module members
                 if !module_prefix.is_empty() {
                     module_info.visibility_map.insert(mangled_name, visibility == Visibility::Public);
+                    // Track module context for relative path resolution
+                    module_info.module_context_map.insert(mangled_name, module_prefix.to_vec());
                 }
                 Some(vec![(
                     Statement::LetRec(
@@ -257,13 +328,8 @@ fn stmts_from_program_with_prefix(
                     }
                 }
             }
-            ProgramStatement::UseStatement { path } => {
-                // use foo::bar creates an alias: bar -> foo$bar
-                // The last segment becomes the alias name
-                if let Some(alias_name) = path.segments.last().copied() {
-                    let mangled = mangle_qualified_path(&path.segments);
-                    module_info.use_alias_map.insert(alias_name, mangled);
-                }
+            ProgramStatement::UseStatement { visibility, path, target } => {
+                process_use_statement(&visibility, &path, &target, module_prefix, module_info);
                 None
             }
             ProgramStatement::Error => Some(vec![(
@@ -273,6 +339,77 @@ fn stmts_from_program_with_prefix(
         })
         .flatten()
         .collect()
+}
+
+/// Process a use statement, registering aliases in module_info.
+/// - Single: `use foo::bar` → alias `bar` → `foo$bar`
+/// - Multiple: `use foo::{a, b}` → alias `a` → `foo$a`, `b` → `foo$b`
+/// - Wildcard: `use foo::*` → import all public members from foo
+/// If visibility is Public, the imported names are re-exported as public.
+fn process_use_statement(
+    visibility: &Visibility,
+    path: &QualifiedPath,
+    target: &UseTarget,
+    module_prefix: &[Symbol],
+    module_info: &mut ModuleInfo,
+) {
+    // Helper to register an alias and optionally mark as public
+    let mut register_alias = |alias_name: Symbol, mangled: Symbol| {
+        module_info.use_alias_map.insert(alias_name, mangled);
+        
+        // If pub use, register the re-exported name as public in the current module
+        if *visibility == Visibility::Public {
+            let exported_name = mangle_qualified_name(module_prefix, alias_name);
+            module_info.visibility_map.insert(exported_name, true);
+            // Also add the mangled target as alias for the exported name
+            module_info.use_alias_map.insert(exported_name, mangled);
+        }
+    };
+
+    match target {
+        UseTarget::Single => {
+            // use foo::bar creates an alias: bar -> foo$bar
+            if let Some(alias_name) = path.segments.last().copied() {
+                let mangled = mangle_qualified_path(&path.segments);
+                register_alias(alias_name, mangled);
+            }
+        }
+        UseTarget::Multiple(names) => {
+            // use foo::{bar, baz} creates:
+            //   bar -> foo$bar
+            //   baz -> foo$baz
+            for name in names {
+                let mut full_path = path.segments.clone();
+                full_path.push(*name);
+                let mangled = mangle_qualified_path(&full_path);
+                register_alias(*name, mangled);
+            }
+        }
+        UseTarget::Wildcard => {
+            // use foo::* imports all public members from foo
+            // We need to defer this until we know all the public members
+            // For now, store the base path for later resolution
+            let base_mangled = if path.segments.is_empty() {
+                // use ::* at module level means import from parent (current prefix)
+                module_prefix
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join("$")
+            } else {
+                mangle_qualified_path(&path.segments).as_str().to_string()
+            };
+            
+            // Store wildcard import for later resolution
+            // The key is the base path (e.g., "foo"), value is the prefix for resolving members
+            module_info.wildcard_imports.push(base_mangled.to_symbol());
+            
+            // Note: For pub use foo::*, we can't know all exported names at this point.
+            // Wildcard re-exports would require a second pass or runtime resolution.
+            // For now, wildcard imports with pub are stored but individual re-exports
+            // need to be resolved later when the symbols are actually accessed.
+        }
+    }
 }
 
 pub(crate) fn expr_from_program(

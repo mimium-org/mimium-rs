@@ -343,11 +343,52 @@ impl<'a> Parser<'a> {
         });
     }
 
-    /// Parse use statement: use path::to::module
+    /// Parse use statement:
+    /// - `use path::to::module` (single import)
+    /// - `use path::{a, b, c}` (multiple imports)
+    /// - `use path::*` (wildcard import)
     fn parse_use_stmt(&mut self) {
         self.emit_node(SyntaxKind::UseStmt, |this| {
             this.expect(TokenKind::Use);
-            this.parse_qualified_path();
+            this.parse_use_path();
+        });
+    }
+
+    /// Parse use path with support for multiple/wildcard imports
+    fn parse_use_path(&mut self) {
+        self.emit_node(SyntaxKind::QualifiedPath, |this| {
+            this.expect(TokenKind::Ident);
+            while this.check(TokenKind::DoubleColon) {
+                this.bump(); // consume '::'
+
+                // Check for wildcard: use foo::*
+                if this.check(TokenKind::OpProduct) {
+                    this.emit_node(SyntaxKind::UseTargetWildcard, |this2| {
+                        this2.bump(); // consume '*'
+                    });
+                    return;
+                }
+
+                // Check for multiple imports: use foo::{a, b}
+                if this.check(TokenKind::BlockBegin) {
+                    this.emit_node(SyntaxKind::UseTargetMultiple, |this2| {
+                        this2.bump(); // consume '{'
+                        // Parse comma-separated identifiers
+                        if this2.check(TokenKind::Ident) {
+                            this2.bump();
+                            while this2.check(TokenKind::Comma) {
+                                this2.bump(); // consume ','
+                                this2.expect(TokenKind::Ident);
+                            }
+                        }
+                        this2.expect(TokenKind::BlockEnd);
+                    });
+                    return;
+                }
+
+                // Regular identifier
+                this.expect(TokenKind::Ident);
+            }
         });
     }
 

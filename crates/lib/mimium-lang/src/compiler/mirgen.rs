@@ -1,6 +1,7 @@
 use super::intrinsics;
 use super::typing::{InferContext, infer_root};
 
+use crate::ast::program::resolve_qualified_path;
 use crate::compiler::parser;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
@@ -69,6 +70,8 @@ struct Context {
     monomorph_map: BTreeMap<MonomorphKey, FunctionId>,
     data: Vec<ContextData>,
     data_i: usize,
+    /// Current module context for relative path resolution
+    current_module_context: Vec<Symbol>,
 }
 enum AssignDestination {
     Local(VPtr),
@@ -88,6 +91,7 @@ impl Context {
             monomorph_map: BTreeMap::new(),
             data: vec![ContextData::default()],
             data_i: 0,
+            current_module_context: Vec::new(),
         }
     }
     fn get_loc_from_span(&self, span: &Span) -> Location {
@@ -108,6 +112,37 @@ impl Context {
         });
         self.fn_label = None;
         res
+    }
+
+    /// Resolve a qualified path, trying relative resolution from current module context.
+    /// Returns the resolved mangled name.
+    fn resolve_path(&self, path_segments: &[Symbol], absolute_mangled: Symbol) -> Symbol {
+        resolve_qualified_path(
+            path_segments,
+            absolute_mangled,
+            &self.current_module_context,
+            |name| self.valenv.lookup(name).is_some(),
+        )
+        .0
+    }
+
+    /// Try to resolve a simple variable name through wildcard imports.
+    /// Returns the mangled name if found through a wildcard import.
+    fn resolve_through_wildcards(&self, name: Symbol) -> Option<Symbol> {
+        for base in self.typeenv.get_wildcard_imports() {
+            // Build mangled name: base$name
+            let mangled = if base.as_str().is_empty() {
+                name
+            } else {
+                format!("{}${}", base.as_str(), name.as_str()).to_symbol()
+            };
+            
+            // Check if this name exists
+            if self.valenv.lookup(&mangled).is_some() {
+                return Some(mangled);
+            }
+        }
+        None
     }
 
     fn get_current_fn(&mut self) -> &mut mir::Function {
@@ -499,11 +534,17 @@ impl Context {
         let name = match e.to_expr() {
             Expr::Var(name) => {
                 // Check if the name is an alias from a use statement
-                self.typeenv.resolve_alias(name)
+                let resolved = self.typeenv.resolve_alias(name);
+                // If not an alias, try wildcard imports
+                if resolved == name {
+                    self.resolve_through_wildcards(name).unwrap_or(resolved)
+                } else {
+                    resolved
+                }
             }
             Expr::QualifiedVar(path) => {
                 // Convert qualified path to mangled name (e.g., foo::bar -> foo$bar)
-                if path.segments.len() == 1 {
+                let mangled_name = if path.segments.len() == 1 {
                     path.segments[0]
                 } else {
                     let path_str = path
@@ -513,7 +554,14 @@ impl Context {
                         .collect::<Vec<_>>()
                         .join("$");
                     path_str.to_symbol()
-                }
+                };
+                
+                // Try to resolve the path with relative path fallback
+                let resolved = self.resolve_path(&path.segments, mangled_name);
+                
+                // Check if the resolved name is a re-exported alias (from pub use)
+                // If so, use the aliased target name for lookup
+                self.typeenv.resolve_alias(resolved)
             }
             _ => unreachable!("eval_rvar called on non-variable expr"),
         };
@@ -1210,6 +1258,14 @@ impl Context {
                 )
             }
             Expr::Let(pat, body, then) => {
+                // Set module context for relative path resolution within this function
+                let prev_context = std::mem::take(&mut self.current_module_context);
+                if let Pattern::Single(name) = &pat.pat {
+                    if let Some(context) = self.typeenv.get_module_context(name) {
+                        self.current_module_context = context.clone();
+                    }
+                }
+                
                 if let Ok(tid) = TypedId::try_from(pat.clone()) {
                     self.fn_label = Some(tid.id);
                     log::trace!(
@@ -1225,6 +1281,9 @@ impl Context {
                 // };
                 let (bodyv, t, states) = self.eval_expr(*body);
                 self.fn_label = None;
+                
+                // Restore previous context
+                self.current_module_context = prev_context;
 
                 let is_global = self.get_ctxdata().func_i.0 == 0;
                 let is_function = matches!(bodyv.as_ref(), Value::Function(_));
@@ -1247,6 +1306,12 @@ impl Context {
                 }
             }
             Expr::LetRec(id, body, then) => {
+                // Set module context for relative path resolution within this function
+                let prev_context = std::mem::take(&mut self.current_module_context);
+                if let Some(context) = self.typeenv.get_module_context(&id.id) {
+                    self.current_module_context = context.clone();
+                }
+                
                 let is_global = self.get_ctxdata().func_i.0 == 0;
                 self.fn_label = Some(id.id);
                 let nextfunid = self.program.functions.len();
@@ -1264,6 +1329,10 @@ impl Context {
                 let bind = (id.id, v.clone());
                 self.add_bind(bind);
                 let (b, _bt, states) = self.eval_expr(*body);
+                
+                // Restore previous context
+                self.current_module_context = prev_context;
+                
                 if !is_global {
                     let _ = self.push_inst(Instruction::Store(v.clone(), b.clone(), t));
                 }

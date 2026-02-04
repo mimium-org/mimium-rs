@@ -1,0 +1,18 @@
+// Test pub use for re-exporting
+
+// Internal module with a helper function
+mod internal {
+    pub fn helper() {
+        42.0
+    }
+}
+
+// API module that re-exports from internal
+mod api {
+    pub use internal::helper
+}
+
+// Access through the re-exported path
+fn dsp() {
+    api::helper()
+}

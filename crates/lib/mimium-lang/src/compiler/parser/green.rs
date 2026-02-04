@@ -216,6 +216,8 @@ pub enum SyntaxKind {
     // Module-related
     QualifiedPath,
     VisibilityPub,
+    UseTargetMultiple, // use foo::{bar, baz}
+    UseTargetWildcard, // use foo::*
 
     // Lists and sequences
     ParamList,
@@ -278,6 +280,8 @@ impl std::fmt::Display for SyntaxKind {
             SyntaxKind::UseStmt => write!(f, "UseStmt"),
             SyntaxKind::QualifiedPath => write!(f, "QualifiedPath"),
             SyntaxKind::VisibilityPub => write!(f, "VisibilityPub"),
+            SyntaxKind::UseTargetMultiple => write!(f, "UseTargetMultiple"),
+            SyntaxKind::UseTargetWildcard => write!(f, "UseTargetWildcard"),
             SyntaxKind::ParamList => write!(f, "ParamList"),
             SyntaxKind::ArgList => write!(f, "ArgList"),
             SyntaxKind::ExprList => write!(f, "ExprList"),

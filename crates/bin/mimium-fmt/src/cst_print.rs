@@ -178,6 +178,8 @@ where
                 SyntaxKind::ModuleDecl => allocator.text("/* module */"),
                 SyntaxKind::UseStmt => allocator.text("/* use */"),
                 SyntaxKind::QualifiedPath => allocator.text("/* qualified path */"),
+                SyntaxKind::UseTargetMultiple => allocator.text("/* use multiple */"),
+                SyntaxKind::UseTargetWildcard => allocator.text("/* use wildcard */"),
                 SyntaxKind::VisibilityPub => allocator.text("/* pub */"),
                 SyntaxKind::Error => allocator.text("/* error */"),
             }

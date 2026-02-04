@@ -139,7 +139,7 @@ impl ModuleEnv {
                         },
                     );
                 }
-                ProgramStatement::UseStatement { path } => {
+                ProgramStatement::UseStatement { path, .. } => {
                     self.use_imports.push(path.clone());
                 }
                 ProgramStatement::FnDefinition { visibility, name, .. } => {

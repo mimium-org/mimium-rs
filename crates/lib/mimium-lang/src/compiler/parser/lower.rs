@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::ast::operators::Op;
-use crate::ast::program::{Program, ProgramStatement, QualifiedPath, Visibility};
+use crate::ast::program::{Program, ProgramStatement, QualifiedPath, UseTarget, Visibility};
 use crate::ast::statement::{Statement, into_then_expr, stmt_from_expr_top};
 use crate::ast::{Expr, Literal};
 use crate::compiler::parser::cst_parser::ParserError;
@@ -153,7 +153,7 @@ impl<'a> Lowerer<'a> {
                         .lower_module_decl(id, visibility)
                         .unwrap_or(ProgramStatement::Error),
                     (Some(SyntaxKind::UseStmt), Some(id)) => {
-                        self.lower_use_stmt(id).unwrap_or(ProgramStatement::Error)
+                        self.lower_use_stmt(id, visibility).unwrap_or(ProgramStatement::Error)
                     }
                     (Some(_), _) => {
                         let expr_nodes = self.collect_expr_nodes(node);
@@ -221,11 +221,80 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    /// Lower use statement: use path::to::module
-    fn lower_use_stmt(&self, node: GreenNodeId) -> Option<ProgramStatement> {
+    /// Lower use statement:
+    /// - `use path::to::module` (single import)
+    /// - `use path::{a, b, c}` (multiple imports)
+    /// - `use path::*` (wildcard import)
+    /// - `pub use ...` (re-export)
+    fn lower_use_stmt(&self, node: GreenNodeId, visibility: Visibility) -> Option<ProgramStatement> {
         let path_node = self.find_child(node, |kind| kind == SyntaxKind::QualifiedPath)?;
-        let path = self.lower_qualified_path(path_node)?;
-        Some(ProgramStatement::UseStatement { path })
+        
+        // Check for wildcard or multiple import targets within the QualifiedPath
+        let (path, target) = self.lower_use_path(path_node)?;
+        
+        Some(ProgramStatement::UseStatement { visibility, path, target })
+    }
+
+    /// Lower use path, extracting the base path and target type
+    fn lower_use_path(&self, node: GreenNodeId) -> Option<(QualifiedPath, UseTarget)> {
+        use crate::ast::program::UseTarget;
+        
+        let mut segments: Vec<Symbol> = Vec::new();
+        let mut target = UseTarget::Single;
+
+        if let Some(children) = self.arena.children(node) {
+            for child in children.iter() {
+                let child_kind = self.arena.kind(*child);
+                
+                match child_kind {
+                    Some(SyntaxKind::UseTargetWildcard) => {
+                        target = UseTarget::Wildcard;
+                    }
+                    Some(SyntaxKind::UseTargetMultiple) => {
+                        // Extract identifiers from the multiple import block
+                        let symbols = self.lower_use_target_multiple(*child);
+                        target = UseTarget::Multiple(symbols);
+                    }
+                    _ => {
+                        // Check if this is an identifier token
+                        if let Some(token_idx) = self.get_token_index(*child)
+                            && let Some(token) = self.tokens.get(token_idx)
+                            && token.kind == TokenKind::Ident
+                        {
+                            if let Some(text) = self.token_text(token_idx) {
+                                segments.push(text.to_symbol());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if segments.is_empty() && matches!(target, UseTarget::Single) {
+            None
+        } else {
+            Some((QualifiedPath::new(segments), target))
+        }
+    }
+
+    /// Extract identifiers from a UseTargetMultiple node: {a, b, c}
+    fn lower_use_target_multiple(&self, node: GreenNodeId) -> Vec<Symbol> {
+        let mut symbols = Vec::new();
+        
+        if let Some(children) = self.arena.children(node) {
+            for child in children.iter() {
+                if let Some(token_idx) = self.get_token_index(*child)
+                    && let Some(token) = self.tokens.get(token_idx)
+                    && token.kind == TokenKind::Ident
+                {
+                    if let Some(text) = self.token_text(token_idx) {
+                        symbols.push(text.to_symbol());
+                    }
+                }
+            }
+        }
+        
+        symbols
     }
 
     /// Lower qualified path: ident (:: ident)*
@@ -1514,10 +1583,57 @@ mod tests {
 
         let stmt = &prog.statements[0].0;
         match stmt {
-            ProgramStatement::UseStatement { path } => {
+            ProgramStatement::UseStatement { visibility, path, target } => {
+                assert_eq!(*visibility, Visibility::Private);
                 assert_eq!(path.segments.len(), 2);
                 assert_eq!(path.segments[0].as_str(), "modA");
                 assert_eq!(path.segments[1].as_str(), "funcB");
+                assert!(matches!(target, UseTarget::Single));
+            }
+            _ => panic!("Expected UseStatement, got {:?}", stmt),
+        }
+    }
+
+    #[test]
+    fn test_parse_use_multiple() {
+        let source = "use modA::{funcB, funcC}";
+        let prog = parse_source(source);
+
+        assert!(!prog.statements.is_empty());
+
+        let stmt = &prog.statements[0].0;
+        match stmt {
+            ProgramStatement::UseStatement { visibility, path, target } => {
+                assert_eq!(*visibility, Visibility::Private);
+                assert_eq!(path.segments.len(), 1);
+                assert_eq!(path.segments[0].as_str(), "modA");
+                match target {
+                    UseTarget::Multiple(names) => {
+                        assert_eq!(names.len(), 2);
+                        assert_eq!(names[0].as_str(), "funcB");
+                        assert_eq!(names[1].as_str(), "funcC");
+                    }
+                    _ => panic!("Expected UseTarget::Multiple"),
+                }
+            }
+            _ => panic!("Expected UseStatement, got {:?}", stmt),
+        }
+    }
+
+    #[test]
+    fn test_parse_use_wildcard() {
+        let source = "use modA::*";
+        let prog = parse_source(source);
+
+        assert!(!prog.statements.is_empty());
+
+        let stmt = &prog.statements[0].0;
+        match stmt {
+            ProgramStatement::UseStatement { visibility, path, target } => {
+                assert_eq!(*visibility, Visibility::Private);
+                assert_eq!(path.segments.len(), 1);
+                assert_eq!(path.segments[0].as_str(), "modA");
+                assert!(matches!(target, UseTarget::Wildcard));
             }
             _ => panic!("Expected UseStatement, got {:?}", stmt),
         }
@@ -1566,7 +1682,7 @@ mod tests {
 
         let stmt = &prog.statements[0].0;
         match stmt {
-            ProgramStatement::UseStatement { path } => {
+            ProgramStatement::UseStatement { path, .. } => {
                 assert_eq!(path.segments.len(), 4);
                 assert_eq!(path.segments[0].as_str(), "a");
                 assert_eq!(path.segments[1].as_str(), "b");
@@ -1669,5 +1785,25 @@ fn dsp() { add(1.0, 2.0) }
             ast_string.contains("mymod$add"),
             "AST should contain mymod$add, but got: {}", ast_string
         );
+    }
+
+    #[test]
+    fn test_parse_pub_use() {
+        let source = "pub use modA::funcB";
+        let prog = parse_source(source);
+
+        assert!(!prog.statements.is_empty());
+
+        let stmt = &prog.statements[0].0;
+        match stmt {
+            ProgramStatement::UseStatement { visibility, path, target } => {
+                assert_eq!(*visibility, Visibility::Public);
+                assert_eq!(path.segments.len(), 2);
+                assert_eq!(path.segments[0].as_str(), "modA");
+                assert_eq!(path.segments[1].as_str(), "funcB");
+                assert!(matches!(target, UseTarget::Single));
+            }
+            _ => panic!("Expected UseStatement, got {:?}", stmt),
+        }
     }
 }

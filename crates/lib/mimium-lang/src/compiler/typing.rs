@@ -1,4 +1,4 @@
-use crate::ast::program::ModuleInfo;
+use crate::ast::program::{resolve_qualified_path, ModuleInfo};
 use crate::ast::{Expr, Literal, RecordField};
 use crate::compiler::{EvalStage, intrinsics};
 use crate::interner::{ExprKey, ExprNodeId, Symbol, ToSymbol, TypeNodeId};
@@ -385,6 +385,8 @@ pub struct InferContext {
     file_path: PathBuf,
     /// Module information containing visibility and use aliases
     module_info: ModuleInfo,
+    /// Current module context for relative path resolution (module prefix of the current function)
+    current_module_context: Vec<Symbol>,
     pub env: Environment<(TypeNodeId, EvalStage)>,
     pub errors: Vec<Error>,
 }
@@ -404,6 +406,7 @@ impl InferContext {
             result_memo: Default::default(),
             file_path,
             module_info,
+            current_module_context: Vec::new(),
             env: Environment::<(TypeNodeId, EvalStage)>::default(),
             errors: Default::default(),
         };
@@ -427,6 +430,70 @@ impl InferContext {
     /// Returns the mangled name if the name is an alias, otherwise returns the original name.
     pub fn resolve_alias(&self, name: Symbol) -> Symbol {
         self.module_info.use_alias_map.get(&name).copied().unwrap_or(name)
+    }
+
+    /// Get the module context for a given function name.
+    /// Returns None if the function is not defined within a module.
+    pub fn get_module_context(&self, name: &Symbol) -> Option<&Vec<Symbol>> {
+        self.module_info.module_context_map.get(name)
+    }
+
+    /// Get the list of wildcard imports.
+    pub fn get_wildcard_imports(&self) -> &[Symbol] {
+        &self.module_info.wildcard_imports
+    }
+
+    /// Resolve a qualified path, trying relative resolution from current module context.
+    /// Returns `(mangled_name, resolved_path_segments)`.
+    fn resolve_path(&self, path_segments: &[Symbol], absolute_mangled: Symbol) -> (Symbol, Vec<Symbol>) {
+        resolve_qualified_path(
+            path_segments,
+            absolute_mangled,
+            &self.current_module_context,
+            |name| self.env.lookup(name).is_some(),
+        )
+    }
+
+    /// Try to resolve a simple variable name through wildcard imports.
+    /// Returns the mangled name if found through a wildcard import.
+    fn resolve_through_wildcards(&self, name: Symbol) -> Option<Symbol> {
+        for base in &self.module_info.wildcard_imports {
+            // Build mangled name: base$name
+            let mangled = if base.as_str().is_empty() {
+                name
+            } else {
+                format!("{}${}", base.as_str(), name.as_str()).to_symbol()
+            };
+            
+            // Check if this name exists and is public
+            if self.env.lookup(&mangled).is_some() {
+                // Check visibility - only allow public members
+                if let Some(&is_public) = self.module_info.visibility_map.get(&mangled) {
+                    if is_public {
+                        return Some(mangled);
+                    }
+                } else {
+                    // If not in visibility map, treat as accessible (e.g., external)
+                    return Some(mangled);
+                }
+            }
+        }
+        None
+    }
+
+    /// Check if the resolved path is within the same module hierarchy as current context.
+    /// This is used to allow private member access within the same module.
+    fn is_within_module_hierarchy(&self, resolved_path: &[Symbol]) -> bool {
+        if self.current_module_context.is_empty() || resolved_path.len() < 2 {
+            return false;
+        }
+        
+        // Get the module part of the resolved path (excluding the member name)
+        let target_module = &resolved_path[..resolved_path.len() - 1];
+        
+        // Check if current context starts with the target module path
+        // (meaning we're inside that module or a nested module)
+        self.current_module_context.starts_with(target_module)
     }
 }
 impl InferContext {
@@ -918,7 +985,20 @@ impl InferContext {
                 .into_id_with_location(e.to_location()))
             }
             Expr::Let(tpat, body, then) => {
+                // Set module context for relative path resolution within this function
+                // (for functions converted from LetRec by convert_pronoun)
+                let prev_context = std::mem::take(&mut self.current_module_context);
+                if let Pattern::Single(name) = &tpat.pat {
+                    if let Some(context) = self.module_info.module_context_map.get(name) {
+                        self.current_module_context = context.clone();
+                    }
+                }
+                
                 let bodyt = self.infer_type_levelup(*body);
+                
+                // Restore previous context
+                self.current_module_context = prev_context;
+                
                 let loc_p = tpat.to_loc();
                 let loc_b = body.to_location();
                 let pat_t = self.bind_pattern((tpat.clone(), loc_p), (bodyt, loc_b));
@@ -932,7 +1012,18 @@ impl InferContext {
                 let idt = self.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
                 self.env.add_bind(&[(id.id, (idt, self.stage))]);
                 //polymorphic inference is not allowed in recursive function.
+                
+                // Set module context for relative path resolution within this function
+                let prev_context = std::mem::take(&mut self.current_module_context);
+                if let Some(context) = self.module_info.module_context_map.get(&id.id) {
+                    self.current_module_context = context.clone();
+                }
+                
                 let bodyt = self.infer_type_levelup(*body);
+                
+                // Restore previous context
+                self.current_module_context = prev_context;
+                
                 let _res = self.unify_types(idt, bodyt);
                 match then {
                     Some(e) => self.infer_type(*e),
@@ -1005,6 +1096,10 @@ impl InferContext {
                     // Resolve the aliased name
                     let res = self.unwrap_result(self.lookup(mangled_name, loc).map_err(|e| vec![e]));
                     Ok(self.instantiate(res))
+                } else if let Some(mangled) = self.resolve_through_wildcards(*name) {
+                    // Try to resolve through wildcard imports
+                    let res = self.unwrap_result(self.lookup(mangled, loc).map_err(|e| vec![e]));
+                    Ok(self.instantiate(res))
                 } else {
                     let res = self.unwrap_result(self.lookup(*name, loc).map_err(|e| vec![e]));
                     // log::trace!("{} {} /level{}", name.as_str(), res.to_type(), self.level);
@@ -1026,20 +1121,32 @@ impl InferContext {
                     path_str.to_symbol()
                 };
 
+                // Try to resolve the path, with relative path fallback
+                let (resolved_name, resolved_path) = self.resolve_path(&path.segments, mangled_name);
+
+                // Check if the resolved name is a re-exported alias (from pub use)
+                // If so, use the aliased target name for lookup
+                let lookup_name = self.module_info.use_alias_map
+                    .get(&resolved_name)
+                    .copied()
+                    .unwrap_or(resolved_name);
+
                 // Check visibility for module members (paths with more than one segment)
-                if path.segments.len() > 1 {
-                    if let Some(&is_public) = self.module_info.visibility_map.get(&mangled_name) {
-                        if !is_public {
+                if resolved_path.len() > 1 {
+                    if let Some(&is_public) = self.module_info.visibility_map.get(&resolved_name) {
+                        // Private member access is allowed from within the same module hierarchy
+                        let is_same_module = self.is_within_module_hierarchy(&resolved_path);
+                        if !is_public && !is_same_module {
                             return Err(vec![Error::PrivateMemberAccess {
-                                module_path: path.segments[..path.segments.len() - 1].to_vec(),
-                                member: *path.segments.last().unwrap(),
+                                module_path: resolved_path[..resolved_path.len() - 1].to_vec(),
+                                member: *resolved_path.last().unwrap(),
                                 location: loc.clone(),
                             }]);
                         }
                     }
                 }
 
-                let res = self.unwrap_result(self.lookup(mangled_name, loc.clone()).map_err(|_| {
+                let res = self.unwrap_result(self.lookup(lookup_name, loc.clone()).map_err(|_| {
                     // Provide better error message for qualified paths
                     if path.segments.len() > 1 {
                         vec![Error::MemberNotFound {
