@@ -5,6 +5,7 @@ use std::{
 };
 
 use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
+use thiserror::Error;
 
 use super::metadata::Location;
 
@@ -26,34 +27,26 @@ impl PartialEq for dyn ReportableError + '_ {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Error)]
+#[error("{message}")]
 pub struct SimpleError {
     pub message: String,
     pub span: Location,
 }
-impl std::fmt::Display for SimpleError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-impl std::error::Error for SimpleError {}
+
 impl ReportableError for SimpleError {
     fn get_labels(&self) -> Vec<(Location, String)> {
         vec![(self.span.clone(), self.message.clone())]
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Error)]
+#[error("{message}")]
 pub struct RichError {
     pub message: String,
     pub labels: Vec<(Location, String)>,
 }
-impl std::fmt::Display for RichError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-impl std::error::Error for RichError {}
+
 impl ReportableError for RichError {
     fn get_message(&self) -> String {
         self.message.clone()

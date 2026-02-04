@@ -1,49 +1,21 @@
-use std::{env, fmt, path::PathBuf};
+use std::{env, path::PathBuf};
+use thiserror::Error;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum Error {
-    IoError(std::io::Error),
-    FileNotFound(String, PathBuf),
-    UtfConversionError(std::string::FromUtf8Error),
-    PathJoinError(env::JoinPathsError),
-    SelfReference(PathBuf),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Error::IoError(e) => write!(f, "IoError: {e}"),
-            Error::FileNotFound(e, p) => write!(f, "File {} not found: {}", p.display(), e),
-            Error::UtfConversionError(e) => write!(f, "Failed to convert into UTF: {e}"),
-            Error::PathJoinError(e) => write!(f, "Failed to join path: {e}"),
-            Error::SelfReference(path_buf) => write!(
-                f,
-                "File tried to include itself recusively: {}",
-                path_buf.to_string_lossy()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-impl From<std::io::Error> for Error {
-    fn from(e: std::io::Error) -> Self {
-        Error::IoError(e)
-    }
-}
-impl From<std::string::FromUtf8Error> for Error {
-    fn from(e: std::string::FromUtf8Error) -> Self {
-        Error::UtfConversionError(e)
-    }
-}
-impl From<env::JoinPathsError> for Error {
-    fn from(e: env::JoinPathsError) -> Self {
-        Error::PathJoinError(e)
-    }
+    #[error("IoError: {0}")]
+    IoError(#[from] std::io::Error),
+    #[error("File {path} not found: {message}", path = path.display())]
+    FileNotFound { message: String, path: PathBuf },
+    #[error("Failed to convert into UTF: {0}")]
+    UtfConversionError(#[from] std::string::FromUtf8Error),
+    #[error("Failed to join path: {0}")]
+    PathJoinError(#[from] env::JoinPathsError),
+    #[error("File tried to include itself recusively: {}", path.to_string_lossy())]
+    SelfReference { path: PathBuf },
 }
 fn get_default_library_path() -> Option<PathBuf> {
     #[cfg(not(target_arch = "wasm32"))]
@@ -68,9 +40,10 @@ pub fn get_canonical_path(current_file_or_dir: &str, relpath: &str) -> Result<Pa
         //canonicalize is platform-dependent and always returns Err on wasm32
         Ok(abspath)
     } else {
-        abspath
-            .canonicalize()
-            .map_err(|e| Error::FileNotFound(e.to_string(), abspath))
+        abspath.canonicalize().map_err(|e| Error::FileNotFound {
+            message: e.to_string(),
+            path: abspath,
+        })
     }
 }
 
@@ -104,7 +77,9 @@ pub fn load_mmmlibfile(current_file_or_dir: &str, path: &str) -> Result<(String,
     };
     let cpath = get_canonical_path(current_file_or_dir, &path.to_string_lossy())?;
     if current_file_or_dir == cpath.to_string_lossy() {
-        return Err(Error::SelfReference(cpath.clone()));
+        return Err(Error::SelfReference {
+            path: cpath.clone(),
+        });
     }
     let content = load(&cpath.to_string_lossy())?;
     Ok((content, cpath))
@@ -113,8 +88,10 @@ pub fn load_mmmlibfile(current_file_or_dir: &str, path: &str) -> Result<(String,
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load(canonical_path: &str) -> Result<String, Error> {
     // debug_assert!(std::path::Path::new(canonical_path).is_absolute());
-    let content = std::fs::read(canonical_path)
-        .map_err(|e| Error::FileNotFound(e.to_string(), PathBuf::from(canonical_path)))?;
+    let content = std::fs::read(canonical_path).map_err(|e| Error::FileNotFound {
+        message: e.to_string(),
+        path: PathBuf::from(canonical_path),
+    })?;
 
     let content_r = String::from_utf8(content).map_err(Error::from)?;
     Ok(content_r)
@@ -122,8 +99,10 @@ pub fn load(canonical_path: &str) -> Result<String, Error> {
 
 #[cfg(target_arch = "wasm32")]
 pub fn load(canonical_path: &str) -> Result<String, Error> {
-    let content_r = read_file(canonical_path)
-        .map_err(|e| Error::FileNotFound(format!("{:?}", e), canonical_path.into()))?;
+    let content_r = read_file(canonical_path).map_err(|e| Error::FileNotFound {
+        message: format!("{:?}", e),
+        path: canonical_path.into(),
+    })?;
     Ok(content_r)
 }
 
@@ -171,6 +150,6 @@ fn dsp(){
         let (_, file) = setup_file();
         let err = load_mmmlibfile(&file, &file).expect_err("should be an error");
 
-        assert!(matches!(err, Error::SelfReference(_)));
+        assert!(matches!(err, Error::SelfReference { .. }));
     }
 }

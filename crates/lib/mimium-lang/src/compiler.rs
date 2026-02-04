@@ -4,6 +4,7 @@ pub mod mirgen;
 pub mod parser;
 pub mod typing;
 use crate::plugin::{ExtFunTypeInfo, MacroFunction};
+use thiserror::Error;
 
 /// Stage information for multi-stage programming.
 /// Moved from plugin.rs to be shared across compiler modules.
@@ -57,63 +58,35 @@ impl EvalStage {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Error)]
 pub enum ErrorKind {
+    #[error("Type Mismatch, expected {0}, but the actual was {1}.")]
     TypeMismatch(Type, Type),
+    #[error("Circular loop of type definition")]
     CircularType,
+    #[error("Tuple index out of range, number of elements are {0} but accessed with {1}.")]
     IndexOutOfRange(u16, u16),
+    #[error("Index access for non tuple-type {0}.")]
     IndexForNonTuple(Type),
+    #[error("Variable Not Found.")]
     VariableNotFound(String),
+    #[error("Feed can take only non-funtion type.")]
     NonPrimitiveInFeed,
-    NotApplicable, //need?
+    #[error("Application to non-function type value.")]
+    NotApplicable,
+    #[error("Array index out of bounds.")]
     IndexOutOfBounds,
+    #[error("Type error in expression.")]
     TypeError,
+    #[error("Unknown error.")]
     Unknown,
 }
-#[derive(Debug, Clone)]
-pub struct Error(pub ErrorKind, pub Span);
 
-impl std::fmt::Display for ErrorKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ErrorKind::VariableNotFound(_) => {
-                write!(f, "Variable Not Found.")
-            }
-            ErrorKind::TypeMismatch(expect, actual) => {
-                write!(
-                    f,
-                    "Type Mismatch, expected {expect}, but the actual was {actual}."
-                )
-            }
-            ErrorKind::IndexForNonTuple(t) => {
-                write!(f, "Index access for non tuple-type {t}.")
-            }
-            ErrorKind::IndexOutOfRange(r, a) => {
-                write!(
-                    f,
-                    "Tuple index out of range, number of elements are {r} but accessed with {a}."
-                )
-            }
-            ErrorKind::NotApplicable => {
-                write!(f, "Application to non-function type value.")
-            }
-            ErrorKind::CircularType => write!(f, "Circular loop of type definition"),
-            ErrorKind::NonPrimitiveInFeed => write!(f, "Feed can take only non-funtion type."),
-            ErrorKind::IndexOutOfBounds => write!(f, "Array index out of bounds."),
-            ErrorKind::TypeError => write!(f, "Type error in expression."),
-            ErrorKind::Unknown => write!(f, "unknwon error."),
-        }
-    }
-}
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
+#[derive(Debug, Clone, Error)]
+#[error("{0}")]
+pub struct CompileError(pub ErrorKind, pub Span);
 
-impl std::error::Error for Error {}
-
-impl ReportableError for Error {
+impl ReportableError for CompileError {
     fn get_labels(&self) -> Vec<(crate::utils::metadata::Location, String)> {
         todo!()
     }

@@ -3,48 +3,30 @@
 use super::green::{GreenNodeArena, GreenNodeId, GreenTreeBuilder, Marker, SyntaxKind};
 use super::preparser::PreParsedTokens;
 use super::token::{Token, TokenKind};
-use std::fmt;
+use thiserror::Error;
 
 /// Error detail - structured error information
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ErrorDetail {
     /// Expected token not found (e.g., expected `)` but found `}`)
+    #[error("Expected {expected}, found {found}")]
     UnexpectedToken { expected: String, found: String },
     /// Unexpected end of input
+    #[error("Unexpected end of input, expected {expected}")]
     UnexpectedEof { expected: String },
     /// Invalid syntax with reason
+    #[error("Invalid syntax: {reason}")]
     InvalidSyntax { reason: String },
 }
 
-impl fmt::Display for ErrorDetail {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ErrorDetail::UnexpectedToken { expected, found } => {
-                write!(f, "Expected {expected}, found {found}")
-            }
-            ErrorDetail::UnexpectedEof { expected } => {
-                write!(f, "Unexpected end of input, expected {expected}")
-            }
-            ErrorDetail::InvalidSyntax { reason } => {
-                write!(f, "Invalid syntax: {reason}")
-            }
-        }
-    }
-}
-
 /// Parser error with recovery information
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("{detail}")]
 pub struct ParserError {
     /// Token index where the error occurred
     pub token_index: usize,
     /// Error detail
     pub detail: ErrorDetail,
-}
-
-impl fmt::Display for ParserError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.detail)
-    }
 }
 
 impl ParserError {
