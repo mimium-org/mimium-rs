@@ -79,6 +79,18 @@ pub enum Instruction {
     Jmp(i16),
     //merge
     Phi(VPtr, VPtr),
+    /// Multi-way branch for match expressions
+    /// Switch(scrutinee, cases, default_block, merge_block)
+    /// cases: Vec<(literal_value_as_i64, block_index)>
+    Switch {
+        scrutinee: VPtr,
+        /// Each case is (literal_value as i64, block_index)
+        cases: Vec<(i64, u64)>,
+        default_block: u64,
+        merge_block: u64,
+    },
+    /// Phi for switch - merges values from multiple branches
+    PhiSwitch(Vec<VPtr>),
 
     Return(VPtr, TypeNodeId),
     //value to update state

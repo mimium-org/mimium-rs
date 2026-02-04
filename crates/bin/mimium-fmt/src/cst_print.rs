@@ -182,6 +182,10 @@ where
                 SyntaxKind::UseTargetMultiple => print_use_target_multiple(children, ctx, allocator),
                 SyntaxKind::UseTargetWildcard => print_use_target_wildcard(children, ctx, allocator),
                 SyntaxKind::VisibilityPub => print_visibility_pub(children, ctx, allocator),
+                SyntaxKind::MatchExpr
+                | SyntaxKind::MatchArm
+                | SyntaxKind::MatchArmList
+                | SyntaxKind::MatchPattern => print_leaf_children(children, ctx, allocator),
                 SyntaxKind::Error => allocator.text("/* error */"),
             }
         }

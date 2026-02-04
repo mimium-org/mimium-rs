@@ -60,6 +60,20 @@ pub struct RecordField {
     pub expr: ExprNodeId,
 }
 
+/// Pattern for match expressions (Phase 1: only literals and wildcard)
+#[derive(Clone, Debug, PartialEq)]
+pub enum MatchPattern {
+    Literal(Literal),
+    Wildcard,
+}
+
+/// A single arm of a match expression
+#[derive(Clone, Debug, PartialEq)]
+pub struct MatchArm {
+    pub pattern: MatchPattern,
+    pub body: ExprNodeId,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     Literal(Literal), // literal, or special symbols (self, now, _)
@@ -88,6 +102,7 @@ pub enum Expr {
     Let(TypedPattern, ExprNodeId, Option<ExprNodeId>),
     LetRec(TypedId, ExprNodeId, Option<ExprNodeId>),
     If(ExprNodeId, ExprNodeId, Option<ExprNodeId>),
+    Match(ExprNodeId, Vec<MatchArm>),  // match expression: match scrutinee { pattern => expr, ... }
     //exprimental macro system using multi-stage computation
     Bracket(ExprNodeId),
     Escape(ExprNodeId),
@@ -150,6 +165,14 @@ impl ExprNodeId {
                 conv(&e1).min(conv_opt(&e2))
             }
             Expr::If(cond, then, orelse) => conv(&cond).min(conv(&then)).min(conv_opt(&orelse)),
+            Expr::Match(scrutinee, arms) => {
+                let arm_min = arms
+                    .iter()
+                    .map(|arm| arm.body.get_min_stage_rec(current_level))
+                    .min()
+                    .unwrap_or(current_level);
+                conv(&scrutinee).min(arm_min)
+            }
 
             _ => current_level,
         }
@@ -317,6 +340,14 @@ impl MiniPrint for Expr {
                 then.simple_print(),
                 optelse.simple_print()
             ),
+            Expr::Match(scrutinee, arms) => {
+                let arms_str = arms
+                    .iter()
+                    .map(|arm| format!("{:?} => {}", arm.pattern, arm.body.simple_print()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("(match {} [{}])", scrutinee.simple_print(), arms_str)
+            }
             Expr::Bracket(e) => format!("(bracket {})", e.simple_print()),
             Expr::Escape(e) => format!("(escape {})", e.simple_print()),
             Expr::Error => "(error)".to_string(),

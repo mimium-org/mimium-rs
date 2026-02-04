@@ -893,7 +893,6 @@ impl Machine {
                     gvs.copy_from_slice(slice);
                 }
                 Instruction::Jmp(offset) => {
-                    // -1 is for the offset in last increment
                     increment = offset;
                 }
                 Instruction::JmpIfNeg(cond, offset) => {
@@ -901,6 +900,20 @@ impl Machine {
                     if Self::get_as::<f64>(cond_v) <= 0.0 {
                         increment = offset;
                     }
+                }
+                Instruction::JmpTable(scrut, table_idx) => {
+                    let scrut_val = self.get_stack(scrut as i64);
+                    let val = Self::get_as::<f64>(scrut_val) as i64;
+                    let fn_proto = self.get_fnproto(func_i);
+                    debug_assert!(
+                        !fn_proto.jump_tables.is_empty(),
+                        "JmpTable instruction requires non-empty jump_tables"
+                    );
+                    let table = &fn_proto.jump_tables[table_idx as usize];
+                    let idx = (val - table.min) as usize;
+                    // Last element of offsets is the default for out-of-range values
+                    let default_idx = table.offsets.len() - 1;
+                    increment = table.offsets.get(idx).copied().unwrap_or(table.offsets[default_idx]);
                 }
                 Instruction::AddF(dst, src1, src2) => binop!(+,f64,dst,src1,src2,self),
                 Instruction::SubF(dst, src1, src2) => {

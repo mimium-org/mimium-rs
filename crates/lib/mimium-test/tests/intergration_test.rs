@@ -197,6 +197,13 @@ fn nested_ifblock() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn match_int() {
+    let res = run_file_test_mono("match_int.mmm", 1).unwrap();
+    let ans = vec![900.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn letmulti() {
     let res = run_file_test_mono("let_multi.mmm", 1).unwrap();
     let ans = vec![3.0];

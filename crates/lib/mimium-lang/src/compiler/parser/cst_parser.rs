@@ -1215,6 +1215,9 @@ impl<'a> Parser<'a> {
             Some(TokenKind::If) => {
                 self.parse_if_expr();
             }
+            Some(TokenKind::Match) => {
+                self.parse_match_expr();
+            }
             Some(TokenKind::PlaceHolder) => {
                 // Placeholder: _
                 self.emit_node(SyntaxKind::PlaceHolderLiteral, |this| {
@@ -1478,6 +1481,79 @@ impl<'a> Parser<'a> {
                     this.parse_block_expr();
                 } else {
                     this.parse_expr();
+                }
+            }
+        });
+    }
+
+    /// Parse match expression: match scrutinee { pattern => expr, ... }
+    fn parse_match_expr(&mut self) {
+        self.emit_node(SyntaxKind::MatchExpr, |this| {
+            this.expect(TokenKind::Match);
+            this.parse_expr(); // scrutinee
+
+            this.expect(TokenKind::BlockBegin);
+
+            // Parse match arms
+            this.emit_node(SyntaxKind::MatchArmList, |this| {
+                while !this.check(TokenKind::BlockEnd) && !this.is_at_end() {
+                    this.parse_match_arm();
+                    // Arms are separated by linebreaks or commas
+                    if this.has_trailing_linebreak() {
+                        continue;
+                    }
+                    if this.check(TokenKind::Comma) {
+                        this.bump();
+                    }
+                }
+            });
+
+            this.expect(TokenKind::BlockEnd);
+        });
+    }
+
+    /// Parse a single match arm: pattern => expr
+    fn parse_match_arm(&mut self) {
+        self.emit_node(SyntaxKind::MatchArm, |this| {
+            this.parse_match_pattern();
+            this.expect(TokenKind::FatArrow);
+            // Arm body can be a block or simple expression
+            if this.check(TokenKind::BlockBegin) {
+                this.parse_block_expr();
+            } else {
+                this.parse_expr();
+            }
+        });
+    }
+
+    /// Parse a match pattern (for now, only integer literals and placeholder)
+    fn parse_match_pattern(&mut self) {
+        self.emit_node(SyntaxKind::MatchPattern, |this| {
+            match this.peek() {
+                Some(TokenKind::Int) => {
+                    this.emit_node(SyntaxKind::IntLiteral, |this| {
+                        this.bump();
+                    });
+                }
+                Some(TokenKind::Float) => {
+                    this.emit_node(SyntaxKind::FloatLiteral, |this| {
+                        this.bump();
+                    });
+                }
+                Some(TokenKind::PlaceHolder) => {
+                    this.emit_node(SyntaxKind::PlaceHolderLiteral, |this| {
+                        this.bump();
+                    });
+                }
+                _ => {
+                    if let Some(kind) = this.peek() {
+                        this.add_error(ParserError::unexpected_token(
+                            this.current_token_index(),
+                            "match pattern (int, float, or _)",
+                            &format!("{kind:?}"),
+                        ));
+                    }
+                    this.bump();
                 }
             }
         });

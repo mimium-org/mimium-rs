@@ -82,6 +82,7 @@ where
     choice((
         just("->").to(TokenKind::Arrow),
         just("<-").to(TokenKind::LeftArrow),
+        just("=>").to(TokenKind::FatArrow),
         just("==").to(TokenKind::OpEqual),
         just("!=").to(TokenKind::OpNotEqual),
         just("<=").to(TokenKind::OpLessEqual),
@@ -148,6 +149,7 @@ where
             "letrec" => TokenKind::LetRec,
             "if" => TokenKind::If,
             "else" => TokenKind::Else,
+            "match" => TokenKind::Match,
             "float" => TokenKind::FloatType,
             "int" => TokenKind::IntegerType,
             "string" => TokenKind::StringType,

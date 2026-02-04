@@ -1055,6 +1055,46 @@ impl InferContext {
                 self.stage = self.stage.decrement();
                 Ok(Type::Code(res).into_id_with_location(loc_e))
             }
+            Expr::Match(scrutinee, arms) => {
+                // Infer type of scrutinee
+                let scrut_ty = self.infer_type_unwrapping(*scrutinee);
+
+                // Check each pattern against scrutinee type (Phase 1: only numeric literals)
+                for arm in arms {
+                    match &arm.pattern {
+                        crate::ast::MatchPattern::Literal(lit) => {
+                            // For numeric patterns, check scrutinee is numeric
+                            let pat_ty = match lit {
+                                crate::ast::Literal::Int(_) | crate::ast::Literal::Float(_) => {
+                                    Type::Primitive(PType::Numeric)
+                                        .into_id_with_location(loc.clone())
+                                }
+                                _ => Type::Failure.into_id_with_location(loc.clone()),
+                            };
+                            let _ = self.unify_types(scrut_ty, pat_ty);
+                        }
+                        crate::ast::MatchPattern::Wildcard => {
+                            // Wildcard matches anything
+                        }
+                    }
+                }
+
+                // Infer types of all arm bodies and unify them
+                let arm_tys: Vec<TypeNodeId> = arms
+                    .iter()
+                    .map(|arm| self.infer_type_unwrapping(arm.body))
+                    .collect();
+
+                if arm_tys.is_empty() {
+                    Ok(Type::Primitive(PType::Unit).into_id_with_location(loc))
+                } else {
+                    let first = arm_tys[0];
+                    for ty in arm_tys.iter().skip(1) {
+                        let _ = self.unify_types(first, *ty);
+                    }
+                    Ok(first)
+                }
+            }
             _ => Ok(Type::Failure.into_id_with_location(loc)),
         };
         res.inspect(|ty| {

@@ -51,6 +51,10 @@ fn try_find_recurse(e_s: ExprNodeId, name: Symbol) -> bool {
         Expr::UniOp(_, _) => unreachable!(),
         Expr::MacroExpand(_, _) => unreachable!(),
         Expr::Paren(_) => unreachable!(),
+        Expr::Match(scrutinee, arms) => {
+            try_find_recurse(scrutinee, name)
+                || arms.iter().any(|arm| try_find_recurse(arm.body, name))
+        }
         Expr::Literal(_) | Expr::Error => false,
         // Qualified variables don't directly recurse; name resolution handles them
         Expr::QualifiedVar(_) => false,
@@ -122,6 +126,15 @@ pub fn convert_recurse(e_s: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
                 .collect(),
         ),
         Expr::FieldAccess(record, field) => Expr::FieldAccess(convert(record), field),
+        Expr::Match(scrutinee, arms) => Expr::Match(
+            convert(scrutinee),
+            arms.iter()
+                .map(|arm| crate::ast::MatchArm {
+                    pattern: arm.pattern.clone(),
+                    body: convert(arm.body),
+                })
+                .collect(),
+        ),
         Expr::BinOp(_, _, _) => unreachable!(),
         Expr::UniOp(_, _) => unreachable!(),
         Expr::MacroExpand(_, _) => unreachable!(),

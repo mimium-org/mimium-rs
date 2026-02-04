@@ -522,6 +522,7 @@ impl<'a> Lowerer<'a> {
                 let else_expr = expr_children.get(2).map(|&id| self.lower_expr(id));
                 Expr::If(cond, then_expr, else_expr).into_id(loc)
             }
+            Some(SyntaxKind::MatchExpr) => self.lower_match_expr(node, loc),
             Some(SyntaxKind::BlockExpr) => {
                 let stmts = self.lower_block_statements(node);
                 Expr::Block(into_then_expr(&stmts)).into_id(loc)
@@ -581,6 +582,109 @@ impl<'a> Lowerer<'a> {
             }
             _ => Expr::Error.into_id(loc),
         }
+    }
+
+    /// Lower a match expression from CST to AST
+    fn lower_match_expr(&self, node: GreenNodeId, loc: Location) -> ExprNodeId {
+        use crate::ast::MatchArm;
+
+        let children: Vec<GreenNodeId> = self
+            .arena
+            .children(node)
+            .map(|c| c.to_vec())
+            .unwrap_or_default();
+
+        // Find scrutinee (first expression child)
+        let scrutinee = children
+            .iter()
+            .find(|&&c| self.arena.kind(c).map(Self::is_expr_kind) == Some(true))
+            .map(|&c| self.lower_expr(c))
+            .unwrap_or_else(|| Expr::Error.into_id(loc.clone()));
+
+        // Find MatchArmList
+        let arm_list = children
+            .iter()
+            .find(|&&c| self.arena.kind(c) == Some(SyntaxKind::MatchArmList));
+
+        let arms: Vec<MatchArm> = arm_list
+            .and_then(|&list| self.arena.children(list))
+            .map(|arm_nodes| {
+                arm_nodes
+                    .iter()
+                    .filter(|&&c| self.arena.kind(c) == Some(SyntaxKind::MatchArm))
+                    .map(|&arm| self.lower_match_arm(arm))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Expr::Match(scrutinee, arms).into_id(loc)
+    }
+
+    /// Lower a single match arm from CST to AST
+    fn lower_match_arm(&self, node: GreenNodeId) -> crate::ast::MatchArm {
+        use crate::ast::{MatchArm, MatchPattern};
+
+        let children: Vec<GreenNodeId> = self
+            .arena
+            .children(node)
+            .map(|c| c.iter().copied().collect())
+            .unwrap_or_default();
+
+        // Find pattern
+        let pattern_node = children
+            .iter()
+            .find(|&&c| self.arena.kind(c) == Some(SyntaxKind::MatchPattern));
+
+        let pattern = pattern_node
+            .map(|&pat| self.lower_match_pattern(pat))
+            .unwrap_or(MatchPattern::Wildcard);
+
+        // Find body expression (skip MatchPattern node to avoid matching pattern's literals)
+        let body = children
+            .iter()
+            .filter(|&&c| self.arena.kind(c) != Some(SyntaxKind::MatchPattern))
+            .find(|&&c| self.arena.kind(c).map(Self::is_expr_kind) == Some(true))
+            .map(|&c| self.lower_expr(c))
+            .unwrap_or_else(|| {
+                Expr::Error.into_id(self.location_from_span(self.node_span(node).unwrap_or(0..0)))
+            });
+
+        MatchArm { pattern, body }
+    }
+
+    /// Lower a match pattern from CST to AST
+    fn lower_match_pattern(&self, node: GreenNodeId) -> crate::ast::MatchPattern {
+        use crate::ast::{Literal, MatchPattern};
+        use crate::interner::ToSymbol;
+
+        let children: Vec<GreenNodeId> = self
+            .arena
+            .children(node)
+            .map(|c| c.to_vec())
+            .unwrap_or_default();
+
+        for &child in &children {
+            match self.arena.kind(child) {
+                Some(SyntaxKind::IntLiteral) => {
+                    if let Some(text) = self.text_of_first_token(child) {
+                        if let Ok(n) = text.parse::<i64>() {
+                            return MatchPattern::Literal(Literal::Int(n));
+                        }
+                    }
+                }
+                Some(SyntaxKind::FloatLiteral) => {
+                    if let Some(text) = self.text_of_first_token(child) {
+                        return MatchPattern::Literal(Literal::Float(text.to_symbol()));
+                    }
+                }
+                Some(SyntaxKind::PlaceHolderLiteral) => {
+                    return MatchPattern::Wildcard;
+                }
+                _ => {}
+            }
+        }
+
+        MatchPattern::Wildcard
     }
 
     fn lower_lambda(&self, node: GreenNodeId) -> (Vec<TypedId>, ExprNodeId) {
@@ -1284,6 +1388,7 @@ impl<'a> Lowerer<'a> {
                 | SyntaxKind::EscapeExpr
                 | SyntaxKind::LambdaExpr
                 | SyntaxKind::IfExpr
+                | SyntaxKind::MatchExpr
                 | SyntaxKind::BlockExpr
                 | SyntaxKind::TupleExpr
                 | SyntaxKind::RecordExpr
@@ -1845,6 +1950,71 @@ fn dsp() { add(1.0, 2.0) }
                 assert!(matches!(target, UseTarget::Single));
             }
             _ => panic!("Expected UseStatement, got {:?}", stmt),
+        }
+    }
+
+    #[test]
+    fn test_parse_match_expr() {
+        let source = "fn test_match(num) { match num { 0 => 100, 1 => 200, _ => 300 } }";
+        let prog = parse_source(source);
+
+        assert!(!prog.statements.is_empty());
+        let stmt = &prog.statements[0].0;
+        match stmt {
+            ProgramStatement::FnDefinition { body, .. } => {
+                let body_expr = body.to_expr();
+                match body_expr {
+                    Expr::Match(scrutinee, arms) => {
+                        // Check scrutinee is a variable
+                        match scrutinee.to_expr() {
+                            Expr::Var(name) => assert_eq!(name.as_str(), "num"),
+                            other => panic!("Expected Var, got {other:?}"),
+                        }
+
+                        // Check arms
+                        assert_eq!(arms.len(), 3);
+
+                        // Check first arm: 0 => 100
+                        match &arms[0].pattern {
+                            crate::ast::MatchPattern::Literal(crate::ast::Literal::Int(0)) => {}
+                            other => panic!("Expected pattern Literal(Int(0)), got {:?}", other),
+                        }
+                        // Body literals are converted to Float in mimium
+                        match arms[0].body.to_expr() {
+                            Expr::Literal(crate::ast::Literal::Float(s)) => {
+                                assert_eq!(s.as_str(), "100");
+                            }
+                            other => panic!("Expected body Literal(Float(100)), got {:?}", other),
+                        }
+
+                        // Check second arm: 1 => 200
+                        match &arms[1].pattern {
+                            crate::ast::MatchPattern::Literal(crate::ast::Literal::Int(1)) => {}
+                            other => panic!("Expected pattern Literal(Int(1)), got {:?}", other),
+                        }
+                        match arms[1].body.to_expr() {
+                            Expr::Literal(crate::ast::Literal::Float(s)) => {
+                                assert_eq!(s.as_str(), "200");
+                            }
+                            other => panic!("Expected body Literal(Float(200)), got {:?}", other),
+                        }
+
+                        // Check third arm: _ => 300
+                        match &arms[2].pattern {
+                            crate::ast::MatchPattern::Wildcard => {}
+                            other => panic!("Expected Wildcard, got {:?}", other),
+                        }
+                        match arms[2].body.to_expr() {
+                            Expr::Literal(crate::ast::Literal::Float(s)) => {
+                                assert_eq!(s.as_str(), "300");
+                            }
+                            other => panic!("Expected body Literal(Float(300)), got {:?}", other),
+                        }
+                    }
+                    other => panic!("Expected Match expr, got {:?}", other),
+                }
+            }
+            _ => panic!("Expected FnDefinition, got {:?}", stmt),
         }
     }
 }

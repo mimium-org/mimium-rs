@@ -1339,6 +1339,11 @@ impl Context {
 
                 (res, ty, [state_c, branch_state].concat())
             }
+            Expr::Match(scrutinee, arms) => {
+                // For now, implement match as a chain of if-else comparisons
+                // This is a simple implementation for Phase 1 (integer patterns)
+                self.eval_match(*scrutinee, arms, ty)
+            }
             Expr::Bracket(_) | Expr::Escape(_) | Expr::MacroExpand(_, _) => {
                 unreachable!("Macro code should be expanded before mirgen")
             }
@@ -1352,6 +1357,124 @@ impl Context {
                 (Arc::new(Value::None), unit!(), vec![])
             }
         }
+    }
+
+    /// Extract integer value from a literal for use in switch cases
+    fn literal_to_i64(lit: &crate::ast::Literal) -> i64 {
+        use crate::ast::Literal;
+        match lit {
+            Literal::Int(i) => *i,
+            Literal::Float(f) => f.as_str().parse::<f64>().expect("illegal float format") as i64,
+            _ => todo!("Only integer/float literals are supported in match patterns"),
+        }
+    }
+
+    /// Evaluate a match expression using Switch instruction
+    fn eval_match(
+        &mut self,
+        scrutinee: ExprNodeId,
+        arms: &[crate::ast::MatchArm],
+        result_ty: TypeNodeId,
+    ) -> (VPtr, TypeNodeId, Vec<StateSkeleton>) {
+        use crate::ast::MatchPattern;
+
+        if arms.is_empty() {
+            return (Arc::new(Value::None), unit!(), vec![]);
+        }
+
+        let (scrut_val, _scrut_ty, mut states) = self.eval_expr(scrutinee);
+
+        // Collect literal cases (as i64) and find wildcard (default) arm
+        let literal_arms: Vec<_> = arms
+            .iter()
+            .filter_map(|arm| match &arm.pattern {
+                MatchPattern::Literal(lit) => Some((arm, Self::literal_to_i64(lit))),
+                MatchPattern::Wildcard => None,
+            })
+            .collect();
+
+        let default_arm = arms
+            .iter()
+            .find(|arm| matches!(&arm.pattern, MatchPattern::Wildcard));
+
+        // Record current block where Switch will be placed
+        let switch_bidx = self.get_ctxdata().current_bb;
+
+        // Placeholder Switch instruction - will be updated later
+        let _ = self.push_inst(Instruction::Switch {
+            scrutinee: scrut_val.clone(),
+            cases: vec![],
+            default_block: 0,
+            merge_block: 0,
+        });
+
+        // Generate blocks for each literal case
+        let (case_blocks, case_results, case_states): (Vec<_>, Vec<_>, Vec<_>) = literal_arms
+            .iter()
+            .map(|(arm, lit_val)| {
+                self.add_new_basicblock();
+                let block_idx = self.get_ctxdata().current_bb as u64;
+                let (result_val, _, arm_states) = self.eval_expr(arm.body);
+                ((*lit_val, block_idx), result_val, arm_states)
+            })
+            .fold(
+                (vec![], vec![], vec![]),
+                |(mut blocks, mut results, mut states), (block, result, arm_states)| {
+                    blocks.push(block);
+                    results.push(result);
+                    states.extend(arm_states);
+                    (blocks, results, states)
+                },
+            );
+
+        let mut case_results = case_results;
+        let mut all_states = case_states;
+
+        // Generate default block
+        self.add_new_basicblock();
+        let default_block_idx = self.get_ctxdata().current_bb as u64;
+        let default_result = if let Some(arm) = default_arm {
+            let (result_val, _, arm_states) = self.eval_expr(arm.body);
+            all_states.extend(arm_states);
+            result_val
+        } else {
+            // No default case - return None (should be a compile error in a proper implementation)
+            Arc::new(Value::None)
+        };
+        case_results.push(default_result);
+
+        // Generate merge block with PhiSwitch
+        self.add_new_basicblock();
+        let merge_block_idx = self.get_ctxdata().current_bb as u64;
+        let res = self.push_inst(Instruction::PhiSwitch(case_results));
+
+        // Update Switch instruction with correct block indices
+        let switch_inst = self
+            .get_current_fn()
+            .body
+            .get_mut(switch_bidx)
+            .expect("no basic block found")
+            .0
+            .last_mut()
+            .expect("block contains no inst");
+
+        match &mut switch_inst.1 {
+            Instruction::Switch {
+                cases,
+                default_block,
+                merge_block,
+                ..
+            } => {
+                *cases = case_blocks;
+                *default_block = default_block_idx;
+                *merge_block = merge_block_idx;
+            }
+            _ => panic!("expected Switch instruction"),
+        }
+
+
+        states.extend(all_states);
+        (res, result_ty, states)
     }
 }
 

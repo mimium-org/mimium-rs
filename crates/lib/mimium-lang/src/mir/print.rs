@@ -127,6 +127,30 @@ impl std::fmt::Display for Instruction {
             Instruction::JmpIf(cond, tbb, ebb, pbb) => write!(f, "jmpif {cond} {tbb} {ebb} {pbb}"),
             Instruction::Jmp(bb) => write!(f, "jmp {bb}"),
             Instruction::Phi(t, e) => write!(f, "phi {t} {e}"),
+            Instruction::Switch {
+                scrutinee,
+                cases,
+                default_block,
+                merge_block,
+            } => {
+                let cases_str = cases
+                    .iter()
+                    .map(|(lit, b)| format!("{lit}->{b}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(
+                    f,
+                    "switch {scrutinee} [{cases_str}] default:{default_block} merge:{merge_block}"
+                )
+            }
+            Instruction::PhiSwitch(values) => {
+                let vals_str = values
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "phiswitch [{vals_str}]")
+            }
             Instruction::Return(a, rty) => write!(f, "ret {} {}", *a, rty.to_type()),
             Instruction::ReturnFeed(v, rty) => write!(f, "retfeed {} {}", *v, rty.to_type()),
             Instruction::Delay(max, a, b) => write!(f, "delay {max} {} {}", *a, *b),

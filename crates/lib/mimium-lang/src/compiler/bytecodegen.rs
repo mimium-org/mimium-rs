@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::interner::{Symbol, TypeNodeId};
 use crate::mir::{self, Mir};
 use crate::runtime::vm::bytecode::{ConstPos, GlobalPos, Reg};
-use crate::runtime::vm::program::WordSize;
+use crate::runtime::vm::program::{JumpTable, WordSize};
 use crate::runtime::vm::{self, StateOffset};
 use crate::types::{PType, RecordTypeField, Type, TypeSize};
 use crate::utils::half_float::HFloat;
@@ -642,6 +642,161 @@ impl ByteCodeGenerator {
             mir::Instruction::Phi(_, _) => {
                 unreachable!()
             }
+            mir::Instruction::PhiSwitch(_) => {
+                unreachable!("PhiSwitch should be handled within Switch processing")
+            }
+            mir::Instruction::Switch {
+                scrutinee,
+                cases,
+                default_block,
+                merge_block,
+            } => {
+                // Switch is compiled using JmpTable instruction
+                // Structure: [JmpTable] [case0_body, Move, Jmp] [case1_body, Move, Jmp] ... [default_body, Move] [merge_block]
+                let scrut_reg = self.find(&scrutinee);
+
+                // Get PhiSwitch destination register
+                let merge_block_mir = &mirfunc.body[merge_block as usize];
+                let (phi_dst, phi_inst) = merge_block_mir.0.first().unwrap();
+                let phi_reg = self.vregister.add_newvalue(phi_dst);
+
+                // Helper closure to emit instructions for a basic block
+                let mut emit_block =
+                    |this: &mut Self, block: &mir::Block| -> Vec<VmInstruction> {
+                        block.0.iter().fold(vec![], |mut bytes, (bdst, binst)| {
+                            if let Some(vm_inst) = this.emit_instruction(
+                                funcproto,
+                                Some(&mut bytes),
+                                mirfunc.clone(),
+                                bdst.clone(),
+                                binst.clone(),
+                                config,
+                            ) {
+                                bytes.push(vm_inst);
+                            }
+                            bytes
+                        })
+                    };
+
+                // Collect all bytecodes for each case block
+                let all_block_bytes: Vec<Vec<VmInstruction>> = cases
+                    .iter()
+                    .map(|(_, block_idx)| {
+                        let block = &mirfunc.body[*block_idx as usize];
+                        emit_block(self, block)
+                    })
+                    .collect();
+
+                // Default block
+                let default_block_mir = &mirfunc.body[default_block as usize];
+                let default_bytes = emit_block(self, default_block_mir);
+
+                // Now that all blocks are processed, we can find the result registers
+                let result_regs: Vec<Reg> = if let mir::Instruction::PhiSwitch(results) = phi_inst {
+                    results.iter().map(|r| self.find(r)).collect()
+                } else {
+                    panic!("Expected PhiSwitch in merge block");
+                };
+
+                // Merge block remaining instructions
+                let merge_bytes: Vec<VmInstruction> =
+                    merge_block_mir
+                        .0
+                        .iter()
+                        .skip(1)
+                        .fold(vec![], |mut bytes, (bdst, binst)| {
+                            if let Some(vm_inst) = self.emit_instruction(
+                                funcproto,
+                                Some(&mut bytes),
+                                mirfunc.clone(),
+                                bdst.clone(),
+                                binst.clone(),
+                                config,
+                            ) {
+                                bytes.push(vm_inst);
+                            }
+                            bytes
+                        });
+
+                // Calculate sizes: each case segment is [body..., Move, Jmp]
+                let case_segment_sizes: Vec<usize> = all_block_bytes
+                    .iter()
+                    .map(|b| b.len() + 2) // body + Move + Jmp
+                    .collect();
+
+                let default_segment_size = default_bytes.len() + 1; // body + Move (no Jmp needed)
+
+                // Build dense jump table for O(1) lookup
+                // Calculate min/max values from cases
+                let min_val = cases.iter().map(|(v, _)| *v).min().unwrap_or(0);
+                let max_val = cases.iter().map(|(v, _)| *v).max().unwrap_or(0);
+
+                // Calculate offsets for each case using scan (cumulative sum)
+                let case_offsets: Vec<(i64, i16)> = cases
+                    .iter()
+                    .zip(case_segment_sizes.iter())
+                    .scan(1i16, |offset, ((lit_val, _), seg_size)| {
+                        let current = *offset;
+                        *offset += *seg_size as i16;
+                        Some((*lit_val, current))
+                    })
+                    .collect();
+
+                // Default offset (after all case blocks)
+                let default_offset = case_offsets
+                    .last()
+                    .map(|(_, off)| *off + case_segment_sizes.last().copied().unwrap_or(0) as i16)
+                    .unwrap_or(1);
+
+                // Build dense array: fill with default, then set specific case offsets
+                // Add one extra slot at the end for the default offset (used for out-of-range values)
+                let table_size = (max_val - min_val + 1) as usize + 1; // +1 for default slot
+                let offsets = case_offsets
+                    .iter()
+                    .fold(vec![default_offset; table_size], |mut offsets, (lit_val, offset)| {
+                        offsets[(lit_val - min_val) as usize] = *offset;
+                        offsets
+                    });
+
+                // Add jump table to funcproto and get its index
+                let table_idx = funcproto.jump_tables.len() as u8;
+                funcproto.jump_tables.push(JumpTable {
+                    min: min_val,
+                    offsets,
+                });
+
+                // Build the bytecode sequence
+                let switch_bytes: Vec<VmInstruction> = std::iter::once(VmInstruction::JmpTable(scrut_reg, table_idx))
+                    .chain(
+                        all_block_bytes
+                            .iter()
+                            .enumerate()
+                            .flat_map(|(i, block_bytes)| {
+                                let remaining_size: usize =
+                                    case_segment_sizes[i + 1..].iter().sum::<usize>()
+                                        + default_segment_size
+                                        + 1;
+                                block_bytes
+                                    .iter()
+                                    .cloned()
+                                    .chain(std::iter::once(VmInstruction::Move(phi_reg, result_regs[i])))
+                                    .chain(std::iter::once(VmInstruction::Jmp(remaining_size as i16)))
+                            }),
+                    )
+                    .chain(default_bytes.iter().cloned())
+                    .chain(std::iter::once(VmInstruction::Move(
+                        phi_reg,
+                        *result_regs.last().unwrap(),
+                    )))
+                    .chain(merge_bytes.iter().cloned())
+                    .collect();
+
+                // Output everything to the destination
+                let bytecodes_dst = bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut());
+                bytecodes_dst.extend(switch_bytes);
+
+                None
+            }
             mir::Instruction::Return(v, rty) => {
                 let nret = Self::word_size_for_type(rty);
                 let inst = match v.as_ref() {
@@ -744,8 +899,8 @@ impl ByteCodeGenerator {
                 todo!("SetArrayElem is not used in the current implementation");
             }
 
-            _ => {
-                unimplemented!()
+            instr => {
+                unimplemented!("Instruction not implemented: {:?}", instr)
             }
         }
     }
@@ -789,6 +944,7 @@ impl ByteCodeGenerator {
                 func.bytecodes.push(i);
             }
         });
+        
         (mirfunc.label.to_string(), func)
     }
     pub fn generate(&mut self, mir: Mir, config: Config) -> vm::Program {

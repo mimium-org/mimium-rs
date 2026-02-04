@@ -419,6 +419,10 @@ mod expr {
                     .append(allocator.text("!"))
                     .append(allocator.intersperse(args, ", ").parens())
             }
+            Expr::Match(scrutinee, arms) => {
+                // TODO: proper pretty printing for match
+                allocator.text("match /* todo */")
+            }
         }
     }
 }

@@ -77,9 +77,11 @@ pub enum TokenKind {
     Macro,       // macro
     Arrow,       // ->
     LeftArrow,   // <-
+    FatArrow,    // =>
     PlaceHolder, // _
     If,
     Else,
+    Match,       // match
 
     // Directives
     Include,
@@ -158,9 +160,11 @@ impl fmt::Display for TokenKind {
             TokenKind::Macro => write!(f, "macro"),
             TokenKind::Arrow => write!(f, "->"),
             TokenKind::LeftArrow => write!(f, "<-"),
+            TokenKind::FatArrow => write!(f, "=>"),
             TokenKind::PlaceHolder => write!(f, "_"),
             TokenKind::If => write!(f, "if"),
             TokenKind::Else => write!(f, "else"),
+            TokenKind::Match => write!(f, "match"),
             TokenKind::Include => write!(f, "include"),
             TokenKind::LineBreak => write!(f, "linebreak"),
             TokenKind::Whitespace => write!(f, "whitespace"),
