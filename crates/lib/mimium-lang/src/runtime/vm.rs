@@ -566,8 +566,8 @@ impl Machine {
         // clean up temporary variables to ensure that `nret`
         // at the top of the stack is the return value
         self.stack.truncate(base - 1 + nret as usize);
-        let res_slice = self.stack.split_at(base).1;
-        res_slice
+
+        (self.stack.split_at(base).1) as _
     }
 
     pub fn get_as<T>(v: RawVal) -> T {
@@ -1080,7 +1080,7 @@ impl Machine {
                 {
                     let _ = self.fn_map.insert(i, ExtFnIdx::Cls(j));
                 } else {
-                    panic!("external function {} cannot be found", name);
+                    panic!("external function {name} cannot be found");
                 }
             });
     }

@@ -293,10 +293,10 @@ impl<'a> Parser<'a> {
         }
         if let Some(trivia_indices) = self.preparsed.leading_trivia_map.get(&self.current) {
             for &trivia_idx in trivia_indices {
-                if let Some(token) = self.tokens.get(trivia_idx) {
-                    if token.kind == TokenKind::LineBreak {
-                        return true;
-                    }
+                if let Some(token) = self.tokens.get(trivia_idx)
+                    && token.kind == TokenKind::LineBreak
+                {
+                    return true;
                 }
             }
         }

@@ -9,7 +9,7 @@ use crate::ast::{Expr, Literal, RecordField};
 use crate::compiler::EvalStage;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
-use crate::plugin::{MacroFunType, MacroFunction, MacroInfo};
+use crate::plugin::MacroFunction;
 use crate::types::Type;
 use crate::utils::environment::{Environment, LookupRes};
 

@@ -44,7 +44,7 @@ impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Global(gv) => write!(f, "global({})", *gv),
-            Value::Argument(i) => write!(f, "arg({})", i),
+            Value::Argument(i) => write!(f, "arg({i})"),
             Value::Register(r) => write!(f, "reg({r})"),
             Value::Function(id) => write!(f, "function {id}"),
             Value::ExtFunction(label, t) => {

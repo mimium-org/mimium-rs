@@ -104,7 +104,7 @@ impl std::fmt::Display for Program {
             let _ = writeln!(f, "constants:  {:?}", fns.1.constants);
             let _ = writeln!(f, "instructions:");
             for inst in fns.1.bytecodes.iter() {
-                let _ = writeln!(f, "  {}", inst);
+                let _ = writeln!(f, "  {inst}");
             }
         }
         let _ = write!(

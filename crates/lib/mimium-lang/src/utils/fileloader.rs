@@ -15,10 +15,10 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Error::IoError(e) => write!(f, "IoError: {}", e),
+            Error::IoError(e) => write!(f, "IoError: {e}"),
             Error::FileNotFound(e, p) => write!(f, "File {} not found: {}", p.display(), e),
-            Error::UtfConversionError(e) => write!(f, "Failed to convert into UTF: {}", e),
-            Error::PathJoinError(e) => write!(f, "Failed to join path: {}", e),
+            Error::UtfConversionError(e) => write!(f, "Failed to convert into UTF: {e}"),
+            Error::PathJoinError(e) => write!(f, "Failed to join path: {e}"),
             Error::SelfReference(path_buf) => write!(
                 f,
                 "File tried to include itself recusively: {}",

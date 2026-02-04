@@ -159,9 +159,9 @@ impl ExprNodeId {
 impl fmt::Display for Literal {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Literal::Float(n) => write!(f, "(float {})", n),
-            Literal::Int(n) => write!(f, "(int {})", n),
-            Literal::String(s) => write!(f, "\"{}\"", s),
+            Literal::Float(n) => write!(f, "(float {n})"),
+            Literal::Int(n) => write!(f, "(int {n})"),
+            Literal::String(s) => write!(f, "\"{s}\""),
             Literal::Now => write!(f, "now"),
             Literal::SampleRate => write!(f, "samplerate"),
             Literal::SelfLit => write!(f, "self"),
@@ -244,7 +244,7 @@ impl MiniPrint for Expr {
                     .map(|e| e.simple_print())
                     .collect::<Vec<String>>()
                     .join(", ");
-                format!("(array [{}])", items_str)
+                format!("(array [{items_str}])")
             }
             Expr::RecordLiteral(fields) => {
                 let fields_str = fields
@@ -252,7 +252,7 @@ impl MiniPrint for Expr {
                     .map(|f| f.simple_print())
                     .collect::<Vec<String>>()
                     .join(", ");
-                format!("(record {{{}}})", fields_str)
+                format!("(record {{{fields_str}}})")
             }
             Expr::ImcompleteRecord(fields) => {
                 let fields_str = fields
@@ -260,7 +260,7 @@ impl MiniPrint for Expr {
                     .map(|f| f.simple_print())
                     .collect::<Vec<String>>()
                     .join(", ");
-                format!("(incomplete-record {{{}, ..}})", fields_str)
+                format!("(incomplete-record {{{fields_str}, ..}})")
             }
             Expr::RecordUpdate(record, fields) => {
                 let fields_str = fields

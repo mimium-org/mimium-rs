@@ -1,13 +1,10 @@
 use std::{
     collections::HashMap,
-    ops::Range,
     path::PathBuf,
     sync::{LazyLock, Mutex},
 };
 
 use ariadne::{ColorGenerator, Label, Report, ReportKind, Source};
-
-use crate::interner::{Symbol, ToSymbol};
 
 use super::metadata::Location;
 

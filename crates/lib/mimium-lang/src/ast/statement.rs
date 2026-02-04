@@ -2,7 +2,7 @@ use crate::{
     ast::Expr,
     interner::ExprNodeId,
     pattern::{TypedId, TypedPattern},
-    utils::metadata::{Location, Span},
+    utils::metadata::Location,
 };
 
 use super::StageKind;
@@ -100,10 +100,10 @@ pub(crate) fn into_then_expr(stmts: &[(Statement, Location)]) -> Option<ExprNode
         };
         closures.push(cls);
     }
-    let e_pre = closures
+
+    // log::debug!("stmts {:?}, e_pre: {:?}", stmts, e_pre);
+    closures
         .into_iter()
         .rev()
-        .fold(None, move |then, cls: ClsType| cls(then));
-    // log::debug!("stmts {:?}, e_pre: {:?}", stmts, e_pre);
-    e_pre
+        .fold(None, move |then, cls: ClsType| cls(then))
 }

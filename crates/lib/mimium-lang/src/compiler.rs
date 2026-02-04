@@ -19,7 +19,7 @@ impl std::fmt::Display for EvalStage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EvalStage::Persistent => write!(f, "persistent"),
-            EvalStage::Stage(n) => write!(f, "{}", n),
+            EvalStage::Stage(n) => write!(f, "{n}"),
         }
     }
 }

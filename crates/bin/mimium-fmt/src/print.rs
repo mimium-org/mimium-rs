@@ -569,7 +569,7 @@ pub mod program {
                             .map(|s| s.to_string())
                             .collect::<Vec<_>>()
                             .join(", ");
-                        format!("::{{{}}}", names_str)
+                        format!("::{{{names_str}}}")
                     }
                     UseTarget::Wildcard => "::*".to_string(),
                 };

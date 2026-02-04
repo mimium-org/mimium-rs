@@ -101,7 +101,7 @@ where
     F: FnOnce(&mut SessionGlobals) -> R,
 {
     if let Ok(mut guard) = SESSION_GLOBALS.lock() {
-        f(&mut *guard)
+        f(&mut guard)
     } else {
         panic!("Failed to acquire lock on SESSION_GLOBALS");
     }

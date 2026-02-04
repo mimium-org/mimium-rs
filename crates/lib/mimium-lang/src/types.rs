@@ -297,7 +297,7 @@ impl Type {
                     .map(|x| x.to_type().to_mangled_string())
                     .collect::<Vec<_>>()
                     .join("_");
-                format!("tup_{}", mangled_types)
+                format!("tup_{mangled_types}")
             }
             Type::Record(v) => {
                 let mangled_fields = v
@@ -307,7 +307,7 @@ impl Type {
                     })
                     .collect::<Vec<_>>()
                     .join("_");
-                format!("rec_{}", mangled_fields)
+                format!("rec_{mangled_fields}")
             }
             Type::Function { arg, ret } => {
                 format!(
