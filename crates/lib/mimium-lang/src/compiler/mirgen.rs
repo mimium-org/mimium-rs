@@ -8,6 +8,7 @@ use crate::plugin::MacroFunction;
 use crate::utils::miniprint::MiniPrint;
 use crate::{function, interpreter, numeric, unit};
 pub mod convert_pronoun;
+pub mod convert_qualified_names;
 pub(crate) mod pattern_destructor;
 pub(crate) mod recursecheck;
 
@@ -496,8 +497,13 @@ impl Context {
     fn eval_rvar(&mut self, e: ExprNodeId, t: TypeNodeId) -> VPtr {
         let span = &e.to_span();
         let loc = self.get_loc_from_span(span);
+        // After convert_qualified_names, all module names are resolved to simple Var.
+        // QualifiedVar should have been converted to Var with mangled name.
         let name = match e.to_expr() {
             Expr::Var(name) => name,
+            Expr::QualifiedVar(path) => {
+                unreachable!("Qualified Var should be removed in the previous step.")
+            }
             _ => unreachable!("eval_rvar called on non-variable expr"),
         };
         log::trace!("rv t:{} {}", name, t.to_type());
@@ -790,6 +796,9 @@ impl Context {
                 (v, ty, vec![])
             }
             Expr::Var(_name) => (self.eval_rvar(e, ty), ty, vec![]),
+            Expr::QualifiedVar(_path) => {
+                unreachable!("Qualified Var should be removed in the previous step.")
+            }
             Expr::Block(b) => {
                 if let Some(block) = b {
                     self.eval_expr(*block)
@@ -1242,6 +1251,7 @@ impl Context {
                 let bind = (id.id, v.clone());
                 self.add_bind(bind);
                 let (b, _bt, states) = self.eval_expr(*body);
+
                 if !is_global {
                     let _ = self.push_inst(Instruction::Store(v.clone(), b.clone(), t));
                 }
@@ -1376,6 +1386,36 @@ pub fn typecheck(
     (expr, infer_ctx, errors)
 }
 
+pub fn typecheck_with_module_info(
+    root_expr_id: ExprNodeId,
+    builtin_types: &[(Symbol, TypeNodeId)],
+    file_path: Option<PathBuf>,
+    module_info: crate::ast::program::ModuleInfo,
+) -> (ExprNodeId, InferContext, Vec<Box<dyn ReportableError>>) {
+    // Extract builtin names to pass to qualified name resolution
+    let builtin_names: Vec<Symbol> = builtin_types.iter().map(|(name, _)| *name).collect();
+    // Use the extended version that resolves qualified names
+    let (expr, convert_errs) = convert_pronoun::convert_pronoun_with_module(
+        root_expr_id,
+        file_path.clone().unwrap_or_default(),
+        &module_info,
+        &builtin_names,
+    );
+    let expr = recursecheck::convert_recurse(expr, file_path.clone().unwrap_or_default());
+    // After convert_qualified_names, all module-related names are resolved.
+    // Type checker no longer needs module_info.
+    let infer_ctx =
+        super::typing::infer_root(expr, builtin_types, file_path.clone().unwrap_or_default());
+    let errors = infer_ctx
+        .errors
+        .iter()
+        .cloned()
+        .map(|e| -> Box<dyn ReportableError> { Box::new(e) })
+        .chain(convert_errs)
+        .collect::<Vec<_>>();
+    (expr, infer_ctx, errors)
+}
+
 /// Generate MIR from AST.
 /// The input ast (`root_expr_id`) should contain global context. (See [[parser::add_global_context]].)
 /// MIR generator itself does not emit any error, the any compile errors are analyzed before generating MIR, mostly in type checker.
@@ -1386,8 +1426,26 @@ pub fn compile(
     macro_env: &[Box<dyn MacroFunction>],
     file_path: Option<PathBuf>,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
+    compile_with_module_info(
+        root_expr_id,
+        builtin_types,
+        macro_env,
+        file_path,
+        crate::ast::program::ModuleInfo::new(),
+    )
+}
+
+/// Generate MIR from AST with module information (visibility and use aliases).
+pub fn compile_with_module_info(
+    root_expr_id: ExprNodeId,
+    builtin_types: &[(Symbol, TypeNodeId)],
+    macro_env: &[Box<dyn MacroFunction>],
+    file_path: Option<PathBuf>,
+    module_info: crate::ast::program::ModuleInfo,
+) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
     let expr = root_expr_id.wrap_to_staged_expr();
-    let (expr, mut infer_ctx, errors) = typecheck(expr, builtin_types, file_path.clone());
+    let (expr, mut infer_ctx, errors) =
+        typecheck_with_module_info(expr, builtin_types, file_path.clone(), module_info);
     if errors.is_empty() {
         let top_type = infer_ctx.infer_type(expr).unwrap();
         let expr = interpreter::expand_macro(expr, top_type, macro_env);

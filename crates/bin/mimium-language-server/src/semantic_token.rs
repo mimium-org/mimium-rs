@@ -30,11 +30,13 @@ pub const LEGEND_TYPE: &[SemanticTokenType] = &[
     SemanticTokenType::MACRO,
     SemanticTokenType::TYPE,
     SemanticTokenType::TYPE_PARAMETER,
+    SemanticTokenType::NAMESPACE,
 ];
 pub struct ParseResult {
     pub ast: ExprNodeId,
     pub semantic_tokens: Vec<ImCompleteSemanticToken>,
     pub errors: Vec<Box<dyn ReportableError>>,
+    pub module_info: mimium_lang::ast::program::ModuleInfo,
 }
 
 fn get_token_id(semt: &SemanticTokenType) -> usize {
@@ -54,6 +56,9 @@ fn token_kind_to_semantic_index(kind: TokenKind) -> Option<usize> {
         | TokenKind::Macro
         | TokenKind::Include
         | TokenKind::StageKwd
+        | TokenKind::Mod
+        | TokenKind::Use
+        | TokenKind::Pub
         | TokenKind::Main => get_token_id(&SemanticTokenType::KEYWORD),
         TokenKind::IdentFunction => get_token_id(&SemanticTokenType::FUNCTION),
         TokenKind::IdentParameter => get_token_id(&SemanticTokenType::PARAMETER),
@@ -101,6 +106,7 @@ fn token_kind_to_semantic_index(kind: TokenKind) -> Option<usize> {
         | TokenKind::ArrayEnd
         | TokenKind::Comma
         | TokenKind::Colon
+        | TokenKind::DoubleColon
         | TokenKind::SemiColon
         | TokenKind::Dot
         | TokenKind::DoubleDot
@@ -139,123 +145,216 @@ pub fn tokens_from_parser(tokens: &[Token]) -> Vec<ImCompleteSemanticToken> {
         .collect()
 }
 
-fn is_trivia_node(node_id: GreenNodeId, arena: &GreenNodeArena, tokens: &[Token]) -> bool {
-    matches!(arena.get(node_id), GreenNode::Token { token_index, .. } if tokens[*token_index].is_trivia())
+/// Context for semantic token analysis.
+/// Groups together all the data needed for contextual semantic highlighting.
+struct SemanticContext<'a> {
+    arena: &'a GreenNodeArena,
+    tokens: &'a [Token],
+    token_types: &'a mut [Option<usize>],
+    function_id: usize,
+    namespace_id: usize,
 }
 
-fn mark_identifiers_as_function(
-    node_id: GreenNodeId,
-    arena: &GreenNodeArena,
-    tokens: &[Token],
-    token_types: &mut [Option<usize>],
-    function_id: usize,
-) {
-    match arena.get(node_id) {
-        GreenNode::Token { token_index, .. } => {
-            if matches!(
-                tokens[*token_index].kind,
-                TokenKind::Ident
-                    | TokenKind::IdentFunction
-                    | TokenKind::IdentVariable
-                    | TokenKind::IdentParameter
-            ) {
-                token_types[*token_index] = Some(function_id);
+impl<'a> SemanticContext<'a> {
+    fn new(
+        arena: &'a GreenNodeArena,
+        tokens: &'a [Token],
+        token_types: &'a mut [Option<usize>],
+    ) -> Self {
+        Self {
+            arena,
+            tokens,
+            token_types,
+            function_id: get_token_id(&SemanticTokenType::FUNCTION),
+            namespace_id: get_token_id(&SemanticTokenType::NAMESPACE),
+        }
+    }
+
+    fn is_trivia(&self, node_id: GreenNodeId) -> bool {
+        matches!(
+            self.arena.get(node_id),
+            GreenNode::Token { token_index, .. } if self.tokens[*token_index].is_trivia()
+        )
+    }
+
+    fn is_identifier(&self, token_index: usize) -> bool {
+        matches!(
+            self.tokens[token_index].kind,
+            TokenKind::Ident
+                | TokenKind::IdentFunction
+                | TokenKind::IdentVariable
+                | TokenKind::IdentParameter
+        )
+    }
+
+    fn mark_as_function(&mut self, node_id: GreenNodeId) {
+        match self.arena.get(node_id) {
+            GreenNode::Token { token_index, .. } => {
+                if self.is_identifier(*token_index) {
+                    self.token_types[*token_index] = Some(self.function_id);
+                }
+            }
+            GreenNode::Internal { children, .. } => {
+                let children = children.clone();
+                for child in children {
+                    self.mark_as_function(child);
+                }
             }
         }
-        GreenNode::Internal { children, .. } => {
-            children.iter().for_each(|child| {
-                mark_identifiers_as_function(*child, arena, tokens, token_types, function_id)
-            });
+    }
+
+    fn contains_pipe(&self, node_id: GreenNodeId) -> bool {
+        match self.arena.get(node_id) {
+            GreenNode::Token { token_index, .. } => {
+                self.tokens[*token_index].kind == TokenKind::OpPipe
+            }
+            GreenNode::Internal { children, .. } => {
+                children.iter().any(|child| self.contains_pipe(*child))
+            }
         }
     }
-}
 
-fn node_contains_pipe(node_id: GreenNodeId, arena: &GreenNodeArena, tokens: &[Token]) -> bool {
-    match arena.get(node_id) {
-        GreenNode::Token { token_index, .. } => tokens[*token_index].kind == TokenKind::OpPipe,
-        GreenNode::Internal { children, .. } => children
+    fn find_prev_non_trivia(&self, children: &[GreenNodeId], idx: usize) -> Option<GreenNodeId> {
+        children
             .iter()
-            .any(|child| node_contains_pipe(*child, arena, tokens)),
+            .take(idx)
+            .rev()
+            .find(|child| !self.is_trivia(**child))
+            .copied()
     }
-}
 
-fn find_prev_non_trivia(
-    children: &[GreenNodeId],
-    idx: usize,
-    arena: &GreenNodeArena,
-    tokens: &[Token],
-) -> Option<GreenNodeId> {
-    children
-        .iter()
-        .take(idx)
-        .rev()
-        .find(|child| !is_trivia_node(**child, arena, tokens))
-        .copied()
-}
-
-fn mark_function_decl_name(
-    children: &[GreenNodeId],
-    arena: &GreenNodeArena,
-    tokens: &[Token],
-    token_types: &mut [Option<usize>],
-    function_id: usize,
-) {
-    if let Some(token_index) = children.iter().find_map(|child| match arena.get(*child) {
-        GreenNode::Token { token_index, .. }
-            if matches!(
-                tokens[*token_index].kind,
-                TokenKind::Ident | TokenKind::IdentFunction
-            ) =>
-        {
-            Some(*token_index)
+    /// Collect all identifier token indices from a node tree.
+    fn collect_ident_tokens(&self, node_id: GreenNodeId, result: &mut Vec<usize>) {
+        match self.arena.get(node_id) {
+            GreenNode::Token { token_index, .. } => {
+                if self.is_identifier(*token_index) {
+                    result.push(*token_index);
+                }
+            }
+            GreenNode::Internal { children, .. } => {
+                for child in children {
+                    self.collect_ident_tokens(*child, result);
+                }
+            }
         }
-        _ => None,
-    }) {
-        token_types[token_index] = Some(function_id);
+    }
+
+    /// Mark identifiers in a QualifiedPath as namespace tokens, except the last one.
+    /// For `foo::bar::baz`, `foo` and `bar` become NAMESPACE, `baz` stays as VARIABLE/FUNCTION.
+    fn mark_qualified_path_namespaces(&mut self, node_id: GreenNodeId) {
+        let mut ident_tokens: Vec<usize> = Vec::new();
+        self.collect_ident_tokens(node_id, &mut ident_tokens);
+
+        // Mark all but the last identifier as namespace
+        if ident_tokens.len() > 1 {
+            for &token_idx in ident_tokens.iter().take(ident_tokens.len() - 1) {
+                self.token_types[token_idx] = Some(self.namespace_id);
+            }
+        }
+    }
+
+    /// Mark all identifiers in a path as namespace tokens.
+    /// Used for `use foo::bar` where even `bar` should be namespace-colored.
+    fn mark_all_as_namespace(&mut self, node_id: GreenNodeId) {
+        let mut ident_tokens: Vec<usize> = Vec::new();
+        self.collect_ident_tokens(node_id, &mut ident_tokens);
+
+        for &token_idx in &ident_tokens {
+            self.token_types[token_idx] = Some(self.namespace_id);
+        }
+    }
+
+    /// Mark the module name identifier as namespace in module declarations.
+    fn mark_module_name(&mut self, children: &[GreenNodeId]) {
+        if let Some(token_index) = children.iter().find_map(|child| {
+            match self.arena.get(*child) {
+                GreenNode::Token { token_index, .. }
+                    if matches!(
+                        self.tokens[*token_index].kind,
+                        TokenKind::Ident | TokenKind::IdentFunction | TokenKind::IdentVariable
+                    ) =>
+                {
+                    Some(*token_index)
+                }
+                _ => None,
+            }
+        }) {
+            self.token_types[token_index] = Some(self.namespace_id);
+        }
+    }
+
+    /// Mark the function name in function declarations.
+    fn mark_function_decl_name(&mut self, children: &[GreenNodeId]) {
+        if let Some(token_index) = children.iter().find_map(|child| {
+            match self.arena.get(*child) {
+                GreenNode::Token { token_index, .. }
+                    if matches!(
+                        self.tokens[*token_index].kind,
+                        TokenKind::Ident | TokenKind::IdentFunction
+                    ) =>
+                {
+                    Some(*token_index)
+                }
+                _ => None,
+            }
+        }) {
+            self.token_types[token_index] = Some(self.function_id);
+        }
     }
 }
 
-fn apply_contextual_semantics(
-    node_id: GreenNodeId,
-    arena: &GreenNodeArena,
-    tokens: &[Token],
-    token_types: &mut [Option<usize>],
-    function_id: usize,
-) {
-    if let Some(children) = arena.children(node_id) {
-        if arena.kind(node_id) == Some(SyntaxKind::FunctionDecl) {
-            mark_function_decl_name(children, arena, tokens, token_types, function_id);
+impl SemanticContext<'_> {
+    /// Apply contextual semantics to the syntax tree.
+    /// This method walks the tree and applies semantic token types based on context.
+    fn apply(&mut self, node_id: GreenNodeId) {
+        let Some(children) = self.arena.children(node_id) else {
+            return;
+        };
+        let children = children.to_vec();
+
+        match self.arena.kind(node_id) {
+            Some(SyntaxKind::FunctionDecl) => {
+                self.mark_function_decl_name(&children);
+            }
+            Some(SyntaxKind::ModuleDecl) => {
+                self.mark_module_name(&children);
+            }
+            Some(SyntaxKind::UseStmt) => {
+                for child in &children {
+                    if self.arena.kind(*child) == Some(SyntaxKind::QualifiedPath) {
+                        self.mark_all_as_namespace(*child);
+                    }
+                }
+            }
+            _ => {}
         }
 
         for (idx, child) in children.iter().enumerate() {
-            if let Some(kind) = arena.kind(*child) {
+            if let Some(kind) = self.arena.kind(*child) {
                 match kind {
                     SyntaxKind::CallExpr => {
-                        if let Some(prev) = find_prev_non_trivia(children, idx, arena, tokens) {
-                            mark_identifiers_as_function(
-                                prev,
-                                arena,
-                                tokens,
-                                token_types,
-                                function_id,
-                            );
+                        if let Some(prev) = self.find_prev_non_trivia(&children, idx) {
+                            if self.arena.kind(prev) == Some(SyntaxKind::QualifiedPath) {
+                                self.mark_qualified_path_namespaces(prev);
+                            }
+                            self.mark_as_function(prev);
                         }
                     }
-                    SyntaxKind::BinaryExpr if node_contains_pipe(*child, arena, tokens) => {
-                        if let Some(prev) = find_prev_non_trivia(children, idx, arena, tokens) {
-                            mark_identifiers_as_function(
-                                prev,
-                                arena,
-                                tokens,
-                                token_types,
-                                function_id,
-                            );
+                    SyntaxKind::BinaryExpr if self.contains_pipe(*child) => {
+                        if let Some(prev) = self.find_prev_non_trivia(&children, idx) {
+                            if self.arena.kind(prev) == Some(SyntaxKind::QualifiedPath) {
+                                self.mark_qualified_path_namespaces(prev);
+                            }
+                            self.mark_as_function(prev);
                         }
+                    }
+                    SyntaxKind::QualifiedPath => {
+                        self.mark_qualified_path_namespaces(*child);
                     }
                     _ => {}
                 }
             }
-            apply_contextual_semantics(*child, arena, tokens, token_types, function_id);
+            self.apply(*child);
         }
     }
 }
@@ -270,8 +369,8 @@ pub fn tokens_from_green(
         .map(|token| token_kind_to_semantic_index(token.kind))
         .collect();
 
-    let function_id = get_token_id(&SemanticTokenType::FUNCTION);
-    apply_contextual_semantics(root, arena, tokens, &mut token_types, function_id);
+    let mut ctx = SemanticContext::new(arena, tokens, &mut token_types);
+    ctx.apply(root);
 
     tokens
         .iter()
@@ -301,11 +400,12 @@ pub fn parse(src: &str, uri: &str) -> ParseResult {
         })
         .collect();
 
-    let (ast, parse_errs) = parse_to_expr(src, Some(PathBuf::from(uri)));
+    let (ast, module_info, parse_errs) = parse_to_expr(src, Some(PathBuf::from(uri)));
 
     ParseResult {
         ast,
         semantic_tokens,
         errors: parse_errs,
+        module_info,
     }
 }

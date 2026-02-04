@@ -1,0 +1,14 @@
+// External module file: module_external_math.mmm
+// This file is loaded when the main file uses "mod module_external_math"
+
+pub fn sum(x, y) {
+    x + y
+}
+
+pub fn product(x, y) {
+    x * y
+}
+
+fn private_helper() {
+    42.0
+}

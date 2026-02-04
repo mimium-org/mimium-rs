@@ -109,6 +109,7 @@ where
     I: StrInput<'src, Token = char, Span = SimpleSpan, Slice = &'src str>,
 {
     choice((
+        just("::").to(TokenKind::DoubleColon),
         just("..").to(TokenKind::DoubleDot),
         just(".").to(TokenKind::Dot),
         just(",").to(TokenKind::Comma),
@@ -154,6 +155,9 @@ where
             "include" => TokenKind::Include,
             "stage" => TokenKind::StageKwd,
             "main" => TokenKind::Main,
+            "mod" => TokenKind::Mod,
+            "use" => TokenKind::Use,
+            "pub" => TokenKind::Pub,
             "_" => TokenKind::PlaceHolder,
             _ => TokenKind::Ident,
         })
@@ -354,5 +358,82 @@ mod tests {
         let has_dsp = tokens.iter().any(|t| t.kind == TokenKind::Ident);
         assert!(has_fn);
         assert!(has_dsp);
+    }
+
+    #[test]
+    fn test_tokenize_module_keywords() {
+        let source = "mod use pub";
+        let tokens = tokenize(source);
+
+        let kinds: Vec<_> = tokens
+            .iter()
+            .filter(|t| !matches!(t.kind, TokenKind::Whitespace | TokenKind::Eof))
+            .map(|t| t.kind)
+            .collect();
+
+        assert_eq!(kinds, vec![TokenKind::Mod, TokenKind::Use, TokenKind::Pub]);
+    }
+
+    #[test]
+    fn test_tokenize_double_colon() {
+        let source = "mod::path::name";
+        let tokens = tokenize(source);
+
+        let kinds: Vec<_> = tokens
+            .iter()
+            .filter(|t| !matches!(t.kind, TokenKind::Whitespace | TokenKind::Eof))
+            .map(|t| t.kind)
+            .collect();
+
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Mod,
+                TokenKind::DoubleColon,
+                TokenKind::Ident,
+                TokenKind::DoubleColon,
+                TokenKind::Ident
+            ]
+        );
+    }
+
+    #[test]
+    fn test_tokenize_module_declaration() {
+        let source = "mod mymod { pub fn foo() { 42 } }";
+        let tokens = tokenize(source);
+
+        let has_mod = tokens.iter().any(|t| t.kind == TokenKind::Mod);
+        let has_pub = tokens.iter().any(|t| t.kind == TokenKind::Pub);
+        let has_fn = tokens.iter().any(|t| t.kind == TokenKind::Function);
+        let has_ident = tokens.iter().any(|t| t.kind == TokenKind::Ident);
+
+        assert!(has_mod);
+        assert!(has_pub);
+        assert!(has_fn);
+        assert!(has_ident);
+    }
+
+    #[test]
+    fn test_tokenize_use_statement() {
+        let source = "use modA::modB::func";
+        let tokens = tokenize(source);
+
+        let kinds: Vec<_> = tokens
+            .iter()
+            .filter(|t| !matches!(t.kind, TokenKind::Whitespace | TokenKind::Eof))
+            .map(|t| t.kind)
+            .collect();
+
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Use,
+                TokenKind::Ident,
+                TokenKind::DoubleColon,
+                TokenKind::Ident,
+                TokenKind::DoubleColon,
+                TokenKind::Ident
+            ]
+        );
     }
 }

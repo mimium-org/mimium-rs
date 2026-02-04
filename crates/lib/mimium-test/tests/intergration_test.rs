@@ -702,7 +702,117 @@ fn twodelay() {
     assert_eq!(res, ans);
 }
 
+#[wasm_bindgen_test(unsupported = test)]
+fn module_basic() {
+    // mymath::add(2.0, 3.0) + mymath::mul(4.0, 5.0) = 5.0 + 20.0 = 25.0
+    let res = run_file_test_mono("module_basic.mmm", 3).unwrap();
+    let ans = vec![25.0, 25.0, 25.0];
+    assert_eq!(res, ans);
+}
 
+#[wasm_bindgen_test(unsupported = test)]
+fn module_nested() {
+    // outer::exposed() calls inner::secret() which returns 42.0
+    let res = run_file_test_mono("module_nested.mmm", 3).unwrap();
+    let ans = vec![42.0, 42.0, 42.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_visibility_fail() {
+    // Test that private module members cannot be accessed from outside
+    let res = run_error_test("module_visibility_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+    assert!(
+        res[0].get_message().contains("is private"),
+        "Expected 'is private' error message, got: {:?}",
+        res[0].get_message()
+    );
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_use() {
+    // Test that `use mymath::add` allows using `add` without qualification
+    let res = run_file_test_mono("module_use.mmm", 3).unwrap();
+    let ans = vec![15.0, 15.0, 15.0];  // add(10.0, 5.0) = 15.0
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_use_private_fail() {
+    // Test that `use` statement respects visibility - using private function should fail
+    let res = run_error_test("module_use_private_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+    assert!(
+        res[0].get_message().contains("is private"),
+        "Expected 'is private' error message, got: {:?}",
+        res[0].get_message()
+    );
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_external() {
+    // Test external file module: mod foo; syntax (Rust-like)
+    // Loads module_external_math.mmm from same directory
+    let res = run_file_test_mono("module_external.mmm", 3).unwrap();
+    let ans = vec![15.0, 15.0, 15.0];  // add(1,2) + mul(3,4) = 3 + 12 = 15
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_external_use() {
+    // Test external file module with use statement
+    let res = run_file_test_mono("module_external_use.mmm", 3).unwrap();
+    let ans = vec![12.0, 12.0, 12.0];  // add(5, 7) = 12
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_relative_path() {
+    // Test relative path resolution: inner::secret() from within outer module
+    // resolves to outer::inner::secret()
+    let res = run_file_test_mono("module_relative_path.mmm", 3).unwrap();
+    let ans = vec![42.0, 42.0, 42.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_use_multiple() {
+    // Test multiple imports: use math::{double, triple}
+    let res = run_file_test_mono("module_use_multiple.mmm", 3).unwrap();
+    let ans = vec![50.0, 50.0, 50.0];  // double(10) + triple(10) = 20 + 30 = 50
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_use_wildcard() {
+    // Test wildcard import: use math::*
+    let res = run_file_test_mono("module_use_wildcard.mmm", 3).unwrap();
+    let ans = vec![50.0, 50.0, 50.0];  // double(10) + triple(10) = 20 + 30 = 50
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_pub_use() {
+    // Test pub use for re-exporting
+    let res = run_file_test_mono("module_pub_use.mmm", 3).unwrap();
+    let ans = vec![42.0, 42.0, 42.0];  // api::helper() returns 42.0
+    assert_eq!(res, ans);
+}
+#[wasm_bindgen_test(unsupported = test)]
+fn module_macro() {
+    // Test pub use for re-exporting
+    let res = run_file_test_mono("module_macro.mmm", 3).unwrap();
+    let ans = vec![2.0, 2.0, 2.0]; 
+    assert_eq!(res, ans);
+}
+#[wasm_bindgen_test(unsupported = test)]
+fn module_macro_sugar() {
+    // Test pub use for re-exporting
+    let res = run_file_test_mono("module_macro_sugar.mmm", 3).unwrap();
+    let ans = vec![2.0, 2.0, 2.0]; 
+    assert_eq!(res, ans);
+}
 
 // #[wasm_bindgen_test(unsupported = test)]
 // fn map_record() {

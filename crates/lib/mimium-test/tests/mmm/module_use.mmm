@@ -1,0 +1,19 @@
+// Test use statement functionality
+// use foo::bar should make bar accessible without qualification
+
+mod mymath {
+    pub fn myadd(x, y) {
+        x + y
+    }
+    pub fn mymul(x, y) {
+        x * y
+    }
+}
+
+// Import specific function from module
+use mymath::myadd
+
+fn dsp() {
+    // Using myadd without qualification
+    myadd(10.0, 5.0)
+}

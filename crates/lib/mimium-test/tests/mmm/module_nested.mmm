@@ -1,0 +1,18 @@
+// Test nested modules - using fully qualified paths
+
+mod outer {
+    mod inner {
+        pub fn secret() {
+            42.0
+        }
+    }
+    pub fn exposed() {
+        // Note: need to use fully qualified path from root
+        // Relative paths inside modules are not yet supported
+        outer::inner::secret()
+    }
+}
+
+fn dsp() {
+    outer::exposed()
+}

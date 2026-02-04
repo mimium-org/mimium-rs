@@ -7,12 +7,10 @@ use crate::utils::metadata::Location;
 use crate::utils::{environment::Environment, error::ReportableError};
 use crate::{function, integer, numeric, unit};
 use itertools::Itertools;
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 mod unification;
 use unification::{Error as UnificationError, Relation, unify_types};
@@ -59,6 +57,23 @@ pub enum Error {
         right: (Vec<(Symbol, TypeNodeId)>, Location),
     },
     VariableNotFound(Symbol, Location),
+    /// Module not found in the current scope
+    ModuleNotFound {
+        module_path: Vec<Symbol>,
+        location: Location,
+    },
+    /// Member not found in a module
+    MemberNotFound {
+        module_path: Vec<Symbol>,
+        member: Symbol,
+        location: Location,
+    },
+    /// Attempted to access a private module member
+    PrivateMemberAccess {
+        module_path: Vec<Symbol>,
+        member: Symbol,
+        location: Location,
+    },
     StageMismatch {
         variable: Symbol,
         expected_stage: EvalStage,
@@ -93,6 +108,38 @@ impl ReportableError for Error {
             }
             Error::VariableNotFound(symbol, _) => {
                 format!("Variable \"{symbol}\" not found in this scope")
+            }
+            Error::ModuleNotFound { module_path, .. } => {
+                let path_str = module_path
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                format!("Module \"{path_str}\" not found")
+            }
+            Error::MemberNotFound {
+                module_path,
+                member,
+                ..
+            } => {
+                let path_str = module_path
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                format!("Member \"{member}\" not found in module \"{path_str}\"")
+            }
+            Error::PrivateMemberAccess {
+                module_path,
+                member,
+                ..
+            } => {
+                let path_str = module_path
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                format!("Member \"{member}\" in module \"{path_str}\" is private")
             }
             Error::StageMismatch {
                 variable,
@@ -174,6 +221,47 @@ impl ReportableError for Error {
             }
             Error::VariableNotFound(symbol, loc) => {
                 vec![(loc.clone(), format!("{symbol} is not defined"))]
+            }
+            Error::ModuleNotFound {
+                module_path,
+                location,
+            } => {
+                let path_str = module_path
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                vec![(location.clone(), format!("Module \"{path_str}\" not found"))]
+            }
+            Error::MemberNotFound {
+                module_path,
+                member,
+                location,
+            } => {
+                let path_str = module_path
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                vec![(
+                    location.clone(),
+                    format!("\"{member}\" is not a member of \"{path_str}\""),
+                )]
+            }
+            Error::PrivateMemberAccess {
+                module_path,
+                member,
+                location,
+            } => {
+                let path_str = module_path
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                vec![(
+                    location.clone(),
+                    format!("\"{member}\" in \"{path_str}\" is private and cannot be accessed"),
+                )]
             }
             Error::StageMismatch {
                 variable,
@@ -298,7 +386,7 @@ pub struct InferContext {
     pub errors: Vec<Error>,
 }
 impl InferContext {
-    fn new(builtins: &[(Symbol, TypeNodeId)], file_path: PathBuf) -> Self {
+    pub fn new(builtins: &[(Symbol, TypeNodeId)], file_path: PathBuf) -> Self {
         let mut res = Self {
             interm_idx: Default::default(),
             typescheme_idx: Default::default(),
@@ -500,7 +588,7 @@ impl InferContext {
     fn instantiate(&mut self, t: TypeNodeId) -> TypeNodeId {
         match t.to_type() {
             Type::TypeScheme(id) => {
-                log::debug!("instantiate typescheme id: {:?}", id);
+                log::debug!("instantiate typescheme id: {id:?}");
                 if let Some(tvar) = self.instantiated_map.get(&id) {
                     *tvar
                 } else {
@@ -533,14 +621,14 @@ impl InferContext {
         let pat_t = match pat {
             Pattern::Single(id) => {
                 let pat_t = self.convert_unknown_to_intermediate(ty, loc_p);
-                log::trace!("bind {} : {}", id, pat_t.to_type().to_string());
+                log::trace!("bind {} : {}", id, pat_t.to_type());
                 self.env.add_bind(&[(id, (pat_t, self.stage))]);
                 Ok::<TypeNodeId, Vec<Error>>(pat_t)
             }
             Pattern::Placeholder => {
                 // Placeholder doesn't bind anything, just check the type
                 let pat_t = self.convert_unknown_to_intermediate(ty, loc_p);
-                log::trace!("bind _ (placeholder) : {}", pat_t.to_type().to_string());
+                log::trace!("bind _ (placeholder) : {}", pat_t.to_type());
                 Ok::<TypeNodeId, Vec<Error>>(pat_t)
             }
             Pattern::Tuple(pats) => {
@@ -580,7 +668,8 @@ impl InferContext {
 
     pub fn lookup(&self, name: Symbol, loc: Location) -> Result<TypeNodeId, Error> {
         use crate::utils::environment::LookupRes;
-        match self.env.lookup_cls(&name) {
+        let lookup_res = self.env.lookup_cls(&name);
+        match lookup_res {
             LookupRes::Local((ty, bound_stage)) if self.stage == *bound_stage => Ok(*ty),
             LookupRes::UpValue(_, (ty, bound_stage)) if self.stage == *bound_stage => Ok(*ty),
             LookupRes::Global((ty, bound_stage))
@@ -658,7 +747,7 @@ impl InferContext {
                     Type::Array(elem_t).into_id_with_location(loc_e.clone()),
                     arr_t,
                 );
-                let _ = self.merge_rel_result(rel1, rel2, arr_t, idx_t)?;
+                self.merge_rel_result(rel1, rel2, arr_t, idx_t)?;
                 Ok(elem_t)
             }
             Expr::Proj(e, idx) => {
@@ -816,6 +905,7 @@ impl InferContext {
             }
             Expr::Let(tpat, body, then) => {
                 let bodyt = self.infer_type_levelup(*body);
+
                 let loc_p = tpat.to_loc();
                 let loc_b = body.to_location();
                 let pat_t = self.bind_pattern((tpat.clone(), loc_p), (bodyt, loc_b));
@@ -829,7 +919,9 @@ impl InferContext {
                 let idt = self.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
                 self.env.add_bind(&[(id.id, (idt, self.stage))]);
                 //polymorphic inference is not allowed in recursive function.
+
                 let bodyt = self.infer_type_levelup(*body);
+
                 let _res = self.unify_types(idt, bodyt);
                 match then {
                     Some(e) => self.infer_type(*e),
@@ -879,9 +971,12 @@ impl InferContext {
                 then.map_or(Ok(unit!()), |t| self.infer_type(t))
             }
             Expr::Var(name) => {
+                // Aliases and wildcards are already resolved by convert_qualified_names
                 let res = self.unwrap_result(self.lookup(*name, loc).map_err(|e| vec![e]));
-                // log::trace!("{} {} /level{}", name.as_str(), res.to_type(), self.level);
                 Ok(self.instantiate(res))
+            }
+            Expr::QualifiedVar(path) => {
+                unreachable!("Qualified Var should be removed in the previous step.")
             }
             Expr::Apply(fun, callee) => {
                 let loc_f = fun.to_location();
@@ -1187,5 +1282,66 @@ mod tests {
         // Clean up scopes
         ctx.env.to_outer();
         ctx.env.to_outer();
+    }
+
+    #[test]
+    fn test_qualified_var_mangling() {
+        use crate::compiler;
+
+        let src = r#"
+mod mymath {
+    pub fn add(x, y) {
+        x + y
+    }
+}
+
+fn dsp() {
+    mymath::add(1.0, 2.0)
+}
+"#;
+        // Use the compiler context to process the code through the full pipeline
+        // (which includes convert_qualified_names before type checking)
+        let empty_ext_fns: Vec<compiler::ExtFunTypeInfo> = vec![];
+        let empty_macros: Vec<Box<dyn crate::plugin::MacroFunction>> = vec![];
+        let ctx = compiler::Context::new(
+            empty_ext_fns,
+            empty_macros,
+            Some(std::path::PathBuf::from("test")),
+            compiler::Config::default(),
+        );
+        let result = ctx.emit_mir(src);
+
+        // Check for compilation errors
+        assert!(result.is_ok(), "Compilation failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_qualified_var_mir_generation() {
+        use crate::compiler;
+
+        let src = r#"
+mod mymath {
+    pub fn add(x, y) {
+        x + y
+    }
+}
+
+fn dsp() {
+    mymath::add(1.0, 2.0)
+}
+"#;
+        // Use the compiler context to generate MIR
+        let empty_ext_fns: Vec<compiler::ExtFunTypeInfo> = vec![];
+        let empty_macros: Vec<Box<dyn crate::plugin::MacroFunction>> = vec![];
+        let ctx = compiler::Context::new(
+            empty_ext_fns,
+            empty_macros,
+            Some(std::path::PathBuf::from("test")),
+            compiler::Config::default(),
+        );
+        let result = ctx.emit_mir(src);
+
+        // Check for compilation errors
+        assert!(result.is_ok(), "MIR generation failed: {:?}", result.err());
     }
 }

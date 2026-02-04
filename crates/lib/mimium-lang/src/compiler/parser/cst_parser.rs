@@ -146,6 +146,34 @@ impl<'a> Parser<'a> {
             .map(|t| t.kind)
     }
 
+    /// Check if current position starts a path (possibly qualified) followed by macro expansion (!)
+    /// Returns the offset where MacroExpand is found, or None if not a macro expansion
+    fn find_macro_expand_after_path(&self) -> Option<usize> {
+        let mut offset = 0;
+        
+        // First must be Ident
+        if self.peek_ahead(offset) != Some(TokenKind::Ident) {
+            return None;
+        }
+        offset += 1;
+        
+        // Consume :: Ident pairs
+        while self.peek_ahead(offset) == Some(TokenKind::DoubleColon) {
+            offset += 1; // ::
+            if self.peek_ahead(offset) != Some(TokenKind::Ident) {
+                return None; // Malformed path
+            }
+            offset += 1; // Ident
+        }
+        
+        // Check if followed by MacroExpand
+        if self.peek_ahead(offset) == Some(TokenKind::MacroExpand) {
+            Some(offset)
+        } else {
+            None
+        }
+    }
+
     /// Get the current token
     #[allow(dead_code)]
     fn current_token(&self) -> Option<&Token> {
@@ -292,16 +320,144 @@ impl<'a> Parser<'a> {
     /// Parse a statement
     fn parse_statement(&mut self) {
         self.emit_node(SyntaxKind::Statement, |this| {
+            // Check for visibility modifier first
+            let has_pub = this.check(TokenKind::Pub);
+            if has_pub {
+                this.emit_node(SyntaxKind::VisibilityPub, |this| {
+                    this.bump(); // consume 'pub'
+                });
+            }
+
             match this.peek() {
                 Some(TokenKind::Function) => this.parse_function_decl(),
+                Some(TokenKind::Macro) => this.parse_macro_decl(),
                 Some(TokenKind::Let) => this.parse_let_decl(),
                 Some(TokenKind::LetRec) => this.parse_letrec_decl(),
                 Some(TokenKind::Include) => this.parse_include_stmt(),
                 Some(TokenKind::Sharp) => this.parse_stage_decl(),
+                Some(TokenKind::Mod) => this.parse_module_decl(),
+                Some(TokenKind::Use) => this.parse_use_stmt(),
                 _ => {
                     // Try parsing as expression
                     this.parse_expr();
                 }
+            }
+        });
+    }
+
+    /// Parse module declaration: mod name { ... } or mod name;
+    fn parse_module_decl(&mut self) {
+        self.emit_node(SyntaxKind::ModuleDecl, |this| {
+            this.expect(TokenKind::Mod);
+            this.expect(TokenKind::Ident);
+            
+            // Check if this is an external file module (mod foo;) or inline module (mod foo { ... })
+            if this.check(TokenKind::LineBreak) {
+                // External file module: mod foo;
+                // Just consume the line break, no body
+                this.bump();
+            } else if this.check(TokenKind::BlockBegin) {
+                // Inline module: mod foo { ... }
+                this.expect(TokenKind::BlockBegin);
+
+                // Parse module body (statements)
+                while !this.check(TokenKind::BlockEnd) && !this.is_at_end() {
+                    this.parse_statement();
+                }
+
+                this.expect(TokenKind::BlockEnd);
+            }
+            // If neither, error recovery will handle it
+        });
+    }
+
+    /// Parse use statement:
+    /// - `use path::to::module` (single import)
+    /// - `use path::{a, b, c}` (multiple imports)
+    /// - `use path::*` (wildcard import)
+    fn parse_use_stmt(&mut self) {
+        self.emit_node(SyntaxKind::UseStmt, |this| {
+            this.expect(TokenKind::Use);
+            this.parse_use_path();
+        });
+    }
+
+    /// Parse use path with support for multiple/wildcard imports
+    fn parse_use_path(&mut self) {
+        self.emit_node(SyntaxKind::QualifiedPath, |this| {
+            this.expect(TokenKind::Ident);
+            while this.check(TokenKind::DoubleColon) {
+                this.bump(); // consume '::'
+
+                // Check for wildcard: use foo::*
+                if this.check(TokenKind::OpProduct) {
+                    this.emit_node(SyntaxKind::UseTargetWildcard, |this2| {
+                        this2.bump(); // consume '*'
+                    });
+                    return;
+                }
+
+                // Check for multiple imports: use foo::{a, b}
+                if this.check(TokenKind::BlockBegin) {
+                    this.emit_node(SyntaxKind::UseTargetMultiple, |this2| {
+                        this2.bump(); // consume '{'
+                        // Parse comma-separated identifiers
+                        if this2.check(TokenKind::Ident) {
+                            this2.bump();
+                            while this2.check(TokenKind::Comma) {
+                                this2.bump(); // consume ','
+                                this2.expect(TokenKind::Ident);
+                            }
+                        }
+                        this2.expect(TokenKind::BlockEnd);
+                    });
+                    return;
+                }
+
+                // Regular identifier
+                this.expect(TokenKind::Ident);
+            }
+        });
+    }
+
+    /// Parse qualified path: ident (:: ident)*
+    fn parse_qualified_path(&mut self) {
+        self.emit_node(SyntaxKind::QualifiedPath, |this| {
+            this.expect(TokenKind::Ident);
+            while this.check(TokenKind::DoubleColon) {
+                this.bump(); // consume '::'
+                this.expect(TokenKind::Ident);
+            }
+        });
+    }
+
+    /// Parse macro declaration: macro name(params) { body }
+    fn parse_macro_decl(&mut self) {
+        self.emit_node(SyntaxKind::FunctionDecl, |this| {
+            this.expect(TokenKind::Macro);
+
+            // Mark macro name with IdentFunction kind
+            if this.check(TokenKind::Ident) {
+                if let Some(&token_idx) = this.preparsed.token_indices.get(this.current) {
+                    this.tokens[token_idx].kind = TokenKind::IdentFunction;
+                }
+                this.bump();
+            }
+
+            // Parameters
+            if this.check(TokenKind::ParenBegin) {
+                this.parse_param_list();
+            }
+
+            // Optional return type annotation after '->'
+            if this.check(TokenKind::Arrow) {
+                this.bump();
+                this.parse_type();
+            }
+
+            // Body
+            if this.check(TokenKind::BlockBegin) {
+                this.parse_block_expr();
             }
         });
     }
@@ -330,12 +486,19 @@ impl<'a> Parser<'a> {
         });
     }
 
-    /// Parse macro expansion: MacroName!(args)
+    /// Parse macro expansion: MacroName!(args) or Qualified::Path!(args)
     fn parse_macro_expansion(&mut self) {
         self.emit_node(SyntaxKind::MacroExpansion, |this| {
-            // Macro name (identifier) and '!('
+            // Parse the macro name which can be a simple identifier or qualified path
+            // Check if it's a qualified path
+            if this.peek_ahead(1) == Some(TokenKind::DoubleColon) {
+                this.parse_qualified_path();
+            } else {
+                this.expect(TokenKind::Ident);
+            }
+            
+            // '!(' 
             this.expect_all(&[
-                TokenKind::Ident,
                 TokenKind::MacroExpand,
                 TokenKind::ParenBegin,
             ]);
@@ -1009,9 +1172,12 @@ impl<'a> Parser<'a> {
                 self.parse_lambda_expr();
             }
             Some(TokenKind::Ident) => {
-                // Check if next token is ! for macro expansion
-                if self.peek_ahead(1) == Some(TokenKind::MacroExpand) {
+                // Check if this is a macro expansion (including qualified paths)
+                if self.find_macro_expand_after_path().is_some() {
                     self.parse_macro_expansion();
+                } else if self.peek_ahead(1) == Some(TokenKind::DoubleColon) {
+                    // Qualified path: mod::submod::name
+                    self.parse_qualified_path();
                 } else {
                     self.emit_node(SyntaxKind::Identifier, |this| {
                         this.bump();
@@ -1182,11 +1348,11 @@ impl<'a> Parser<'a> {
             token1,
             Some(TokenKind::Ident) | Some(TokenKind::IdentParameter)
         );
-        let is_record_syntax = matches!(token1, Some(TokenKind::DoubleDot))
-            || (is_record_key
-                && matches!(token2, Some(TokenKind::Assign) | Some(TokenKind::LeftArrow)));
+        
 
-        is_record_syntax
+        (matches!(token1, Some(TokenKind::DoubleDot))
+            || (is_record_key
+                && matches!(token2, Some(TokenKind::Assign) | Some(TokenKind::LeftArrow))))
     }
 
     /// Parse tuple expression: (a, b, c)

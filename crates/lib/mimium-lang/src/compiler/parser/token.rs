@@ -49,11 +49,12 @@ pub enum TokenKind {
     SampleRate,
 
     // Punctuation
-    Comma,     // ,
-    Dot,       // .
-    DoubleDot, // ..
-    Colon,     // :
-    SemiColon, // ;
+    Comma,       // ,
+    Dot,         // .
+    DoubleDot,   // ..
+    Colon,       // :
+    DoubleColon, // ::
+    SemiColon,   // ;
 
     // Keywords
     Let,
@@ -85,6 +86,11 @@ pub enum TokenKind {
     Sharp,    // #
     StageKwd, // stage
     Main,     // main
+
+    // Module keywords
+    Mod,  // mod
+    Use,  // use
+    Pub,  // pub
 
     // Trivia (whitespace and comments)
     LineBreak,
@@ -136,6 +142,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Dot => write!(f, "."),
             TokenKind::DoubleDot => write!(f, ".."),
             TokenKind::Colon => write!(f, ":"),
+            TokenKind::DoubleColon => write!(f, "::"),
             TokenKind::SemiColon => write!(f, ";"),
             TokenKind::Let => write!(f, "let"),
             TokenKind::LetRec => write!(f, "letrec"),
@@ -163,6 +170,9 @@ impl fmt::Display for TokenKind {
             TokenKind::Dollar => write!(f, "$"),
             TokenKind::StageKwd => write!(f, "stage"),
             TokenKind::Main => write!(f, "main"),
+            TokenKind::Mod => write!(f, "mod"),
+            TokenKind::Use => write!(f, "use"),
+            TokenKind::Pub => write!(f, "pub"),
             TokenKind::Sharp => write!(f, "#"),
             TokenKind::Error => write!(f, "error"),
             TokenKind::Eof => write!(f, "eof"),

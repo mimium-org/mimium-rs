@@ -1,0 +1,12 @@
+// Test wildcard import: use mod::*
+
+mod math {
+    pub fn double(x) { x * 2.0 }
+    pub fn triple(x) { x * 3.0 }
+}
+
+use math::*
+
+fn dsp() {
+    double(10.0) + triple(10.0)
+}

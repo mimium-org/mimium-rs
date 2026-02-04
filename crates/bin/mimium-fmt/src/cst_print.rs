@@ -175,6 +175,13 @@ where
                 SyntaxKind::AssignExpr => print_assign_expr(children, ctx, allocator),
                 SyntaxKind::ExprList => print_expr_list(children, ctx, allocator),
                 SyntaxKind::ParamDefault => print_param_default(children, ctx, allocator),
+                // Module system
+                SyntaxKind::ModuleDecl => print_module_decl(children, ctx, allocator),
+                SyntaxKind::UseStmt => print_use_stmt(children, ctx, allocator),
+                SyntaxKind::QualifiedPath => print_qualified_path(children, ctx, allocator),
+                SyntaxKind::UseTargetMultiple => print_use_target_multiple(children, ctx, allocator),
+                SyntaxKind::UseTargetWildcard => print_use_target_wildcard(children, ctx, allocator),
+                SyntaxKind::VisibilityPub => print_visibility_pub(children, ctx, allocator),
                 SyntaxKind::Error => allocator.text("/* error */"),
             }
         }
@@ -1557,6 +1564,289 @@ where
     }
 }
 
+// ============================================================================
+// Module system
+// ============================================================================
+
+/// Print module declaration: `mod name { body }` or `pub mod name { body }`
+fn print_module_decl<'a, D, A>(
+    children: &[GreenNodeId],
+    ctx: &PrintContext,
+    allocator: &'a D,
+) -> DocBuilder<'a, D, A>
+where
+    D: DocAllocator<'a, A>,
+    D::Doc: Clone + Pretty<'a, D, A>,
+    A: Clone,
+{
+    let mut result = allocator.nil();
+    let mut seen_mod = false;
+    let mut seen_name = false;
+
+    for &child in children.iter() {
+        let node = ctx.arena.get(child);
+
+        if let mimium_lang::compiler::parser::green::GreenNode::Token { token_index, .. } = node {
+            let token = &ctx.tokens[*token_index];
+
+            match token.kind {
+                TokenKind::Mod => {
+                    result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
+                    result = result.append(allocator.space());
+                    seen_mod = true;
+                    continue;
+                }
+                TokenKind::Ident | TokenKind::IdentFunction | TokenKind::IdentVariable => {
+                    if seen_mod && !seen_name {
+                        result =
+                            result.append(emit_token_with_trivia(*token_index, ctx, allocator));
+                        result = result.append(allocator.space());
+                        seen_name = true;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // For internal nodes (VisibilityPub, BlockExpr)
+        if let mimium_lang::compiler::parser::green::GreenNode::Internal { kind, .. } = node {
+            let child_doc = cst_to_doc(child, ctx, allocator);
+
+            match kind {
+                SyntaxKind::VisibilityPub => {
+                    // pub keyword (already includes trailing space)
+                    result = result.append(child_doc);
+                }
+                SyntaxKind::BlockExpr => {
+                    // Block body
+                    result = result.append(child_doc);
+                }
+                _ => {
+                    result = result.append(child_doc);
+                }
+            }
+            continue;
+        }
+
+        result = result.append(cst_to_doc(child, ctx, allocator));
+    }
+
+    result
+}
+
+/// Print use statement: `use path::to::item` or `pub use path::to::item`
+fn print_use_stmt<'a, D, A>(
+    children: &[GreenNodeId],
+    ctx: &PrintContext,
+    allocator: &'a D,
+) -> DocBuilder<'a, D, A>
+where
+    D: DocAllocator<'a, A>,
+    D::Doc: Clone + Pretty<'a, D, A>,
+    A: Clone,
+{
+    let mut result = allocator.nil();
+    let mut seen_use = false;
+
+    for &child in children.iter() {
+        let node = ctx.arena.get(child);
+
+        if let mimium_lang::compiler::parser::green::GreenNode::Token { token_index, .. } = node {
+            let token = &ctx.tokens[*token_index];
+
+            match token.kind {
+                TokenKind::Use => {
+                    result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
+                    result = result.append(allocator.space());
+                    seen_use = true;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        // For internal nodes (VisibilityPub, QualifiedPath, UseTargetMultiple, UseTargetWildcard)
+        if let mimium_lang::compiler::parser::green::GreenNode::Internal { kind, .. } = node {
+            let child_doc = cst_to_doc(child, ctx, allocator);
+
+            match kind {
+                SyntaxKind::VisibilityPub => {
+                    // pub keyword (already includes trailing space)
+                    result = result.append(child_doc);
+                }
+                SyntaxKind::QualifiedPath
+                | SyntaxKind::UseTargetMultiple
+                | SyntaxKind::UseTargetWildcard => {
+                    if seen_use {
+                        result = result.append(child_doc);
+                    }
+                }
+                _ => {
+                    result = result.append(child_doc);
+                }
+            }
+            continue;
+        }
+
+        result = result.append(cst_to_doc(child, ctx, allocator));
+    }
+
+    result
+}
+
+/// Print qualified path: `foo::bar::baz`
+fn print_qualified_path<'a, D, A>(
+    children: &[GreenNodeId],
+    ctx: &PrintContext,
+    allocator: &'a D,
+) -> DocBuilder<'a, D, A>
+where
+    D: DocAllocator<'a, A>,
+    D::Doc: Clone + Pretty<'a, D, A>,
+    A: Clone,
+{
+    let mut result = allocator.nil();
+
+    for &child in children.iter() {
+        let node = ctx.arena.get(child);
+
+        if let mimium_lang::compiler::parser::green::GreenNode::Token { token_index, .. } = node {
+            let token = &ctx.tokens[*token_index];
+
+            match token.kind {
+                TokenKind::Ident
+                | TokenKind::IdentFunction
+                | TokenKind::IdentVariable
+                | TokenKind::DoubleColon => {
+                    result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
+                }
+                _ => {}
+            }
+        } else {
+            result = result.append(cst_to_doc(child, ctx, allocator));
+        }
+    }
+
+    result
+}
+
+/// Print use target multiple: `{a, b, c}`
+fn print_use_target_multiple<'a, D, A>(
+    children: &[GreenNodeId],
+    ctx: &PrintContext,
+    allocator: &'a D,
+) -> DocBuilder<'a, D, A>
+where
+    D: DocAllocator<'a, A>,
+    D::Doc: Clone + Pretty<'a, D, A>,
+    A: Clone,
+{
+    let mut items = Vec::new();
+    let mut found_open = false;
+    let mut open_doc = allocator.nil();
+    let mut close_doc = allocator.nil();
+
+    for &child in children.iter() {
+        if let mimium_lang::compiler::parser::green::GreenNode::Token { token_index, .. } =
+            ctx.arena.get(child)
+        {
+            let token = &ctx.tokens[*token_index];
+            match token.kind {
+                TokenKind::BlockBegin => {
+                    open_doc = allocator.text("{");
+                    found_open = true;
+                    continue;
+                }
+                TokenKind::BlockEnd => {
+                    close_doc = allocator.text("}");
+                    continue;
+                }
+                TokenKind::Comma => {
+                    continue;
+                }
+                TokenKind::Ident | TokenKind::IdentFunction | TokenKind::IdentVariable => {
+                    if found_open {
+                        items.push(emit_token_with_trivia(*token_index, ctx, allocator));
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        if found_open {
+            items.push(cst_to_doc(child, ctx, allocator));
+        }
+    }
+
+    if items.is_empty() {
+        open_doc.append(close_doc)
+    } else {
+        let items_doc = allocator.intersperse(items, allocator.text(", "));
+        open_doc.append(items_doc).append(close_doc)
+    }
+}
+
+/// Print use target wildcard: `*`
+fn print_use_target_wildcard<'a, D, A>(
+    children: &[GreenNodeId],
+    ctx: &PrintContext,
+    allocator: &'a D,
+) -> DocBuilder<'a, D, A>
+where
+    D: DocAllocator<'a, A>,
+    D::Doc: Clone + Pretty<'a, D, A>,
+    A: Clone,
+{
+    // Structure: ::*
+    let mut result = allocator.nil();
+
+    for &child in children.iter() {
+        if let mimium_lang::compiler::parser::green::GreenNode::Token { token_index, .. } =
+            ctx.arena.get(child)
+        {
+            let token = &ctx.tokens[*token_index];
+            match token.kind {
+                TokenKind::DoubleColon | TokenKind::OpProduct => {
+                    result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    result
+}
+
+/// Print visibility pub keyword: `pub`
+fn print_visibility_pub<'a, D, A>(
+    children: &[GreenNodeId],
+    ctx: &PrintContext,
+    allocator: &'a D,
+) -> DocBuilder<'a, D, A>
+where
+    D: DocAllocator<'a, A>,
+    D::Doc: Clone + Pretty<'a, D, A>,
+    A: Clone,
+{
+    let mut result = allocator.nil();
+
+    for &child in children.iter() {
+        if let mimium_lang::compiler::parser::green::GreenNode::Token { token_index, .. } =
+            ctx.arena.get(child)
+        {
+            let token = &ctx.tokens[*token_index];
+            if token.kind == TokenKind::Pub {
+                result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
+                result = result.append(allocator.space());
+            }
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2076,5 +2366,53 @@ mod tests {
     fn test_block_with_trailing_comment() {
         let output = format("fn f() { // comment after {\n    42\n}");
         assert_eq!(output, "fn f(){ // comment after {\n    42\n}\n");
+    }
+
+    // ========================================================================
+    // Module system tests
+    // ========================================================================
+
+    #[test]
+    fn test_module_decl_basic() {
+        let output = format("mod foo { fn bar() { 1 } }");
+        assert!(output.starts_with("mod foo {"), "output: {output}");
+        assert!(output.contains("fn bar()"), "output: {output}");
+    }
+
+    #[test]
+    fn test_module_decl_pub() {
+        let output = format("pub mod foo { fn bar() { 1 } }");
+        assert!(output.starts_with("pub mod foo {"), "output: {output}");
+        assert!(output.contains("fn bar()"), "output: {output}");
+    }
+
+    #[test]
+    fn test_use_stmt_simple() {
+        let output = format("use foo::bar");
+        assert_eq!(output, "use foo::bar\n");
+    }
+
+    #[test]
+    fn test_use_stmt_multiple() {
+        let output = format("use foo::{bar, baz}");
+        assert_eq!(output, "use foo::{bar, baz}\n");
+    }
+
+    #[test]
+    fn test_use_stmt_wildcard() {
+        let output = format("use foo::*");
+        assert_eq!(output, "use foo::*\n");
+    }
+
+    #[test]
+    fn test_pub_use() {
+        let output = format("pub use foo::bar");
+        assert_eq!(output, "pub use foo::bar\n");
+    }
+
+    #[test]
+    fn test_qualified_path_call() {
+        let output = format("let x = foo::bar::baz()");
+        assert_eq!(output, "let x = foo::bar::baz()\n");
     }
 }

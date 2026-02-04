@@ -1,0 +1,14 @@
+// Basic module test: define a module and access its members
+
+mod mymath {
+    pub fn add(x, y) {
+        x + y
+    }
+    pub fn mul(x, y) {
+        x * y
+    }
+}
+
+fn dsp() {
+    mymath::add(2.0, 3.0) + mymath::mul(4.0, 5.0)
+}

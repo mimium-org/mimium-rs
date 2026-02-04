@@ -1,0 +1,18 @@
+// Test relative path resolution within modules
+// inner::secret() should be resolved to outer::inner::secret() from within outer module
+
+mod outer {
+    mod inner {
+        pub fn secret() {
+            42.0
+        }
+    }
+    pub fn exposed() {
+        // Using relative path: inner::secret() instead of outer::inner::secret()
+        inner::secret()
+    }
+}
+
+fn dsp() {
+    outer::exposed()
+}

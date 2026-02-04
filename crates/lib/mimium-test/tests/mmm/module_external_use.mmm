@@ -1,0 +1,12 @@
+// Test external file module with use statement
+// mod foo; + use foo::func syntax
+
+mod module_external_math
+
+use module_external_math::sum
+
+fn dsp() {
+    // Use aliased function directly
+    sum(5.0, 7.0)
+    // Expected: 5 + 7 = 12
+}
