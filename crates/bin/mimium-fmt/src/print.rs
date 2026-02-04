@@ -161,6 +161,13 @@ mod expr {
             Expr::Literal(Literal::SampleRate) => allocator.text("samplerate"),
             Expr::Literal(Literal::PlaceHolder) => allocator.text("_"),
             Expr::Var(name) => allocator.text(name),
+            Expr::QualifiedVar(path) => {
+                let path_str = path.segments.iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                allocator.text(path_str)
+            }
             Expr::Block(Some(e)) => allocator
                 .text("{")
                 .append(allocator.line())
@@ -469,6 +476,7 @@ pub mod program {
     {
         let stmt_docs = prog.statements.into_iter().map(|(stmt, _span)| match stmt {
             ProgramStatement::FnDefinition {
+                visibility: _,
                 name,
                 args,
                 return_type,
@@ -519,6 +527,21 @@ pub mod program {
             ProgramStatement::StageDeclaration { stage } => allocator
                 .text(format!("#stage({stage})"))
                 .append(allocator.softline()),
+            ProgramStatement::ModuleDefinition { visibility, name, body: _ } => {
+                let vis_doc = if visibility == mimium_lang::ast::program::Visibility::Public {
+                    allocator.text("pub ")
+                } else {
+                    allocator.nil()
+                };
+                vis_doc.append(allocator.text("mod ")).append(allocator.text(name.to_string())).append(allocator.text(" { /* ... */ }"))
+            }
+            ProgramStatement::UseStatement { path } => {
+                let path_str = path.segments.iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                allocator.text("use ").append(allocator.text(path_str))
+            }
         });
         allocator.intersperse(stmt_docs, "\n")
     }

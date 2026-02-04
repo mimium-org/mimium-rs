@@ -498,6 +498,20 @@ impl Context {
         let loc = self.get_loc_from_span(span);
         let name = match e.to_expr() {
             Expr::Var(name) => name,
+            Expr::QualifiedVar(path) => {
+                // Convert qualified path to mangled name (e.g., foo::bar -> foo$bar)
+                if path.segments.len() == 1 {
+                    path.segments[0]
+                } else {
+                    let path_str = path
+                        .segments
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join("$");
+                    path_str.to_symbol()
+                }
+            }
             _ => unreachable!("eval_rvar called on non-variable expr"),
         };
         log::trace!("rv t:{} {}", name, t.to_type());
@@ -790,6 +804,11 @@ impl Context {
                 (v, ty, vec![])
             }
             Expr::Var(_name) => (self.eval_rvar(e, ty), ty, vec![]),
+            Expr::QualifiedVar(_path) => {
+                // TODO: Implement qualified variable resolution in MIR generation
+                // For now, treat as a simple variable reference after name resolution
+                (self.eval_rvar(e, ty), ty, vec![])
+            }
             Expr::Block(b) => {
                 if let Some(block) = b {
                     self.eval_expr(*block)
@@ -1376,6 +1395,31 @@ pub fn typecheck(
     (expr, infer_ctx, errors)
 }
 
+pub fn typecheck_with_visibility(
+    root_expr_id: ExprNodeId,
+    builtin_types: &[(Symbol, TypeNodeId)],
+    file_path: Option<PathBuf>,
+    visibility_map: crate::ast::program::VisibilityMap,
+) -> (ExprNodeId, InferContext, Vec<Box<dyn ReportableError>>) {
+    let (expr, convert_errs) =
+        convert_pronoun::convert_pronoun(root_expr_id, file_path.clone().unwrap_or_default());
+    let expr = recursecheck::convert_recurse(expr, file_path.clone().unwrap_or_default());
+    // let expr = destruct_let_pattern(expr);
+    let infer_ctx = super::typing::infer_root_with_visibility(expr, builtin_types, file_path.clone().unwrap_or_default(), visibility_map);
+    let errors = infer_ctx
+        .errors
+        .iter()
+        .cloned()
+        .map(|e| -> Box<dyn ReportableError> { Box::new(e) })
+        .chain(
+            convert_errs
+                .into_iter()
+                .map(|e| -> Box<dyn ReportableError> { Box::new(e) }),
+        )
+        .collect::<Vec<_>>();
+    (expr, infer_ctx, errors)
+}
+
 /// Generate MIR from AST.
 /// The input ast (`root_expr_id`) should contain global context. (See [[parser::add_global_context]].)
 /// MIR generator itself does not emit any error, the any compile errors are analyzed before generating MIR, mostly in type checker.
@@ -1386,8 +1430,19 @@ pub fn compile(
     macro_env: &[Box<dyn MacroFunction>],
     file_path: Option<PathBuf>,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
+    compile_with_visibility(root_expr_id, builtin_types, macro_env, file_path, crate::ast::program::VisibilityMap::new())
+}
+
+/// Generate MIR from AST with visibility checking.
+pub fn compile_with_visibility(
+    root_expr_id: ExprNodeId,
+    builtin_types: &[(Symbol, TypeNodeId)],
+    macro_env: &[Box<dyn MacroFunction>],
+    file_path: Option<PathBuf>,
+    visibility_map: crate::ast::program::VisibilityMap,
+) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
     let expr = root_expr_id.wrap_to_staged_expr();
-    let (expr, mut infer_ctx, errors) = typecheck(expr, builtin_types, file_path.clone());
+    let (expr, mut infer_ctx, errors) = typecheck_with_visibility(expr, builtin_types, file_path.clone(), visibility_map);
     if errors.is_empty() {
         let top_type = infer_ctx.infer_type(expr).unwrap();
         let expr = interpreter::expand_macro(expr, top_type, macro_env);

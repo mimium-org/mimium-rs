@@ -1,0 +1,19 @@
+// Test that private module members cannot be accessed from outside
+// This test should fail with a PrivateMemberAccess error
+
+mod mymath {
+    // Private function - not accessible from outside the module
+    fn private_add(x, y) {
+        x + y
+    }
+    
+    // Public function - accessible from outside
+    pub fn public_mul(x, y) {
+        x * y
+    }
+}
+
+fn dsp() {
+    // This should fail: trying to access a private function
+    mymath::private_add(1.0, 2.0)
+}

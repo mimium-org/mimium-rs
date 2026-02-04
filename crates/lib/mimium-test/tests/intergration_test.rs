@@ -702,7 +702,33 @@ fn twodelay() {
     assert_eq!(res, ans);
 }
 
+#[wasm_bindgen_test(unsupported = test)]
+fn module_basic() {
+    // mymath::add(2.0, 3.0) + mymath::mul(4.0, 5.0) = 5.0 + 20.0 = 25.0
+    let res = run_file_test_mono("module_basic.mmm", 3).unwrap();
+    let ans = vec![25.0, 25.0, 25.0];
+    assert_eq!(res, ans);
+}
 
+#[wasm_bindgen_test(unsupported = test)]
+fn module_nested() {
+    // outer::exposed() calls inner::secret() which returns 42.0
+    let res = run_file_test_mono("module_nested.mmm", 3).unwrap();
+    let ans = vec![42.0, 42.0, 42.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_visibility_fail() {
+    // Test that private module members cannot be accessed from outside
+    let res = run_error_test("module_visibility_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+    assert!(
+        res[0].get_message().contains("is private"),
+        "Expected 'is private' error message, got: {:?}",
+        res[0].get_message()
+    );
+}
 
 // #[wasm_bindgen_test(unsupported = test)]
 // fn map_record() {

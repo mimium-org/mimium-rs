@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use super::resolve_include::resolve_include;
@@ -46,6 +47,7 @@ impl QualifiedPath {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProgramStatement {
     FnDefinition {
+        visibility: Visibility,
         name: Symbol,
         args: (Vec<TypedId>, Location),
         return_type: Option<TypeNodeId>,
@@ -75,16 +77,48 @@ pub enum ProgramStatement {
 pub struct Program {
     pub statements: Vec<(ProgramStatement, Span)>,
 }
+
+/// Convert a qualified path to a mangled symbol name.
+/// For example, `foo::bar::baz` becomes `foo$bar$baz`.
+fn mangle_qualified_name(prefix: &[Symbol], name: Symbol) -> Symbol {
+    use crate::interner::ToSymbol;
+    if prefix.is_empty() {
+        name
+    } else {
+        let path_str = prefix
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("$");
+        format!("{}${}", path_str, name.as_str()).to_symbol()
+    }
+}
+
+/// Map from mangled symbol name to whether it's public.
+/// Only contains entries for module members (not top-level definitions).
+pub type VisibilityMap = HashMap<Symbol, bool>;
+
 fn stmts_from_program(
     program: Program,
     file_path: PathBuf,
     errs: &mut Vec<Box<dyn ReportableError>>,
+    visibility_map: &mut VisibilityMap,
 ) -> Vec<(Statement, Location)> {
-    program
-        .statements
+    stmts_from_program_with_prefix(program.statements, file_path, errs, &[], visibility_map)
+}
+
+fn stmts_from_program_with_prefix(
+    statements: Vec<(ProgramStatement, Span)>,
+    file_path: PathBuf,
+    errs: &mut Vec<Box<dyn ReportableError>>,
+    module_prefix: &[Symbol],
+    visibility_map: &mut VisibilityMap,
+) -> Vec<(Statement, Location)> {
+    statements
         .into_iter()
         .filter_map(|(stmt, span)| match stmt {
             ProgramStatement::FnDefinition {
+                visibility,
                 name,
                 args,
                 return_type,
@@ -103,9 +137,15 @@ fn stmts_from_program(
                     ret: return_type.unwrap_or(Type::Unknown.into_id_with_location(loc.clone())),
                 }
                 .into_id_with_location(loc.clone());
+                // Use mangled name if inside a module
+                let mangled_name = mangle_qualified_name(module_prefix, name);
+                // Track visibility for module members
+                if !module_prefix.is_empty() {
+                    visibility_map.insert(mangled_name, visibility == Visibility::Public);
+                }
                 Some(vec![(
                     Statement::LetRec(
-                        TypedId::new(name, fnty),
+                        TypedId::new(mangled_name, fnty),
                         Expr::Lambda(args.0, return_type, body).into_id(loc.clone()),
                     ),
                     loc,
@@ -119,17 +159,28 @@ fn stmts_from_program(
                 let (imported_program, mut new_errs) =
                     resolve_include(file_path.to_str().unwrap(), filename.as_str(), span.clone());
                 errs.append(&mut new_errs);
-                let res = stmts_from_program(imported_program, file_path.clone(), errs);
+                let res = stmts_from_program(imported_program, file_path.clone(), errs, visibility_map);
                 Some(res)
             }
             ProgramStatement::StageDeclaration { stage } => Some(vec![(
                 Statement::DeclareStage(stage),
                 Location::new(span, file_path.clone()),
             )]),
-            // Module definitions and use statements are handled during module resolution phase
-            // For now, they are skipped in the expression conversion
-            ProgramStatement::ModuleDefinition { .. } | ProgramStatement::UseStatement { .. } => {
-                // TODO: Implement module environment resolution
+            ProgramStatement::ModuleDefinition {
+                visibility: _,
+                name,
+                body,
+            } => {
+                // Flatten module contents with qualified names
+                let mut new_prefix = module_prefix.to_vec();
+                new_prefix.push(name);
+                let inner_stmts =
+                    stmts_from_program_with_prefix(body, file_path.clone(), errs, &new_prefix, visibility_map);
+                Some(inner_stmts)
+            }
+            ProgramStatement::UseStatement { .. } => {
+                // Use statements are handled during qualified name resolution
+                // They don't generate any statements directly
                 None
             }
             ProgramStatement::Error => Some(vec![(
@@ -143,11 +194,12 @@ fn stmts_from_program(
 pub(crate) fn expr_from_program(
     program: Program,
     file_path: PathBuf,
-) -> (ExprNodeId, Vec<Box<dyn ReportableError>>) {
+) -> (ExprNodeId, VisibilityMap, Vec<Box<dyn ReportableError>>) {
     let mut errs = vec![];
-    let stmts = stmts_from_program(program, file_path.clone(), &mut errs);
+    let mut visibility_map = VisibilityMap::new();
+    let stmts = stmts_from_program(program, file_path.clone(), &mut errs, &mut visibility_map);
 
     let res = into_then_expr(stmts.as_slice()).unwrap_or(Expr::Error.into_id_without_span());
 
-    (res, errs)
+    (res, visibility_map, errs)
 }

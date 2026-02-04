@@ -52,6 +52,8 @@ fn try_find_recurse(e_s: ExprNodeId, name: Symbol) -> bool {
         Expr::MacroExpand(_, _) => unreachable!(),
         Expr::Paren(_) => unreachable!(),
         Expr::Literal(_) | Expr::Error => false,
+        // Qualified variables don't directly recurse; name resolution handles them
+        Expr::QualifiedVar(_) => false,
     }
 }
 
@@ -124,7 +126,7 @@ pub fn convert_recurse(e_s: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
         Expr::UniOp(_, _) => unreachable!(),
         Expr::MacroExpand(_, _) => unreachable!(),
         Expr::Paren(_) => unreachable!(),
-        Expr::Literal(_) | Expr::Var(_) | Expr::Error => e_s.to_expr(),
+        Expr::Literal(_) | Expr::Var(_) | Expr::Error | Expr::QualifiedVar(_) => e_s.to_expr(),
     };
     let loc = Location {
         span,

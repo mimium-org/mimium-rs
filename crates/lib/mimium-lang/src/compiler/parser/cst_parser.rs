@@ -1089,6 +1089,9 @@ impl<'a> Parser<'a> {
                 // Check if next token is ! for macro expansion
                 if self.peek_ahead(1) == Some(TokenKind::MacroExpand) {
                     self.parse_macro_expansion();
+                } else if self.peek_ahead(1) == Some(TokenKind::DoubleColon) {
+                    // Qualified path: mod::submod::name
+                    self.parse_qualified_path();
                 } else {
                     self.emit_node(SyntaxKind::Identifier, |this| {
                         this.bump();

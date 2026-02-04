@@ -1,3 +1,4 @@
+use crate::ast::program::VisibilityMap;
 use crate::ast::{Expr, Literal, RecordField};
 use crate::compiler::{EvalStage, intrinsics};
 use crate::interner::{ExprKey, ExprNodeId, Symbol, ToSymbol, TypeNodeId};
@@ -59,6 +60,23 @@ pub enum Error {
         right: (Vec<(Symbol, TypeNodeId)>, Location),
     },
     VariableNotFound(Symbol, Location),
+    /// Module not found in the current scope
+    ModuleNotFound {
+        module_path: Vec<Symbol>,
+        location: Location,
+    },
+    /// Member not found in a module
+    MemberNotFound {
+        module_path: Vec<Symbol>,
+        member: Symbol,
+        location: Location,
+    },
+    /// Attempted to access a private module member
+    PrivateMemberAccess {
+        module_path: Vec<Symbol>,
+        member: Symbol,
+        location: Location,
+    },
     StageMismatch {
         variable: Symbol,
         expected_stage: EvalStage,
@@ -93,6 +111,38 @@ impl ReportableError for Error {
             }
             Error::VariableNotFound(symbol, _) => {
                 format!("Variable \"{symbol}\" not found in this scope")
+            }
+            Error::ModuleNotFound { module_path, .. } => {
+                let path_str = module_path
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                format!("Module \"{path_str}\" not found")
+            }
+            Error::MemberNotFound {
+                module_path,
+                member,
+                ..
+            } => {
+                let path_str = module_path
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                format!("Member \"{member}\" not found in module \"{path_str}\"")
+            }
+            Error::PrivateMemberAccess {
+                module_path,
+                member,
+                ..
+            } => {
+                let path_str = module_path
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                format!("Member \"{member}\" in module \"{path_str}\" is private")
             }
             Error::StageMismatch {
                 variable,
@@ -174,6 +224,47 @@ impl ReportableError for Error {
             }
             Error::VariableNotFound(symbol, loc) => {
                 vec![(loc.clone(), format!("{symbol} is not defined"))]
+            }
+            Error::ModuleNotFound {
+                module_path,
+                location,
+            } => {
+                let path_str = module_path
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                vec![(location.clone(), format!("Module \"{path_str}\" not found"))]
+            }
+            Error::MemberNotFound {
+                module_path,
+                member,
+                location,
+            } => {
+                let path_str = module_path
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                vec![(
+                    location.clone(),
+                    format!("\"{member}\" is not a member of \"{path_str}\""),
+                )]
+            }
+            Error::PrivateMemberAccess {
+                module_path,
+                member,
+                location,
+            } => {
+                let path_str = module_path
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                vec![(
+                    location.clone(),
+                    format!("\"{member}\" in \"{path_str}\" is private and cannot be accessed"),
+                )]
             }
             Error::StageMismatch {
                 variable,
@@ -294,11 +385,17 @@ pub struct InferContext {
     generalize_map: BTreeMap<IntermediateId, TypeSchemeId>,
     result_memo: BTreeMap<ExprKey, TypeNodeId>,
     file_path: PathBuf,
+    /// Map from mangled symbol name to whether it's public (only for module members)
+    visibility_map: VisibilityMap,
     pub env: Environment<(TypeNodeId, EvalStage)>,
     pub errors: Vec<Error>,
 }
 impl InferContext {
-    fn new(builtins: &[(Symbol, TypeNodeId)], file_path: PathBuf) -> Self {
+    pub fn new(builtins: &[(Symbol, TypeNodeId)], file_path: PathBuf) -> Self {
+        Self::new_with_visibility(builtins, file_path, VisibilityMap::new())
+    }
+    
+    pub fn new_with_visibility(builtins: &[(Symbol, TypeNodeId)], file_path: PathBuf, visibility_map: VisibilityMap) -> Self {
         let mut res = Self {
             interm_idx: Default::default(),
             typescheme_idx: Default::default(),
@@ -308,6 +405,7 @@ impl InferContext {
             generalize_map: Default::default(),
             result_memo: Default::default(),
             file_path,
+            visibility_map,
             env: Environment::<(TypeNodeId, EvalStage)>::default(),
             errors: Default::default(),
         };
@@ -883,6 +981,48 @@ impl InferContext {
                 // log::trace!("{} {} /level{}", name.as_str(), res.to_type(), self.level);
                 Ok(self.instantiate(res))
             }
+            Expr::QualifiedVar(path) => {
+                // Convert qualified path to mangled name (e.g., foo::bar -> foo$bar)
+                // This matches the mangling done in program.rs for module members
+                let mangled_name = if path.segments.len() == 1 {
+                    path.segments[0]
+                } else {
+                    let path_str = path
+                        .segments
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join("$");
+                    path_str.to_symbol()
+                };
+
+                // Check visibility for module members (paths with more than one segment)
+                if path.segments.len() > 1 {
+                    if let Some(&is_public) = self.visibility_map.get(&mangled_name) {
+                        if !is_public {
+                            return Err(vec![Error::PrivateMemberAccess {
+                                module_path: path.segments[..path.segments.len() - 1].to_vec(),
+                                member: *path.segments.last().unwrap(),
+                                location: loc.clone(),
+                            }]);
+                        }
+                    }
+                }
+
+                let res = self.unwrap_result(self.lookup(mangled_name, loc.clone()).map_err(|_| {
+                    // Provide better error message for qualified paths
+                    if path.segments.len() > 1 {
+                        vec![Error::MemberNotFound {
+                            module_path: path.segments[..path.segments.len() - 1].to_vec(),
+                            member: *path.segments.last().unwrap(),
+                            location: loc.clone(),
+                        }]
+                    } else {
+                        vec![Error::VariableNotFound(path.segments[0], loc.clone())]
+                    }
+                }));
+                Ok(self.instantiate(res))
+            }
             Expr::Apply(fun, callee) => {
                 let loc_f = fun.to_location();
                 let fnl = self.infer_type_unwrapping(*fun);
@@ -983,7 +1123,16 @@ pub fn infer_root(
     builtin_types: &[(Symbol, TypeNodeId)],
     file_path: PathBuf,
 ) -> InferContext {
-    let mut ctx = InferContext::new(builtin_types, file_path.clone());
+    infer_root_with_visibility(e, builtin_types, file_path, VisibilityMap::new())
+}
+
+pub fn infer_root_with_visibility(
+    e: ExprNodeId,
+    builtin_types: &[(Symbol, TypeNodeId)],
+    file_path: PathBuf,
+    visibility_map: VisibilityMap,
+) -> InferContext {
+    let mut ctx = InferContext::new_with_visibility(builtin_types, file_path.clone(), visibility_map);
     let _t = ctx
         .infer_type(e)
         .unwrap_or(Type::Failure.into_id_with_location(e.to_location()));
@@ -1187,5 +1336,73 @@ mod tests {
         // Clean up scopes
         ctx.env.to_outer();
         ctx.env.to_outer();
+    }
+
+    #[test]
+    fn test_qualified_var_mangling() {
+        use crate::compiler::parser::parse_to_expr;
+
+        let src = r#"
+mod mymath {
+    pub fn add(x, y) {
+        x + y
+    }
+}
+
+fn dsp() {
+    mymath::add(1.0, 2.0)
+}
+"#;
+        let (ast, _module_env, visibility_map, errs) = parse_to_expr(src, Some(std::path::PathBuf::from("test")));
+        assert!(errs.is_empty(), "Parse errors: {:?}", errs);
+
+        // Run type inference
+        let ctx = crate::compiler::typing::infer_root_with_visibility(
+            ast,
+            &[],
+            std::path::PathBuf::from("test"),
+            visibility_map,
+        );
+
+        // Check for type errors
+        assert!(
+            ctx.errors.is_empty(),
+            "Type errors: {:?}",
+            ctx.errors
+        );
+    }
+
+    #[test]
+    fn test_qualified_var_mir_generation() {
+        use crate::compiler;
+
+        let src = r#"
+mod mymath {
+    pub fn add(x, y) {
+        x + y
+    }
+}
+
+fn dsp() {
+    mymath::add(1.0, 2.0)
+}
+"#;
+        // Use the compiler context to generate MIR
+        let empty_ext_fns: Vec<compiler::ExtFunTypeInfo> = vec![];
+        let empty_macros: Vec<Box<dyn crate::plugin::MacroFunction>> = vec![];
+        let ctx = compiler::Context::new(
+            empty_ext_fns.into_iter(),
+            empty_macros.into_iter(),
+            Some(std::path::PathBuf::from("test")),
+            compiler::Config::default(),
+        );
+        let result = ctx.emit_mir(src);
+
+        // Check for compilation errors
+        assert!(
+            result.is_ok(),
+            "MIR generation failed: {:?}",
+            result.err()
+        );
     }
 }

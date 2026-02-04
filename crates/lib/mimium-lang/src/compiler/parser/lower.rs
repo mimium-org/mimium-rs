@@ -135,7 +135,7 @@ impl<'a> Lowerer<'a> {
 
                 match (inner_kind, inner_id) {
                     (Some(SyntaxKind::FunctionDecl), Some(id)) => self
-                        .lower_function_decl(id)
+                        .lower_function_decl(id, visibility)
                         .unwrap_or(ProgramStatement::Error),
                     (Some(SyntaxKind::LetDecl), Some(id)) => {
                         self.lower_let_decl(id).unwrap_or(ProgramStatement::Error)
@@ -287,7 +287,7 @@ impl<'a> Lowerer<'a> {
         )))
     }
 
-    fn lower_function_decl(&self, node: GreenNodeId) -> Option<ProgramStatement> {
+    fn lower_function_decl(&self, node: GreenNodeId, visibility: Visibility) -> Option<ProgramStatement> {
         let name_idx = self.find_token(node, |kind| {
             matches!(kind, TokenKind::IdentFunction | TokenKind::Ident)
         })?;
@@ -316,6 +316,7 @@ impl<'a> Lowerer<'a> {
 
         let arg_loc = self.location_from_span(params_span.clone());
         Some(ProgramStatement::FnDefinition {
+            visibility,
             name,
             args: (params, arg_loc),
             return_type,
@@ -388,6 +389,19 @@ impl<'a> Lowerer<'a> {
             Some(SyntaxKind::Identifier) => {
                 let text = self.text_of_first_token(node).unwrap_or("");
                 Expr::Var(text.to_symbol()).into_id(loc)
+            }
+            Some(SyntaxKind::QualifiedPath) => {
+                // Qualified path in expression context: modA::funcB
+                if let Some(path) = self.lower_qualified_path(node) {
+                    // If it's a single-segment path, treat it as a simple Var
+                    if path.segments.len() == 1 {
+                        Expr::Var(path.segments[0]).into_id(loc)
+                    } else {
+                        Expr::QualifiedVar(path).into_id(loc)
+                    }
+                } else {
+                    Expr::Error.into_id(loc)
+                }
             }
             Some(SyntaxKind::TupleExpr) => {
                 let elems = self.lower_expr_list(node);
@@ -1178,6 +1192,7 @@ impl<'a> Lowerer<'a> {
                 | SyntaxKind::SampleRateLiteral
                 | SyntaxKind::PlaceHolderLiteral
                 | SyntaxKind::Identifier
+                | SyntaxKind::QualifiedPath
         )
     }
 
@@ -1249,11 +1264,14 @@ pub fn parse_program(source: &str, file_path: PathBuf) -> (Program, Vec<ParserEr
 
 /// Parse source to ExprNodeId with error collection.
 /// This is a compatibility function for the old parser API.
+/// Also returns the ModuleEnv built from the parsed program.
 pub fn parse_to_expr(
     source: &str,
     file_path: Option<PathBuf>,
 ) -> (
     ExprNodeId,
+    crate::utils::module_env::ModuleEnv,
+    crate::ast::program::VisibilityMap,
     Vec<Box<dyn crate::utils::error::ReportableError>>,
 ) {
     let path = file_path.unwrap_or_default();
@@ -1262,13 +1280,21 @@ pub fn parse_to_expr(
         crate::compiler::parser::parser_errors_to_reportable(source, path.clone(), parse_errs);
 
     if prog.statements.is_empty() {
-        return (Expr::Error.into_id_without_span(), errs);
+        return (
+            Expr::Error.into_id_without_span(),
+            crate::utils::module_env::ModuleEnv::new(),
+            crate::ast::program::VisibilityMap::new(),
+            errs,
+        );
     }
 
-    let (expr, mut new_errs) = crate::ast::program::expr_from_program(prog, path);
+    // Build module environment from the program before converting to expressions
+    let module_env = crate::utils::module_env::ModuleEnv::from_program(&prog);
+
+    let (expr, visibility_map, mut new_errs) = crate::ast::program::expr_from_program(prog, path);
     let mut all_errs = errs;
     all_errs.append(&mut new_errs);
-    (expr, all_errs)
+    (expr, module_env, visibility_map, all_errs)
 }
 
 /// Add global context wrapper around AST.

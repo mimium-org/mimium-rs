@@ -54,6 +54,9 @@ fn token_kind_to_semantic_index(kind: TokenKind) -> Option<usize> {
         | TokenKind::Macro
         | TokenKind::Include
         | TokenKind::StageKwd
+        | TokenKind::Mod
+        | TokenKind::Use
+        | TokenKind::Pub
         | TokenKind::Main => get_token_id(&SemanticTokenType::KEYWORD),
         TokenKind::IdentFunction => get_token_id(&SemanticTokenType::FUNCTION),
         TokenKind::IdentParameter => get_token_id(&SemanticTokenType::PARAMETER),
@@ -101,6 +104,7 @@ fn token_kind_to_semantic_index(kind: TokenKind) -> Option<usize> {
         | TokenKind::ArrayEnd
         | TokenKind::Comma
         | TokenKind::Colon
+        | TokenKind::DoubleColon
         | TokenKind::SemiColon
         | TokenKind::Dot
         | TokenKind::DoubleDot
@@ -301,7 +305,7 @@ pub fn parse(src: &str, uri: &str) -> ParseResult {
         })
         .collect();
 
-    let (ast, parse_errs) = parse_to_expr(src, Some(PathBuf::from(uri)));
+    let (ast, _module_env, _visibility_map, parse_errs) = parse_to_expr(src, Some(PathBuf::from(uri)));
 
     ParseResult {
         ast,

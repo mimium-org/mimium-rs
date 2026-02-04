@@ -175,6 +175,10 @@ where
                 SyntaxKind::AssignExpr => print_assign_expr(children, ctx, allocator),
                 SyntaxKind::ExprList => print_expr_list(children, ctx, allocator),
                 SyntaxKind::ParamDefault => print_param_default(children, ctx, allocator),
+                SyntaxKind::ModuleDecl => allocator.text("/* module */"),
+                SyntaxKind::UseStmt => allocator.text("/* use */"),
+                SyntaxKind::QualifiedPath => allocator.text("/* qualified path */"),
+                SyntaxKind::VisibilityPub => allocator.text("/* pub */"),
                 SyntaxKind::Error => allocator.text("/* error */"),
             }
         }

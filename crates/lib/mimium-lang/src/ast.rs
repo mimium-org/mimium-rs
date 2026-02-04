@@ -4,6 +4,7 @@ pub mod program;
 mod resolve_include;
 pub mod statement;
 use crate::ast::operators::Op;
+use crate::ast::program::QualifiedPath;
 use crate::interner::{ExprNodeId, Symbol, TypeNodeId, with_session_globals};
 use crate::pattern::{TypedId, TypedPattern};
 use crate::utils::metadata::{Location, Span};
@@ -63,6 +64,7 @@ pub struct RecordField {
 pub enum Expr {
     Literal(Literal), // literal, or special symbols (self, now, _)
     Var(Symbol),
+    QualifiedVar(QualifiedPath), // qualified name like modA::funcB
     Block(Option<ExprNodeId>),
     Tuple(Vec<ExprNodeId>),
     Proj(ExprNodeId, i64),
@@ -213,6 +215,13 @@ impl MiniPrint for Expr {
         match self {
             Expr::Literal(l) => l.simple_print(),
             Expr::Var(v) => format!("{v}"),
+            Expr::QualifiedVar(path) => {
+                path.segments
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::")
+            }
             Expr::Block(e) => e.map_or("".to_string(), |eid| {
                 format!("(block {})", eid.simple_print())
             }),
