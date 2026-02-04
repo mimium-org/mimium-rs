@@ -30,6 +30,7 @@ pub const LEGEND_TYPE: &[SemanticTokenType] = &[
     SemanticTokenType::MACRO,
     SemanticTokenType::TYPE,
     SemanticTokenType::TYPE_PARAMETER,
+    SemanticTokenType::NAMESPACE,
 ];
 pub struct ParseResult {
     pub ast: ExprNodeId,
@@ -197,6 +198,95 @@ fn find_prev_non_trivia(
         .copied()
 }
 
+/// Mark identifiers in a QualifiedPath as namespace tokens, except the last one.
+/// For `foo::bar::baz`, `foo` and `bar` become NAMESPACE, `baz` stays as VARIABLE/FUNCTION.
+fn mark_qualified_path_namespaces(
+    node_id: GreenNodeId,
+    arena: &GreenNodeArena,
+    tokens: &[Token],
+    token_types: &mut [Option<usize>],
+    namespace_id: usize,
+) {
+    // Collect all identifier tokens in this qualified path
+    let mut ident_tokens: Vec<usize> = Vec::new();
+    collect_ident_tokens(node_id, arena, tokens, &mut ident_tokens);
+    
+    // Mark all but the last identifier as namespace
+    if ident_tokens.len() > 1 {
+        for &token_idx in ident_tokens.iter().take(ident_tokens.len() - 1) {
+            token_types[token_idx] = Some(namespace_id);
+        }
+    }
+}
+
+/// Mark all identifiers in a path as namespace tokens.
+/// Used for `use foo::bar` where even `bar` should be namespace-colored in the use context.
+fn mark_all_as_namespace(
+    node_id: GreenNodeId,
+    arena: &GreenNodeArena,
+    tokens: &[Token],
+    token_types: &mut [Option<usize>],
+    namespace_id: usize,
+) {
+    let mut ident_tokens: Vec<usize> = Vec::new();
+    collect_ident_tokens(node_id, arena, tokens, &mut ident_tokens);
+    
+    for &token_idx in &ident_tokens {
+        token_types[token_idx] = Some(namespace_id);
+    }
+}
+
+/// Collect all identifier token indices from a node tree.
+fn collect_ident_tokens(
+    node_id: GreenNodeId,
+    arena: &GreenNodeArena,
+    tokens: &[Token],
+    result: &mut Vec<usize>,
+) {
+    match arena.get(node_id) {
+        GreenNode::Token { token_index, .. } => {
+            if matches!(
+                tokens[*token_index].kind,
+                TokenKind::Ident
+                    | TokenKind::IdentFunction
+                    | TokenKind::IdentVariable
+                    | TokenKind::IdentParameter
+            ) {
+                result.push(*token_index);
+            }
+        }
+        GreenNode::Internal { children, .. } => {
+            for child in children {
+                collect_ident_tokens(*child, arena, tokens, result);
+            }
+        }
+    }
+}
+
+/// Mark the module name identifier as namespace in module declarations.
+fn mark_module_name(
+    children: &[GreenNodeId],
+    arena: &GreenNodeArena,
+    tokens: &[Token],
+    token_types: &mut [Option<usize>],
+    namespace_id: usize,
+) {
+    // Find the first identifier token which is the module name
+    if let Some(token_index) = children.iter().find_map(|child| match arena.get(*child) {
+        GreenNode::Token { token_index, .. }
+            if matches!(
+                tokens[*token_index].kind,
+                TokenKind::Ident | TokenKind::IdentFunction | TokenKind::IdentVariable
+            ) =>
+        {
+            Some(*token_index)
+        }
+        _ => None,
+    }) {
+        token_types[token_index] = Some(namespace_id);
+    }
+}
+
 fn mark_function_decl_name(
     children: &[GreenNodeId],
     arena: &GreenNodeArena,
@@ -225,10 +315,26 @@ fn apply_contextual_semantics(
     tokens: &[Token],
     token_types: &mut [Option<usize>],
     function_id: usize,
+    namespace_id: usize,
 ) {
     if let Some(children) = arena.children(node_id) {
-        if arena.kind(node_id) == Some(SyntaxKind::FunctionDecl) {
-            mark_function_decl_name(children, arena, tokens, token_types, function_id);
+        match arena.kind(node_id) {
+            Some(SyntaxKind::FunctionDecl) => {
+                mark_function_decl_name(children, arena, tokens, token_types, function_id);
+            }
+            Some(SyntaxKind::ModuleDecl) => {
+                // Mark the module name as namespace
+                mark_module_name(children, arena, tokens, token_types, namespace_id);
+            }
+            Some(SyntaxKind::UseStmt) => {
+                // Mark all identifiers in use statement as namespace
+                for child in children {
+                    if arena.kind(*child) == Some(SyntaxKind::QualifiedPath) {
+                        mark_all_as_namespace(*child, arena, tokens, token_types, namespace_id);
+                    }
+                }
+            }
+            _ => {}
         }
 
         for (idx, child) in children.iter().enumerate() {
@@ -236,6 +342,16 @@ fn apply_contextual_semantics(
                 match kind {
                     SyntaxKind::CallExpr => {
                         if let Some(prev) = find_prev_non_trivia(children, idx, arena, tokens) {
+                            // Check if prev is a QualifiedPath - mark namespaces first
+                            if arena.kind(prev) == Some(SyntaxKind::QualifiedPath) {
+                                mark_qualified_path_namespaces(
+                                    prev,
+                                    arena,
+                                    tokens,
+                                    token_types,
+                                    namespace_id,
+                                );
+                            }
                             mark_identifiers_as_function(
                                 prev,
                                 arena,
@@ -247,6 +363,16 @@ fn apply_contextual_semantics(
                     }
                     SyntaxKind::BinaryExpr if node_contains_pipe(*child, arena, tokens) => {
                         if let Some(prev) = find_prev_non_trivia(children, idx, arena, tokens) {
+                            // Check if prev is a QualifiedPath - mark namespaces first
+                            if arena.kind(prev) == Some(SyntaxKind::QualifiedPath) {
+                                mark_qualified_path_namespaces(
+                                    prev,
+                                    arena,
+                                    tokens,
+                                    token_types,
+                                    namespace_id,
+                                );
+                            }
                             mark_identifiers_as_function(
                                 prev,
                                 arena,
@@ -256,10 +382,21 @@ fn apply_contextual_semantics(
                             );
                         }
                     }
+                    SyntaxKind::QualifiedPath => {
+                        // For standalone qualified paths (not in call/use context), 
+                        // mark the namespace parts
+                        mark_qualified_path_namespaces(
+                            *child,
+                            arena,
+                            tokens,
+                            token_types,
+                            namespace_id,
+                        );
+                    }
                     _ => {}
                 }
             }
-            apply_contextual_semantics(*child, arena, tokens, token_types, function_id);
+            apply_contextual_semantics(*child, arena, tokens, token_types, function_id, namespace_id);
         }
     }
 }
@@ -275,7 +412,8 @@ pub fn tokens_from_green(
         .collect();
 
     let function_id = get_token_id(&SemanticTokenType::FUNCTION);
-    apply_contextual_semantics(root, arena, tokens, &mut token_types, function_id);
+    let namespace_id = get_token_id(&SemanticTokenType::NAMESPACE);
+    apply_contextual_semantics(root, arena, tokens, &mut token_types, function_id, namespace_id);
 
     tokens
         .iter()
