@@ -645,15 +645,57 @@ impl ByteCodeGenerator {
             mir::Instruction::PhiSwitch(_) => {
                 unreachable!("PhiSwitch should be handled within Switch processing")
             }
-            // Tagged Union instructions (Phase 2) - not yet implemented in VM
-            mir::Instruction::TaggedUnionWrap { .. } => {
-                todo!("TaggedUnionWrap not yet implemented in bytecode generation")
+            // Tagged Union instructions (Phase 2)
+            // Represents tagged unions as (tag, value) tuples using consecutive registers
+            mir::Instruction::TaggedUnionWrap {
+                tag,
+                value,
+                union_type,
+            } => {
+                // Get word size for the value
+                let value_size = Self::word_size_for_type(union_type);
+                let total_size = 1 + value_size; // tag (1 word) + value
+                
+                // Allocate consecutive registers for (tag, value)
+                let dst_reg = self.vregister.push_stack(&dst, total_size as u64);
+                
+                // Store tag in first register
+                let tag_pos = funcproto.add_new_constant(tag);
+                bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut())
+                    .push(VmInstruction::MoveConst(dst_reg, tag_pos as ConstPos));
+                
+                // Store value in subsequent register(s)
+                let val_reg = self.find(&value);
+                let val_dst = dst_reg + 1;
+                
+                if value_size == 1 {
+                    Some(VmInstruction::Move(val_dst, val_reg))
+                } else {
+                    Some(VmInstruction::MoveRange(val_dst, val_reg, value_size))
+                }
             }
-            mir::Instruction::TaggedUnionGetTag(_) => {
-                todo!("TaggedUnionGetTag not yet implemented in bytecode generation")
+            mir::Instruction::TaggedUnionGetTag(union_val) => {
+                // Extract tag (first register of the tagged union tuple)
+                let union_reg = self.find_keep(&union_val);
+                let dst_reg = self.get_destination(dst, 1);
+                
+                // Tag is at union_reg + 0
+                Some(VmInstruction::Move(dst_reg, union_reg))
             }
-            mir::Instruction::TaggedUnionGetValue(_, _) => {
-                todo!("TaggedUnionGetValue not yet implemented in bytecode generation")
+            mir::Instruction::TaggedUnionGetValue(union_val, value_ty) => {
+                // Extract value (second register onwards of the tagged union tuple)
+                let union_reg = self.find_keep(&union_val);
+                let value_size = Self::word_size_for_type(value_ty);
+                let dst_reg = self.get_destination(dst, value_size);
+                
+                // Value starts at union_reg + 1
+                let value_reg = union_reg + 1;
+                
+                if value_size == 1 {
+                    Some(VmInstruction::Move(dst_reg, value_reg))
+                } else {
+                    Some(VmInstruction::MoveRange(dst_reg, value_reg, value_size))
+                }
             }
             mir::Instruction::Switch {
                 scrutinee,
@@ -701,8 +743,9 @@ impl ByteCodeGenerator {
                 let default_bytes = emit_block(self, default_block_mir);
 
                 // Now that all blocks are processed, we can find the result registers
+                // Use find_keep since these values come from different blocks and need to remain available
                 let result_regs: Vec<Reg> = if let mir::Instruction::PhiSwitch(results) = phi_inst {
-                    results.iter().map(|r| self.find(r)).collect()
+                    results.iter().map(|r| self.find_keep(r)).collect()
                 } else {
                     panic!("Expected PhiSwitch in merge block");
                 };
