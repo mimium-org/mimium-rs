@@ -15,9 +15,9 @@ The plan should be separated into the following steps.
 ```
 Phase 1: Integer Match     (foundation)  ✅ COMPLETED
     ↓
-Phase 2: Sum Type `A|B`    (type system extension)  ← NEXT
+Phase 2: Sum Type `A|B`    (type system extension)  ✅ COMPLETED
     ↓
-Phase 3: Type Declaration  (custom types)
+Phase 3: Type Declaration  (custom types)  ← NEXT
     ↓
 Phase 4: Constructor w/ values
     ↓
@@ -29,9 +29,16 @@ Phase 5-6: Complex patterns
 | Phase | Parser | Type System | MIR | VM/Bytecode |
 |-------|--------|-------------|-----|-------------|
 | 1 ✅ | `green.rs`, `cst_parser.rs`, `lower.rs` | `typing.rs` | `mirgen.rs` | `bytecodegen.rs`, `vm.rs` |
-| 2 | (type annotation parser) | `types/mod.rs`, `typing.rs` | `mirgen.rs` | `vm.rs` (tagged union) |
+| 2 ✅ | (type annotation parser) | `types/mod.rs`, `typing.rs`, `unification.rs` | `mirgen.rs` | `bytecodegen.rs`, `vm.rs` |
 | 3 | `cst_parser.rs` (type decl) | type environment | - | - |
 | 4+ | pattern parser | pattern typing | pattern MIR | - |
+
+### Current Test Status (2026-02-05)
+
+- `match_int`: ✅ PASSED (integer literal matching with wildcard default)
+- `sum_type_basic`: ✅ PASSED (Union type with constructor patterns)
+- All other tests (95 integration + 7 scheduler): ✅ PASSED
+- `multistage` tests: ⏳ Skipped (pre-existing hang issue, unrelated to variant types)
 
 ### Phase 1 Implementation Summary ✅
 
@@ -51,7 +58,12 @@ Phase 5-6: Complex patterns
 
 ```rust
 // MIR
-Instruction::Switch { scrutinee: VPtr, cases: Vec<(i64, u64)>, default_block: u64, merge_block: u64 }
+Instruction::Switch { 
+    scrutinee: VPtr, 
+    cases: Vec<(i64, Bbindex)>, 
+    default_block: Option<Bbindex>,  // None for exhaustive matches
+    merge_block: Bbindex 
+}
 Instruction::PhiSwitch(Vec<VPtr>)
 
 // Bytecode
@@ -98,15 +110,15 @@ The developer should add
 - add switch operation for MIR
 - add jump table mechanism to bytecode and VM
 
-## step 2. primitive sum type ← PARTIALLY COMPLETE
+## step 2. primitive sum type ✅ COMPLETED
 
 The variant type with explicit type annotation should be added.
 
 ```mimium
 fn test(num_or_str: float | string ){
   match num_or_str {
-    String(x) => 1,
-    Float(x) => 2,
+    string(x) => 1,
+    float(x) => 2,
   }
 }
 
@@ -119,18 +131,19 @@ fn dsp(){
 }
 ```
 
-### Phase 2 Implementation Status (Updated: 2025-01-XX)
+### Phase 2 Implementation Status ✅ COMPLETED (2026-02-05)
 
-**Working:**
+**All features working:**
 - Union type parsing (`float | string`)
 - Type inference for union types
-- Subtype relationship: values can be passed to union type parameters
-- Functions with union type parameters compile successfully
-- Constructor patterns parse correctly (`float(x)`, `string(_)`)
+- Subtype-based coercion: values are automatically wrapped when passed to union type parameters
+- Functions with union type parameters compile and execute correctly
+- Constructor patterns parse and work correctly (`float(x)`, `string(_)`)
+- Tagged union memory layout implemented (tag + value)
+- Match expressions with constructor patterns and variable bindings work correctly
 
-**Known Limitations:**
-- Match expressions with constructor patterns and variable bindings cause bytecode generation errors due to cross-basic-block register scoping issues
-- Tagged union memory layout not yet implemented (values passed as-is for now)
+**Test Result:**
+- `sum_type_basic` test: ✅ PASSED (returns 3.0)
 
 ### Phase 2 Implementation Steps
 
@@ -159,22 +172,22 @@ fn dsp(){
    - ✅ Variable binding scope in match arms
    - ✅ Error types: `ConstructorNotInUnion`, `ExpectedUnionType`
 
-4. **MIR Generation** ⚠️ PARTIAL
-   - ✅ `Instruction::TaggedUnionWrap` - wrap value with tag (defined)
-   - ✅ `Instruction::TaggedUnionGetTag` - extract tag (defined)
-   - ✅ `Instruction::TaggedUnionGetValue` - extract value (defined)
-   - ✅ Constructor pattern variable bindings in `eval_match`
-   - ⚠️ Cross-block register references cause bytecode gen issues
-   - ⏳ Need phi-node style value propagation for match blocks
+4. **MIR Generation** ✅ COMPLETED
+   - ✅ `Instruction::TaggedUnionWrap` - wrap value with tag
+   - ✅ `Instruction::TaggedUnionGetTag` - extract tag
+   - ✅ `Instruction::TaggedUnionGetValue` - extract value
+   - ✅ Constructor pattern variable bindings in `eval_union_match`
+   - ✅ Subtype-based coercion in `coerce_value()` and `coerce_args_for_call()`
+   - ✅ Float-to-int cast for numeric scrutinees in match expressions
+   - ✅ `Switch.default_block` changed to `Option<Bbindex>` (None for exhaustive matches)
 
-5. **VM/Bytecode Changes** ⏳ TODO
-   - Tagged union memory layout implementation
-   - Bytecode instructions for tagged union operations
-   - VM execution support
-
-### Known Issues
-
-- **Register scoping**: When constructor patterns reference the scrutinee value from a previous basic block, the bytecode generator fails to find the register because `VRegister::find` removes entries after first use. This requires SSA-style value propagation or block arguments for match expressions.
+5. **VM/Bytecode Changes** ✅ COMPLETED
+   - ✅ Tagged union memory layout: `[tag (1 word), value (N words)]`
+   - ✅ `word_size_for_type(Type::Union)` = `1 + max(variant_sizes)`
+   - ✅ Bytecode instructions: `TaggedUnionWrap`, `GetTag`, `GetValue`
+   - ✅ VM execution: SetTag, Move/MoveRange for values
+   - ✅ `CastFtoI` / `CastItoF` bytecode generation
+   - ✅ JmpTable simplified to always read as i64
 
 ---
 
@@ -182,7 +195,7 @@ fn dsp(){
 - Primnitive type constructor(String and Float) pattern should be added.
 - Tagged Union representation should be added in MIR and VM.
 
-## step 3. Explicit Constructor pattern without value
+## step 3. Explicit Constructor pattern without value ← NEXT
 
 ```mimium
 type MyEnum = One | Two | Three 
@@ -203,10 +216,55 @@ fn dsp(){
 }
 ```
 
-- Type declaration statement and binding environemnt should be added.
-- Variable environemnt for type constructors should be added.
-- Variable match pattern should be added.
-- Conversion to the internal integer representation in MIR and VM
+### Phase 3 Implementation Plan
+
+#### Goal
+Enable user-defined sum types with explicit constructor names (without payload values).
+
+#### Implementation Steps
+
+1. **Type Declaration Parsing** ⏳ TODO
+   - Add `SyntaxKind::TypeDecl` to `green.rs`
+   - Parse `type Name = Constructor1 | Constructor2 | ...` in `cst_parser.rs`
+   - CST structure: `TypeDecl { name: Ident, variants: Vec<VariantDef> }`
+   - Lower to AST in `lower.rs`
+
+2. **AST for Type Declarations** ⏳ TODO
+   - Add statement type: `Statement::TypeDecl(Symbol, Vec<VariantDef>)`
+   - `VariantDef { name: Symbol, payload: Option<TypeNodeId> }`
+   - Store in expression as `Expr::TypeDecl` or separate statement list
+
+3. **Type Environment Extension** ⏳ TODO
+   - Create type alias/definition environment
+   - Map type name → `Type::Union(...)` with named constructors
+   - Constructor name → (type_id, tag_index) lookup
+
+4. **Constructor as Value** ⏳ TODO
+   - Constructors without payload become zero-arg functions/values
+   - Type of `One` is `MyEnum` (not a function)
+   - In MIR: `TaggedUnionWrap { tag: 0, value: Unit, union_type }`
+
+5. **Pattern Matching Enhancement** ⏳ TODO
+   - Allow bare identifiers as constructor patterns (not just `Name(x)`)
+   - Look up pattern name in constructor environment
+   - If found, treat as constructor pattern with no binding
+
+#### Key Questions to Resolve
+
+- Should constructors be first-class values (can be passed around)?
+- How to disambiguate `One` (constructor) vs `one` (variable)?
+  - Convention: Uppercase for constructors
+  - Or: explicit lookup in constructor environment first
+
+#### Test File Location
+- `crates/lib/mimium-test/tests/mmm/enum_basic.mmm`
+
+fn dsp(){
+    x+y+z //the result should be 6
+}
+```
+
+---
 
 ## step 4. Explicit Constructor with value
 
