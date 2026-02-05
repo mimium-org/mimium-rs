@@ -1630,6 +1630,10 @@ impl<'a> Parser<'a> {
                         this.bump();
                     });
                 }
+                // Tuple pattern at top level of match arm: (pat1, pat2, ...)
+                Some(TokenKind::ParenBegin) => {
+                    this.parse_match_tuple_pattern();
+                }
                 // Constructor pattern: Identifier(binding) or Identifier
                 // Also handle type keywords (float, string, int) as constructor names
                 Some(TokenKind::Ident)
@@ -1682,6 +1686,27 @@ impl<'a> Parser<'a> {
                     this.bump();
                 }
             }
+        });
+    }
+
+    /// Parse tuple pattern in match expression: (pat1, pat2, ...)
+    /// Each element is a match pattern (can be int, float, _, constructor, or nested tuple)
+    fn parse_match_tuple_pattern(&mut self) {
+        self.emit_node(SyntaxKind::TuplePattern, |this| {
+            this.expect(TokenKind::ParenBegin);
+
+            if !this.check(TokenKind::ParenEnd) {
+                this.parse_match_pattern();
+
+                while this.check(TokenKind::Comma) {
+                    this.bump(); // ,
+                    if !this.check(TokenKind::ParenEnd) {
+                        this.parse_match_pattern();
+                    }
+                }
+            }
+
+            this.expect(TokenKind::ParenEnd);
         });
     }
 

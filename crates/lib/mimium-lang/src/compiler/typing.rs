@@ -665,6 +665,52 @@ impl InferContext {
         }
     }
 
+    /// Check a pattern against a type and add variable bindings
+    /// This is used for tuple patterns in multi-scrutinee matching
+    fn check_pattern_against_type(
+        &mut self,
+        pattern: &crate::ast::MatchPattern,
+        ty: TypeNodeId,
+        loc: &Location,
+    ) {
+        use crate::ast::MatchPattern;
+        match pattern {
+            MatchPattern::Literal(lit) => {
+                // For literal patterns, unify with expected type
+                let pat_ty = match lit {
+                    crate::ast::Literal::Int(_) | crate::ast::Literal::Float(_) => {
+                        Type::Primitive(PType::Numeric).into_id_with_location(loc.clone())
+                    }
+                    _ => Type::Failure.into_id_with_location(loc.clone()),
+                };
+                let _ = self.unify_types(ty, pat_ty);
+            }
+            MatchPattern::Wildcard => {
+                // Wildcard matches anything, no binding
+            }
+            MatchPattern::Variable(var) => {
+                // Bind variable to the expected type
+                self.env.add_bind(&[(*var, (ty, self.stage))]);
+            }
+            MatchPattern::Constructor(constructor_name, inner) => {
+                // Get the payload type for this constructor from the union/enum type
+                let binding_ty = self.get_constructor_type_from_union(ty, *constructor_name);
+                if let Some(inner_pat) = inner {
+                    self.add_pattern_bindings(inner_pat, binding_ty);
+                }
+            }
+            MatchPattern::Tuple(patterns) => {
+                // Recursively check nested tuple pattern
+                let resolved_ty = ty.get_root().to_type();
+                if let Type::Tuple(elem_types) = resolved_ty {
+                    for (pat, elem_ty) in patterns.iter().zip(elem_types.iter()) {
+                        self.check_pattern_against_type(pat, *elem_ty, loc);
+                    }
+                }
+            }
+        }
+    }
+
     fn unwrap_result(&mut self, res: Result<TypeNodeId, Vec<Error>>) -> TypeNodeId {
         match res {
             Ok(t) => t,
@@ -1320,10 +1366,31 @@ impl InferContext {
                                     self.infer_type_unwrapping(arm.body)
                                 }
                             }
-                            crate::ast::MatchPattern::Tuple(_patterns) => {
-                                // Tuple pattern in a match arm (without constructor)
-                                // This shouldn't typically appear at the top level
-                                self.infer_type_unwrapping(arm.body)
+                            crate::ast::MatchPattern::Tuple(patterns) => {
+                                // Tuple pattern in a match arm for multi-scrutinee matching
+                                // The scrutinee should be a tuple and we need to bind variables
+                                // from each sub-pattern
+                                self.env.extend();
+
+                                // Get the scrutinee type and check it's a tuple
+                                let resolved_scrut_ty = scrut_ty.get_root().to_type();
+                                if let Type::Tuple(elem_types) = resolved_scrut_ty {
+                                    // Type check each pattern element against corresponding
+                                    // scrutinee element
+                                    for (pat, elem_ty) in patterns.iter().zip(elem_types.iter()) {
+                                        self.check_pattern_against_type(pat, *elem_ty, &loc);
+                                    }
+                                } else {
+                                    // If scrutinee is not a tuple, check each pattern against
+                                    // the whole type (for error reporting)
+                                    for pat in patterns.iter() {
+                                        self.check_pattern_against_type(pat, scrut_ty, &loc);
+                                    }
+                                }
+
+                                let body_ty = self.infer_type_unwrapping(arm.body);
+                                self.env.to_outer();
+                                body_ty
                             }
                         }
                     })

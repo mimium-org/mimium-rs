@@ -28,6 +28,58 @@ use crate::utils::metadata::{GLOBAL_LABEL, Location, Span};
 
 use crate::ast::{Expr, Literal};
 
+// Decision Tree for pattern matching compilation
+// Used to compile multi-scrutinee pattern matching into nested switches
+
+/// A single pattern cell in the pattern matrix
+#[derive(Debug, Clone)]
+enum PatternCell {
+    /// Literal integer value
+    Literal(i64),
+    /// Wildcard or variable - matches anything
+    Wildcard,
+    /// Variable binding - matches anything and binds
+    Variable(Symbol),
+    /// Constructor with optional nested pattern
+    Constructor {
+        tag: i64,
+        inner: Option<Box<PatternCell>>,
+    },
+    /// Tuple of patterns (for nested tuples in constructor payloads)
+    Tuple(Vec<PatternCell>),
+}
+
+/// A row in the pattern matrix
+#[derive(Debug, Clone)]
+struct PatternRow {
+    /// Pattern cells for each scrutinee element
+    cells: Vec<PatternCell>,
+    /// Index of the original match arm
+    arm_index: usize,
+    /// The body expression to evaluate
+    body: ExprNodeId,
+}
+
+/// Decision tree node
+#[derive(Debug)]
+enum DecisionTree {
+    /// Leaf node - evaluate arm body with bindings
+    Leaf {
+        arm_index: usize,
+        body: ExprNodeId,
+        /// Bindings: (variable_name, scrutinee_index, is_payload)
+        bindings: Vec<(Symbol, usize, bool)>,
+    },
+    /// Switch on scrutinee at given index
+    Switch {
+        scrutinee_index: usize,
+        cases: Vec<(i64, Box<DecisionTree>)>,
+        default: Option<Box<DecisionTree>>,
+    },
+    /// No match - unreachable
+    Fail,
+}
+
 // pub mod closure_convert;
 // pub mod feedconvert;
 // pub mod hir_solve_stage;
@@ -1798,6 +1850,12 @@ impl Context {
             return self.eval_union_match(scrut_val, scrut_ty, arms, result_ty, states);
         }
 
+        // Check if scrutinee is a tuple type - Phase 6: multi-scrutinee matching
+        if let Type::Tuple(elem_types) = scrut_ty.to_type() {
+            let (v, state) = self.eval_tuple_match(scrut_val, scrut_ty, &elem_types, arms, states);
+            return (v, result_ty, state);
+        }
+
         // Cast float scrutinee to int for switch instruction
         // This ensures JmpTable always receives integer values
         let scrut_val = if matches!(scrut_ty.to_type(), Type::Primitive(PType::Numeric)) {
@@ -1902,6 +1960,348 @@ impl Context {
 
         states.extend(all_states);
         (res, result_ty, states)
+    }
+
+    /// Evaluate a match expression with tuple scrutinee (multi-scrutinee matching)
+    /// Uses Decision Tree algorithm for efficient pattern matching
+    fn eval_tuple_match(
+        &mut self,
+        scrut_val: VPtr,
+        scrut_ty: TypeNodeId,
+        elem_types: &[TypeNodeId],
+        arms: &[crate::ast::MatchArm],
+
+        mut states: Vec<StateSkeleton>,
+    ) -> (VPtr, Vec<StateSkeleton>) {
+        if arms.is_empty() {
+            return (Arc::new(Value::None), vec![]);
+        }
+
+        // Build pattern matrix from match arms
+        let pattern_matrix = self.build_pattern_matrix(arms, elem_types.len());
+
+        // Build decision tree from pattern matrix
+        // remaining_cols starts as [0, 1, 2, ..., num_columns-1]
+        let remaining_cols: Vec<usize> = (0..elem_types.len()).collect();
+        let decision_tree = Self::build_decision_tree(&pattern_matrix, &remaining_cols);
+
+        // Compile decision tree to MIR
+        // Pass the tuple value and type so each block can extract elements locally
+        let (res, tree_states) =
+            self.compile_decision_tree(&decision_tree, &scrut_val, scrut_ty, elem_types);
+
+        states.extend(tree_states);
+        (res, states)
+    }
+
+    /// Build pattern matrix from match arms
+    fn build_pattern_matrix(
+        &self,
+        arms: &[crate::ast::MatchArm],
+        num_columns: usize,
+    ) -> Vec<PatternRow> {
+        use crate::ast::MatchPattern;
+
+        arms.iter()
+            .enumerate()
+            .map(|(arm_index, arm)| {
+                let cells = match &arm.pattern {
+                    MatchPattern::Tuple(patterns) => patterns
+                        .iter()
+                        .map(|p| self.match_pattern_to_cell(p))
+                        .collect(),
+                    MatchPattern::Wildcard => vec![PatternCell::Wildcard; num_columns],
+                    MatchPattern::Variable(v) => vec![PatternCell::Variable(*v); num_columns],
+                    _ => vec![PatternCell::Wildcard; num_columns],
+                };
+
+                PatternRow {
+                    cells,
+                    arm_index,
+                    body: arm.body,
+                }
+            })
+            .collect()
+    }
+
+    /// Convert a MatchPattern to a PatternCell
+    fn match_pattern_to_cell(&self, pattern: &crate::ast::MatchPattern) -> PatternCell {
+        use crate::ast::MatchPattern;
+
+        match pattern {
+            MatchPattern::Literal(lit) => PatternCell::Literal(Self::literal_to_i64(lit)),
+            MatchPattern::Wildcard => PatternCell::Wildcard,
+            MatchPattern::Variable(v) => PatternCell::Variable(*v),
+            MatchPattern::Constructor(name, inner) => {
+                // Get tag from constructor name
+                let tag = self
+                    .typeenv
+                    .constructor_env
+                    .get(name)
+                    .map(|info| info.tag_index as i64)
+                    .unwrap_or(0);
+                PatternCell::Constructor {
+                    tag,
+                    inner: inner
+                        .as_ref()
+                        .map(|p| Box::new(self.match_pattern_to_cell(p))),
+                }
+            }
+            MatchPattern::Tuple(patterns) => PatternCell::Tuple(
+                patterns
+                    .iter()
+                    .map(|p| self.match_pattern_to_cell(p))
+                    .collect(),
+            ),
+        }
+    }
+
+    /// Build decision tree from pattern matrix using column-based algorithm
+    /// `remaining_cols` tracks which original column indices are still available
+    fn build_decision_tree(matrix: &[PatternRow], remaining_cols: &[usize]) -> DecisionTree {
+        if matrix.is_empty() {
+            return DecisionTree::Fail;
+        }
+
+        // Find first remaining column with non-wildcard patterns
+        let discriminating_col_pos =
+            remaining_cols
+                .iter()
+                .enumerate()
+                .find_map(|(pos, &orig_col)| {
+                    let has_concrete = matrix.iter().any(|row| {
+                        orig_col < row.cells.len()
+                            && !matches!(
+                                &row.cells[orig_col],
+                                PatternCell::Wildcard | PatternCell::Variable(_)
+                            )
+                    });
+                    if has_concrete { Some(pos) } else { None }
+                });
+
+        match discriminating_col_pos {
+            None => {
+                // All patterns are wildcards/variables - take first row
+                let row = &matrix[0];
+                // Bind variables using original column indices
+                let bindings = remaining_cols
+                    .iter()
+                    .filter_map(|&orig_col| {
+                        if orig_col < row.cells.len() {
+                            match &row.cells[orig_col] {
+                                PatternCell::Variable(v) => Some((*v, orig_col, false)),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                DecisionTree::Leaf {
+                    arm_index: row.arm_index,
+                    body: row.body,
+                    bindings,
+                }
+            }
+            Some(pos) => {
+                let orig_col = remaining_cols[pos];
+
+                // Step 1: Collect all concrete values and wildcards separately
+                let mut concrete_rows: BTreeMap<i64, Vec<PatternRow>> = BTreeMap::new();
+                let mut wildcard_rows: Vec<PatternRow> = Vec::new();
+
+                for row in matrix {
+                    if orig_col >= row.cells.len() {
+                        wildcard_rows.push(row.clone());
+                        continue;
+                    }
+
+                    match &row.cells[orig_col] {
+                        PatternCell::Literal(val) => {
+                            concrete_rows.entry(*val).or_default().push(row.clone());
+                        }
+                        PatternCell::Constructor { tag, .. } => {
+                            concrete_rows.entry(*tag).or_default().push(row.clone());
+                        }
+                        PatternCell::Wildcard | PatternCell::Variable(_) => {
+                            wildcard_rows.push(row.clone());
+                        }
+                        PatternCell::Tuple(_) => {
+                            // Nested tuple - treat as wildcard for now
+                            wildcard_rows.push(row.clone());
+                        }
+                    }
+                }
+
+                // Build remaining_cols for subtrees (remove the current column)
+                let new_remaining_cols: Vec<usize> = remaining_cols
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, &c)| if i != pos { Some(c) } else { None })
+                    .collect();
+
+                // Step 2: Create specialized matrices for each case
+                // Wildcards apply to ALL cases, so append them to each concrete case
+                // Note: We don't remove cells anymore - we use remaining_cols to track
+                let case_trees: Vec<(i64, Box<DecisionTree>)> = concrete_rows
+                    .into_iter()
+                    .map(|(val, mut rows)| {
+                        // Add wildcard rows to this case
+                        rows.extend(wildcard_rows.iter().cloned());
+                        let subtree = Self::build_decision_tree(&rows, &new_remaining_cols);
+                        (val, Box::new(subtree))
+                    })
+                    .collect();
+
+                // Build default subtree
+                let default_tree = if !wildcard_rows.is_empty() {
+                    Some(Box::new(Self::build_decision_tree(
+                        &wildcard_rows,
+                        &new_remaining_cols,
+                    )))
+                } else {
+                    None
+                };
+
+                DecisionTree::Switch {
+                    scrutinee_index: orig_col,
+                    cases: case_trees,
+                    default: default_tree,
+                }
+            }
+        }
+    }
+
+    /// Compile decision tree to MIR instructions
+    /// Takes the original tuple value and type so each block can extract elements locally
+    fn compile_decision_tree(
+        &mut self,
+        tree: &DecisionTree,
+        tuple_val: &VPtr,
+        tuple_ty: TypeNodeId,
+        elem_types: &[TypeNodeId],
+    ) -> (VPtr, Vec<StateSkeleton>) {
+        match tree {
+            DecisionTree::Leaf {
+                arm_index: _,
+                body,
+                bindings,
+            } => {
+                // Bind variables by extracting from tuple
+                for (var, idx, _is_payload) in bindings {
+                    if *idx < elem_types.len() {
+                        let elem_val = self.push_inst(Instruction::GetElement {
+                            value: tuple_val.clone(),
+                            ty: tuple_ty,
+                            tuple_offset: *idx as u64,
+                        });
+                        self.add_bind((*var, elem_val));
+                    }
+                }
+                // Evaluate body
+                let (result, _, states) = self.eval_expr(*body);
+                (result, states)
+            }
+
+            DecisionTree::Switch {
+                scrutinee_index,
+                cases,
+                default,
+            } => {
+                if cases.is_empty() {
+                    // No cases - just use default or fail
+                    if let Some(default_tree) = default {
+                        return self.compile_decision_tree(
+                            default_tree,
+                            tuple_val,
+                            tuple_ty,
+                            elem_types,
+                        );
+                    } else {
+                        return (Arc::new(Value::None), vec![]);
+                    }
+                }
+
+                // Get scrutinee element value from tuple and cast to int
+                let elem_val = self.push_inst(Instruction::GetElement {
+                    value: tuple_val.clone(),
+                    ty: tuple_ty,
+                    tuple_offset: *scrutinee_index as u64,
+                });
+                let scrut_int = self.push_inst(Instruction::CastFtoI(elem_val));
+
+                // Record current block for Switch instruction
+                let switch_bb = self.get_ctxdata().current_bb;
+
+                // Placeholder Switch
+                let _ = self.push_inst(Instruction::Switch {
+                    scrutinee: scrut_int.clone(),
+                    cases: vec![],
+                    default_block: None,
+                    merge_block: 0,
+                });
+
+                // Generate blocks for each case
+                let mut case_blocks: Vec<(i64, u64)> = Vec::new();
+                let mut case_results: Vec<VPtr> = Vec::new();
+                let mut all_states: Vec<StateSkeleton> = Vec::new();
+
+                for (val, subtree) in cases {
+                    self.add_new_basicblock();
+                    let block_idx = self.get_ctxdata().current_bb as u64;
+                    let (result, states) =
+                        self.compile_decision_tree(subtree, tuple_val, tuple_ty, elem_types);
+                    case_blocks.push((*val, block_idx));
+                    case_results.push(result);
+                    all_states.extend(states);
+                }
+
+                // Generate default block if present
+                let default_block_idx = if let Some(default_tree) = default {
+                    self.add_new_basicblock();
+                    let block_idx = self.get_ctxdata().current_bb as u64;
+                    let (result, states) =
+                        self.compile_decision_tree(default_tree, tuple_val, tuple_ty, elem_types);
+                    case_results.push(result);
+                    all_states.extend(states);
+                    Some(block_idx)
+                } else {
+                    None
+                };
+
+                // Generate merge block
+                self.add_new_basicblock();
+                let merge_block_idx = self.get_ctxdata().current_bb as u64;
+                let res = self.push_inst(Instruction::PhiSwitch(case_results));
+
+                // Update Switch instruction
+                let switch_inst = self
+                    .get_current_fn()
+                    .body
+                    .get_mut(switch_bb)
+                    .expect("no basic block found")
+                    .0
+                    .last_mut()
+                    .expect("block contains no inst");
+
+                if let Instruction::Switch {
+                    cases,
+                    default_block,
+                    merge_block,
+                    ..
+                } = &mut switch_inst.1
+                {
+                    *cases = case_blocks;
+                    *default_block = default_block_idx;
+                    *merge_block = merge_block_idx;
+                }
+
+                (res, all_states)
+            }
+
+            DecisionTree::Fail => (Arc::new(Value::None), vec![]),
+        }
     }
 }
 

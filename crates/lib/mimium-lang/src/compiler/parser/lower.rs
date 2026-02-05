@@ -755,6 +755,10 @@ impl<'a> Lowerer<'a> {
                 Some(SyntaxKind::ConstructorPattern) => {
                     return self.lower_constructor_pattern(child);
                 }
+                Some(SyntaxKind::TuplePattern) => {
+                    // Tuple pattern for multi-scrutinee matching: (pat1, pat2, ...)
+                    return self.lower_match_tuple_pattern(child);
+                }
                 Some(SyntaxKind::Identifier) => {
                     // Bare identifier in pattern: treat as constructor (e.g., One, Two)
                     if let Some(text) = self.text_of_first_token(child) {
@@ -860,6 +864,33 @@ impl<'a> Lowerer<'a> {
         if patterns.len() == 1 {
             if let MatchPattern::Tuple(_) = &patterns[0] {
                 return patterns.pop().unwrap();
+            }
+        }
+
+        MatchPattern::Tuple(patterns)
+    }
+
+    /// Lower a tuple pattern in match expression from CST to AST
+    /// This handles (pat1, pat2, ...) where each element is a full match pattern
+    /// (can be literals, constructors, wildcards, or nested tuples)
+    fn lower_match_tuple_pattern(&self, node: GreenNodeId) -> crate::ast::MatchPattern {
+        use crate::ast::MatchPattern;
+
+        let children: Vec<GreenNodeId> = self
+            .arena
+            .children(node)
+            .map(|c| c.to_vec())
+            .unwrap_or_default();
+
+        let mut patterns = Vec::new();
+
+        for &child in &children {
+            match self.arena.kind(child) {
+                Some(SyntaxKind::MatchPattern) => {
+                    // Recursively lower each match pattern
+                    patterns.push(self.lower_match_pattern(child));
+                }
+                _ => {}
             }
         }
 

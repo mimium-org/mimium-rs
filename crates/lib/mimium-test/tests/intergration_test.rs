@@ -847,6 +847,14 @@ fn enum_complex() {
     assert_eq!(res, ans);
 }
 
+// Phase 6: Multi-scrutinee pattern matching with tuple patterns
+#[wasm_bindgen_test(unsupported = test)]
+fn enum_multi_scrutinee() {
+    let res = run_file_test_mono("enum_multi_scrutinee.mmm", 1).unwrap();
+    let ans = vec![160.0]; // test_simple(1,1)=10 + test_simple(1,2)=20 + test_simple(2,1)=30 + test_simple(3,3)=100 = 160
+    assert_eq!(res, ans);
+}
+
 // #[wasm_bindgen_test(unsupported = test)]
 // fn map_record() {
 //     let res = run_file_test_stereo("map_record.mmm", 1).unwrap();
