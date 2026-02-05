@@ -1388,8 +1388,9 @@ impl Context {
         }
         
         // Find which variant in the union matches the argument type
+        // Use simple type equality check
         for (i, variant_ty) in variants.iter().enumerate() {
-            if self.typeenv.can_unify(arg_ty, *variant_ty).is_ok() {
+            if arg_ty == *variant_ty {
                 return Some(i as u64);
             }
         }

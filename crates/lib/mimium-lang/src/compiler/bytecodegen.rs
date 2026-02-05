@@ -646,46 +646,56 @@ impl ByteCodeGenerator {
                 unreachable!("PhiSwitch should be handled within Switch processing")
             }
             // Tagged Union instructions (Phase 2)
+            // Represents tagged unions as (tag, value) tuples using consecutive registers
             mir::Instruction::TaggedUnionWrap {
                 tag,
                 value,
                 union_type,
             } => {
-                // Represent tagged union as a tuple: (tag, value)
-                // tag is stored as an integer, value is the actual data
-                let dst_reg = self.vregister.add_newvalue(&v);
+                // Get word size for the value
+                let value_size = Self::word_size_for_type(union_type);
+                let total_size = 1 + value_size; // tag (1 word) + value
                 
-                // Create tag as an integer value
-                let tag_reg = dst_reg; // Use dst_reg for tag temporarily
-                self.emit_push(VmInstruction::Move(tag_reg, *tag as i64));
+                // Allocate consecutive registers for (tag, value)
+                let dst_reg = self.vregister.push_stack(&dst, total_size as u64);
                 
-                // Get value register
+                // Store tag in first register
+                let tag_pos = funcproto.add_new_constant(tag);
+                bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut())
+                    .push(VmInstruction::MoveConst(dst_reg, tag_pos as ConstPos));
+                
+                // Store value in subsequent register(s)
                 let val_reg = self.find(&value);
+                let val_dst = dst_reg + 1;
                 
-                // Create tuple: store tag at dst_reg, value at dst_reg+1
-                // For now, just pass the value through as the tagged union
-                // (full tuple representation requires more VM changes)
-                self.emit_push(VmInstruction::Move(dst_reg, tag_reg as i64));
-                
-                Some(VmInstruction::Move(dst_reg, val_reg as i64))
+                if value_size == 1 {
+                    Some(VmInstruction::Move(val_dst, val_reg))
+                } else {
+                    Some(VmInstruction::MoveRange(val_dst, val_reg, value_size))
+                }
             }
             mir::Instruction::TaggedUnionGetTag(union_val) => {
-                // Extract tag from tagged union (first element of tuple)
+                // Extract tag (first register of the tagged union tuple)
                 let union_reg = self.find_keep(&union_val);
-                let dst_reg = self.vregister.add_newvalue(&v);
+                let dst_reg = self.get_destination(dst, 1);
                 
-                // For now, tag is stored in the same register as the union
-                // This is a simplified representation
-                Some(VmInstruction::Move(dst_reg, union_reg as i64))
+                // Tag is at union_reg + 0
+                Some(VmInstruction::Move(dst_reg, union_reg))
             }
-            mir::Instruction::TaggedUnionGetValue(union_val, _value_ty) => {
-                // Extract value from tagged union (second element of tuple)
+            mir::Instruction::TaggedUnionGetValue(union_val, value_ty) => {
+                // Extract value (second register onwards of the tagged union tuple)
                 let union_reg = self.find_keep(&union_val);
-                let dst_reg = self.vregister.add_newvalue(&v);
+                let value_size = Self::word_size_for_type(value_ty);
+                let dst_reg = self.get_destination(dst, value_size);
                 
-                // For now, value is stored in union_reg+1 or we just pass through
-                // This is a simplified representation - the actual value is in the union
-                Some(VmInstruction::Move(dst_reg, union_reg as i64))
+                // Value starts at union_reg + 1
+                let value_reg = union_reg + 1;
+                
+                if value_size == 1 {
+                    Some(VmInstruction::Move(dst_reg, value_reg))
+                } else {
+                    Some(VmInstruction::MoveRange(dst_reg, value_reg, value_size))
+                }
             }
             mir::Instruction::Switch {
                 scrutinee,
@@ -733,8 +743,9 @@ impl ByteCodeGenerator {
                 let default_bytes = emit_block(self, default_block_mir);
 
                 // Now that all blocks are processed, we can find the result registers
+                // Use find_keep since these values come from different blocks and need to remain available
                 let result_regs: Vec<Reg> = if let mir::Instruction::PhiSwitch(results) = phi_inst {
-                    results.iter().map(|r| self.find(r)).collect()
+                    results.iter().map(|r| self.find_keep(r)).collect()
                 } else {
                     panic!("Expected PhiSwitch in merge block");
                 };
