@@ -443,7 +443,11 @@ pub struct InferContext {
     pub errors: Vec<Error>,
 }
 impl InferContext {
-    pub fn new(builtins: &[(Symbol, TypeNodeId)], file_path: PathBuf) -> Self {
+    pub fn new(
+        builtins: &[(Symbol, TypeNodeId)],
+        file_path: PathBuf,
+        type_declarations: Option<&crate::ast::program::TypeDeclarationMap>,
+    ) -> Self {
         let mut res = Self {
             interm_idx: Default::default(),
             typescheme_idx: Default::default(),
@@ -470,11 +474,15 @@ impl InferContext {
             .map(|(name, ty)| (*name, (*ty, EvalStage::Persistent)))
             .collect::<Vec<_>>();
         res.env.add_bind(&builtins);
+        // Register user-defined type constructors
+        if let Some(type_decls) = type_declarations {
+            res.register_type_declarations(type_decls);
+        }
         res
     }
 
     /// Register type declarations from ModuleInfo into the constructor environment
-    pub fn register_type_declarations(
+    fn register_type_declarations(
         &mut self,
         type_declarations: &crate::ast::program::TypeDeclarationMap,
     ) {
@@ -1284,21 +1292,9 @@ pub fn infer_root(
     e: ExprNodeId,
     builtin_types: &[(Symbol, TypeNodeId)],
     file_path: PathBuf,
-) -> InferContext {
-    infer_root_with_type_decls(e, builtin_types, file_path, None)
-}
-
-pub fn infer_root_with_type_decls(
-    e: ExprNodeId,
-    builtin_types: &[(Symbol, TypeNodeId)],
-    file_path: PathBuf,
     type_declarations: Option<&crate::ast::program::TypeDeclarationMap>,
 ) -> InferContext {
-    let mut ctx = InferContext::new(builtin_types, file_path.clone());
-    // Register user-defined type constructors before type inference
-    if let Some(type_decls) = type_declarations {
-        ctx.register_type_declarations(type_decls);
-    }
+    let mut ctx = InferContext::new(builtin_types, file_path.clone(), type_declarations);
     let _t = ctx
         .infer_type(e)
         .unwrap_or(Type::Failure.into_id_with_location(e.to_location()));
@@ -1314,12 +1310,12 @@ mod tests {
     use crate::utils::metadata::{Location, Span};
 
     fn create_test_context() -> InferContext {
-        InferContext::new(&[], PathBuf::from("test"))
+        InferContext::new(&[], PathBuf::from("test"), None)
     }
 
     fn create_test_location() -> Location {
         Location::new(Span { start: 0, end: 0 }, PathBuf::from("test"))
-    }
+Ï    }
 
     #[test]
     fn test_stage_mismatch_detection() {

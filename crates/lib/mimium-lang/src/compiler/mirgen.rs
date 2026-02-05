@@ -1904,7 +1904,7 @@ pub fn typecheck(
         convert_pronoun::convert_pronoun(root_expr_id, file_path.clone().unwrap_or_default());
     let expr = recursecheck::convert_recurse(expr, file_path.clone().unwrap_or_default());
     // let expr = destruct_let_pattern(expr);
-    let infer_ctx = infer_root(expr, builtin_types, file_path.clone().unwrap_or_default());
+    let infer_ctx = infer_root(expr, builtin_types, file_path.clone().unwrap_or_default(), None);
     let errors = infer_ctx
         .errors
         .iter()
@@ -1936,7 +1936,7 @@ pub fn typecheck_with_module_info(
     );
     let expr = recursecheck::convert_recurse(expr, file_path.clone().unwrap_or_default());
     // Type checker needs module_info for type declarations (user-defined sum types).
-    let infer_ctx = super::typing::infer_root_with_type_decls(
+    let infer_ctx = super::typing::infer_root(
         expr,
         builtin_types,
         file_path.clone().unwrap_or_default(),
