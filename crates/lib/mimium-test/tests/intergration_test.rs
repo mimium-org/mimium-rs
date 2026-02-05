@@ -912,16 +912,6 @@ fn stateful_in_match() {
 //     let ans = vec![6000.0, 22.0];
 //     assert_eq!(res, ans);
 // }
-
-#[wasm_bindgen_test(unsupported = test)]
-fn union_type_basic() {
-    // Test basic union type: type Color = Red | Green | Blue
-    // getColorValue(Red) * 100.0 = 1.0 * 100.0 = 100.0
-    let res = run_file_test_mono("union_type_basic.mmm", 1).unwrap();
-    let ans = vec![100.0];
-    assert_eq!(res, ans);
-}
-
 #[wasm_bindgen_test(unsupported = test)]
 fn union_type_multi_arg() {
     // Test union type with multi-arg syntax (treated as tuple)

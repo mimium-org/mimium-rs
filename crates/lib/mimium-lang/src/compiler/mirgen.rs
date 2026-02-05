@@ -1770,6 +1770,11 @@ impl Context {
                 self.add_new_basicblock();
                 let block_idx = self.get_ctxdata().current_bb as u64;
 
+                // Reset state offset at the start of each arm
+                // This ensures each arm starts with a clean state context
+                self.get_ctxdata().next_state_offset = None;
+                self.get_ctxdata().push_sum = 0;
+
                 // Extract value from the tagged union if there's a binding pattern and payload type
                 if let MatchPattern::Constructor(_, Some(inner_pattern)) = &arm.pattern
                     && let Some(vt) = *variant_ty
@@ -1788,27 +1793,76 @@ impl Context {
                 |(mut blocks, mut results, mut states), (block, result, arm_states)| {
                     blocks.push(block);
                     results.push(result);
-                    states.extend(arm_states);
+                    states.push(arm_states);
                     (blocks, results, states)
                 },
             );
 
         let mut case_results = case_results;
-        let mut all_states = case_states;
+        let mut all_arm_states = case_states;
 
         // Handle default block - only create one if there's an explicit wildcard pattern
         let default_block_idx = if let Some(arm) = default_arm {
             // Explicit wildcard default case
             self.add_new_basicblock();
             let block_idx = self.get_ctxdata().current_bb as u64;
+            
+            // Reset state offset for default arm
+            self.get_ctxdata().next_state_offset = None;
+            self.get_ctxdata().push_sum = 0;
+            
             let (result_val, _, arm_states) = self.eval_expr(arm.body);
-            all_states.extend(arm_states);
+            all_arm_states.push(arm_states);
             case_results.push(result_val);
             Some(block_idx)
         } else {
             // Exhaustive match - no default block needed
             None
         };
+
+        // Calculate maximum state size across all arms
+        let arm_state_sizes: Vec<u64> = all_arm_states
+            .iter()
+            .map(|states| states.iter().map(|s| s.total_size()).sum::<u64>())
+            .collect();
+        let max_state_size = arm_state_sizes.iter().copied().max().unwrap_or(0);
+
+        // Insert PushStateOffset for arms with smaller state sizes
+        // This ensures all arms have the same state offset when merging
+        for (i, ((_tag, block_idx), state_size)) in
+            case_blocks.iter().zip(arm_state_sizes.iter()).enumerate()
+        {
+            if *state_size < max_state_size {
+                let offset = max_state_size - state_size;
+                let block = self
+                    .get_current_fn()
+                    .body
+                    .get_mut(*block_idx as usize)
+                    .unwrap();
+                // Insert PushStateOffset at the end of the block (before result)
+                block.0.push((
+                    Arc::new(Value::None),
+                    Instruction::PushStateOffset(offset),
+                ));
+            }
+        }
+
+        // Handle default block state adjustment if it exists
+        if let Some(default_idx) = default_block_idx {
+            let default_state_size = arm_state_sizes.last().copied().unwrap_or(0);
+            if default_state_size < max_state_size {
+                let offset = max_state_size - default_state_size;
+                let block = self
+                    .get_current_fn()
+                    .body
+                    .get_mut(default_idx as usize)
+                    .unwrap();
+                block.0.push((
+                    Arc::new(Value::None),
+                    Instruction::PushStateOffset(offset),
+                ));
+            }
+        }
 
         // Generate merge block with PhiSwitch
         self.add_new_basicblock();
@@ -1839,7 +1893,13 @@ impl Context {
             _ => panic!("expected Switch instruction"),
         }
 
-        states.extend(all_states);
+        // Use the largest arm's state as the result state
+        // This represents the maximum state size across all branches
+        // But we need to collect all states from all arms for the function's state signature
+        for arm_states in all_arm_states {
+            states.extend(arm_states);
+        }
+
         (res, result_ty, states)
     }
 
