@@ -1398,12 +1398,12 @@ impl Context {
         // structural compatibility for common cases.
         for (i, variant_ty) in variants.iter().enumerate() {
             let variant_ty = variant_ty.get_root();
-            
+
             // Exact match
             if arg_ty == variant_ty {
                 return Some(i as u64);
             }
-            
+
             // Simple structural comparison for common cases
             if Self::types_compatible(arg_ty, variant_ty) {
                 return Some(i as u64);
@@ -1418,28 +1418,28 @@ impl Context {
     /// This is a lightweight check that handles common cases without deep recursion.
     fn types_compatible(t1: TypeNodeId, t2: TypeNodeId) -> bool {
         use crate::types::{PType, Type};
-        
+
         let t1 = t1.get_root();
         let t2 = t2.get_root();
-        
+
         if t1 == t2 {
             return true;
         }
-        
+
         match (t1.to_type(), t2.to_type()) {
             // Int is compatible with Numeric (int -> float promotion) - check before general primitive match
             (Type::Primitive(PType::Int), Type::Primitive(PType::Numeric)) => true,
-            
+
             // Same primitives are compatible
             (Type::Primitive(p1), Type::Primitive(p2)) => p1 == p2,
-            
+
             // Intermediate types (unresolved type variables) - match anything
             (Type::Intermediate(_), _) | (_, Type::Intermediate(_)) => true,
-            
+
             // Any and Failure match everything
             (Type::Any, _) | (_, Type::Any) => true,
             (Type::Failure, _) | (_, Type::Failure) => true,
-            
+
             // For other cases, require exact TypeNodeId match
             _ => false,
         }
@@ -1625,7 +1625,7 @@ impl Context {
         let _ = self.push_inst(Instruction::Switch {
             scrutinee: tag_val.clone(),
             cases: vec![],
-            default_block: 0,
+            default_block: None,
             merge_block: 0,
         });
 
@@ -1661,27 +1661,19 @@ impl Context {
         let mut case_results = case_results;
         let mut all_states = case_states;
 
-        // Handle default block
-        // If no explicit default arm and match is exhaustive, use last case as default
-        let (default_block_idx, default_result) = if let Some(arm) = default_arm {
+        // Handle default block - only create one if there's an explicit wildcard pattern
+        let default_block_idx = if let Some(arm) = default_arm {
             // Explicit wildcard default case
             self.add_new_basicblock();
             let block_idx = self.get_ctxdata().current_bb as u64;
             let (result_val, _, arm_states) = self.eval_expr(arm.body);
             all_states.extend(arm_states);
-            (block_idx, result_val)
-        } else if !case_blocks.is_empty() {
-            // No default case - reuse last case block as default (exhaustive match)
-            let last_case = case_blocks.last().unwrap();
-            let last_result = case_results.last().unwrap().clone();
-            (last_case.1, last_result)
+            case_results.push(result_val);
+            Some(block_idx)
         } else {
-            // No cases at all - shouldn't happen in valid code
-            self.add_new_basicblock();
-            let block_idx = self.get_ctxdata().current_bb as u64;
-            (block_idx, Arc::new(Value::None))
+            // Exhaustive match - no default block needed
+            None
         };
-        case_results.push(default_result);
 
         // Generate merge block with PhiSwitch
         self.add_new_basicblock();
@@ -1773,7 +1765,7 @@ impl Context {
         let _ = self.push_inst(Instruction::Switch {
             scrutinee: scrut_val.clone(),
             cases: vec![],
-            default_block: 0,
+            default_block: None,
             merge_block: 0,
         });
 
@@ -1799,27 +1791,19 @@ impl Context {
         let mut case_results = case_results;
         let mut all_states = case_states;
 
-        // Handle default block
-        // If no explicit default arm and match is exhaustive, use last case as default
-        let (default_block_idx, default_result) = if let Some(arm) = default_arm {
+        // Handle default block - only create one if there's an explicit wildcard pattern
+        let default_block_idx = if let Some(arm) = default_arm {
             // Wildcard pattern - just evaluate the body
             self.add_new_basicblock();
             let block_idx = self.get_ctxdata().current_bb as u64;
             let (result_val, _, arm_states) = self.eval_expr(arm.body);
             all_states.extend(arm_states);
-            (block_idx, result_val)
-        } else if !case_blocks.is_empty() {
-            // No default case - reuse last case block as default (exhaustive match)
-            let last_case = case_blocks.last().unwrap();
-            let last_result = case_results.last().unwrap().clone();
-            (last_case.1, last_result)
+            case_results.push(result_val);
+            Some(block_idx)
         } else {
-            // No cases at all - shouldn't happen in valid code
-            self.add_new_basicblock();
-            let block_idx = self.get_ctxdata().current_bb as u64;
-            (block_idx, Arc::new(Value::None))
+            // Exhaustive match - no default block needed
+            None
         };
-        case_results.push(default_result);
 
         // Generate merge block with PhiSwitch
         self.add_new_basicblock();

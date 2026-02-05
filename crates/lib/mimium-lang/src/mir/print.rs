@@ -138,9 +138,13 @@ impl std::fmt::Display for Instruction {
                     .map(|(lit, b)| format!("{lit}->{b}"))
                     .collect::<Vec<_>>()
                     .join(", ");
+                let default_str = match default_block {
+                    Some(b) => format!("default:{b}"),
+                    None => "exhaustive".to_string(),
+                };
                 write!(
                     f,
-                    "switch {scrutinee} [{cases_str}] default:{default_block} merge:{merge_block}"
+                    "switch {scrutinee} [{cases_str}] {default_str} merge:{merge_block}"
                 )
             }
             Instruction::PhiSwitch(values) => {
@@ -202,8 +206,8 @@ impl std::fmt::Display for Instruction {
             Instruction::Le(a, b) => write!(f, "le {} {}", *a, *b),
             Instruction::And(a, b) => write!(f, "and {} {}", *a, *b),
             Instruction::Or(a, b) => write!(f, "or {} {}", *a, *b),
-            Instruction::CastFtoI(_) => todo!(),
-            Instruction::CastItoF(_) => todo!(),
+            Instruction::CastFtoI(v) => write!(f, "ftoi {v}"),
+            Instruction::CastItoF(v) => write!(f, "itof {v}"),
             Instruction::CastItoB(_) => todo!(),
             Instruction::Error => write!(f, "error"),
             Instruction::Array(values, ty) => {

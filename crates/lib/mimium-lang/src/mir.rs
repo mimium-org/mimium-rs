@@ -86,7 +86,8 @@ pub enum Instruction {
         scrutinee: VPtr,
         /// Each case is (literal_value as i64, block_index)
         cases: Vec<(i64, Bbindex)>,
-        default_block: Bbindex,
+        /// Default block for non-exhaustive matches; None if exhaustive
+        default_block: Option<Bbindex>,
         merge_block: Bbindex,
     },
     /// Phi for switch - merges values from multiple branches

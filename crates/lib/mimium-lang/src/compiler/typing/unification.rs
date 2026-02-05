@@ -497,4 +497,3 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
 
     Ok(res)
 }
-

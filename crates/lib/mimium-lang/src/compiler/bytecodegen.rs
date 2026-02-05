@@ -665,19 +665,20 @@ impl ByteCodeGenerator {
                 let total_size = Self::word_size_for_type(union_type);
                 // Value size is total - 1 (for the tag)
                 let value_size = total_size - 1;
-                
+
                 // Allocate consecutive registers for (tag, value)
                 let dst_reg = self.vregister.push_stack(&dst, total_size as u64);
-                
+
                 // Store tag in first register
                 let tag_pos = funcproto.add_new_constant(tag);
-                bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut())
+                bytecodes_dst
+                    .unwrap_or_else(|| funcproto.bytecodes.as_mut())
                     .push(VmInstruction::MoveConst(dst_reg, tag_pos as ConstPos));
-                
+
                 // Store value in subsequent register(s)
                 let val_reg = self.find(&value);
                 let val_dst = dst_reg + 1;
-                
+
                 if value_size == 1 {
                     Some(VmInstruction::Move(val_dst, val_reg))
                 } else {
@@ -688,7 +689,7 @@ impl ByteCodeGenerator {
                 // Extract tag (first register of the tagged union tuple)
                 let union_reg = self.find_keep(&union_val);
                 let dst_reg = self.get_destination(dst, 1);
-                
+
                 // Tag is at union_reg + 0
                 Some(VmInstruction::Move(dst_reg, union_reg))
             }
@@ -697,10 +698,10 @@ impl ByteCodeGenerator {
                 let union_reg = self.find_keep(&union_val);
                 let value_size = Self::word_size_for_type(value_ty);
                 let dst_reg = self.get_destination(dst, value_size);
-                
+
                 // Value starts at union_reg + 1
                 let value_reg = union_reg + 1;
-                
+
                 if value_size == 1 {
                     Some(VmInstruction::Move(dst_reg, value_reg))
                 } else {
@@ -714,7 +715,10 @@ impl ByteCodeGenerator {
                 merge_block,
             } => {
                 // Switch is compiled using JmpTable instruction
-                // Structure: [JmpTable] [case0_body, Move, Jmp] [case1_body, Move, Jmp] ... [default_body, Move] [merge_block]
+                // For exhaustive matches (default_block = None):
+                //   Structure: [JmpTable] [case0_body, Move, Jmp] ... [caseN_body, Move] [merge_block]
+                // For non-exhaustive matches (default_block = Some):
+                //   Structure: [JmpTable] [case0_body, Move, Jmp] ... [default_body, Move] [merge_block]
                 let scrut_reg = self.find(&scrutinee);
 
                 // Get PhiSwitch destination register
@@ -748,16 +752,14 @@ impl ByteCodeGenerator {
                     })
                     .collect();
 
-                // Check if default block is the same as one of the case blocks
-                let is_default_shared = cases.iter().any(|(_, block_idx)| *block_idx == default_block);
-                
-                // Default block - only emit if it's a separate block
-                let default_bytes = if is_default_shared {
-                    vec![] // Don't re-emit the same block
-                } else {
-                    let default_block_mir = &mirfunc.body[default_block as usize];
+                // Default block - only emit if explicitly present
+                let default_bytes = if let Some(default_idx) = default_block {
+                    let default_block_mir = &mirfunc.body[default_idx as usize];
                     emit_block(self, default_block_mir)
+                } else {
+                    vec![]
                 };
+                let has_default = default_block.is_some();
 
                 // Now that all blocks are processed, we can find the result registers
                 // Use find_keep since these values come from different blocks and need to remain available
@@ -787,17 +789,28 @@ impl ByteCodeGenerator {
                             bytes
                         });
 
-                // Calculate sizes: each case segment is [body..., Move, Jmp]
+                // Calculate sizes:
+                // - Most case segments: [body..., Move, Jmp]
+                // - Last segment (exhaustive case or default): [body..., Move] (no Jmp needed)
+                let num_cases = all_block_bytes.len();
                 let case_segment_sizes: Vec<usize> = all_block_bytes
                     .iter()
-                    .map(|b| b.len() + 2) // body + Move + Jmp
+                    .enumerate()
+                    .map(|(i, b)| {
+                        if !has_default && i == num_cases - 1 {
+                            // Last case in exhaustive match - no Jmp needed
+                            b.len() + 1 // body + Move
+                        } else {
+                            b.len() + 2 // body + Move + Jmp
+                        }
+                    })
                     .collect();
 
-                // If default is shared, there's no separate default segment
-                let default_segment_size = if is_default_shared {
-                    0
-                } else {
+                // Default segment size (only if has_default)
+                let default_segment_size = if has_default {
                     default_bytes.len() + 1 // body + Move (no Jmp needed)
+                } else {
+                    0
                 };
 
                 // Build dense jump table for O(1) lookup
@@ -816,21 +829,18 @@ impl ByteCodeGenerator {
                     })
                     .collect();
 
-                // Default offset
-                let default_offset = if is_default_shared {
-                    // Find the offset of the case that shares the same block
-                    cases
-                        .iter()
-                        .zip(case_offsets.iter())
-                        .find(|((_, block_idx), _)| *block_idx == default_block)
-                        .map(|(_, (_, offset))| *offset)
-                        .unwrap_or(1)
-                } else {
+                // Default offset: for exhaustive matches, use last case; otherwise, after all cases
+                let default_offset = if has_default {
                     // Separate default block - offset is after all case blocks
                     case_offsets
                         .last()
-                        .map(|(_, off)| *off + case_segment_sizes.last().copied().unwrap_or(0) as i16)
+                        .map(|(_, off)| {
+                            *off + case_segment_sizes.last().copied().unwrap_or(0) as i16
+                        })
                         .unwrap_or(1)
+                } else {
+                    // Exhaustive match - use last case as default
+                    case_offsets.last().map(|(_, off)| *off).unwrap_or(1)
                 };
 
                 // Build dense array: fill with default, then set specific case offsets
@@ -852,38 +862,12 @@ impl ByteCodeGenerator {
                 });
 
                 // Build the bytecode sequence
-                let switch_bytes: Vec<VmInstruction> = if is_default_shared {
-                    // Default is shared with a case block - no separate default segment
-                    std::iter::once(VmInstruction::JmpTable(scrut_reg, table_idx))
-                        .chain(
-                            all_block_bytes
-                                .iter()
-                                .enumerate()
-                                .flat_map(|(i, block_bytes)| {
-                                    let remaining_size: usize =
-                                        case_segment_sizes[i + 1..].iter().sum::<usize>() + 1;
-                                    block_bytes
-                                        .iter()
-                                        .cloned()
-                                        .chain(std::iter::once(VmInstruction::Move(
-                                            phi_reg,
-                                            result_regs[i],
-                                        )))
-                                        .chain(std::iter::once(VmInstruction::Jmp(
-                                            remaining_size as i16,
-                                        )))
-                                }),
-                        )
-                        .chain(merge_bytes.iter().cloned())
-                        .collect()
-                } else {
-                    // Separate default block
-                    std::iter::once(VmInstruction::JmpTable(scrut_reg, table_idx))
-                        .chain(
-                            all_block_bytes
-                                .iter()
-                                .enumerate()
-                                .flat_map(|(i, block_bytes)| {
+                let switch_bytes: Vec<VmInstruction> =
+                    if has_default {
+                        // Non-exhaustive: has a separate default block
+                        std::iter::once(VmInstruction::JmpTable(scrut_reg, table_idx))
+                            .chain(all_block_bytes.iter().enumerate().flat_map(
+                                |(i, block_bytes)| {
                                     let remaining_size: usize =
                                         case_segment_sizes[i + 1..].iter().sum::<usize>()
                                             + default_segment_size
@@ -898,16 +882,41 @@ impl ByteCodeGenerator {
                                         .chain(std::iter::once(VmInstruction::Jmp(
                                             remaining_size as i16,
                                         )))
-                                }),
-                        )
-                        .chain(default_bytes.iter().cloned())
-                        .chain(std::iter::once(VmInstruction::Move(
-                            phi_reg,
-                            *result_regs.last().unwrap(),
-                        )))
-                        .chain(merge_bytes.iter().cloned())
-                        .collect()
-                };
+                                },
+                            ))
+                            .chain(default_bytes.iter().cloned())
+                            .chain(std::iter::once(VmInstruction::Move(
+                                phi_reg,
+                                *result_regs.last().unwrap(),
+                            )))
+                            .chain(merge_bytes.iter().cloned())
+                            .collect()
+                    } else {
+                        // Exhaustive: last case falls through to merge
+                        std::iter::once(VmInstruction::JmpTable(scrut_reg, table_idx))
+                            .chain(all_block_bytes.iter().enumerate().flat_map(
+                                |(i, block_bytes)| {
+                                    let is_last = i == num_cases - 1;
+                                    let remaining_size: usize =
+                                        case_segment_sizes[i + 1..].iter().sum::<usize>() + 1;
+                                    block_bytes
+                                        .iter()
+                                        .cloned()
+                                        .chain(std::iter::once(VmInstruction::Move(
+                                            phi_reg,
+                                            result_regs[i],
+                                        )))
+                                        .chain(if is_last {
+                                            // Last case - no Jmp, falls through to merge
+                                            None
+                                        } else {
+                                            Some(VmInstruction::Jmp(remaining_size as i16))
+                                        })
+                                },
+                            ))
+                            .chain(merge_bytes.iter().cloned())
+                            .collect()
+                    };
 
                 // Output everything to the destination
                 let bytecodes_dst = bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut());
