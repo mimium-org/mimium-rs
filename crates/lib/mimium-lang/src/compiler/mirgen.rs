@@ -43,7 +43,13 @@ enum PatternCell {
     /// Constructor with optional nested pattern
     Constructor {
         tag: i64,
+        payload_ty: Option<TypeNodeId>,
         inner: Option<Box<PatternCell>>,
+    },
+    /// Constructor already matched by tag; keep payload type and pattern for binding
+    Payload {
+        payload_ty: TypeNodeId,
+        inner: Box<PatternCell>,
     },
     /// Tuple of patterns (for nested tuples in constructor payloads)
     Tuple(Vec<PatternCell>),
@@ -60,6 +66,17 @@ struct PatternRow {
     body: ExprNodeId,
 }
 
+/// Binding information for pattern variables
+#[derive(Debug, Clone)]
+struct BindingInfo {
+    /// Variable name to bind
+    var: Symbol,
+    /// Index of the tuple element (scrutinee column)
+    column_index: usize,
+    /// If binding comes from a constructor payload, contains payload type and optional tuple index
+    payload: Option<(TypeNodeId, Option<usize>)>,
+}
+
 /// Decision tree node
 #[derive(Debug)]
 enum DecisionTree {
@@ -67,8 +84,8 @@ enum DecisionTree {
     Leaf {
         arm_index: usize,
         body: ExprNodeId,
-        /// Bindings: (variable_name, scrutinee_index, is_payload)
-        bindings: Vec<(Symbol, usize, bool)>,
+        /// Variable bindings to apply before evaluating body
+        bindings: Vec<BindingInfo>,
     },
     /// Switch on scrutinee at given index
     Switch {
@@ -390,7 +407,7 @@ impl Context {
         );
         let args = abinds
             .iter()
-            .map(|(s, ty, _default)| Argument(*s, *ty))
+            .map(|(s, ty, _default)| Argument(*s, ty.get_root()))
             .collect::<Vec<_>>();
         let parent_i = self.get_ctxdata().func_i;
         let c_idx = self.make_new_function(fname, &args, state_skeleton, Some(parent_i));
@@ -2034,14 +2051,15 @@ impl Context {
             MatchPattern::Variable(v) => PatternCell::Variable(*v),
             MatchPattern::Constructor(name, inner) => {
                 // Get tag from constructor name
-                let tag = self
+                let (tag, payload_ty) = self
                     .typeenv
                     .constructor_env
                     .get(name)
-                    .map(|info| info.tag_index as i64)
-                    .unwrap_or(0);
+                    .map(|info| (info.tag_index as i64, info.payload_type))
+                    .unwrap_or((0, None));
                 PatternCell::Constructor {
                     tag,
+                    payload_ty,
                     inner: inner
                         .as_ref()
                         .map(|p| Box::new(self.match_pattern_to_cell(p))),
@@ -2056,6 +2074,60 @@ impl Context {
         }
     }
 
+    /// Collect variable bindings from a pattern cell recursively
+    fn collect_bindings_from_cell(cell: &PatternCell, col_idx: usize) -> Vec<BindingInfo> {
+        match cell {
+            PatternCell::Variable(v) => vec![BindingInfo {
+                var: *v,
+                column_index: col_idx,
+                payload: None,
+            }],
+            PatternCell::Constructor {
+                payload_ty, inner, ..
+            } => {
+                if let (Some(payload_ty), Some(inner_cell)) = (payload_ty, inner.as_ref()) {
+                    Self::collect_bindings_from_payload(inner_cell, col_idx, *payload_ty)
+                } else {
+                    vec![]
+                }
+            }
+            PatternCell::Payload { payload_ty, inner } => {
+                Self::collect_bindings_from_payload(inner, col_idx, *payload_ty)
+            }
+            PatternCell::Tuple(_) => vec![],
+            _ => vec![],
+        }
+    }
+
+    /// Collect bindings from a constructor payload pattern.
+    /// `payload_ty` is the runtime type needed for `TaggedUnionGetValue`.
+    fn collect_bindings_from_payload(
+        cell: &PatternCell,
+        col_idx: usize,
+        payload_ty: TypeNodeId,
+    ) -> Vec<BindingInfo> {
+        match cell {
+            PatternCell::Variable(v) => vec![BindingInfo {
+                var: *v,
+                column_index: col_idx,
+                payload: Some((payload_ty, None)),
+            }],
+            PatternCell::Tuple(cells) => cells
+                .iter()
+                .enumerate()
+                .flat_map(|(elem_idx, c)| {
+                    Self::collect_bindings_from_payload(c, col_idx, payload_ty)
+                        .into_iter()
+                        .map(move |mut b| {
+                            b.payload = Some((payload_ty, Some(elem_idx)));
+                            b
+                        })
+                })
+                .collect(),
+            _ => vec![],
+        }
+    }
+
     /// Build decision tree from pattern matrix using column-based algorithm
     /// `remaining_cols` tracks which original column indices are still available
     fn build_decision_tree(matrix: &[PatternRow], remaining_cols: &[usize]) -> DecisionTree {
@@ -2063,7 +2135,7 @@ impl Context {
             return DecisionTree::Fail;
         }
 
-        // Find first remaining column with non-wildcard patterns
+        // Find first remaining column with concrete patterns
         let discriminating_col_pos =
             remaining_cols
                 .iter()
@@ -2073,7 +2145,10 @@ impl Context {
                         orig_col < row.cells.len()
                             && !matches!(
                                 &row.cells[orig_col],
-                                PatternCell::Wildcard | PatternCell::Variable(_)
+                                PatternCell::Wildcard
+                                    | PatternCell::Variable(_)
+                                    | PatternCell::Tuple(_)
+                                    | PatternCell::Payload { .. }
                             )
                     });
                     if has_concrete { Some(pos) } else { None }
@@ -2081,19 +2156,16 @@ impl Context {
 
         match discriminating_col_pos {
             None => {
-                // All patterns are wildcards/variables - take first row
+                // All patterns are wildcards/variables/matched constructors - take first row
                 let row = &matrix[0];
-                // Bind variables using original column indices
+                // Collect bindings from all patterns including constructor payloads
                 let bindings = remaining_cols
                     .iter()
-                    .filter_map(|&orig_col| {
+                    .flat_map(|&orig_col| {
                         if orig_col < row.cells.len() {
-                            match &row.cells[orig_col] {
-                                PatternCell::Variable(v) => Some((*v, orig_col, false)),
-                                _ => None,
-                            }
+                            Self::collect_bindings_from_cell(&row.cells[orig_col], orig_col)
                         } else {
-                            None
+                            vec![]
                         }
                     })
                     .collect();
@@ -2127,6 +2199,10 @@ impl Context {
                         PatternCell::Wildcard | PatternCell::Variable(_) => {
                             wildcard_rows.push(row.clone());
                         }
+                        PatternCell::Payload { .. } => {
+                            // Already matched by constructor tag; treat as wildcard here.
+                            wildcard_rows.push(row.clone());
+                        }
                         PatternCell::Tuple(_) => {
                             // Nested tuple - treat as wildcard for now
                             wildcard_rows.push(row.clone());
@@ -2142,14 +2218,43 @@ impl Context {
                     .collect();
 
                 // Step 2: Create specialized matrices for each case
-                // Wildcards apply to ALL cases, so append them to each concrete case
-                // Note: We don't remove cells anymore - we use remaining_cols to track
+                // Wildcards apply to ALL cases, so append them to each concrete case.
+                // For Constructor patterns, replace the matched constructor cell with `Payload`
+                // so leaf binding collection knows how to extract payload values.
+                // Note: we keep `remaining_cols` (not `new_remaining_cols`) for case subtrees.
                 let case_trees: Vec<(i64, Box<DecisionTree>)> = concrete_rows
                     .into_iter()
-                    .map(|(val, mut rows)| {
+                    .map(|(val, rows)| {
+                        // Transform rows: replace Constructor cells with their inner patterns
+                        let mut transformed_rows: Vec<PatternRow> = rows
+                            .into_iter()
+                            .map(|mut row| {
+                                if orig_col < row.cells.len() {
+                                    if let PatternCell::Constructor {
+                                        payload_ty, inner, ..
+                                    } = &row.cells[orig_col]
+                                    {
+                                        row.cells[orig_col] = match (payload_ty, inner.as_ref()) {
+                                            (Some(p_ty), Some(inner_cell)) => {
+                                                PatternCell::Payload {
+                                                    payload_ty: *p_ty,
+                                                    inner: Box::new((**inner_cell).clone()),
+                                                }
+                                            }
+                                            _ => PatternCell::Wildcard,
+                                        };
+                                    } else {
+                                        // For literals, replace with Wildcard
+                                        row.cells[orig_col] = PatternCell::Wildcard;
+                                    }
+                                }
+                                row
+                            })
+                            .collect();
                         // Add wildcard rows to this case
-                        rows.extend(wildcard_rows.iter().cloned());
-                        let subtree = Self::build_decision_tree(&rows, &new_remaining_cols);
+                        transformed_rows.extend(wildcard_rows.iter().cloned());
+                        // Use remaining_cols (not new_remaining_cols) since we replaced the cell
+                        let subtree = Self::build_decision_tree(&transformed_rows, remaining_cols);
                         (val, Box::new(subtree))
                     })
                     .collect();
@@ -2189,14 +2294,46 @@ impl Context {
                 bindings,
             } => {
                 // Bind variables by extracting from tuple
-                for (var, idx, _is_payload) in bindings {
-                    if *idx < elem_types.len() {
-                        let elem_val = self.push_inst(Instruction::GetElement {
-                            value: tuple_val.clone(),
-                            ty: tuple_ty,
-                            tuple_offset: *idx as u64,
-                        });
-                        self.add_bind((*var, elem_val));
+                for binding in bindings {
+                    let col_idx = binding.column_index;
+                    if col_idx >= elem_types.len() {
+                        continue;
+                    }
+
+                    match binding.payload {
+                        Some((payload_ty, tuple_index)) => {
+                            // Payload binding - extract from tagged union payload.
+                            let enum_ptr = self.push_inst(Instruction::GetElement {
+                                value: tuple_val.clone(),
+                                ty: tuple_ty,
+                                tuple_offset: col_idx as u64,
+                            });
+                            // Load the enum value from pointer
+                            let enum_val_ty = elem_types[col_idx];
+                            let enum_val = self.push_inst(Instruction::Load(enum_ptr, enum_val_ty));
+                            let payload = self
+                                .push_inst(Instruction::TaggedUnionGetValue(enum_val, payload_ty));
+
+                            if let Some(elem_idx) = tuple_index {
+                                let payload_elem = self.push_inst(Instruction::GetElement {
+                                    value: payload.clone(),
+                                    ty: payload_ty,
+                                    tuple_offset: elem_idx as u64,
+                                });
+                                self.add_bind((binding.var, payload_elem));
+                            } else {
+                                self.add_bind((binding.var, payload));
+                            }
+                        }
+                        None => {
+                            // Regular variable binding from tuple element
+                            let elem_val = self.push_inst(Instruction::GetElement {
+                                value: tuple_val.clone(),
+                                ty: tuple_ty,
+                                tuple_offset: col_idx as u64,
+                            });
+                            self.add_bind((binding.var, elem_val));
+                        }
                     }
                 }
                 // Evaluate body
@@ -2223,13 +2360,29 @@ impl Context {
                     }
                 }
 
-                // Get scrutinee element value from tuple and cast to int
+                // Get scrutinee element value from tuple
                 let elem_val = self.push_inst(Instruction::GetElement {
                     value: tuple_val.clone(),
                     ty: tuple_ty,
                     tuple_offset: *scrutinee_index as u64,
                 });
-                let scrut_int = self.push_inst(Instruction::CastFtoI(elem_val));
+
+                // Check if the element type is an enum (UserSum) - if so, extract the tag
+                let elem_ty = if *scrutinee_index < elem_types.len() {
+                    elem_types[*scrutinee_index]
+                } else {
+                    tuple_ty
+                };
+
+                let scrut_int = if matches!(elem_ty.to_type(), Type::UserSum { .. }) {
+                    // Load the value from the pointer, then extract the tag
+                    let loaded_val = self.push_inst(Instruction::Load(elem_val.clone(), elem_ty));
+                    // Tagged union tags are stored as integer RawVal already.
+                    self.push_inst(Instruction::TaggedUnionGetTag(loaded_val))
+                } else {
+                    // For literals (numbers), just cast to int
+                    self.push_inst(Instruction::CastFtoI(elem_val))
+                };
 
                 // Record current block for Switch instruction
                 let switch_bb = self.get_ctxdata().current_bb;

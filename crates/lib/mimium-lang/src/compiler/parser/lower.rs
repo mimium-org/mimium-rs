@@ -1863,7 +1863,35 @@ impl<'a> Lowerer<'a> {
                     .collect::<Vec<_>>();
                 Type::Union(elem_types).into_id_with_location(loc)
             }
-            _ => Type::Unknown.into_id_with_location(loc),
+            Some(SyntaxKind::TypeIdent) => {
+                // Type name reference in type annotation (e.g., MyEnum)
+                // TypeIdent node contains a child Ident token
+                if let Some(children) = self.arena.children(node) {
+                    for child in children {
+                        if let Some(token_index) = self.get_token_index(*child)
+                            && let Some(token) = self.tokens.get(token_index)
+                            && matches!(token.kind, TokenKind::Ident)
+                        {
+                            let type_name = token.text(self.source).to_symbol();
+                            return Type::TypeAlias(type_name).into_id_with_location(loc);
+                        }
+                    }
+                }
+                Type::Unknown.into_id_with_location(loc)
+            }
+            _ => {
+                // Check if this is an identifier token (type name reference)
+                if let Some(token_index) = self.get_token_index(node)
+                    && let Some(token) = self.tokens.get(token_index)
+                    && matches!(token.kind, TokenKind::Ident)
+                {
+                    // Type name - store as TypeAlias for later resolution
+                    let type_name = token.text(self.source).to_symbol();
+                    Type::TypeAlias(type_name).into_id_with_location(loc)
+                } else {
+                    Type::Unknown.into_id_with_location(loc)
+                }
+            }
         }
     }
 }

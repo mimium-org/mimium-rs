@@ -498,6 +498,9 @@ impl InferContext {
             }
             .into_id();
 
+            // Register the type name itself
+            self.env.add_bind(&[(*type_name, (sum_type, self.stage))]);
+
             // Register each constructor
             for (tag_index, variant) in variants.iter().enumerate() {
                 self.constructor_env.insert(
@@ -745,6 +748,25 @@ impl InferContext {
     fn convert_unknown_to_intermediate(&mut self, t: TypeNodeId, loc: Location) -> TypeNodeId {
         match t.to_type() {
             Type::Unknown => self.gen_intermediate_type_with_location(loc.clone()),
+            Type::TypeAlias(name) => {
+                log::trace!("Resolving TypeAlias: {}", name.as_str());
+                // Resolve type alias by looking it up in the environment
+                match self.lookup(name, loc.clone()) {
+                    Ok(resolved_ty) => {
+                        log::trace!(
+                            "Resolved TypeAlias {} to {}",
+                            name.as_str(),
+                            resolved_ty.to_type()
+                        );
+                        resolved_ty
+                    }
+                    Err(_) => {
+                        log::warn!("TypeAlias {} not found, treating as Unknown", name.as_str());
+                        // If not found, treat as Unknown and convert to intermediate
+                        self.gen_intermediate_type_with_location(loc.clone())
+                    }
+                }
+            }
             _ => t.apply_fn(|t| self.convert_unknown_to_intermediate(t, loc.clone())),
         }
     }

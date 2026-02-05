@@ -731,6 +731,16 @@ impl ByteCodeGenerator {
                 //   Structure: [JmpTable] [case0_body, Move, Jmp] ... [default_body, Move] [merge_block]
                 let scrut_reg = self.find(&scrutinee);
 
+                // Reserve jump table index BEFORE processing child blocks
+                // This ensures the outer switch gets the correct index even if nested switches
+                // add their tables first during child block processing
+                let table_idx = funcproto.jump_tables.len() as u8;
+                // Add placeholder - will be filled in later
+                funcproto.jump_tables.push(JumpTable {
+                    min: 0,
+                    offsets: vec![],
+                });
+
                 // Get PhiSwitch destination register
                 let merge_block_mir = &mirfunc.body[merge_block as usize];
                 let (phi_dst, phi_inst) = merge_block_mir.0.first().unwrap();
@@ -864,12 +874,11 @@ impl ByteCodeGenerator {
                     },
                 );
 
-                // Add jump table to funcproto and get its index
-                let table_idx = funcproto.jump_tables.len() as u8;
-                funcproto.jump_tables.push(JumpTable {
+                // Update the placeholder jump table that was reserved earlier
+                funcproto.jump_tables[table_idx as usize] = JumpTable {
                     min: min_val,
                     offsets,
-                });
+                };
 
                 // Build the bytecode sequence
                 let switch_bytes: Vec<VmInstruction> =

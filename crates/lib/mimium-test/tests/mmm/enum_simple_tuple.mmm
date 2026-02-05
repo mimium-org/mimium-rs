@@ -1,0 +1,14 @@
+type MyEnum =   One(float)
+              | Two(float)
+
+fn test(myenum:MyEnum, myenum2:MyEnum){
+   match (myenum, myenum2){
+      (One(v1), One(v2)) => v1+v2,
+      _ => 100.0
+   }
+}
+
+fn dsp(){
+  let a = test(One(1.0), One(2.0))
+  a
+}

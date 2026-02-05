@@ -100,6 +100,7 @@ mod types {
                     .append(allocator.text(variants_str))
             }
             Type::TypeScheme(_) => unreachable!(),
+            Type::TypeAlias(name) => allocator.text(name.to_string()),
             Type::Intermediate(_) => unreachable!(),
             Type::Ref(_) => unreachable!(),
             Type::Failure => unreachable!(),

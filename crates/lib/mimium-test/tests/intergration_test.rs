@@ -821,7 +821,6 @@ fn module_macro_sugar() {
     assert_eq!(res, ans);
 }
 
-// Phase 2: Sum types with union syntax and constructor patterns
 #[wasm_bindgen_test(unsupported = test)]
 fn sum_type_basic() {
     // Test union type float | int with constructor pattern matching
@@ -830,7 +829,6 @@ fn sum_type_basic() {
     assert_eq!(res, ans);
 }
 
-// Phase 3: User-defined sum types with explicit constructor names
 #[wasm_bindgen_test(unsupported = test)]
 fn enum_basic() {
     // Test user-defined enum type: type MyEnum = One | Two | Three
@@ -839,7 +837,6 @@ fn enum_basic() {
     assert_eq!(res, ans);
 }
 
-// Phase 4: Explicit constructors with complex values (different-sized tuples)
 #[wasm_bindgen_test(unsupported = test)]
 fn enum_complex() {
     let res = run_file_test_mono("enum_complex.mmm", 1).unwrap();
@@ -847,11 +844,24 @@ fn enum_complex() {
     assert_eq!(res, ans);
 }
 
-// Phase 6: Multi-scrutinee pattern matching with tuple patterns
 #[wasm_bindgen_test(unsupported = test)]
 fn enum_multi_scrutinee() {
     let res = run_file_test_mono("enum_multi_scrutinee.mmm", 1).unwrap();
     let ans = vec![160.0]; // test_simple(1,1)=10 + test_simple(1,2)=20 + test_simple(2,1)=30 + test_simple(3,3)=100 = 160
+    assert_eq!(res, ans);
+}
+#[wasm_bindgen_test(unsupported = test)]
+fn enum_multi_scrutinee2() {
+    let res = run_file_test_mono("enum_multi_scrutinee2.mmm", 1).unwrap();
+    let ans = vec![213.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn enum_simple_tuple() {
+    // Simplified tuple pattern matching test: match (One(1), One(2))
+    let res = run_file_test_mono("enum_simple_tuple.mmm", 1).unwrap();
+    let ans = vec![3.0]; // One(1) + One(2) = 3
     assert_eq!(res, ans);
 }
 

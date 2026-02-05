@@ -108,6 +108,8 @@ pub enum Type {
     },
     Intermediate(Arc<RwLock<TypeVar>>),
     TypeScheme(TypeSchemeId),
+    /// Type alias or type name reference that needs to be resolved during type inference
+    TypeAlias(Symbol),
     /// Any type is the top level, it can be unified with anything.
     Any,
     /// Failure type: it is bottom type that can be unified to any type and return bottom type.
@@ -143,6 +145,7 @@ impl PartialEq for Type {
                 },
             ) => n1 == n2 && v1 == v2,
             (Type::TypeScheme(a), Type::TypeScheme(b)) => a == b,
+            (Type::TypeAlias(a), Type::TypeAlias(b)) => a == b,
             (Type::Any, Type::Any) => true,
             (Type::Failure, Type::Failure) => true,
             (Type::Unknown, Type::Unknown) => true,
@@ -347,6 +350,7 @@ impl Type {
                     .unwrap_or_else(|| format!("ivar_{}", tv.var.0))
             }
             Type::TypeScheme(id) => format!("scheme_{}", id.0),
+            Type::TypeAlias(name) => format!("alias_{}", name.as_str()),
             Type::Union(v) => {
                 let mangled_types = v
                     .iter()
@@ -503,6 +507,7 @@ impl fmt::Display for Type {
             Type::TypeScheme(id) => {
                 write!(f, "g({})", id.0)
             }
+            Type::TypeAlias(name) => write!(f, "{}", name.as_str()),
             Type::Any => write!(f, "any"),
             Type::Failure => write!(f, "!"),
             Type::Unknown => write!(f, "unknown"),
