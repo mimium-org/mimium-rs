@@ -817,6 +817,7 @@ impl<'a> Lowerer<'a> {
 
     /// Lower a tuple pattern from CST to AST
     /// e.g., (x, y), (a, b, c)
+    /// Also handles unwrapping spurious nesting like ((x, y)) in constructor patterns
     fn lower_tuple_pattern(&self, node: GreenNodeId) -> crate::ast::MatchPattern {
         use crate::ast::MatchPattern;
         use crate::interner::ToSymbol;
@@ -836,6 +837,12 @@ impl<'a> Lowerer<'a> {
                         patterns.push(MatchPattern::Variable(text.to_symbol()));
                     }
                 }
+                Some(SyntaxKind::SinglePattern) => {
+                    // SinglePattern contains an identifier for variable binding
+                    if let Some(text) = self.text_of_first_token(child) {
+                        patterns.push(MatchPattern::Variable(text.to_symbol()));
+                    }
+                }
                 Some(SyntaxKind::PlaceHolderLiteral) => {
                     patterns.push(MatchPattern::Wildcard);
                 }
@@ -844,6 +851,15 @@ impl<'a> Lowerer<'a> {
                     patterns.push(self.lower_tuple_pattern(child));
                 }
                 _ => {}
+            }
+        }
+
+        // Unwrap spurious single-element tuple nesting
+        // This handles cases like ((x, y)) in constructor patterns where
+        // the outer parens are just for the constructor call syntax
+        if patterns.len() == 1 {
+            if let MatchPattern::Tuple(_) = &patterns[0] {
+                return patterns.pop().unwrap();
             }
         }
 

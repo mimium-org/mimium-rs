@@ -628,6 +628,8 @@ impl InferContext {
     /// Handles variable bindings, tuple patterns, and nested patterns
     fn add_pattern_bindings(&mut self, pattern: &crate::ast::MatchPattern, ty: TypeNodeId) {
         use crate::ast::MatchPattern;
+        // Resolve the type to its concrete form (unwrap intermediate types)
+        let resolved_ty = ty.get_root().to_type();
         match pattern {
             MatchPattern::Variable(var) => {
                 self.env.add_bind(&[(*var, (ty, self.stage))]);
@@ -641,9 +643,16 @@ impl InferContext {
             MatchPattern::Tuple(patterns) => {
                 // For tuple patterns, we need to bind each element
                 // The type should be a tuple type with matching elements
-                if let Type::Tuple(elem_types) = ty.to_type() {
+                if let Type::Tuple(elem_types) = resolved_ty {
                     for (pat, elem_ty) in patterns.iter().zip(elem_types.iter()) {
                         self.add_pattern_bindings(pat, *elem_ty);
+                    }
+                } else {
+                    // If we have a single-element tuple pattern, try to unwrap and bind
+                    // This handles the case of Tuple([inner_pattern]) where we should
+                    // pass the type directly to the inner pattern
+                    if patterns.len() == 1 {
+                        self.add_pattern_bindings(&patterns[0], ty);
                     }
                 }
             }
