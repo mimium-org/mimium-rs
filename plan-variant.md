@@ -19,7 +19,7 @@ Phase 2: Sum Type `A|B`    (type system extension)  ✅ COMPLETED
     ↓
 Phase 3: Type Declaration  (custom types)  ✅ COMPLETED
     ↓
-Phase 4: Constructor w/ values  ← NEXT
+Phase 4: Constructor w/ values  ← IN PROGRESS
     ↓
 Phase 5-6: Complex patterns
 ```
@@ -31,14 +31,14 @@ Phase 5-6: Complex patterns
 | 1 ✅ | `green.rs`, `cst_parser.rs`, `lower.rs` | `typing.rs` | `mirgen.rs` | `bytecodegen.rs`, `vm.rs` |
 | 2 ✅ | (type annotation parser) | `types/mod.rs`, `typing.rs`, `unification.rs` | `mirgen.rs` | `bytecodegen.rs`, `vm.rs` |
 | 3 ✅ | `cst_parser.rs` (type decl) | `typing.rs`, `unification.rs` | `mirgen.rs` | - |
-| 4+ | pattern parser | pattern typing | pattern MIR | - |
+| 4 | pattern parser | pattern typing | pattern MIR | `bytecodegen.rs`, `vm.rs` |
 
 ### Current Test Status (2026-02-05)
 
 - `match_int`: ✅ PASSED (integer literal matching with wildcard default)
 - `sum_type_basic`: ✅ PASSED (Union type with constructor patterns)
-- `enum_basic`: ✅ PASSED (User-defined enum with constructor patterns)
-- All other tests (96 integration + 7 scheduler): ✅ PASSED
+- `enum_basic`: ✅ PASSED (User-defined enum with payloadless constructors)
+- All other tests (97 integration + 7 scheduler): ✅ PASSED
 - `multistage` tests: ⏳ Skipped (pre-existing hang issue, unrelated to variant types)
 
 ### Phase 1 Implementation Summary ✅

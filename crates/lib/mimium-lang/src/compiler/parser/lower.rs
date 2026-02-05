@@ -336,7 +336,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Lower type declaration: type Name = Variant1 | Variant2 | ...
+    /// Lower type declaration: type Name = Variant1 | Variant2(Type) | ...
     fn lower_type_decl(
         &self,
         node: GreenNodeId,

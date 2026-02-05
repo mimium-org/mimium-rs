@@ -432,38 +432,6 @@ impl<'a> Parser<'a> {
         });
     }
 
-    /// Parse type declaration: type Name = Variant1 | Variant2 | ...
-    fn parse_type_decl(&mut self) {
-        self.emit_node(SyntaxKind::TypeDecl, |this| {
-            this.expect(TokenKind::Type);
-            this.expect(TokenKind::Ident); // type name
-
-            this.expect(TokenKind::Assign); // =
-
-            // Parse variant definitions separated by |
-            this.parse_variant_def();
-            while this.check(TokenKind::LambdaArgBeginEnd) {
-                this.bump(); // consume '|'
-                this.parse_variant_def();
-            }
-        });
-    }
-
-    /// Parse a single variant definition: Name or Name(type)
-    fn parse_variant_def(&mut self) {
-        self.emit_node(SyntaxKind::VariantDef, |this| {
-            // Variant name (must be identifier)
-            this.expect(TokenKind::Ident);
-
-            // Optional payload type: Name(Type)
-            if this.check(TokenKind::ParenBegin) {
-                this.bump(); // consume '('
-                this.parse_type();
-                this.expect(TokenKind::ParenEnd);
-            }
-        });
-    }
-
     /// Parse macro declaration: macro name(params) { body }
     fn parse_macro_decl(&mut self) {
         self.emit_node(SyntaxKind::FunctionDecl, |this| {
@@ -1049,19 +1017,56 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse union type: A | B | C
+    /// Note: We need lookahead to distinguish union type separator `|` from lambda's closing `|`
     fn parse_type_union(&mut self) {
         let marker = self.builder.marker();
         self.parse_type_primary();
 
-        if self.check(TokenKind::LambdaArgBeginEnd) {
+        // Only continue parsing union if `|` is followed by a type start token
+        if self.check(TokenKind::LambdaArgBeginEnd) && self.is_type_start_after_pipe() {
             // We have a union type, wrap the first type and parse the rest
             self.builder.start_node_at(marker, SyntaxKind::UnionType);
-            while self.check(TokenKind::LambdaArgBeginEnd) {
+            while self.check(TokenKind::LambdaArgBeginEnd) && self.is_type_start_after_pipe() {
                 self.bump(); // consume |
                 self.parse_type_primary();
             }
             self.builder.finish_node();
         }
+    }
+
+    /// Check if the token after `|` is a type start token (for union type disambiguation)
+    fn is_type_start_after_pipe(&self) -> bool {
+        matches!(
+            self.peek_ahead(1),
+            Some(TokenKind::FloatType)
+                | Some(TokenKind::IntegerType)
+                | Some(TokenKind::StringType)
+                | Some(TokenKind::ParenBegin)
+                | Some(TokenKind::BlockBegin)
+                | Some(TokenKind::ArrayBegin)
+                | Some(TokenKind::BackQuote)
+        ) || self.is_type_ident_after_pipe()
+    }
+
+    /// Check if the token after `|` is a type identifier
+    /// A type identifier is followed by `|`, `,`, `)`, `}`, `]`, or is a known type name
+    fn is_type_ident_after_pipe(&self) -> bool {
+        if self.peek_ahead(1) != Some(TokenKind::Ident) {
+            return false;
+        }
+        // Check what follows the identifier
+        // If it's followed by another `|` that continues union, or `,`, `)`, etc.
+        // it's likely a type identifier
+        matches!(
+            self.peek_ahead(2),
+            Some(TokenKind::LambdaArgBeginEnd) // Union continues or lambda closes
+                | Some(TokenKind::Comma)
+                | Some(TokenKind::ParenEnd)
+                | Some(TokenKind::BlockEnd)
+                | Some(TokenKind::ArrayEnd)
+                | Some(TokenKind::Arrow)  // Function return type
+                | None
+        )
     }
 
     /// Parse primary type (primitive, tuple, etc.)
@@ -1633,6 +1638,38 @@ impl<'a> Parser<'a> {
                     }
                     this.bump();
                 }
+            }
+        });
+    }
+
+    /// Parse type declaration: type Name = Variant1 | Variant2(Type) | ...
+    fn parse_type_decl(&mut self) {
+        self.emit_node(SyntaxKind::TypeDecl, |this| {
+            this.expect(TokenKind::Type);
+            this.expect(TokenKind::Ident); // type name
+            this.expect(TokenKind::Assign); // =
+
+            // Parse first variant
+            this.parse_variant_def();
+
+            // Parse remaining variants separated by |
+            while this.check(TokenKind::LambdaArgBeginEnd) {
+                this.bump(); // consume |
+                this.parse_variant_def();
+            }
+        });
+    }
+
+    /// Parse a single variant definition: Name or Name(Type)
+    fn parse_variant_def(&mut self) {
+        self.emit_node(SyntaxKind::VariantDef, |this| {
+            this.expect(TokenKind::Ident); // variant name
+
+            // Check for optional payload type: Name(Type)
+            if this.check(TokenKind::ParenBegin) {
+                this.bump(); // consume (
+                this.parse_type(); // payload type
+                this.expect(TokenKind::ParenEnd);
             }
         });
     }

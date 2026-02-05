@@ -1,0 +1,17 @@
+type MyEnum = One(float) | Two(float) | Three(float)
+
+fn test(myenum){
+  match myenum {
+    One(v) => v*1,
+    Two(v) => v*2,
+    Three(v) => v*3
+  }
+}
+
+let x = test(One(4))
+let y = test(Two(5))
+let z = test(Three(6))
+
+fn dsp(){
+    x+y+z //the result should be 4*1 + 5*2 + 6*3 = 4 + 10 + 18 = 32
+}

@@ -501,7 +501,7 @@ impl Context {
         // QualifiedVar should have been converted to Var with mangled name.
         let name = match e.to_expr() {
             Expr::Var(name) => name,
-            Expr::QualifiedVar(path) => {
+            Expr::QualifiedVar(_path) => {
                 unreachable!("Qualified Var should be removed in the previous step.")
             }
             _ => unreachable!("eval_rvar called on non-variable expr"),
@@ -1541,37 +1541,6 @@ impl Context {
         }
     }
 
-    /// Get the type for a constructor binding in a union pattern match
-    /// For union types like `float | string`, this returns the underlying type
-    /// for the matched constructor (e.g., `float` for constructor `float`)
-    fn get_constructor_binding_type(
-        &self,
-        union_ty: TypeNodeId,
-        constructor_name: Symbol,
-    ) -> TypeNodeId {
-        use crate::types::{PType, Type};
-        match union_ty.to_type() {
-            Type::Union(variants) => {
-                // Find the variant type matching the constructor name
-                for variant_ty in variants.iter() {
-                    let matches = match variant_ty.to_type() {
-                        Type::Primitive(PType::Numeric) => constructor_name.as_str() == "float",
-                        Type::Primitive(PType::String) => constructor_name.as_str() == "string",
-                        Type::Primitive(PType::Int) => constructor_name.as_str() == "int",
-                        _ => false,
-                    };
-                    if matches {
-                        return *variant_ty;
-                    }
-                }
-                // Fallback to numeric if not found
-                Type::Primitive(PType::Numeric).into_id()
-            }
-            // Non-union type: return as-is
-            _ => union_ty,
-        }
-    }
-
     /// Evaluate a match expression on a union type using tagged union operations
     fn eval_union_match(
         &mut self,
@@ -1582,69 +1551,41 @@ impl Context {
         mut states: Vec<StateSkeleton>,
     ) -> (VPtr, TypeNodeId, Vec<StateSkeleton>) {
         use crate::ast::MatchPattern;
+        use crate::interner::ToSymbol;
         use crate::types::Type;
 
         // Build a map from constructor names to (tag_index, variant_type)
-        let mut constructor_map = std::collections::HashMap::new();
+        // For UserSum types, variant_type is None (no payload)
+        let mut constructor_map: std::collections::HashMap<Symbol, (i64, Option<TypeNodeId>)> =
+            std::collections::HashMap::new();
 
-        match scrut_ty.to_type() {
-            Type::Union(variants) => {
-                // Extract tag from the tagged union
-                let tag_val = self.push_inst(Instruction::TaggedUnionGetTag(scrut_val.clone()));
-
-                // Phase 2: Union type with primitive types
-                for (tag_idx, variant_ty) in variants.iter().enumerate() {
-                    use crate::types::PType;
-                    let constructor_name = match variant_ty.to_type() {
-                        Type::Primitive(PType::Numeric) => "float",
-                        Type::Primitive(PType::String) => "string",
-                        Type::Primitive(PType::Int) => "int",
-                        _ => continue,
-                    };
-                    constructor_map.insert(
-                        constructor_name.to_symbol(),
-                        (tag_idx as i64, Some(*variant_ty)),
-                    );
-                }
-                self.eval_union_match_impl(
-                    tag_val,
-                    Some(scrut_val),
-                    arms,
-                    result_ty,
-                    states,
-                    constructor_map,
-                )
-            }
+        // For UserSum types, the scrutinee is already the tag value (integer)
+        // For Union types, we need to extract the tag from a tagged union
+        let tag_val = match scrut_ty.to_type() {
             Type::UserSum { name: _, variants } => {
-                // Phase 3: User-defined sum type (no payload)
-                // Scrutinee is just an integer tag
+                // UserSum: scrutinee is already the tag
                 for (tag_idx, variant_name) in variants.iter().enumerate() {
                     constructor_map.insert(*variant_name, (tag_idx as i64, None));
                 }
-                self.eval_union_match_impl(
-                    scrut_val,
-                    None,
-                    arms,
-                    result_ty,
-                    states,
-                    constructor_map,
-                )
+                scrut_val.clone()
+            }
+            Type::Union(variants) => {
+                // Union: extract tag from tagged union
+                let tag_val = self.push_inst(Instruction::TaggedUnionGetTag(scrut_val.clone()));
+                for (tag_idx, variant_ty) in variants.iter().enumerate() {
+                    use crate::types::PType;
+                    let constructor_name = match variant_ty.to_type() {
+                        Type::Primitive(PType::Numeric) => "float".to_symbol(),
+                        Type::Primitive(PType::String) => "string".to_symbol(),
+                        Type::Primitive(PType::Int) => "int".to_symbol(),
+                        _ => continue,
+                    };
+                    constructor_map.insert(constructor_name, (tag_idx as i64, Some(*variant_ty)));
+                }
+                tag_val
             }
             _ => panic!("eval_union_match called on non-union type"),
-        }
-    }
-
-    /// Implementation of union/sum type pattern matching
-    fn eval_union_match_impl(
-        &mut self,
-        tag_val: VPtr,
-        scrut_val: Option<VPtr>,
-        arms: &[crate::ast::MatchArm],
-        result_ty: TypeNodeId,
-        mut states: Vec<StateSkeleton>,
-        constructor_map: std::collections::HashMap<Symbol, (i64, Option<TypeNodeId>)>,
-    ) -> (VPtr, TypeNodeId, Vec<StateSkeleton>) {
-        use crate::ast::MatchPattern;
+        };
 
         // Collect constructor pattern arms and map them to tag values
         let tag_arms: Vec<_> = arms
@@ -1684,13 +1625,13 @@ impl Context {
                 self.add_new_basicblock();
                 let block_idx = self.get_ctxdata().current_bb as u64;
 
-                // Extract value from the tagged union if there's a binding and we have a scrutinee value
-                if let MatchPattern::Constructor(_, Some(bound_var)) = &arm.pattern {
-                    if let (Some(sv), Some(vt)) = (&scrut_val, *variant_ty) {
-                        let bound_val =
-                            self.push_inst(Instruction::TaggedUnionGetValue(sv.clone(), vt));
-                        self.add_bind((*bound_var, bound_val));
-                    }
+                // Extract value from the tagged union if there's a binding and payload type
+                if let MatchPattern::Constructor(_, Some(bound_var)) = &arm.pattern
+                    && let Some(vt) = *variant_ty
+                {
+                    let bound_val =
+                        self.push_inst(Instruction::TaggedUnionGetValue(scrut_val.clone(), vt));
+                    self.add_bind((*bound_var, bound_val));
                 }
 
                 let (result_val, _, arm_states) = self.eval_expr(arm.body);
@@ -1773,8 +1714,7 @@ impl Context {
         let (scrut_val, scrut_ty, mut states) = self.eval_expr(scrutinee);
 
         // Check if scrutinee is a union type or user-defined sum type
-        let is_union_match =
-            matches!(scrut_ty.to_type(), Type::Union(_) | Type::UserSum { .. });
+        let is_union_match = matches!(scrut_ty.to_type(), Type::Union(_) | Type::UserSum { .. });
 
         if is_union_match {
             // Phase 2: Union type matching with constructor patterns
@@ -1904,7 +1844,12 @@ pub fn typecheck(
         convert_pronoun::convert_pronoun(root_expr_id, file_path.clone().unwrap_or_default());
     let expr = recursecheck::convert_recurse(expr, file_path.clone().unwrap_or_default());
     // let expr = destruct_let_pattern(expr);
-    let infer_ctx = infer_root(expr, builtin_types, file_path.clone().unwrap_or_default(), None);
+    let infer_ctx = infer_root(
+        expr,
+        builtin_types,
+        file_path.clone().unwrap_or_default(),
+        None,
+    );
     let errors = infer_ctx
         .errors
         .iter()

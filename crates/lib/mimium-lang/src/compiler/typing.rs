@@ -422,6 +422,8 @@ pub struct ConstructorInfo {
     pub sum_type: TypeNodeId,
     /// The index (tag) of this constructor in the sum type
     pub tag_index: usize,
+    /// Optional payload type for this constructor
+    pub payload_type: Option<TypeNodeId>,
 }
 
 /// Map from constructor name to its info
@@ -502,6 +504,7 @@ impl InferContext {
                     ConstructorInfo {
                         sum_type,
                         tag_index,
+                        payload_type: variant.payload,
                     },
                 );
             }
@@ -558,7 +561,7 @@ impl InferContext {
 
     /// Get the type associated with a constructor name from a union or user-defined sum type
     /// For primitive types in unions like `float | string`, the constructor names are "float" and "string"
-    /// For user-defined sum types like `type MyEnum = One | Two`, the constructor names are "One" and "Two"
+    /// For user-defined sum types, returns Unit for payloadless constructors
     fn get_constructor_type_from_union(
         &self,
         union_ty: TypeNodeId,
@@ -579,11 +582,14 @@ impl InferContext {
                 Type::Unknown.into_id_with_location(union_ty.to_loc())
             }
             Type::UserSum { name: _, variants } => {
-                // For user-defined sum types, check if constructor_name is one of the variants
+                // Check if constructor_name is one of the variants
                 if variants.contains(&constructor_name) {
-                    // For now, user-defined constructors without payload return Unit type
-                    // The constructor pattern just checks the tag, no value extraction
-                    Type::Primitive(PType::Unit).into_id_with_location(union_ty.to_loc())
+                    // Return the payload type if available, otherwise Unit
+                    if let Some(constructor_info) = self.constructor_env.get(&constructor_name) {
+                        constructor_info.payload_type.unwrap_or_else(|| unit!())
+                    } else {
+                        unit!()
+                    }
                 } else {
                     Type::Unknown.into_id_with_location(union_ty.to_loc())
                 }
@@ -1315,7 +1321,7 @@ mod tests {
 
     fn create_test_location() -> Location {
         Location::new(Span { start: 0, end: 0 }, PathBuf::from("test"))
-Ï    }
+    }
 
     #[test]
     fn test_stage_mismatch_detection() {

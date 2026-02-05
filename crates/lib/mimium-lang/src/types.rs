@@ -100,8 +100,7 @@ pub enum Type {
     Code(TypeNodeId),
     /// Union (sum) type: A | B | C
     Union(Vec<TypeNodeId>),
-    /// User-defined sum type with named constructors (no payload)
-    /// Contains: (type_name, variant_names)
+    /// User-defined sum type with named variants: type Name = A | B | C
     UserSum {
         name: Symbol,
         variants: Vec<Symbol>,
@@ -356,12 +355,12 @@ impl Type {
                 format!("union_{}", mangled_types)
             }
             Type::UserSum { name, variants } => {
-                let mangled_variants = variants
+                let variant_str = variants
                     .iter()
                     .map(|s| s.as_str())
                     .collect::<Vec<_>>()
                     .join("_");
-                format!("usersum_{}_{}", name.as_str(), mangled_variants)
+                format!("{}_{}", name.as_str(), variant_str)
             }
             Type::Any => "any".to_string(),
             Type::Failure => "fail".to_string(),
@@ -490,8 +489,12 @@ impl fmt::Display for Type {
                 write!(f, "{vf}")
             }
             Type::UserSum { name, variants } => {
-                let vf = format_vec!(variants, " | ");
-                write!(f, "{name} = {vf}")
+                let variant_str = variants
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                write!(f, "{} = {}", name.as_str(), variant_str)
             }
             Type::Intermediate(id) => {
                 write!(f, "{}", id.read().unwrap())

@@ -830,7 +830,7 @@ fn sum_type_basic() {
     assert_eq!(res, ans);
 }
 
-// Phase 3: User-defined sum types with explicit constructors
+// Phase 3: User-defined sum types with explicit constructor names
 #[wasm_bindgen_test(unsupported = test)]
 fn enum_basic() {
     // Test user-defined enum type: type MyEnum = One | Two | Three

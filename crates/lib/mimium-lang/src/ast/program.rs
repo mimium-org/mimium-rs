@@ -106,6 +106,8 @@ pub enum ProgramStatement {
     DocComment(Symbol),
     Error,
 }
+/// Map from type name to list of variants
+pub type TypeDeclarationMap = HashMap<Symbol, Vec<VariantDef>>;
 
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Program {
@@ -183,9 +185,6 @@ pub type UseAliasMap = HashMap<Symbol, Symbol>;
 /// Used for relative path resolution within modules.
 pub type ModuleContextMap = HashMap<Symbol, Vec<Symbol>>;
 
-/// Map from type name to its variant definitions.
-pub type TypeDeclarationMap = HashMap<Symbol, Vec<VariantDef>>;
-
 /// Module-related information collected during parsing.
 /// Contains visibility information for module members and use aliases.
 #[derive(Clone, Debug, Default)]
@@ -198,7 +197,7 @@ pub struct ModuleInfo {
     pub module_context_map: ModuleContextMap,
     /// List of wildcard import base paths (e.g., `use foo::*` stores "foo")
     pub wildcard_imports: Vec<Symbol>,
-    /// Map from type name to its variant definitions
+    /// Type declarations for user-defined sum types
     pub type_declarations: TypeDeclarationMap,
 }
 
@@ -384,7 +383,6 @@ fn stmts_from_program_with_prefix(
                 variants,
             } => {
                 // Store type declaration for later use in type environment
-                // For now, register as a type alias in module info
                 let mangled_name = mangle_qualified_name(module_prefix, name);
                 module_info.type_declarations.insert(mangled_name, variants);
                 None
