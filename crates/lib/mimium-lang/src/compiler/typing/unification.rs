@@ -2,14 +2,18 @@ use crate::utils::metadata::Span;
 
 use super::*;
 
-#[derive(PartialEq, Eq, Debug, Clone)]
-pub(super) enum Relation {
+/// Represents the relationship between two types after unification.
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+pub(crate) enum Relation {
+    /// t1 is subtype of t2 (e.g., int is subtype of float | int)
     Subtype,
+    /// t1 and t2 are identical types
     Identical,
+    /// t1 is supertype of t2
     Supertype,
 }
 #[derive(PartialEq, Eq, Debug)]
-pub(super) enum Error {
+pub(crate) enum Error {
     TypeMismatch {
         left: TypeNodeId,
         right: TypeNodeId,
@@ -181,7 +185,7 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
 
 /// Solve type constraints. Though the function arguments are immutable, it modified the content of Intermediate Type.
 /// If the result is `Relation::Subtype`, it means "t1 is subtype of t2".
-pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Error>> {
+pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Error>> {
     let loc1 = t1.to_span(); //todo file
     let loc2 = t1.to_span();
 
@@ -493,3 +497,4 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
 
     Ok(res)
 }
+

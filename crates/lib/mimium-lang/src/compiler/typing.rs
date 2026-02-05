@@ -13,7 +13,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 mod unification;
-use unification::{Error as UnificationError, Relation, unify_types};
+use unification::{Error as UnificationError, unify_types};
+pub(crate) use unification::Relation;
 
 #[derive(Clone, Debug)]
 pub enum Error {

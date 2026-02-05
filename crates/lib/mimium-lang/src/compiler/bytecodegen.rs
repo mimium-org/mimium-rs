@@ -148,6 +148,15 @@ impl ByteCodeGenerator {
             Type::Function { arg: _, ret: _ } => 1,
             Type::Ref(_) => 1,
             Type::Code(_) => todo!(),
+            Type::Union(variants) => {
+                // Tagged union: 1 word for tag + max size of any variant
+                let max_variant_size = variants
+                    .iter()
+                    .map(|v| Self::word_size_for_type(*v))
+                    .max()
+                    .unwrap_or(0);
+                1 + max_variant_size
+            }
             _ => {
                 //todo: this may contain intermediate types
                 1
@@ -652,9 +661,10 @@ impl ByteCodeGenerator {
                 value,
                 union_type,
             } => {
-                // Get word size for the value
-                let value_size = Self::word_size_for_type(union_type);
-                let total_size = 1 + value_size; // tag (1 word) + value
+                // Get total word size for the tagged union (includes tag + max variant size)
+                let total_size = Self::word_size_for_type(union_type);
+                // Value size is total - 1 (for the tag)
+                let value_size = total_size - 1;
                 
                 // Allocate consecutive registers for (tag, value)
                 let dst_reg = self.vregister.push_stack(&dst, total_size as u64);
@@ -738,9 +748,16 @@ impl ByteCodeGenerator {
                     })
                     .collect();
 
-                // Default block
-                let default_block_mir = &mirfunc.body[default_block as usize];
-                let default_bytes = emit_block(self, default_block_mir);
+                // Check if default block is the same as one of the case blocks
+                let is_default_shared = cases.iter().any(|(_, block_idx)| *block_idx == default_block);
+                
+                // Default block - only emit if it's a separate block
+                let default_bytes = if is_default_shared {
+                    vec![] // Don't re-emit the same block
+                } else {
+                    let default_block_mir = &mirfunc.body[default_block as usize];
+                    emit_block(self, default_block_mir)
+                };
 
                 // Now that all blocks are processed, we can find the result registers
                 // Use find_keep since these values come from different blocks and need to remain available
@@ -776,7 +793,12 @@ impl ByteCodeGenerator {
                     .map(|b| b.len() + 2) // body + Move + Jmp
                     .collect();
 
-                let default_segment_size = default_bytes.len() + 1; // body + Move (no Jmp needed)
+                // If default is shared, there's no separate default segment
+                let default_segment_size = if is_default_shared {
+                    0
+                } else {
+                    default_bytes.len() + 1 // body + Move (no Jmp needed)
+                };
 
                 // Build dense jump table for O(1) lookup
                 // Calculate min/max values from cases
@@ -794,11 +816,22 @@ impl ByteCodeGenerator {
                     })
                     .collect();
 
-                // Default offset (after all case blocks)
-                let default_offset = case_offsets
-                    .last()
-                    .map(|(_, off)| *off + case_segment_sizes.last().copied().unwrap_or(0) as i16)
-                    .unwrap_or(1);
+                // Default offset
+                let default_offset = if is_default_shared {
+                    // Find the offset of the case that shares the same block
+                    cases
+                        .iter()
+                        .zip(case_offsets.iter())
+                        .find(|((_, block_idx), _)| *block_idx == default_block)
+                        .map(|(_, (_, offset))| *offset)
+                        .unwrap_or(1)
+                } else {
+                    // Separate default block - offset is after all case blocks
+                    case_offsets
+                        .last()
+                        .map(|(_, off)| *off + case_segment_sizes.last().copied().unwrap_or(0) as i16)
+                        .unwrap_or(1)
+                };
 
                 // Build dense array: fill with default, then set specific case offsets
                 // Add one extra slot at the end for the default offset (used for out-of-range values)
@@ -819,7 +852,32 @@ impl ByteCodeGenerator {
                 });
 
                 // Build the bytecode sequence
-                let switch_bytes: Vec<VmInstruction> =
+                let switch_bytes: Vec<VmInstruction> = if is_default_shared {
+                    // Default is shared with a case block - no separate default segment
+                    std::iter::once(VmInstruction::JmpTable(scrut_reg, table_idx))
+                        .chain(
+                            all_block_bytes
+                                .iter()
+                                .enumerate()
+                                .flat_map(|(i, block_bytes)| {
+                                    let remaining_size: usize =
+                                        case_segment_sizes[i + 1..].iter().sum::<usize>() + 1;
+                                    block_bytes
+                                        .iter()
+                                        .cloned()
+                                        .chain(std::iter::once(VmInstruction::Move(
+                                            phi_reg,
+                                            result_regs[i],
+                                        )))
+                                        .chain(std::iter::once(VmInstruction::Jmp(
+                                            remaining_size as i16,
+                                        )))
+                                }),
+                        )
+                        .chain(merge_bytes.iter().cloned())
+                        .collect()
+                } else {
+                    // Separate default block
                     std::iter::once(VmInstruction::JmpTable(scrut_reg, table_idx))
                         .chain(
                             all_block_bytes
@@ -848,7 +906,8 @@ impl ByteCodeGenerator {
                             *result_regs.last().unwrap(),
                         )))
                         .chain(merge_bytes.iter().cloned())
-                        .collect();
+                        .collect()
+                };
 
                 // Output everything to the destination
                 let bytecodes_dst = bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut());
@@ -909,6 +968,8 @@ impl ByteCodeGenerator {
             mir::Instruction::CosF(v1) => self.emit_binop1(VmInstruction::CosF, dst, v1),
             mir::Instruction::AbsF(v1) => self.emit_binop1(VmInstruction::AbsF, dst, v1),
             mir::Instruction::SqrtF(v1) => self.emit_binop1(VmInstruction::SqrtF, dst, v1),
+            mir::Instruction::CastFtoI(v1) => self.emit_binop1(VmInstruction::CastFtoI, dst, v1),
+            mir::Instruction::CastItoF(v1) => self.emit_binop1(VmInstruction::CastItoF, dst, v1),
             mir::Instruction::AddI(v1, v2) => self.emit_binop2(VmInstruction::AddI, dst, v1, v2),
             mir::Instruction::SubI(v1, v2) => self.emit_binop2(VmInstruction::SubI, dst, v1, v2),
             mir::Instruction::MulI(v1, v2) => self.emit_binop2(VmInstruction::MulI, dst, v1, v2),

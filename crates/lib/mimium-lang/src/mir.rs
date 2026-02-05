@@ -34,7 +34,7 @@ pub enum Value {
 }
 
 pub type VPtr = Arc<Value>;
-
+type Bbindex = u64;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
     Uinteger(u64),
@@ -74,7 +74,7 @@ pub enum Instruction {
     GetState(TypeNodeId),
 
     //condition,  basic block index for then statement, else statement, and merge block
-    JmpIf(VPtr, u64, u64, u64),
+    JmpIf(VPtr, Bbindex, Bbindex, Bbindex),
     // basic block index (for return statement)
     Jmp(i16),
     //merge
@@ -85,9 +85,9 @@ pub enum Instruction {
     Switch {
         scrutinee: VPtr,
         /// Each case is (literal_value as i64, block_index)
-        cases: Vec<(i64, u64)>,
-        default_block: u64,
-        merge_block: u64,
+        cases: Vec<(i64, Bbindex)>,
+        default_block: Bbindex,
+        merge_block: Bbindex,
     },
     /// Phi for switch - merges values from multiple branches
     PhiSwitch(Vec<VPtr>),

@@ -903,7 +903,8 @@ impl Machine {
                 }
                 Instruction::JmpTable(scrut, table_idx) => {
                     let scrut_val = self.get_stack(scrut as i64);
-                    let val = Self::get_as::<f64>(scrut_val) as i64;
+                    // Scrutinee is always an integer: either a tag from union or cast from float
+                    let val = Self::get_as::<i64>(scrut_val);
                     let fn_proto = self.get_fnproto(func_i);
                     debug_assert!(
                         !fn_proto.jump_tables.is_empty(),

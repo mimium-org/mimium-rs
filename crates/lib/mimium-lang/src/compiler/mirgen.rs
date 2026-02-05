@@ -783,6 +783,79 @@ impl Context {
             _ => unreachable!("This expression cannot be used as an l-value"),
         }
     }
+    fn unpack_argument(
+        &mut self,
+        f_val: VPtr,
+        arg_val: VPtr,
+        at: TypeNodeId,
+        ty: TypeNodeId,
+    ) -> Vec<(VPtr, TypeNodeId)> {
+        log::trace!("Unpacking argument {ty} for {at}");
+        // Check if the argument is a tuple or record that we need to unpack
+        match ty.to_type() {
+            Type::Tuple(tys) => tys
+                .into_iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    let elem_val = self.push_inst(Instruction::GetElement {
+                        value: arg_val.clone(),
+                        ty,
+                        tuple_offset: i as u64,
+                    });
+                    (elem_val, t)
+                })
+                .collect(),
+            Type::Record(kvs) => {
+                enum SearchRes {
+                    Found(usize),
+                    Default,
+                }
+                if let Type::Record(param_types) = at.to_type() {
+                    let search_res = param_types.iter().map(|param| {
+                        kvs.iter()
+                            .enumerate()
+                            .find_map(|(i, kv)| {
+                                (param.key == kv.key).then_some((SearchRes::Found(i), kv))
+                            })
+                            .or(param.has_default.then_some((SearchRes::Default, param)))
+                    });
+                    search_res.map(
+                                            |searchres| match searchres {
+                                                Some((SearchRes::Found(i), kv)) => {
+                                                    log::trace!("non-default argument {} found", kv.key);
+
+                                                    let field_val = self.push_inst(
+                                                                    Instruction::GetElement {
+                                                                        value: arg_val.clone(),
+                                                                        ty,
+                                                                        tuple_offset: i as u64,
+                                                                    },
+                                                                );
+                                                                (field_val, kv.ty)
+                                                            },
+                                                Some((SearchRes::Default, kv)) => {
+                                                  if let Value::Function(fid) = f_val.as_ref() {
+                                                     let fid=      FunctionId(*fid as u64);
+                                                        log::trace!("searching default argument for {} in function {}", kv.key, self.program.functions[fid.0 as usize].label.as_str());
+                                                        let default_val = self.get_default_arg_call(kv.key, fid).expect(format!("msg: default argument {} not found", kv.key).as_str());
+                                                        (default_val, kv.ty)
+                                                    } else {
+                                                        log::error!("default argument cannot be supported with closure currently");
+                                                        (Arc::new(Value::None), Type::Failure.into_id())
+                                                    }
+                                                }
+                                                None=>{
+                                                    panic!("parameter pack failed, possible type inference bug")
+                                                }
+                                            }).collect::<Vec<_>>()
+                } else {
+                    unreachable!("parameter pack failed, possible type inference bug")
+                }
+            }
+            _ => vec![(arg_val, ty)],
+        }
+    }
+
     pub fn eval_expr(&mut self, e: ExprNodeId) -> (VPtr, TypeNodeId, Vec<StateSkeleton>) {
         let span = e.to_span();
         let ty = self
@@ -943,9 +1016,7 @@ impl Context {
                             Arc::new(Value::ExtFunction(mangled_name, concrete_fn_ty));
                         (monomorphized_fn, concrete_ret_ty)
                     } else {
-                        // For non-external functions, we would need to clone and specialize the function body
-                        // This is more complex and might be implemented later
-                        log::warn!(
+                        todo!(
                             "Monomorphization of non-external generic functions not yet implemented"
                         );
                         (f_val.clone(), rt)
@@ -960,76 +1031,7 @@ impl Context {
                     let (ats, states) = self.eval_args(args);
                     let (arg_val, ty) = ats.first().unwrap().clone();
                     if ty.to_type().can_be_unpacked() {
-                        log::trace!("Unpacking argument {ty} for {at}");
-                        // Check if the argument is a tuple or record that we need to unpack
-                        let ats = match ty.to_type() {
-                            Type::Tuple(tys) => tys
-                                .into_iter()
-                                .enumerate()
-                                .map(|(i, t)| {
-                                    let elem_val = self.push_inst(Instruction::GetElement {
-                                        value: arg_val.clone(),
-                                        ty,
-                                        tuple_offset: i as u64,
-                                    });
-                                    (elem_val, t)
-                                })
-                                .collect(),
-                            Type::Record(kvs) => {
-                                enum SearchRes {
-                                    Found(usize),
-                                    Default,
-                                }
-                                if let Type::Record(param_types) = at.to_type() {
-                                    let search_res = param_types.iter().map(|param| {
-                                        kvs.iter()
-                                            .enumerate()
-                                            .find_map(|(i, kv)| {
-                                                (param.key == kv.key)
-                                                    .then_some((SearchRes::Found(i), kv))
-                                            })
-                                            .or(param
-                                                .has_default
-                                                .then_some((SearchRes::Default, param)))
-                                    });
-                                    search_res.map(
-                                            |searchres| match searchres {
-                                                Some((SearchRes::Found(i), kv)) => {
-                                                    log::trace!("non-default argument {} found", kv.key);
-
-                                                    let field_val = self.push_inst(
-                                                                    Instruction::GetElement {
-                                                                        value: arg_val.clone(),
-                                                                        ty,
-                                                                        tuple_offset: i as u64,
-                                                                    },
-                                                                );
-                                                                (field_val, kv.ty)
-                                                            },
-                                                Some((SearchRes::Default, kv)) => {
-                                                  if let Value::Function(fid) = f_val.as_ref() {
-                                                     let fid=      FunctionId(*fid as u64);
-                                                        log::trace!("searching default argument for {} in function {}", kv.key, self.program.functions[fid.0 as usize].label.as_str());
-                                                        let default_val = self.get_default_arg_call(kv.key, fid).expect(format!("msg: default argument {} not found", kv.key).as_str());
-                                                        (default_val, kv.ty)
-                                                    } else {
-                                                        log::error!("default argument cannot be supported with closure currently");
-                                                        (Arc::new(Value::None), Type::Failure.into_id())
-                                                    }
-                                                }
-                                                None=>{
-                                                    panic!("parameter pack failed, possible type inference bug")
-                                                }
-                                            }).collect::<Vec<_>>()
-                                } else {
-                                    unreachable!(
-                                        "parameter pack failed, possible type inference bug"
-                                    )
-                                }
-                            }
-                            _ => vec![(arg_val, ty)],
-                        };
-                        (ats, states)
+                        (self.unpack_argument(f_val, arg_val, at, ty), states)
                     } else {
                         (vec![(arg_val, ty)], states)
                     }
@@ -1037,8 +1039,8 @@ impl Context {
                     self.eval_args(args)
                 };
 
-                // Wrap arguments in tagged unions if the function expects union types
-                let atvvec = self.wrap_args_for_call(atvvec, at);
+                // Coerce arguments based on subtype relationships (union wrapping, int->float, etc.)
+                let atvvec = self.coerce_args_for_call(atvvec, at);
 
                 let (res, state) = match f_to_call.as_ref() {
                     Value::Global(v) => match v.as_ref() {
@@ -1372,74 +1374,163 @@ impl Context {
         }
     }
 
-    /// Check if an argument needs to be wrapped in a union type
-    /// Returns Some(tag_index) if wrapping is needed, None otherwise
+    /// Check if an argument needs to be wrapped in a union type.
+    /// Returns Some(tag_index) if wrapping is needed, None otherwise.
     fn needs_union_wrapping(&self, arg_ty: TypeNodeId, param_ty: TypeNodeId) -> Option<u64> {
         use crate::types::Type;
-        
+
+        let arg_ty = arg_ty.get_root();
+        let param_ty = param_ty.get_root();
+
         // If parameter is not a union, no wrapping needed
         let Type::Union(variants) = param_ty.to_type() else {
             return None;
         };
-        
+
         // If argument type is already the union type, no wrapping needed
         if arg_ty == param_ty {
             return None;
         }
-        
-        // Find which variant in the union matches the argument type
-        // Use simple type equality check
+
+        // Find which variant in the union matches the argument type.
+        // For MIR generation, we use simple type comparison since type inference
+        // has already ensured compatibility. We first try exact match, then
+        // structural compatibility for common cases.
         for (i, variant_ty) in variants.iter().enumerate() {
-            if arg_ty == *variant_ty {
+            let variant_ty = variant_ty.get_root();
+            
+            // Exact match
+            if arg_ty == variant_ty {
+                return Some(i as u64);
+            }
+            
+            // Simple structural comparison for common cases
+            if Self::types_compatible(arg_ty, variant_ty) {
                 return Some(i as u64);
             }
         }
-        
+
+        // If no match found, return None (caller will handle this case)
         None
     }
 
-    /// Wrap a value in a tagged union
-    fn wrap_in_union(&mut self, value: VPtr, arg_ty: TypeNodeId, param_ty: TypeNodeId) -> VPtr {
-        if let Some(tag) = self.needs_union_wrapping(arg_ty, param_ty) {
-            log::debug!("Wrapping {:?} (type {}) in union type {} with tag {}", 
-                value, arg_ty.to_type(), param_ty.to_type(), tag);
-            self.push_inst(Instruction::TaggedUnionWrap {
-                tag,
-                value,
-                union_type: param_ty,
-            })
-        } else {
-            value
+    /// Simple type compatibility check for union variant matching.
+    /// This is a lightweight check that handles common cases without deep recursion.
+    fn types_compatible(t1: TypeNodeId, t2: TypeNodeId) -> bool {
+        use crate::types::{PType, Type};
+        
+        let t1 = t1.get_root();
+        let t2 = t2.get_root();
+        
+        if t1 == t2 {
+            return true;
+        }
+        
+        match (t1.to_type(), t2.to_type()) {
+            // Int is compatible with Numeric (int -> float promotion) - check before general primitive match
+            (Type::Primitive(PType::Int), Type::Primitive(PType::Numeric)) => true,
+            
+            // Same primitives are compatible
+            (Type::Primitive(p1), Type::Primitive(p2)) => p1 == p2,
+            
+            // Intermediate types (unresolved type variables) - match anything
+            (Type::Intermediate(_), _) | (_, Type::Intermediate(_)) => true,
+            
+            // Any and Failure match everything
+            (Type::Any, _) | (_, Type::Any) => true,
+            (Type::Failure, _) | (_, Type::Failure) => true,
+            
+            // For other cases, require exact TypeNodeId match
+            _ => false,
         }
     }
 
-    /// Wrap function arguments in unions if needed
-    /// Takes the argument list and the function's parameter type and wraps each argument
-    fn wrap_args_for_call(
+    /// Coerce a value from one type to another based on subtype relationship.
+    /// Handles:
+    /// - Union wrapping: wrapping a value into a tagged union (e.g., float -> float | string)
+    /// - Primitive coercion: int -> float promotion
+    /// Type inference guarantees the coercion is valid.
+    fn coerce_value(&mut self, value: VPtr, arg_ty: TypeNodeId, param_ty: TypeNodeId) -> VPtr {
+        use crate::types::{PType, Type};
+
+        let arg_ty = arg_ty.get_root();
+        let param_ty = param_ty.get_root();
+
+        // Fast path: identical types need no coercion
+        if arg_ty == param_ty {
+            return value;
+        }
+
+        // Only check coercion for types that actually need it
+        match param_ty.to_type() {
+            Type::Union(_) => {
+                // Union wrapping - need to find which variant matches
+                if let Some(tag) = self.needs_union_wrapping(arg_ty, param_ty) {
+                    log::debug!(
+                        "Wrapping {:?} (type {}) in union type {} with tag {}",
+                        value,
+                        arg_ty.to_type(),
+                        param_ty.to_type(),
+                        tag
+                    );
+                    self.push_inst(Instruction::TaggedUnionWrap {
+                        tag,
+                        value,
+                        union_type: param_ty,
+                    })
+                } else {
+                    value
+                }
+            }
+            Type::Primitive(PType::Numeric) => {
+                // int -> float promotion
+                match arg_ty.to_type() {
+                    Type::Primitive(PType::Int) => self.push_inst(Instruction::CastItoF(value)),
+                    _ => value,
+                }
+            }
+            // For all other types, type inference guarantees compatibility
+            _ => value,
+        }
+    }
+
+    /// Coerce function arguments to match expected parameter types.
+    /// Handles subtype coercion including union wrapping and primitive type promotion.
+    fn coerce_args_for_call(
         &mut self,
         args: Vec<(VPtr, TypeNodeId)>,
         param_ty: TypeNodeId,
     ) -> Vec<(VPtr, TypeNodeId)> {
         use crate::types::Type;
-        
+
         match param_ty.to_type() {
             Type::Tuple(param_types) if args.len() == param_types.len() => {
-                // Multiple parameters - wrap each one individually
+                // Multiple parameters - coerce each one individually
                 args.into_iter()
                     .zip(param_types.iter())
                     .map(|((val, arg_ty), &expected_ty)| {
-                        let wrapped_val = self.wrap_in_union(val, arg_ty, expected_ty);
-                        (wrapped_val, expected_ty)
+                        let coerced_val = self.coerce_value(val, arg_ty, expected_ty);
+                        (coerced_val, expected_ty)
+                    })
+                    .collect()
+            }
+            Type::Record(fields) if args.len() == fields.len() => {
+                // Record parameters - coerce each field
+                args.into_iter()
+                    .zip(fields.iter())
+                    .map(|((val, arg_ty), field)| {
+                        let coerced_val = self.coerce_value(val, arg_ty, field.ty);
+                        (coerced_val, field.ty)
                     })
                     .collect()
             }
             _ if args.len() == 1 => {
-                // Single parameter - wrap it if needed
+                // Single parameter - coerce it if needed
                 let (val, arg_ty) = args.into_iter().next().unwrap();
-                let wrapped_val = self.wrap_in_union(val, arg_ty, param_ty);
-                vec![(wrapped_val, param_ty)]
+                let coerced_val = self.coerce_value(val, arg_ty, param_ty);
+                vec![(coerced_val, param_ty)]
             }
-            _ => args, // No wrapping needed
+            _ => args, // No coercion needed
         }
     }
 
@@ -1523,7 +1614,9 @@ impl Context {
             .collect();
 
         // Find wildcard arm (default case)
-        let default_arm = arms.iter().find(|arm| matches!(&arm.pattern, MatchPattern::Wildcard));
+        let default_arm = arms
+            .iter()
+            .find(|arm| matches!(&arm.pattern, MatchPattern::Wildcard));
 
         // Record current block where Switch will be placed
         let switch_bidx = self.get_ctxdata().current_bb;
@@ -1568,16 +1661,25 @@ impl Context {
         let mut case_results = case_results;
         let mut all_states = case_states;
 
-        // Generate default block
-        self.add_new_basicblock();
-        let default_block_idx = self.get_ctxdata().current_bb as u64;
-        let default_result = if let Some(arm) = default_arm {
+        // Handle default block
+        // If no explicit default arm and match is exhaustive, use last case as default
+        let (default_block_idx, default_result) = if let Some(arm) = default_arm {
+            // Explicit wildcard default case
+            self.add_new_basicblock();
+            let block_idx = self.get_ctxdata().current_bb as u64;
             let (result_val, _, arm_states) = self.eval_expr(arm.body);
             all_states.extend(arm_states);
-            result_val
+            (block_idx, result_val)
+        } else if !case_blocks.is_empty() {
+            // No default case - reuse last case block as default (exhaustive match)
+            let last_case = case_blocks.last().unwrap();
+            let last_result = case_results.last().unwrap().clone();
+            (last_case.1, last_result)
         } else {
-            // No default case - this should be a compile error in exhaustiveness checking
-            Arc::new(Value::None)
+            // No cases at all - shouldn't happen in valid code
+            self.add_new_basicblock();
+            let block_idx = self.get_ctxdata().current_bb as u64;
+            (block_idx, Arc::new(Value::None))
         };
         case_results.push(default_result);
 
@@ -1638,6 +1740,14 @@ impl Context {
             return self.eval_union_match(scrut_val, scrut_ty, arms, result_ty, states);
         }
 
+        // Cast float scrutinee to int for switch instruction
+        // This ensures JmpTable always receives integer values
+        let scrut_val = if matches!(scrut_ty.to_type(), Type::Primitive(PType::Numeric)) {
+            self.push_inst(Instruction::CastFtoI(scrut_val))
+        } else {
+            scrut_val
+        };
+
         // Phase 1: Integer literal matching (existing implementation)
         // Collect literal cases (as i64) and find wildcard (default) arm
         let literal_arms: Vec<_> = arms
@@ -1652,9 +1762,9 @@ impl Context {
             })
             .collect();
 
-        let default_arm = arms.iter().find(|arm| {
-            matches!(&arm.pattern, MatchPattern::Wildcard)
-        });
+        let default_arm = arms
+            .iter()
+            .find(|arm| matches!(&arm.pattern, MatchPattern::Wildcard));
 
         // Record current block where Switch will be placed
         let switch_bidx = self.get_ctxdata().current_bb;
@@ -1689,17 +1799,25 @@ impl Context {
         let mut case_results = case_results;
         let mut all_states = case_states;
 
-        // Generate default block
-        self.add_new_basicblock();
-        let default_block_idx = self.get_ctxdata().current_bb as u64;
-        let default_result = if let Some(arm) = default_arm {
+        // Handle default block
+        // If no explicit default arm and match is exhaustive, use last case as default
+        let (default_block_idx, default_result) = if let Some(arm) = default_arm {
             // Wildcard pattern - just evaluate the body
+            self.add_new_basicblock();
+            let block_idx = self.get_ctxdata().current_bb as u64;
             let (result_val, _, arm_states) = self.eval_expr(arm.body);
             all_states.extend(arm_states);
-            result_val
+            (block_idx, result_val)
+        } else if !case_blocks.is_empty() {
+            // No default case - reuse last case block as default (exhaustive match)
+            let last_case = case_blocks.last().unwrap();
+            let last_result = case_results.last().unwrap().clone();
+            (last_case.1, last_result)
         } else {
-            // No default case - return None (should be a compile error in exhaustiveness checking)
-            Arc::new(Value::None)
+            // No cases at all - shouldn't happen in valid code
+            self.add_new_basicblock();
+            let block_idx = self.get_ctxdata().current_bb as u64;
+            (block_idx, Arc::new(Value::None))
         };
         case_results.push(default_result);
 
