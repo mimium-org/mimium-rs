@@ -1037,6 +1037,9 @@ impl Context {
                     self.eval_args(args)
                 };
 
+                // Wrap arguments in tagged unions if the function expects union types
+                let atvvec = self.wrap_args_for_call(atvvec, at);
+
                 let (res, state) = match f_to_call.as_ref() {
                     Value::Global(v) => match v.as_ref() {
                         Value::Function(idx) => {
@@ -1369,6 +1372,76 @@ impl Context {
         }
     }
 
+    /// Check if an argument needs to be wrapped in a union type
+    /// Returns Some(tag_index) if wrapping is needed, None otherwise
+    fn needs_union_wrapping(&self, arg_ty: TypeNodeId, param_ty: TypeNodeId) -> Option<u64> {
+        use crate::types::Type;
+        
+        // If parameter is not a union, no wrapping needed
+        let Type::Union(variants) = param_ty.to_type() else {
+            return None;
+        };
+        
+        // If argument type is already the union type, no wrapping needed
+        if arg_ty == param_ty {
+            return None;
+        }
+        
+        // Find which variant in the union matches the argument type
+        for (i, variant_ty) in variants.iter().enumerate() {
+            if self.typeenv.can_unify(arg_ty, *variant_ty).is_ok() {
+                return Some(i as u64);
+            }
+        }
+        
+        None
+    }
+
+    /// Wrap a value in a tagged union
+    fn wrap_in_union(&mut self, value: VPtr, arg_ty: TypeNodeId, param_ty: TypeNodeId) -> VPtr {
+        if let Some(tag) = self.needs_union_wrapping(arg_ty, param_ty) {
+            log::debug!("Wrapping {:?} (type {}) in union type {} with tag {}", 
+                value, arg_ty.to_type(), param_ty.to_type(), tag);
+            self.push_inst(Instruction::TaggedUnionWrap {
+                tag,
+                value,
+                union_type: param_ty,
+            })
+        } else {
+            value
+        }
+    }
+
+    /// Wrap function arguments in unions if needed
+    /// Takes the argument list and the function's parameter type and wraps each argument
+    fn wrap_args_for_call(
+        &mut self,
+        args: Vec<(VPtr, TypeNodeId)>,
+        param_ty: TypeNodeId,
+    ) -> Vec<(VPtr, TypeNodeId)> {
+        use crate::types::Type;
+        
+        match param_ty.to_type() {
+            Type::Tuple(param_types) if args.len() == param_types.len() => {
+                // Multiple parameters - wrap each one individually
+                args.into_iter()
+                    .zip(param_types.iter())
+                    .map(|((val, arg_ty), &expected_ty)| {
+                        let wrapped_val = self.wrap_in_union(val, arg_ty, expected_ty);
+                        (wrapped_val, expected_ty)
+                    })
+                    .collect()
+            }
+            _ if args.len() == 1 => {
+                // Single parameter - wrap it if needed
+                let (val, arg_ty) = args.into_iter().next().unwrap();
+                let wrapped_val = self.wrap_in_union(val, arg_ty, param_ty);
+                vec![(wrapped_val, param_ty)]
+            }
+            _ => args, // No wrapping needed
+        }
+    }
+
     /// Get the type for a constructor binding in a union pattern match
     /// For union types like `float | string`, this returns the underlying type
     /// for the matched constructor (e.g., `float` for constructor `float`)
@@ -1400,6 +1473,146 @@ impl Context {
         }
     }
 
+    /// Evaluate a match expression on a union type using tagged union operations
+    fn eval_union_match(
+        &mut self,
+        scrut_val: VPtr,
+        scrut_ty: TypeNodeId,
+        arms: &[crate::ast::MatchArm],
+        result_ty: TypeNodeId,
+        mut states: Vec<StateSkeleton>,
+    ) -> (VPtr, TypeNodeId, Vec<StateSkeleton>) {
+        use crate::ast::MatchPattern;
+        use crate::types::Type;
+
+        // Extract tag from the tagged union
+        let tag_val = self.push_inst(Instruction::TaggedUnionGetTag(scrut_val.clone()));
+
+        // Get the union variants to map constructor names to tags
+        let Type::Union(variants) = scrut_ty.to_type() else {
+            panic!("eval_union_match called on non-union type");
+        };
+
+        // Build a map from constructor names to (tag_index, variant_type)
+        let mut constructor_map = std::collections::HashMap::new();
+        for (tag_idx, variant_ty) in variants.iter().enumerate() {
+            use crate::types::PType;
+            let constructor_name = match variant_ty.to_type() {
+                Type::Primitive(PType::Numeric) => "float",
+                Type::Primitive(PType::String) => "string",
+                Type::Primitive(PType::Int) => "int",
+                _ => continue,
+            };
+            constructor_map.insert(constructor_name, (tag_idx as i64, *variant_ty));
+        }
+
+        // Collect constructor pattern arms and map them to tag values
+        let mut tag_arms: Vec<_> = arms
+            .iter()
+            .filter_map(|arm| match &arm.pattern {
+                MatchPattern::Constructor(name, _) => {
+                    if let Some(&(tag, variant_ty)) = constructor_map.get(name.as_str()) {
+                        Some((arm, tag, variant_ty))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+
+        // Find wildcard arm (default case)
+        let default_arm = arms.iter().find(|arm| matches!(&arm.pattern, MatchPattern::Wildcard));
+
+        // Record current block where Switch will be placed
+        let switch_bidx = self.get_ctxdata().current_bb;
+
+        // Placeholder Switch instruction on the tag - will be updated later
+        let _ = self.push_inst(Instruction::Switch {
+            scrutinee: tag_val.clone(),
+            cases: vec![],
+            default_block: 0,
+            merge_block: 0,
+        });
+
+        // Generate blocks for each constructor pattern
+        let (case_blocks, case_results, case_states): (Vec<_>, Vec<_>, Vec<_>) = tag_arms
+            .iter()
+            .map(|(arm, tag, variant_ty)| {
+                self.add_new_basicblock();
+                let block_idx = self.get_ctxdata().current_bb as u64;
+
+                // Extract value from the tagged union if there's a binding
+                if let MatchPattern::Constructor(_, Some(bound_var)) = &arm.pattern {
+                    let bound_val = self.push_inst(Instruction::TaggedUnionGetValue(
+                        scrut_val.clone(),
+                        *variant_ty,
+                    ));
+                    self.add_bind((*bound_var, bound_val));
+                }
+
+                let (result_val, _, arm_states) = self.eval_expr(arm.body);
+                ((*tag, block_idx), result_val, arm_states)
+            })
+            .fold(
+                (vec![], vec![], vec![]),
+                |(mut blocks, mut results, mut states), (block, result, arm_states)| {
+                    blocks.push(block);
+                    results.push(result);
+                    states.extend(arm_states);
+                    (blocks, results, states)
+                },
+            );
+
+        let mut case_results = case_results;
+        let mut all_states = case_states;
+
+        // Generate default block
+        self.add_new_basicblock();
+        let default_block_idx = self.get_ctxdata().current_bb as u64;
+        let default_result = if let Some(arm) = default_arm {
+            let (result_val, _, arm_states) = self.eval_expr(arm.body);
+            all_states.extend(arm_states);
+            result_val
+        } else {
+            // No default case - this should be a compile error in exhaustiveness checking
+            Arc::new(Value::None)
+        };
+        case_results.push(default_result);
+
+        // Generate merge block with PhiSwitch
+        self.add_new_basicblock();
+        let merge_block_idx = self.get_ctxdata().current_bb as u64;
+        let res = self.push_inst(Instruction::PhiSwitch(case_results));
+
+        // Update Switch instruction with correct block indices
+        let switch_inst = self
+            .get_current_fn()
+            .body
+            .get_mut(switch_bidx)
+            .expect("no basic block found")
+            .0
+            .last_mut()
+            .expect("block contains no inst");
+
+        match &mut switch_inst.1 {
+            Instruction::Switch {
+                cases,
+                default_block,
+                merge_block,
+                ..
+            } => {
+                *cases = case_blocks;
+                *default_block = default_block_idx;
+                *merge_block = merge_block_idx;
+            }
+            _ => panic!("expected Switch instruction"),
+        }
+
+        states.extend(all_states);
+        (res, result_ty, states)
+    }
+
     /// Evaluate a match expression using Switch instruction
     fn eval_match(
         &mut self,
@@ -1408,6 +1621,7 @@ impl Context {
         result_ty: TypeNodeId,
     ) -> (VPtr, TypeNodeId, Vec<StateSkeleton>) {
         use crate::ast::MatchPattern;
+        use crate::types::Type;
 
         if arms.is_empty() {
             return (Arc::new(Value::None), unit!(), vec![]);
@@ -1415,26 +1629,30 @@ impl Context {
 
         let (scrut_val, scrut_ty, mut states) = self.eval_expr(scrutinee);
 
+        // Check if scrutinee is a union type
+        let is_union_match = matches!(scrut_ty.to_type(), Type::Union(_));
+
+        if is_union_match {
+            // Phase 2: Union type matching with constructor patterns
+            return self.eval_union_match(scrut_val, scrut_ty, arms, result_ty, states);
+        }
+
+        // Phase 1: Integer literal matching (existing implementation)
         // Collect literal cases (as i64) and find wildcard (default) arm
-        // For Phase 2, constructor patterns are handled with tagged union approach
         let literal_arms: Vec<_> = arms
             .iter()
             .filter_map(|arm| match &arm.pattern {
                 MatchPattern::Literal(lit) => Some((arm, Self::literal_to_i64(lit))),
                 MatchPattern::Wildcard => None,
                 MatchPattern::Constructor(_, _) => {
-                    // TODO: Constructor patterns for union types (Phase 2)
-                    // For now, treat constructor patterns similar to wildcard
+                    // Constructor patterns should not appear in non-union matches
                     None
                 }
             })
             .collect();
 
         let default_arm = arms.iter().find(|arm| {
-            matches!(
-                &arm.pattern,
-                MatchPattern::Wildcard | MatchPattern::Constructor(_, _)
-            )
+            matches!(&arm.pattern, MatchPattern::Wildcard)
         });
 
         // Record current block where Switch will be placed
@@ -1474,29 +1692,12 @@ impl Context {
         self.add_new_basicblock();
         let default_block_idx = self.get_ctxdata().current_bb as u64;
         let default_result = if let Some(arm) = default_arm {
-            // Handle constructor patterns with variable bindings
-            match &arm.pattern {
-                MatchPattern::Constructor(constructor_name, Some(bound_var)) => {
-                    // For constructor patterns, create a new register in this block
-                    // that loads/copies the scrutinee value for the bound variable
-                    // Get the type for the bound variable from type inference
-                    let bound_ty = self.get_constructor_binding_type(scrut_ty, *constructor_name);
-                    let bound_reg = self.push_inst(Instruction::Load(scrut_val.clone(), bound_ty));
-                    self.add_bind((*bound_var, bound_reg));
-                }
-                MatchPattern::Constructor(_constructor_name, None) => {
-                    // No binding variable in the constructor pattern
-                }
-                MatchPattern::Wildcard => {
-                    // Wildcard doesn't bind anything
-                }
-                _ => {}
-            }
+            // Wildcard pattern - just evaluate the body
             let (result_val, _, arm_states) = self.eval_expr(arm.body);
             all_states.extend(arm_states);
             result_val
         } else {
-            // No default case - return None (should be a compile error in a proper implementation)
+            // No default case - return None (should be a compile error in exhaustiveness checking)
             Arc::new(Value::None)
         };
         case_results.push(default_result);

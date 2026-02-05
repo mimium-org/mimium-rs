@@ -1,0 +1,14 @@
+// Test for Phase 2: primitive sum types with constructor patterns
+// Tests union type float | int with pattern matching
+
+fn test_union(num: float | int) {
+    match num {
+        int(_) => 1
+        float(_) => 2
+    }
+}
+
+fn dsp() {
+    // Should return 3 (1 from int + 2 from float)
+    test_union(5) + test_union(99.0)
+}

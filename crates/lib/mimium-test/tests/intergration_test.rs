@@ -821,6 +821,15 @@ fn module_macro_sugar() {
     assert_eq!(res, ans);
 }
 
+// Phase 2: Sum types with union syntax and constructor patterns
+#[wasm_bindgen_test(unsupported = test)]
+fn sum_type_basic() {
+    // Test union type float | int with constructor pattern matching
+    let res = run_file_test_mono("sum_type_basic.mmm", 1).unwrap();
+    let ans = vec![3.0]; // test_union(5)=1 + test_union(99.0)=2
+    assert_eq!(res, ans);
+}
+
 // #[wasm_bindgen_test(unsupported = test)]
 // fn map_record() {
 //     let res = run_file_test_stereo("map_record.mmm", 1).unwrap();
