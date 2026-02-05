@@ -91,7 +91,7 @@ mod types {
             Type::UserSum { name, variants } => {
                 let variants_str = variants
                     .iter()
-                    .map(|v| v.to_string())
+                    .map(|(v, _)| v.to_string())
                     .collect::<Vec<_>>()
                     .join(" | ");
                 allocator

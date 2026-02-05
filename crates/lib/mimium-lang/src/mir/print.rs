@@ -50,6 +50,15 @@ impl std::fmt::Display for Value {
             Value::ExtFunction(label, t) => {
                 write!(f, "extfun {label} {}", t.to_type())
             }
+            Value::Constructor(name, tag, sum_type) => {
+                write!(
+                    f,
+                    "constructor {}(tag={}, {})",
+                    name,
+                    tag,
+                    sum_type.to_type()
+                )
+            }
             Value::State(v) => write!(f, "state({})", *v),
             Value::None => write!(f, "none"),
         }

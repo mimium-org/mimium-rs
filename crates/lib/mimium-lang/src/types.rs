@@ -101,9 +101,10 @@ pub enum Type {
     /// Union (sum) type: A | B | C
     Union(Vec<TypeNodeId>),
     /// User-defined sum type with named variants: type Name = A | B | C
+    /// Each variant is (name, optional payload type)
     UserSum {
         name: Symbol,
-        variants: Vec<Symbol>,
+        variants: Vec<(Symbol, Option<TypeNodeId>)>,
     },
     Intermediate(Arc<RwLock<TypeVar>>),
     TypeScheme(TypeSchemeId),
@@ -357,7 +358,7 @@ impl Type {
             Type::UserSum { name, variants } => {
                 let variant_str = variants
                     .iter()
-                    .map(|s| s.as_str())
+                    .map(|(s, _)| s.as_str())
                     .collect::<Vec<_>>()
                     .join("_");
                 format!("{}_{}", name.as_str(), variant_str)
@@ -491,7 +492,7 @@ impl fmt::Display for Type {
             Type::UserSum { name, variants } => {
                 let variant_str = variants
                     .iter()
-                    .map(|s| s.as_str())
+                    .map(|(s, _)| s.as_str())
                     .collect::<Vec<_>>()
                     .join(" | ");
                 write!(f, "{} = {}", name.as_str(), variant_str)

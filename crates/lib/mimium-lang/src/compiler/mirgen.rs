@@ -510,9 +510,18 @@ impl Context {
 
         // Check if this is a constructor from a user-defined sum type
         if let Some(constructor_info) = self.typeenv.constructor_env.get(&name) {
-            // For constructors without payload, just return the tag as an integer
-            let tag = constructor_info.tag_index as u64;
-            return self.push_inst(Instruction::Integer(tag as i64));
+            if constructor_info.payload_type.is_none() {
+                // For constructors without payload, just return the tag as an integer
+                let tag = constructor_info.tag_index as u64;
+                return self.push_inst(Instruction::Integer(tag as i64));
+            }
+            // For constructors with payload, we return a special value that will be
+            // handled by Apply to generate TaggedUnionWrap
+            return Arc::new(Value::Constructor(
+                name,
+                constructor_info.tag_index,
+                constructor_info.sum_type,
+            ));
         }
 
         match self.lookup(&name) {
@@ -970,6 +979,25 @@ impl Context {
             }
             Expr::Apply(f, args) => {
                 let (f_val, ft, app_state) = self.eval_expr(*f);
+
+                // Check if this is a constructor call with payload
+                if let Value::Constructor(_name, tag_index, sum_type) = f_val.as_ref() {
+                    // Evaluate the payload argument
+                    let (arg_vals, arg_states) = self.eval_args(args);
+                    let (payload_val, _payload_ty) = arg_vals
+                        .first()
+                        .expect("Constructor with payload must have an argument")
+                        .clone();
+
+                    // Generate TaggedUnionWrap instruction
+                    let result = self.push_inst(Instruction::TaggedUnionWrap {
+                        tag: *tag_index as u64,
+                        value: payload_val,
+                        union_type: *sum_type,
+                    });
+                    return (result, *sum_type, [app_state, arg_states].concat());
+                }
+
                 let del = self.try_make_delay(&f_val, args);
                 if let Some((d, states)) = del {
                     return (d, numeric!(), states);
@@ -1541,6 +1569,53 @@ impl Context {
         }
     }
 
+    /// Bind variables from a match pattern to extracted values
+    /// Handles variable bindings, tuple patterns, and nested patterns
+    fn bind_pattern(&mut self, pattern: &crate::ast::MatchPattern, value: VPtr, ty: TypeNodeId) {
+        use crate::ast::MatchPattern;
+        use crate::compiler::EvalStage;
+        use crate::types::Type;
+
+        match pattern {
+            MatchPattern::Variable(var) => {
+                // Allocate stack space and store the value, then bind the pointer
+                let ptr = self.push_inst(Instruction::Alloc(ty));
+                self.push_inst(Instruction::Store(ptr.clone(), value, ty));
+                self.add_bind((*var, ptr));
+                // Also add to type environment so infer_type can find it
+                // MIR generation is at Stage 1 (Stage 0 is for macro evaluation)
+                self.typeenv
+                    .env
+                    .add_bind(&[(*var, (ty, EvalStage::Stage(1)))]);
+            }
+            MatchPattern::Wildcard => {
+                // No binding needed
+            }
+            MatchPattern::Literal(_) => {
+                // No binding for literal patterns
+            }
+            MatchPattern::Tuple(patterns) => {
+                // For tuple patterns, extract each element and bind recursively
+                if let Type::Tuple(elem_types) = ty.to_type() {
+                    for (i, (pat, elem_ty)) in patterns.iter().zip(elem_types.iter()).enumerate() {
+                        let elem_val = self.push_inst(Instruction::GetElement {
+                            value: value.clone(),
+                            ty,
+                            tuple_offset: i as u64,
+                        });
+                        self.bind_pattern(pat, elem_val, *elem_ty);
+                    }
+                }
+            }
+            MatchPattern::Constructor(_, inner) => {
+                // For nested constructor patterns, recursively bind the inner pattern
+                if let Some(inner_pat) = inner {
+                    self.bind_pattern(inner_pat, value, ty);
+                }
+            }
+        }
+    }
+
     /// Evaluate a match expression on a union type using tagged union operations
     fn eval_union_match(
         &mut self,
@@ -1563,11 +1638,12 @@ impl Context {
         // For Union types, we need to extract the tag from a tagged union
         let tag_val = match scrut_ty.to_type() {
             Type::UserSum { name: _, variants } => {
-                // UserSum: scrutinee is already the tag
-                for (tag_idx, variant_name) in variants.iter().enumerate() {
-                    constructor_map.insert(*variant_name, (tag_idx as i64, None));
+                // UserSum: get tag from tagged union
+                let tag_val = self.push_inst(Instruction::TaggedUnionGetTag(scrut_val.clone()));
+                for (tag_idx, (variant_name, payload_ty)) in variants.iter().enumerate() {
+                    constructor_map.insert(*variant_name, (tag_idx as i64, *payload_ty));
                 }
-                scrut_val.clone()
+                tag_val
             }
             Type::Union(variants) => {
                 // Union: extract tag from tagged union
@@ -1625,13 +1701,14 @@ impl Context {
                 self.add_new_basicblock();
                 let block_idx = self.get_ctxdata().current_bb as u64;
 
-                // Extract value from the tagged union if there's a binding and payload type
-                if let MatchPattern::Constructor(_, Some(bound_var)) = &arm.pattern
+                // Extract value from the tagged union if there's a binding pattern and payload type
+                if let MatchPattern::Constructor(_, Some(inner_pattern)) = &arm.pattern
                     && let Some(vt) = *variant_ty
                 {
                     let bound_val =
                         self.push_inst(Instruction::TaggedUnionGetValue(scrut_val.clone(), vt));
-                    self.add_bind((*bound_var, bound_val));
+                    // Bind the pattern to the extracted value
+                    self.bind_pattern(inner_pattern, bound_val, vt);
                 }
 
                 let (result_val, _, arm_states) = self.eval_expr(arm.body);
@@ -1735,7 +1812,7 @@ impl Context {
             .iter()
             .filter_map(|arm| match &arm.pattern {
                 MatchPattern::Literal(lit) => Some((arm, Self::literal_to_i64(lit))),
-                MatchPattern::Wildcard => None,
+                MatchPattern::Wildcard | MatchPattern::Variable(_) | MatchPattern::Tuple(_) => None,
                 MatchPattern::Constructor(_, _) => {
                     // Constructor patterns should not appear in non-union matches
                     None

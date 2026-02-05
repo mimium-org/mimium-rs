@@ -41,6 +41,14 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Recursively unwrap `Expr::Paren` nodes, returning the innermost expression.
+    fn unwrap_paren(expr: ExprNodeId) -> ExprNodeId {
+        match expr.to_expr() {
+            Expr::Paren(inner) => Self::unwrap_paren(inner),
+            _ => expr,
+        }
+    }
+
     /// Lower a full program node into the existing `Program` structure.
     pub fn lower_program(&self, root: GreenNodeId) -> Program {
         let (mut program_statements, pending_statements, pending_span) = self
@@ -607,12 +615,12 @@ impl<'a> Lowerer<'a> {
             }
             Some(SyntaxKind::ParenExpr) => {
                 let inner_nodes = self.child_exprs(node);
-                let inner = if inner_nodes.is_empty() {
+                if inner_nodes.is_empty() {
                     Expr::Error.into_id(loc.clone())
                 } else {
+                    // Unwrap parenthesized expressions directly
                     self.lower_expr_sequence(&inner_nodes)
-                };
-                Expr::Paren(inner).into_id(loc)
+                }
             }
             Some(SyntaxKind::MacroExpansion) => {
                 let (callee, args) = self.lower_macro_expand(node);
@@ -761,7 +769,7 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Lower a constructor pattern from CST to AST
-    /// e.g., Float(x), String(s), MyType(binding), MyType
+    /// e.g., Float(x), String(s), MyType(binding), MyType, Two((x, y))
     fn lower_constructor_pattern(&self, node: GreenNodeId) -> crate::ast::MatchPattern {
         use crate::ast::MatchPattern;
         use crate::interner::ToSymbol;
@@ -773,7 +781,7 @@ impl<'a> Lowerer<'a> {
             .unwrap_or_default();
 
         let mut constructor_name: Option<Symbol> = None;
-        let mut binding: Option<Symbol> = None;
+        let mut inner_pattern: Option<Box<MatchPattern>> = None;
 
         for &child in &children {
             match self.arena.kind(child) {
@@ -782,24 +790,64 @@ impl<'a> Lowerer<'a> {
                         if constructor_name.is_none() {
                             constructor_name = Some(text.to_symbol());
                         } else {
-                            // Second identifier is the binding variable
-                            binding = Some(text.to_symbol());
+                            // Second identifier is a variable binding pattern
+                            inner_pattern =
+                                Some(Box::new(MatchPattern::Variable(text.to_symbol())));
                         }
                     }
                 }
                 Some(SyntaxKind::PlaceHolderLiteral) => {
                     // Discard binding with _
-                    binding = None;
+                    inner_pattern = Some(Box::new(MatchPattern::Wildcard));
+                }
+                Some(SyntaxKind::TuplePattern) => {
+                    // Nested tuple pattern like (x, y)
+                    inner_pattern = Some(Box::new(self.lower_tuple_pattern(child)));
                 }
                 _ => {}
             }
         }
 
         if let Some(name) = constructor_name {
-            MatchPattern::Constructor(name, binding)
+            MatchPattern::Constructor(name, inner_pattern)
         } else {
             MatchPattern::Wildcard
         }
+    }
+
+    /// Lower a tuple pattern from CST to AST
+    /// e.g., (x, y), (a, b, c)
+    fn lower_tuple_pattern(&self, node: GreenNodeId) -> crate::ast::MatchPattern {
+        use crate::ast::MatchPattern;
+        use crate::interner::ToSymbol;
+
+        let children: Vec<GreenNodeId> = self
+            .arena
+            .children(node)
+            .map(|c| c.to_vec())
+            .unwrap_or_default();
+
+        let mut patterns = Vec::new();
+
+        for &child in &children {
+            match self.arena.kind(child) {
+                Some(SyntaxKind::Identifier) => {
+                    if let Some(text) = self.text_of_first_token(child) {
+                        patterns.push(MatchPattern::Variable(text.to_symbol()));
+                    }
+                }
+                Some(SyntaxKind::PlaceHolderLiteral) => {
+                    patterns.push(MatchPattern::Wildcard);
+                }
+                Some(SyntaxKind::TuplePattern) => {
+                    // Nested tuple pattern
+                    patterns.push(self.lower_tuple_pattern(child));
+                }
+                _ => {}
+            }
+        }
+
+        MatchPattern::Tuple(patterns)
     }
 
     fn lower_lambda(&self, node: GreenNodeId) -> (Vec<TypedId>, ExprNodeId) {
@@ -1085,7 +1133,11 @@ impl<'a> Lowerer<'a> {
             Expr::Error.into_id_without_span()
         };
 
-        let args = self.lower_arg_list(node);
+        let args = self
+            .lower_arg_list(node)
+            .into_iter()
+            .map(Self::unwrap_paren)
+            .collect();
         let call_span = self.node_span(node).unwrap_or_else(|| callee.to_span());
         let loc = self.location_from_span(merge_spans(callee.to_span(), call_span));
         Expr::Apply(callee, args).into_id(loc)

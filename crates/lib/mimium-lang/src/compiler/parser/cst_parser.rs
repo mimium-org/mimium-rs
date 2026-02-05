@@ -1036,16 +1036,21 @@ impl<'a> Parser<'a> {
 
     /// Check if the token after `|` is a type start token (for union type disambiguation)
     fn is_type_start_after_pipe(&self) -> bool {
-        matches!(
-            self.peek_ahead(1),
+        match self.peek_ahead(1) {
             Some(TokenKind::FloatType)
-                | Some(TokenKind::IntegerType)
-                | Some(TokenKind::StringType)
-                | Some(TokenKind::ParenBegin)
-                | Some(TokenKind::BlockBegin)
-                | Some(TokenKind::ArrayBegin)
-                | Some(TokenKind::BackQuote)
-        ) || self.is_type_ident_after_pipe()
+            | Some(TokenKind::IntegerType)
+            | Some(TokenKind::StringType)
+            | Some(TokenKind::ParenBegin)
+            | Some(TokenKind::ArrayBegin)
+            | Some(TokenKind::BackQuote) => true,
+            // For BlockBegin, we need to distinguish record type `{field: Type}` from
+            // lambda body block `{expression}`. Record type starts with `{ ident :`
+            Some(TokenKind::BlockBegin) => {
+                self.peek_ahead(2) == Some(TokenKind::Ident)
+                    && self.peek_ahead(3) == Some(TokenKind::Colon)
+            }
+            _ => self.is_type_ident_after_pipe(),
+        }
     }
 
     /// Check if the token after `|` is a type identifier
@@ -1562,6 +1567,31 @@ impl<'a> Parser<'a> {
         });
     }
 
+    /// Check if the current position has a tuple pattern inside a constructor
+    /// i.e., Constructor((x, y)) - the inner (x, y) is a tuple pattern
+    /// Returns true if we see: ( ( or ( ident ,
+    fn is_tuple_pattern_in_constructor(&self) -> bool {
+        // We're at ( - look ahead to see if it's a tuple pattern
+        // A tuple pattern starts with ( and either:
+        // 1. Has another ( immediately (nested tuple)
+        // 2. Has ident, comma pattern
+        if self.peek() != Some(TokenKind::ParenBegin) {
+            return false;
+        }
+
+        // Check what follows the opening paren
+        match self.peek_ahead(1) {
+            // ((x, y)) - nested tuple
+            Some(TokenKind::ParenBegin) => true,
+            // (x, y) - look for comma after first element
+            Some(TokenKind::Ident) | Some(TokenKind::PlaceHolder) => {
+                // Check if there's a comma after the identifier
+                self.peek_ahead(2) == Some(TokenKind::Comma)
+            }
+            _ => false,
+        }
+    }
+
     /// Parse a single match arm: pattern => expr
     fn parse_match_arm(&mut self) {
         self.emit_node(SyntaxKind::MatchArm, |this| {
@@ -1611,20 +1641,33 @@ impl<'a> Parser<'a> {
                         this.emit_node(SyntaxKind::Identifier, |this| {
                             this.bump();
                         });
-                        // Optional binding: (x)
+                        // Optional binding: (x) or ((x, y)) for tuple patterns
                         if this.check(TokenKind::ParenBegin) {
-                            this.bump(); // (
-                            if this.check(TokenKind::Ident) {
-                                this.emit_node(SyntaxKind::Identifier, |this| {
-                                    this.bump();
-                                });
-                            } else if this.check(TokenKind::PlaceHolder) {
-                                // Allow _ as binding to discard the value
-                                this.emit_node(SyntaxKind::PlaceHolderLiteral, |this| {
-                                    this.bump();
-                                });
+                            // Look ahead to determine if this is a tuple pattern or simple binding
+                            // If there's a comma after the first identifier, it's a tuple pattern
+                            let is_tuple_pattern = this.is_tuple_pattern_in_constructor();
+
+                            if is_tuple_pattern {
+                                // Parse as tuple pattern
+                                this.parse_tuple_pattern();
+                            } else {
+                                // Simple binding: (x) or (_)
+                                this.bump(); // (
+                                if this.check(TokenKind::Ident) {
+                                    this.emit_node(SyntaxKind::Identifier, |this| {
+                                        this.bump();
+                                    });
+                                } else if this.check(TokenKind::PlaceHolder) {
+                                    // Allow _ as binding to discard the value
+                                    this.emit_node(SyntaxKind::PlaceHolderLiteral, |this| {
+                                        this.bump();
+                                    });
+                                } else if this.check(TokenKind::ParenBegin) {
+                                    // Nested tuple pattern: ((x, y))
+                                    this.parse_tuple_pattern();
+                                }
+                                this.expect(TokenKind::ParenEnd);
                             }
-                            this.expect(TokenKind::ParenEnd);
                         }
                     });
                 }

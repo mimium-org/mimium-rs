@@ -445,8 +445,8 @@ fn convert_expr(ctx: &mut ResolveContext, e_id: ExprNodeId) -> ExprNodeId {
             Expr::Feed(sym, new_e).into_id(loc)
         }
         Expr::Paren(e) => {
-            let new_e = convert_expr(ctx, e);
-            Expr::Paren(new_e).into_id(loc)
+            // Unwrap parenthesized expressions
+            convert_expr(ctx, e)
         }
         Expr::Match(scrutinee, arms) => {
             let new_scrutinee = convert_expr(ctx, scrutinee);

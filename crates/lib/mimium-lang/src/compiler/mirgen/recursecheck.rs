@@ -50,7 +50,7 @@ fn try_find_recurse(e_s: ExprNodeId, name: Symbol) -> bool {
         Expr::BinOp(_, _, _) => unreachable!(),
         Expr::UniOp(_, _) => unreachable!(),
         Expr::MacroExpand(_, _) => unreachable!(),
-        Expr::Paren(_) => unreachable!(),
+        Expr::Paren(inner) => try_find_recurse(inner, name),
         Expr::Match(scrutinee, arms) => {
             try_find_recurse(scrutinee, name)
                 || arms.iter().any(|arm| try_find_recurse(arm.body, name))
@@ -138,7 +138,7 @@ pub fn convert_recurse(e_s: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
         Expr::BinOp(_, _, _) => unreachable!(),
         Expr::UniOp(_, _) => unreachable!(),
         Expr::MacroExpand(_, _) => unreachable!(),
-        Expr::Paren(_) => unreachable!(),
+        Expr::Paren(inner) => return convert_recurse(inner, file_path),
         Expr::Literal(_) | Expr::Var(_) | Expr::Error | Expr::QualifiedVar(_) => e_s.to_expr(),
     };
     let loc = Location {

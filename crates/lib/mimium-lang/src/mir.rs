@@ -29,6 +29,8 @@ pub enum Value {
     Function(usize),
     /// native function (Rust function item or closure)
     ExtFunction(Symbol, TypeNodeId),
+    /// Constructor with payload: (name, tag_index, sum_type)
+    Constructor(Symbol, usize, TypeNodeId),
     /// internal state
     None,
 }

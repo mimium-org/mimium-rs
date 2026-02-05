@@ -839,6 +839,18 @@ fn enum_basic() {
     assert_eq!(res, ans);
 }
 
+// Phase 4: Explicit constructors with complex values (different-sized tuples)
+#[wasm_bindgen_test(unsupported = test)]
+fn enum_complex() {
+    // Simplified test: One(float), Two(float)
+    // test(One(4)) = 4*1 = 4
+    // test(Two(5)) = 5*2 = 10
+    // Total = 4 + 10 = 14
+    let res = run_file_test_mono("enum_complex.mmm", 1).unwrap();
+    let ans = vec![14.0];
+    assert_eq!(res, ans);
+}
+
 // #[wasm_bindgen_test(unsupported = test)]
 // fn map_record() {
 //     let res = run_file_test_stereo("map_record.mmm", 1).unwrap();

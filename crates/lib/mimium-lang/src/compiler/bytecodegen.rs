@@ -157,6 +157,16 @@ impl ByteCodeGenerator {
                     .unwrap_or(0);
                 1 + max_variant_size
             }
+            Type::UserSum { variants, .. } => {
+                // Tagged UserSum: 1 word for tag + max size of any variant payload
+                let max_variant_size = variants
+                    .iter()
+                    .filter_map(|(_, payload_ty)| *payload_ty)
+                    .map(Self::word_size_for_type)
+                    .max()
+                    .unwrap_or(0);
+                1 + max_variant_size
+            }
             _ => {
                 //todo: this may contain intermediate types
                 1

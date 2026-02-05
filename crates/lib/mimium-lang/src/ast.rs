@@ -61,18 +61,22 @@ pub struct RecordField {
 }
 
 /// Pattern for match expressions
-/// Phase 1: Literal and Wildcard patterns
-/// Phase 2: Constructor patterns for union types like Float(x), String(x)
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum MatchPattern {
     /// Literal pattern: matches a specific value (e.g., 0, 1, 2)
     Literal(Literal),
     /// Wildcard pattern: matches anything (_)
     Wildcard,
-    /// Constructor pattern for union types: TypeName(binding_var)
-    /// e.g., Float(x), String(s)
-    /// The Symbol is the type/constructor name, the Option<Symbol> is the optional binding variable
-    Constructor(Symbol, Option<Symbol>),
+    /// Variable binding pattern: binds a value to a name
+    Variable(Symbol),
+    /// Constructor pattern for union types: TypeName(inner_pattern)
+    /// e.g., Float(x), String(s), Two((x, y))
+    /// The Symbol is the type/constructor name, the Option<Box<MatchPattern>> is the optional inner pattern
+    Constructor(Symbol, Option<Box<MatchPattern>>),
+    /// Tuple pattern: matches a tuple and binds its elements
+    /// e.g., (x, y), (a, b, c)
+    Tuple(Vec<MatchPattern>),
 }
 
 /// A single arm of a match expression

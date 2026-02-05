@@ -489,11 +489,12 @@ impl InferContext {
         type_declarations: &crate::ast::program::TypeDeclarationMap,
     ) {
         for (type_name, variants) in type_declarations {
-            // Create the UserSum type
-            let variant_names: Vec<Symbol> = variants.iter().map(|v| v.name).collect();
+            // Create the UserSum type with variant names and payload types
+            let variant_data: Vec<(Symbol, Option<TypeNodeId>)> =
+                variants.iter().map(|v| (v.name, v.payload)).collect();
             let sum_type = Type::UserSum {
                 name: *type_name,
-                variants: variant_names.clone(),
+                variants: variant_data,
             }
             .into_id();
 
@@ -567,6 +568,12 @@ impl InferContext {
         union_ty: TypeNodeId,
         constructor_name: Symbol,
     ) -> TypeNodeId {
+        // First, try to look up the constructor directly in constructor_env.
+        // This handles cases where the union type is still an unresolved intermediate type.
+        if let Some(constructor_info) = self.constructor_env.get(&constructor_name) {
+            return constructor_info.payload_type.unwrap_or_else(|| unit!());
+        }
+
         let resolved = Self::substitute_type(union_ty);
         match resolved.to_type() {
             Type::Union(variants) => {
@@ -583,13 +590,11 @@ impl InferContext {
             }
             Type::UserSum { name: _, variants } => {
                 // Check if constructor_name is one of the variants
-                if variants.contains(&constructor_name) {
+                if let Some((_, payload_ty)) =
+                    variants.iter().find(|(name, _)| *name == constructor_name)
+                {
                     // Return the payload type if available, otherwise Unit
-                    if let Some(constructor_info) = self.constructor_env.get(&constructor_name) {
-                        constructor_info.payload_type.unwrap_or_else(|| unit!())
-                    } else {
-                        unit!()
-                    }
+                    payload_ty.unwrap_or_else(|| unit!())
                 } else {
                     Type::Unknown.into_id_with_location(union_ty.to_loc())
                 }
@@ -616,6 +621,38 @@ impl InferContext {
             Type::Primitive(PType::Unit) => Some("unit".to_symbol()),
             // For other types, we don't have built-in constructor names yet
             _ => None,
+        }
+    }
+
+    /// Add bindings for a match pattern to the current environment
+    /// Handles variable bindings, tuple patterns, and nested patterns
+    fn add_pattern_bindings(&mut self, pattern: &crate::ast::MatchPattern, ty: TypeNodeId) {
+        use crate::ast::MatchPattern;
+        match pattern {
+            MatchPattern::Variable(var) => {
+                self.env.add_bind(&[(*var, (ty, self.stage))]);
+            }
+            MatchPattern::Wildcard => {
+                // No bindings for wildcard
+            }
+            MatchPattern::Literal(_) => {
+                // No bindings for literal patterns
+            }
+            MatchPattern::Tuple(patterns) => {
+                // For tuple patterns, we need to bind each element
+                // The type should be a tuple type with matching elements
+                if let Type::Tuple(elem_types) = ty.to_type() {
+                    for (pat, elem_ty) in patterns.iter().zip(elem_types.iter()) {
+                        self.add_pattern_bindings(pat, *elem_ty);
+                    }
+                }
+            }
+            MatchPattern::Constructor(_, inner) => {
+                // For constructor patterns, recursively handle the inner pattern
+                if let Some(inner_pat) = inner {
+                    self.add_pattern_bindings(inner_pat, ty);
+                }
+            }
         }
     }
 
@@ -1130,8 +1167,18 @@ impl InferContext {
             Expr::Var(name) => {
                 // First check if this is a constructor from a user-defined sum type
                 if let Some(constructor_info) = self.constructor_env.get(name) {
-                    // Return the sum type for this constructor
-                    return Ok(constructor_info.sum_type);
+                    if let Some(payload_ty) = constructor_info.payload_type {
+                        // Constructor with payload: type is `payload_type -> sum_type`
+                        let fn_type = Type::Function {
+                            arg: payload_ty,
+                            ret: constructor_info.sum_type,
+                        }
+                        .into_id_with_location(loc.clone());
+                        return Ok(fn_type);
+                    } else {
+                        // Constructor without payload: type is the sum type itself
+                        return Ok(constructor_info.sum_type);
+                    }
                 }
                 // Aliases and wildcards are already resolved by convert_qualified_names
                 let res = self.unwrap_result(self.lookup(*name, loc).map_err(|e| vec![e]));
@@ -1242,25 +1289,32 @@ impl InferContext {
                                 // Wildcard matches anything
                                 self.infer_type_unwrapping(arm.body)
                             }
+                            crate::ast::MatchPattern::Variable(_) => {
+                                // Variable pattern binds the whole value
+                                // This should typically be handled by Constructor pattern
+                                self.infer_type_unwrapping(arm.body)
+                            }
                             crate::ast::MatchPattern::Constructor(constructor_name, binding) => {
                                 // Handle constructor patterns for union types
                                 // Find the type associated with this constructor in the union
                                 let binding_ty = self
                                     .get_constructor_type_from_union(scrut_ty, *constructor_name);
 
-                                if let Some(bound_var) = binding {
-                                    // Create a new scope with the binding variable
+                                if let Some(inner_pattern) = binding {
+                                    // Add bindings for the inner pattern
                                     self.env.extend();
-                                    self.env.add_bind(&[(
-                                        *bound_var,
-                                        (binding_ty, self.stage.clone()),
-                                    )]);
+                                    self.add_pattern_bindings(inner_pattern, binding_ty);
                                     let body_ty = self.infer_type_unwrapping(arm.body);
                                     self.env.to_outer();
                                     body_ty
                                 } else {
                                     self.infer_type_unwrapping(arm.body)
                                 }
+                            }
+                            crate::ast::MatchPattern::Tuple(_patterns) => {
+                                // Tuple pattern in a match arm (without constructor)
+                                // This shouldn't typically appear at the top level
+                                self.infer_type_unwrapping(arm.body)
                             }
                         }
                     })
