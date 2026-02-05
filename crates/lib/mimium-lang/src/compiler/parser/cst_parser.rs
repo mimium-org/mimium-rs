@@ -150,13 +150,13 @@ impl<'a> Parser<'a> {
     /// Returns the offset where MacroExpand is found, or None if not a macro expansion
     fn find_macro_expand_after_path(&self) -> Option<usize> {
         let mut offset = 0;
-        
+
         // First must be Ident
         if self.peek_ahead(offset) != Some(TokenKind::Ident) {
             return None;
         }
         offset += 1;
-        
+
         // Consume :: Ident pairs
         while self.peek_ahead(offset) == Some(TokenKind::DoubleColon) {
             offset += 1; // ::
@@ -165,7 +165,7 @@ impl<'a> Parser<'a> {
             }
             offset += 1; // Ident
         }
-        
+
         // Check if followed by MacroExpand
         if self.peek_ahead(offset) == Some(TokenKind::MacroExpand) {
             Some(offset)
@@ -350,7 +350,7 @@ impl<'a> Parser<'a> {
         self.emit_node(SyntaxKind::ModuleDecl, |this| {
             this.expect(TokenKind::Mod);
             this.expect(TokenKind::Ident);
-            
+
             // Check if this is an external file module (mod foo;) or inline module (mod foo { ... })
             if this.check(TokenKind::LineBreak) {
                 // External file module: mod foo;
@@ -496,12 +496,9 @@ impl<'a> Parser<'a> {
             } else {
                 this.expect(TokenKind::Ident);
             }
-            
-            // '!(' 
-            this.expect_all(&[
-                TokenKind::MacroExpand,
-                TokenKind::ParenBegin,
-            ]);
+
+            // '!('
+            this.expect_all(&[TokenKind::MacroExpand, TokenKind::ParenBegin]);
 
             // Parse arguments as expression list
             if !this.check(TokenKind::ParenEnd) {
@@ -1020,15 +1017,17 @@ impl<'a> Parser<'a> {
 
     /// Parse union type: A | B | C
     fn parse_type_union(&mut self) {
+        let marker = self.builder.marker();
         self.parse_type_primary();
-        
-        if self.check(TokenKind::Pipe) {
-            self.emit_node_at_pos(SyntaxKind::UnionType, self.builder.checkpoint(), |inner| {
-                while inner.check(TokenKind::Pipe) {
-                    inner.bump(); // consume |
-                    inner.parse_type_primary();
-                }
-            });
+
+        if self.check(TokenKind::LambdaArgBeginEnd) {
+            // We have a union type, wrap the first type and parse the rest
+            self.builder.start_node_at(marker, SyntaxKind::UnionType);
+            while self.check(TokenKind::LambdaArgBeginEnd) {
+                self.bump(); // consume |
+                self.parse_type_primary();
+            }
+            self.builder.finish_node();
         }
     }
 
@@ -1365,7 +1364,6 @@ impl<'a> Parser<'a> {
             token1,
             Some(TokenKind::Ident) | Some(TokenKind::IdentParameter)
         );
-        
 
         (matches!(token1, Some(TokenKind::DoubleDot))
             || (is_record_key
@@ -1540,7 +1538,12 @@ impl<'a> Parser<'a> {
         });
     }
 
-    /// Parse a match pattern (for now, only integer literals and placeholder)
+    /// Parse a match pattern
+    /// Supports:
+    /// - Integer literals: 0, 1, 2
+    /// - Float literals: 1.0, 2.5
+    /// - Wildcard: _
+    /// - Constructor patterns: Float(x), String(s), TypeName(binding)
     fn parse_match_pattern(&mut self) {
         self.emit_node(SyntaxKind::MatchPattern, |this| {
             match this.peek() {
@@ -1559,11 +1562,39 @@ impl<'a> Parser<'a> {
                         this.bump();
                     });
                 }
+                // Constructor pattern: Identifier(binding) or Identifier
+                // Also handle type keywords (float, string, int) as constructor names
+                Some(TokenKind::Ident)
+                | Some(TokenKind::FloatType)
+                | Some(TokenKind::StringType)
+                | Some(TokenKind::IntegerType) => {
+                    this.emit_node(SyntaxKind::ConstructorPattern, |this| {
+                        // Constructor name (e.g., float, string, MyType)
+                        this.emit_node(SyntaxKind::Identifier, |this| {
+                            this.bump();
+                        });
+                        // Optional binding: (x)
+                        if this.check(TokenKind::ParenBegin) {
+                            this.bump(); // (
+                            if this.check(TokenKind::Ident) {
+                                this.emit_node(SyntaxKind::Identifier, |this| {
+                                    this.bump();
+                                });
+                            } else if this.check(TokenKind::PlaceHolder) {
+                                // Allow _ as binding to discard the value
+                                this.emit_node(SyntaxKind::PlaceHolderLiteral, |this| {
+                                    this.bump();
+                                });
+                            }
+                            this.expect(TokenKind::ParenEnd);
+                        }
+                    });
+                }
                 _ => {
                     if let Some(kind) = this.peek() {
                         this.add_error(ParserError::unexpected_token(
                             this.current_token_index(),
-                            "match pattern (int, float, or _)",
+                            "match pattern (int, float, _, or constructor)",
                             &format!("{kind:?}"),
                         ));
                     }

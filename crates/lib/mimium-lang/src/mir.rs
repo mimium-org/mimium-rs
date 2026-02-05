@@ -92,6 +92,18 @@ pub enum Instruction {
     /// Phi for switch - merges values from multiple branches
     PhiSwitch(Vec<VPtr>),
 
+    /// Tagged Union operations for sum types
+    /// Wrap a value into a tagged union: (tag, value, union_type)
+    TaggedUnionWrap {
+        tag: u64,
+        value: VPtr,
+        union_type: TypeNodeId,
+    },
+    /// Extract tag from a tagged union
+    TaggedUnionGetTag(VPtr),
+    /// Extract value from a tagged union (assuming correct tag)
+    TaggedUnionGetValue(VPtr, TypeNodeId),
+
     Return(VPtr, TypeNodeId),
     //value to update state
     ReturnFeed(VPtr, TypeNodeId),

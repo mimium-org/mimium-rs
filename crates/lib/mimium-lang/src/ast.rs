@@ -60,11 +60,19 @@ pub struct RecordField {
     pub expr: ExprNodeId,
 }
 
-/// Pattern for match expressions (Phase 1: only literals and wildcard)
+/// Pattern for match expressions
+/// Phase 1: Literal and Wildcard patterns
+/// Phase 2: Constructor patterns for union types like Float(x), String(x)
 #[derive(Clone, Debug, PartialEq)]
 pub enum MatchPattern {
+    /// Literal pattern: matches a specific value (e.g., 0, 1, 2)
     Literal(Literal),
+    /// Wildcard pattern: matches anything (_)
     Wildcard,
+    /// Constructor pattern for union types: TypeName(binding_var)
+    /// e.g., Float(x), String(s)
+    /// The Symbol is the type/constructor name, the Option<Symbol> is the optional binding variable
+    Constructor(Symbol, Option<Symbol>),
 }
 
 /// A single arm of a match expression
@@ -102,7 +110,7 @@ pub enum Expr {
     Let(TypedPattern, ExprNodeId, Option<ExprNodeId>),
     LetRec(TypedId, ExprNodeId, Option<ExprNodeId>),
     If(ExprNodeId, ExprNodeId, Option<ExprNodeId>),
-    Match(ExprNodeId, Vec<MatchArm>),  // match expression: match scrutinee { pattern => expr, ... }
+    Match(ExprNodeId, Vec<MatchArm>), // match expression: match scrutinee { pattern => expr, ... }
     //exprimental macro system using multi-stage computation
     Bracket(ExprNodeId),
     Escape(ExprNodeId),
@@ -238,13 +246,12 @@ impl MiniPrint for Expr {
         match self {
             Expr::Literal(l) => l.simple_print(),
             Expr::Var(v) => format!("{v}"),
-            Expr::QualifiedVar(path) => {
-                path.segments
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>()
-                    .join("::")
-            }
+            Expr::QualifiedVar(path) => path
+                .segments
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join("::"),
             Expr::Block(e) => e.map_or("".to_string(), |eid| {
                 format!("(block {})", eid.simple_print())
             }),

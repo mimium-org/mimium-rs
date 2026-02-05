@@ -331,6 +331,14 @@ impl Type {
                     .unwrap_or_else(|| format!("ivar_{}", tv.var.0))
             }
             Type::TypeScheme(id) => format!("scheme_{}", id.0),
+            Type::Union(v) => {
+                let mangled_types = v
+                    .iter()
+                    .map(|x| x.to_type().to_mangled_string())
+                    .collect::<Vec<_>>()
+                    .join("_");
+                format!("union_{}", mangled_types)
+            }
             Type::Any => "any".to_string(),
             Type::Failure => "fail".to_string(),
             Type::Unknown => "unknown".to_string(),

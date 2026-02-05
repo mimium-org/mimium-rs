@@ -98,7 +98,7 @@ The developer should add
 - add switch operation for MIR
 - add jump table mechanism to bytecode and VM
 
-## step 2. primitive sum type ← IN PROGRESS
+## step 2. primitive sum type ← PARTIALLY COMPLETE
 
 The variant type with explicit type annotation should be added.
 
@@ -119,46 +119,62 @@ fn dsp(){
 }
 ```
 
+### Phase 2 Implementation Status (Updated: 2025-01-XX)
+
+**Working:**
+- Union type parsing (`float | string`)
+- Type inference for union types
+- Subtype relationship: values can be passed to union type parameters
+- Functions with union type parameters compile successfully
+- Constructor patterns parse correctly (`float(x)`, `string(_)`)
+
+**Known Limitations:**
+- Match expressions with constructor patterns and variable bindings cause bytecode generation errors due to cross-basic-block register scoping issues
+- Tagged union memory layout not yet implemented (values passed as-is for now)
+
 ### Phase 2 Implementation Steps
 
-1. **Type System Extension** ✅ COMPLETED (2026-02-05)
+1. **Type System Extension** ✅ COMPLETED
    - ✅ Add `Type::Union(Vec<TypeNodeId>)` variant to `types.rs`
    - ✅ Parser for `A | B` type syntax in type annotations (`parse_type_union`)
    - ✅ `SyntaxKind::UnionType` added to `green.rs`
    - ✅ `lower_type` handles `UnionType` in `lower.rs`
    - ✅ `Display` implementation for union types (formats as `A | B`)
    - ✅ Updated `contains_*` methods for union types
-   - ⏳ Subtype relationship: `A` is subtype of `A | B` (TODO in typing)
+   - ✅ `to_mangled_string` for union types
+   - ✅ Subtype relationship in `unification.rs`: `A` is subtype of `A | B`
+   - ✅ Union-to-Union unification support
 
-2. **Tagged Union Representation** ⏳ IN PROGRESS
-   - Memory layout: `[tag: u64][value: N words]`
-   - Tag values: 0, 1, 2, ... for each variant
-   - Value size: max of all variant sizes
+2. **Constructor Pattern Parsing** ✅ COMPLETED
+   - ✅ Add `MatchPattern::Constructor(Symbol, Option<Symbol>)` to AST
+   - ✅ `SyntaxKind::ConstructorPattern` added to `green.rs`
+   - ✅ Parser for `Float(x)`, `String(s)` patterns in `cst_parser.rs`
+   - ✅ Support for type keywords as constructor names (float, string, int)
+   - ✅ `lower_constructor_pattern` in `lower.rs`
+   - ✅ Formatter support in `cst_print.rs`
 
-3. **Type Constructor Patterns** ⏳ TODO
-   - Add `MatchPattern::Constructor(TypeName, Option<Symbol>)` to AST
-   - Parser for `Float(x)`, `String(x)` patterns
-   - Binding captured variable in pattern scope
+3. **Type Inference for Constructor Patterns** ✅ COMPLETED
+   - ✅ `get_constructor_type_from_union` helper function
+   - ✅ `type_constructor_name` maps primitive types to constructor names
+   - ✅ Variable binding scope in match arms
+   - ✅ Error types: `ConstructorNotInUnion`, `ExpectedUnionType`
 
-4. **MIR Changes** ⏳ TODO
-   - Extend `Switch` to extract tag from tagged union
-   - Add instruction for extracting value from tagged union
+4. **MIR Generation** ⚠️ PARTIAL
+   - ✅ `Instruction::TaggedUnionWrap` - wrap value with tag (defined)
+   - ✅ `Instruction::TaggedUnionGetTag` - extract tag (defined)
+   - ✅ `Instruction::TaggedUnionGetValue` - extract value (defined)
+   - ✅ Constructor pattern variable bindings in `eval_match`
+   - ⚠️ Cross-block register references cause bytecode gen issues
+   - ⏳ Need phi-node style value propagation for match blocks
 
-5. **VM Changes** ⏳ TODO
-   - Tagged union allocation and access
-   - Pattern match with tag comparison + value extraction
+5. **VM/Bytecode Changes** ⏳ TODO
+   - Tagged union memory layout implementation
+   - Bytecode instructions for tagged union operations
+   - VM execution support
 
-### Key Challenges
+### Known Issues
 
-- **Implicit conversion**: `let x: float | string = 42.0` should auto-wrap
-- **Type checking**: Ensure all union variants are covered in match
-- **Memory layout**: Fixed size for tagged union (tag + max variant size)
-
-### Implementation Notes
-
-- Parser changes complete: Union types can now be parsed in type annotations
-- Next step: Implement constructor patterns for `Float(x)`, `String(x)` in match expressions
-- Need to handle primitive type constructors as special built-in constructors
+- **Register scoping**: When constructor patterns reference the scrutinee value from a previous basic block, the bytecode generator fails to find the register because `VRegister::find` removes entries after first use. This requires SSA-style value propagation or block arguments for match expressions.
 
 ---
 

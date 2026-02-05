@@ -913,7 +913,11 @@ impl Machine {
                     let idx = (val - table.min) as usize;
                     // Last element of offsets is the default for out-of-range values
                     let default_idx = table.offsets.len() - 1;
-                    increment = table.offsets.get(idx).copied().unwrap_or(table.offsets[default_idx]);
+                    increment = table
+                        .offsets
+                        .get(idx)
+                        .copied()
+                        .unwrap_or(table.offsets[default_idx]);
                 }
                 Instruction::AddF(dst, src1, src2) => binop!(+,f64,dst,src1,src2,self),
                 Instruction::SubF(dst, src1, src2) => {

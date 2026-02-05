@@ -680,11 +680,56 @@ impl<'a> Lowerer<'a> {
                 Some(SyntaxKind::PlaceHolderLiteral) => {
                     return MatchPattern::Wildcard;
                 }
+                Some(SyntaxKind::ConstructorPattern) => {
+                    return self.lower_constructor_pattern(child);
+                }
                 _ => {}
             }
         }
 
         MatchPattern::Wildcard
+    }
+
+    /// Lower a constructor pattern from CST to AST
+    /// e.g., Float(x), String(s), MyType(binding), MyType
+    fn lower_constructor_pattern(&self, node: GreenNodeId) -> crate::ast::MatchPattern {
+        use crate::ast::MatchPattern;
+        use crate::interner::ToSymbol;
+
+        let children: Vec<GreenNodeId> = self
+            .arena
+            .children(node)
+            .map(|c| c.to_vec())
+            .unwrap_or_default();
+
+        let mut constructor_name: Option<Symbol> = None;
+        let mut binding: Option<Symbol> = None;
+
+        for &child in &children {
+            match self.arena.kind(child) {
+                Some(SyntaxKind::Identifier) => {
+                    if let Some(text) = self.text_of_first_token(child) {
+                        if constructor_name.is_none() {
+                            constructor_name = Some(text.to_symbol());
+                        } else {
+                            // Second identifier is the binding variable
+                            binding = Some(text.to_symbol());
+                        }
+                    }
+                }
+                Some(SyntaxKind::PlaceHolderLiteral) => {
+                    // Discard binding with _
+                    binding = None;
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(name) = constructor_name {
+            MatchPattern::Constructor(name, binding)
+        } else {
+            MatchPattern::Wildcard
+        }
     }
 
     fn lower_lambda(&self, node: GreenNodeId) -> (Vec<TypedId>, ExprNodeId) {

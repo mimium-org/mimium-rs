@@ -151,6 +151,23 @@ impl std::fmt::Display for Instruction {
                     .join(", ");
                 write!(f, "phiswitch [{vals_str}]")
             }
+            Instruction::TaggedUnionWrap {
+                tag,
+                value,
+                union_type,
+            } => {
+                write!(
+                    f,
+                    "union_wrap tag:{tag} value:{value} type:{}",
+                    union_type.to_type()
+                )
+            }
+            Instruction::TaggedUnionGetTag(v) => {
+                write!(f, "union_get_tag {v}")
+            }
+            Instruction::TaggedUnionGetValue(v, ty) => {
+                write!(f, "union_get_value {v} type:{}", ty.to_type())
+            }
             Instruction::Return(a, rty) => write!(f, "ret {} {}", *a, rty.to_type()),
             Instruction::ReturnFeed(v, rty) => write!(f, "retfeed {} {}", *v, rty.to_type()),
             Instruction::Delay(max, a, b) => write!(f, "delay {max} {} {}", *a, *b),

@@ -51,6 +51,7 @@ fn occur_check(id1: IntermediateId, t2: TypeNodeId) -> bool {
                 .collect::<Vec<_>>()
                 .as_slice(),
         ),
+        Type::Union(types) => vec_cls(types),
         _ => false,
     }
 }
@@ -159,6 +160,20 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
             unify_types_args(new_tup, t2)?
         }
         (Type::Tuple(_), Type::Record(_)) => unify_types_args(t2, t1)?,
+        // Union type in argument position: check if actual type can be part of the union
+        (Type::Union(union_types), _t) => {
+            // Expected type is a union, actual type should match one of the union members
+            for union_member in union_types {
+                if unify_types_args(*union_member, t2r).is_ok() {
+                    // Treat as identical when the actual type matches a union member
+                    return Ok(Relation::Identical);
+                }
+            }
+            return Err(vec![Error::TypeMismatch {
+                left: t1,
+                right: t2,
+            }]);
+        }
         (_, _) => unify_types(t1, t2)?,
     };
     Ok(res)
@@ -416,6 +431,57 @@ pub(super) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
         (Type::Any, _t) | (_t, Type::Failure) => Relation::Identical,
 
         (Type::Code(p1), Type::Code(p2)) => unify_types(*p1, *p2)?,
+        // Union type support: check if two union types are identical
+        (Type::Union(union_types1), Type::Union(union_types2)) => {
+            // Two unions are identical if they have the same members (in any order)
+            if union_types1.len() != union_types2.len() {
+                return Err(vec![Error::TypeMismatch {
+                    left: t1,
+                    right: t2,
+                }]);
+            }
+            // Check that each member of union1 matches exactly one member of union2
+            let all_match = union_types1.iter().all(|m1| {
+                union_types2
+                    .iter()
+                    .any(|m2| unify_types(*m1, *m2).is_ok_and(|r| r == Relation::Identical))
+            });
+            if all_match {
+                Relation::Identical
+            } else {
+                return Err(vec![Error::TypeMismatch {
+                    left: t1,
+                    right: t2,
+                }]);
+            }
+        }
+        // Union type support: T is a subtype of T | U if T can unify with one of the union members
+        (_t, Type::Union(union_types)) => {
+            // Check if t can unify with any type in the union
+            for union_member in union_types {
+                if unify_types(t1r, *union_member).is_ok() {
+                    return Ok(Relation::Subtype);
+                }
+            }
+            return Err(vec![Error::TypeMismatch {
+                left: t1,
+                right: t2,
+            }]);
+        }
+        (Type::Union(union_types), t) => {
+            // Check if all types in the union can unify with t
+            // Union is subtype of t only if all members are subtypes
+            let all_match = union_types
+                .iter()
+                .all(|union_member| unify_types(*union_member, t2r).is_ok());
+            if all_match {
+                return Ok(Relation::Supertype);
+            }
+            return Err(vec![Error::TypeMismatch {
+                left: t1,
+                right: t2,
+            }]);
+        }
         (_p1, _p2) => {
             return Err(vec![Error::TypeMismatch {
                 left: t1,

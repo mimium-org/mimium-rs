@@ -81,7 +81,7 @@ pub enum TokenKind {
     PlaceHolder, // _
     If,
     Else,
-    Match,       // match
+    Match, // match
 
     // Directives
     Include,
@@ -90,9 +90,9 @@ pub enum TokenKind {
     Main,     // main
 
     // Module keywords
-    Mod,  // mod
-    Use,  // use
-    Pub,  // pub
+    Mod, // mod
+    Use, // use
+    Pub, // pub
 
     // Trivia (whitespace and comments)
     LineBreak,

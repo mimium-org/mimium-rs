@@ -81,6 +81,17 @@ pub enum Error {
         location: Location,
     },
     NonPrimitiveInFeed(Location),
+    /// Constructor pattern doesn't match any variant of the union type
+    ConstructorNotInUnion {
+        constructor: Symbol,
+        union_type: TypeNodeId,
+        location: Location,
+    },
+    /// Expected a union type for constructor pattern matching
+    ExpectedUnionType {
+        found: TypeNodeId,
+        location: Location,
+    },
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -174,6 +185,15 @@ impl ReportableError for Error {
 
             Error::NonSupertypeArgument { .. } => {
                 format!("Arguments for functions are less than required.")
+            }
+            Error::ConstructorNotInUnion { constructor, .. } => {
+                format!("Constructor \"{constructor}\" is not a variant of the union type")
+            }
+            Error::ExpectedUnionType { found, .. } => {
+                format!(
+                    "Expected a union type but found {}",
+                    found.to_type().to_string_for_error()
+                )
             }
         }
     }
@@ -368,6 +388,28 @@ impl ReportableError for Error {
                     ),
                 )]
             }
+            Error::ConstructorNotInUnion {
+                constructor,
+                union_type,
+                location,
+            } => {
+                vec![(
+                    location.clone(),
+                    format!(
+                        "Constructor \"{constructor}\" is not a variant of {}",
+                        union_type.to_type().to_string_for_error()
+                    ),
+                )]
+            }
+            Error::ExpectedUnionType { found, location } => {
+                vec![(
+                    location.clone(),
+                    format!(
+                        "Expected a union type but found {}",
+                        found.to_type().to_string_for_error()
+                    ),
+                )]
+            }
         }
     }
 }
@@ -462,6 +504,53 @@ impl InferContext {
         .chain(unibinds)
         .collect()
     }
+
+    /// Get the type associated with a constructor name from a union type
+    /// For primitive types in unions like `float | string`, the constructor names are "float" and "string"
+    fn get_constructor_type_from_union(
+        &self,
+        union_ty: TypeNodeId,
+        constructor_name: Symbol,
+    ) -> TypeNodeId {
+        let resolved = Self::substitute_type(union_ty);
+        match resolved.to_type() {
+            Type::Union(variants) => {
+                // Find a variant that matches the constructor name
+                for variant_ty in variants.iter() {
+                    let variant_resolved = Self::substitute_type(*variant_ty);
+                    let variant_name = Self::type_constructor_name(&variant_resolved.to_type());
+                    if variant_name == Some(constructor_name) {
+                        return *variant_ty;
+                    }
+                }
+                // Constructor not found in union - return Unknown as placeholder
+                Type::Unknown.into_id_with_location(union_ty.to_loc())
+            }
+            // If not a union type, check if it matches the constructor directly
+            other => {
+                let type_name = Self::type_constructor_name(&other);
+                if type_name == Some(constructor_name) {
+                    resolved
+                } else {
+                    Type::Unknown.into_id_with_location(union_ty.to_loc())
+                }
+            }
+        }
+    }
+
+    /// Get the constructor name for a type (used for matching in union types)
+    /// Primitive types use their type name as constructor (e.g., "float", "string")
+    fn type_constructor_name(ty: &Type) -> Option<Symbol> {
+        match ty {
+            Type::Primitive(PType::Numeric) => Some("float".to_symbol()),
+            Type::Primitive(PType::String) => Some("string".to_symbol()),
+            Type::Primitive(PType::Int) => Some("int".to_symbol()),
+            Type::Primitive(PType::Unit) => Some("unit".to_symbol()),
+            // For other types, we don't have built-in constructor names yet
+            _ => None,
+        }
+    }
+
     fn unwrap_result(&mut self, res: Result<TypeNodeId, Vec<Error>>) -> TypeNodeId {
         match res {
             Ok(t) => t,
@@ -1059,30 +1148,49 @@ impl InferContext {
                 // Infer type of scrutinee
                 let scrut_ty = self.infer_type_unwrapping(*scrutinee);
 
-                // Check each pattern against scrutinee type (Phase 1: only numeric literals)
-                for arm in arms {
-                    match &arm.pattern {
-                        crate::ast::MatchPattern::Literal(lit) => {
-                            // For numeric patterns, check scrutinee is numeric
-                            let pat_ty = match lit {
-                                crate::ast::Literal::Int(_) | crate::ast::Literal::Float(_) => {
-                                    Type::Primitive(PType::Numeric)
-                                        .into_id_with_location(loc.clone())
-                                }
-                                _ => Type::Failure.into_id_with_location(loc.clone()),
-                            };
-                            let _ = self.unify_types(scrut_ty, pat_ty);
-                        }
-                        crate::ast::MatchPattern::Wildcard => {
-                            // Wildcard matches anything
-                        }
-                    }
-                }
-
-                // Infer types of all arm bodies and unify them
+                // Infer types of all arm bodies, handling patterns with variable bindings
                 let arm_tys: Vec<TypeNodeId> = arms
                     .iter()
-                    .map(|arm| self.infer_type_unwrapping(arm.body))
+                    .map(|arm| {
+                        match &arm.pattern {
+                            crate::ast::MatchPattern::Literal(lit) => {
+                                // For numeric patterns, check scrutinee is numeric
+                                let pat_ty = match lit {
+                                    crate::ast::Literal::Int(_) | crate::ast::Literal::Float(_) => {
+                                        Type::Primitive(PType::Numeric)
+                                            .into_id_with_location(loc.clone())
+                                    }
+                                    _ => Type::Failure.into_id_with_location(loc.clone()),
+                                };
+                                let _ = self.unify_types(scrut_ty, pat_ty);
+                                self.infer_type_unwrapping(arm.body)
+                            }
+                            crate::ast::MatchPattern::Wildcard => {
+                                // Wildcard matches anything
+                                self.infer_type_unwrapping(arm.body)
+                            }
+                            crate::ast::MatchPattern::Constructor(constructor_name, binding) => {
+                                // Handle constructor patterns for union types
+                                // Find the type associated with this constructor in the union
+                                let binding_ty = self
+                                    .get_constructor_type_from_union(scrut_ty, *constructor_name);
+
+                                if let Some(bound_var) = binding {
+                                    // Create a new scope with the binding variable
+                                    self.env.extend();
+                                    self.env.add_bind(&[(
+                                        *bound_var,
+                                        (binding_ty, self.stage.clone()),
+                                    )]);
+                                    let body_ty = self.infer_type_unwrapping(arm.body);
+                                    self.env.to_outer();
+                                    body_ty
+                                } else {
+                                    self.infer_type_unwrapping(arm.body)
+                                }
+                            }
+                        }
+                    })
                     .collect();
 
                 if arm_tys.is_empty() {

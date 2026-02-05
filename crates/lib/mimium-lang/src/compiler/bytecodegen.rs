@@ -645,6 +645,16 @@ impl ByteCodeGenerator {
             mir::Instruction::PhiSwitch(_) => {
                 unreachable!("PhiSwitch should be handled within Switch processing")
             }
+            // Tagged Union instructions (Phase 2) - not yet implemented in VM
+            mir::Instruction::TaggedUnionWrap { .. } => {
+                todo!("TaggedUnionWrap not yet implemented in bytecode generation")
+            }
+            mir::Instruction::TaggedUnionGetTag(_) => {
+                todo!("TaggedUnionGetTag not yet implemented in bytecode generation")
+            }
+            mir::Instruction::TaggedUnionGetValue(_, _) => {
+                todo!("TaggedUnionGetValue not yet implemented in bytecode generation")
+            }
             mir::Instruction::Switch {
                 scrutinee,
                 cases,
@@ -661,22 +671,21 @@ impl ByteCodeGenerator {
                 let phi_reg = self.vregister.add_newvalue(phi_dst);
 
                 // Helper closure to emit instructions for a basic block
-                let mut emit_block =
-                    |this: &mut Self, block: &mir::Block| -> Vec<VmInstruction> {
-                        block.0.iter().fold(vec![], |mut bytes, (bdst, binst)| {
-                            if let Some(vm_inst) = this.emit_instruction(
-                                funcproto,
-                                Some(&mut bytes),
-                                mirfunc.clone(),
-                                bdst.clone(),
-                                binst.clone(),
-                                config,
-                            ) {
-                                bytes.push(vm_inst);
-                            }
-                            bytes
-                        })
-                    };
+                let mut emit_block = |this: &mut Self, block: &mir::Block| -> Vec<VmInstruction> {
+                    block.0.iter().fold(vec![], |mut bytes, (bdst, binst)| {
+                        if let Some(vm_inst) = this.emit_instruction(
+                            funcproto,
+                            Some(&mut bytes),
+                            mirfunc.clone(),
+                            bdst.clone(),
+                            binst.clone(),
+                            config,
+                        ) {
+                            bytes.push(vm_inst);
+                        }
+                        bytes
+                    })
+                };
 
                 // Collect all bytecodes for each case block
                 let all_block_bytes: Vec<Vec<VmInstruction>> = cases
@@ -751,12 +760,13 @@ impl ByteCodeGenerator {
                 // Build dense array: fill with default, then set specific case offsets
                 // Add one extra slot at the end for the default offset (used for out-of-range values)
                 let table_size = (max_val - min_val + 1) as usize + 1; // +1 for default slot
-                let offsets = case_offsets
-                    .iter()
-                    .fold(vec![default_offset; table_size], |mut offsets, (lit_val, offset)| {
+                let offsets = case_offsets.iter().fold(
+                    vec![default_offset; table_size],
+                    |mut offsets, (lit_val, offset)| {
                         offsets[(lit_val - min_val) as usize] = *offset;
                         offsets
-                    });
+                    },
+                );
 
                 // Add jump table to funcproto and get its index
                 let table_idx = funcproto.jump_tables.len() as u8;
@@ -766,30 +776,36 @@ impl ByteCodeGenerator {
                 });
 
                 // Build the bytecode sequence
-                let switch_bytes: Vec<VmInstruction> = std::iter::once(VmInstruction::JmpTable(scrut_reg, table_idx))
-                    .chain(
-                        all_block_bytes
-                            .iter()
-                            .enumerate()
-                            .flat_map(|(i, block_bytes)| {
-                                let remaining_size: usize =
-                                    case_segment_sizes[i + 1..].iter().sum::<usize>()
-                                        + default_segment_size
-                                        + 1;
-                                block_bytes
-                                    .iter()
-                                    .cloned()
-                                    .chain(std::iter::once(VmInstruction::Move(phi_reg, result_regs[i])))
-                                    .chain(std::iter::once(VmInstruction::Jmp(remaining_size as i16)))
-                            }),
-                    )
-                    .chain(default_bytes.iter().cloned())
-                    .chain(std::iter::once(VmInstruction::Move(
-                        phi_reg,
-                        *result_regs.last().unwrap(),
-                    )))
-                    .chain(merge_bytes.iter().cloned())
-                    .collect();
+                let switch_bytes: Vec<VmInstruction> =
+                    std::iter::once(VmInstruction::JmpTable(scrut_reg, table_idx))
+                        .chain(
+                            all_block_bytes
+                                .iter()
+                                .enumerate()
+                                .flat_map(|(i, block_bytes)| {
+                                    let remaining_size: usize =
+                                        case_segment_sizes[i + 1..].iter().sum::<usize>()
+                                            + default_segment_size
+                                            + 1;
+                                    block_bytes
+                                        .iter()
+                                        .cloned()
+                                        .chain(std::iter::once(VmInstruction::Move(
+                                            phi_reg,
+                                            result_regs[i],
+                                        )))
+                                        .chain(std::iter::once(VmInstruction::Jmp(
+                                            remaining_size as i16,
+                                        )))
+                                }),
+                        )
+                        .chain(default_bytes.iter().cloned())
+                        .chain(std::iter::once(VmInstruction::Move(
+                            phi_reg,
+                            *result_regs.last().unwrap(),
+                        )))
+                        .chain(merge_bytes.iter().cloned())
+                        .collect();
 
                 // Output everything to the destination
                 let bytecodes_dst = bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut());
@@ -944,7 +960,7 @@ impl ByteCodeGenerator {
                 func.bytecodes.push(i);
             }
         });
-        
+
         (mirfunc.label.to_string(), func)
     }
     pub fn generate(&mut self, mir: Mir, config: Config) -> vm::Program {

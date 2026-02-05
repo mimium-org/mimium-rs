@@ -1369,6 +1369,37 @@ impl Context {
         }
     }
 
+    /// Get the type for a constructor binding in a union pattern match
+    /// For union types like `float | string`, this returns the underlying type
+    /// for the matched constructor (e.g., `float` for constructor `float`)
+    fn get_constructor_binding_type(
+        &self,
+        union_ty: TypeNodeId,
+        constructor_name: Symbol,
+    ) -> TypeNodeId {
+        use crate::types::{PType, Type};
+        match union_ty.to_type() {
+            Type::Union(variants) => {
+                // Find the variant type matching the constructor name
+                for variant_ty in variants.iter() {
+                    let matches = match variant_ty.to_type() {
+                        Type::Primitive(PType::Numeric) => constructor_name.as_str() == "float",
+                        Type::Primitive(PType::String) => constructor_name.as_str() == "string",
+                        Type::Primitive(PType::Int) => constructor_name.as_str() == "int",
+                        _ => false,
+                    };
+                    if matches {
+                        return *variant_ty;
+                    }
+                }
+                // Fallback to numeric if not found
+                Type::Primitive(PType::Numeric).into_id()
+            }
+            // Non-union type: return as-is
+            _ => union_ty,
+        }
+    }
+
     /// Evaluate a match expression using Switch instruction
     fn eval_match(
         &mut self,
@@ -1382,20 +1413,29 @@ impl Context {
             return (Arc::new(Value::None), unit!(), vec![]);
         }
 
-        let (scrut_val, _scrut_ty, mut states) = self.eval_expr(scrutinee);
+        let (scrut_val, scrut_ty, mut states) = self.eval_expr(scrutinee);
 
         // Collect literal cases (as i64) and find wildcard (default) arm
+        // For Phase 2, constructor patterns are handled with tagged union approach
         let literal_arms: Vec<_> = arms
             .iter()
             .filter_map(|arm| match &arm.pattern {
                 MatchPattern::Literal(lit) => Some((arm, Self::literal_to_i64(lit))),
                 MatchPattern::Wildcard => None,
+                MatchPattern::Constructor(_, _) => {
+                    // TODO: Constructor patterns for union types (Phase 2)
+                    // For now, treat constructor patterns similar to wildcard
+                    None
+                }
             })
             .collect();
 
-        let default_arm = arms
-            .iter()
-            .find(|arm| matches!(&arm.pattern, MatchPattern::Wildcard));
+        let default_arm = arms.iter().find(|arm| {
+            matches!(
+                &arm.pattern,
+                MatchPattern::Wildcard | MatchPattern::Constructor(_, _)
+            )
+        });
 
         // Record current block where Switch will be placed
         let switch_bidx = self.get_ctxdata().current_bb;
@@ -1434,6 +1474,24 @@ impl Context {
         self.add_new_basicblock();
         let default_block_idx = self.get_ctxdata().current_bb as u64;
         let default_result = if let Some(arm) = default_arm {
+            // Handle constructor patterns with variable bindings
+            match &arm.pattern {
+                MatchPattern::Constructor(constructor_name, Some(bound_var)) => {
+                    // For constructor patterns, create a new register in this block
+                    // that loads/copies the scrutinee value for the bound variable
+                    // Get the type for the bound variable from type inference
+                    let bound_ty = self.get_constructor_binding_type(scrut_ty, *constructor_name);
+                    let bound_reg = self.push_inst(Instruction::Load(scrut_val.clone(), bound_ty));
+                    self.add_bind((*bound_var, bound_reg));
+                }
+                MatchPattern::Constructor(_constructor_name, None) => {
+                    // No binding variable in the constructor pattern
+                }
+                MatchPattern::Wildcard => {
+                    // Wildcard doesn't bind anything
+                }
+                _ => {}
+            }
             let (result_val, _, arm_states) = self.eval_expr(arm.body);
             all_states.extend(arm_states);
             result_val
@@ -1471,7 +1529,6 @@ impl Context {
             }
             _ => panic!("expected Switch instruction"),
         }
-
 
         states.extend(all_states);
         (res, result_ty, states)
