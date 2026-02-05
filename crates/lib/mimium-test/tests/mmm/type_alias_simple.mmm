@@ -1,0 +1,6 @@
+type alias Freq = float
+
+fn dsp() {
+    let x: Freq = 440.0
+    x * 2.0
+}

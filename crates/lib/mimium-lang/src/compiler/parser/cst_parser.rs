@@ -337,7 +337,14 @@ impl<'a> Parser<'a> {
                 Some(TokenKind::Sharp) => this.parse_stage_decl(),
                 Some(TokenKind::Mod) => this.parse_module_decl(),
                 Some(TokenKind::Use) => this.parse_use_stmt(),
-                Some(TokenKind::Type) => this.parse_type_decl(),
+                Some(TokenKind::Type) => {
+                    // Check if this is "type alias" or just "type"
+                    if this.peek_ahead(1) == Some(TokenKind::Alias) {
+                        this.parse_type_alias_decl();
+                    } else {
+                        this.parse_type_decl();
+                    }
+                }
                 _ => {
                     // Try parsing as expression
                     this.parse_expr();
@@ -1710,14 +1717,15 @@ impl<'a> Parser<'a> {
         });
     }
 
-    /// Parse type declaration: type Name = Variant1 | Variant2(Type) | ...
+    /// Parse type declaration (Union/Sum types only)
+    /// Type declaration: type Name = Variant1 | Variant2(Type) | ...
     fn parse_type_decl(&mut self) {
         self.emit_node(SyntaxKind::TypeDecl, |this| {
             this.expect(TokenKind::Type);
             this.expect(TokenKind::Ident); // type name
             this.expect(TokenKind::Assign); // =
 
-            // Parse first variant
+            // Parse as variant declaration: type Name = Variant1 | Variant2 | ...
             this.parse_variant_def();
 
             // Parse remaining variants separated by |
@@ -1728,15 +1736,45 @@ impl<'a> Parser<'a> {
         });
     }
 
+    /// Parse type alias declaration
+    /// Type alias: type alias Name = BaseType
+    fn parse_type_alias_decl(&mut self) {
+        self.emit_node(SyntaxKind::TypeDecl, |this| {
+            this.expect(TokenKind::Type);
+            this.expect(TokenKind::Alias);
+            this.expect(TokenKind::Ident); // alias name
+            this.expect(TokenKind::Assign); // =
+
+            // Parse the target type
+            this.parse_type();
+        });
+    }
+
     /// Parse a single variant definition: Name or Name(Type)
     fn parse_variant_def(&mut self) {
         self.emit_node(SyntaxKind::VariantDef, |this| {
             this.expect(TokenKind::Ident); // variant name
 
-            // Check for optional payload type: Name(Type)
+            // Check for optional payload type: Name(Type) or Name(T1, T2, ...)
+            // If multiple comma-separated types are found, treat as tuple implicitly
             if this.check(TokenKind::ParenBegin) {
                 this.bump(); // consume (
-                this.parse_type(); // payload type
+
+                // Parse first type
+                this.parse_type();
+
+                // If there's a comma, we have multiple types - treat as tuple
+                if this.check(TokenKind::Comma) {
+                    // We've already parsed the first type, now wrap it in a TupleType
+                    // and parse the rest
+                    while this.check(TokenKind::Comma) {
+                        this.bump(); // consume ,
+                        if !this.check(TokenKind::ParenEnd) {
+                            this.parse_type();
+                        }
+                    }
+                }
+
                 this.expect(TokenKind::ParenEnd);
             }
         });

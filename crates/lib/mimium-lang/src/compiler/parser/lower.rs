@@ -344,7 +344,9 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Lower type declaration: type Name = Variant1 | Variant2(Type) | ...
+    /// Lower type declaration or type alias
+    /// Type alias: type Name = BaseType
+    /// Type declaration: type Name = Variant1 | Variant2(Type) | ...
     fn lower_type_decl(
         &self,
         node: GreenNodeId,
@@ -356,7 +358,8 @@ impl<'a> Lowerer<'a> {
         let name_idx = self.find_token(node, |kind| matches!(kind, TokenKind::Ident))?;
         let name = self.token_text(name_idx)?.to_symbol();
 
-        // Collect all VariantDef children
+        // Check if this is a type alias (has a type but no variant definitions)
+        // or a variant declaration (has variant definitions)
         let variants: Vec<VariantDef> = self
             .arena
             .children(node)
@@ -371,14 +374,28 @@ impl<'a> Lowerer<'a> {
             .unwrap_or_default();
 
         if variants.is_empty() {
-            return None;
-        }
+            // This is a type alias - look for a type annotation
+            let type_node = self.find_child(node, |kind| {
+                matches!(
+                    kind,
+                    SyntaxKind::TypeAnnotation | SyntaxKind::PrimitiveType | SyntaxKind::TypeIdent
+                )
+            })?;
+            let target_type = self.lower_type(type_node);
 
-        Some(ProgramStatement::TypeDeclaration {
-            visibility,
-            name,
-            variants,
-        })
+            Some(ProgramStatement::TypeAlias {
+                visibility,
+                name,
+                target_type,
+            })
+        } else {
+            // This is a variant declaration
+            Some(ProgramStatement::TypeDeclaration {
+                visibility,
+                name,
+                variants,
+            })
+        }
     }
 
     /// Lower a single variant definition: Name or Name(Type)
@@ -391,15 +408,34 @@ impl<'a> Lowerer<'a> {
 
         // Check for optional payload type (any type node inside the VariantDef)
         let payload = self.arena.children(node).and_then(|children| {
-            children
+            let type_nodes: Vec<_> = children
                 .iter()
-                .find(|c| {
+                .filter(|c| {
                     self.arena
                         .kind(**c)
                         .map(Self::is_type_kind)
                         .unwrap_or(false)
                 })
-                .map(|type_node| self.lower_type(*type_node))
+                .collect();
+
+            match type_nodes.len() {
+                0 => None,
+                1 => {
+                    // Single type - use as-is
+                    Some(self.lower_type(*type_nodes[0]))
+                }
+                _ => {
+                    // Multiple types - treat as tuple (for Rectangle(float, float) syntax)
+                    let elem_types: Vec<_> = type_nodes
+                        .iter()
+                        .map(|node| self.lower_type(**node))
+                        .collect();
+
+                    // Use default location for implicit tuple
+                    let loc = Location::default();
+                    Some(Type::Tuple(elem_types).into_id_with_location(loc))
+                }
+            }
         });
 
         Some(VariantDef::new(name, payload))

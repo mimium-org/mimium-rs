@@ -1,0 +1,13 @@
+type alias Freq = float
+type alias Gain = float  
+type alias Sample = float
+
+fn oscillator(freq: Freq, gain: Gain) -> Sample {
+    freq * gain
+}
+
+fn dsp() {
+    let frequency: Freq = 440.0
+    let amplitude: Gain = 0.5
+    oscillator(frequency, amplitude) * 2.0
+}

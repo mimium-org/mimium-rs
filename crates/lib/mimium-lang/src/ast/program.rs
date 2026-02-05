@@ -96,6 +96,12 @@ pub enum ProgramStatement {
         /// The import target type
         target: UseTarget,
     },
+    /// Type alias: type Alias = BaseType
+    TypeAlias {
+        visibility: Visibility,
+        name: Symbol,
+        target_type: crate::interner::TypeNodeId,
+    },
     /// Type declaration: type Name = Variant1 | Variant2 | ...
     TypeDeclaration {
         visibility: Visibility,
@@ -108,6 +114,8 @@ pub enum ProgramStatement {
 }
 /// Map from type name to list of variants
 pub type TypeDeclarationMap = HashMap<Symbol, Vec<VariantDef>>;
+/// Map from type alias name to target type
+pub type TypeAliasMap = HashMap<Symbol, crate::interner::TypeNodeId>;
 
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Program {
@@ -199,6 +207,8 @@ pub struct ModuleInfo {
     pub wildcard_imports: Vec<Symbol>,
     /// Type declarations for user-defined sum types
     pub type_declarations: TypeDeclarationMap,
+    /// Type aliases for simple type aliases
+    pub type_aliases: TypeAliasMap,
 }
 
 impl ModuleInfo {
@@ -375,6 +385,16 @@ fn stmts_from_program_with_prefix(
                 target,
             } => {
                 process_use_statement(&visibility, &path, &target, module_prefix, module_info);
+                None
+            }
+            ProgramStatement::TypeAlias {
+                visibility: _,
+                name,
+                target_type,
+            } => {
+                // Store type alias for later use in type environment
+                let mangled_name = mangle_qualified_name(module_prefix, name);
+                module_info.type_aliases.insert(mangled_name, target_type);
                 None
             }
             ProgramStatement::TypeDeclaration {

@@ -2479,6 +2479,7 @@ pub fn typecheck(
         builtin_types,
         file_path.clone().unwrap_or_default(),
         None,
+        None,
     );
     let errors = infer_ctx
         .errors
@@ -2516,6 +2517,7 @@ pub fn typecheck_with_module_info(
         builtin_types,
         file_path.clone().unwrap_or_default(),
         Some(&module_info.type_declarations),
+        Some(&module_info.type_aliases),
     );
     let errors = infer_ctx
         .errors

@@ -90,10 +90,11 @@ pub enum TokenKind {
     Main,     // main
 
     // Module keywords
-    Mod,  // mod
-    Use,  // use
-    Pub,  // pub
-    Type, // type
+    Mod,   // mod
+    Use,   // use
+    Pub,   // pub
+    Type,  // type
+    Alias, // alias
 
     // Trivia (whitespace and comments)
     LineBreak,
@@ -179,6 +180,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Use => write!(f, "use"),
             TokenKind::Pub => write!(f, "pub"),
             TokenKind::Type => write!(f, "type"),
+            TokenKind::Alias => write!(f, "alias"),
             TokenKind::Sharp => write!(f, "#"),
             TokenKind::Error => write!(f, "error"),
             TokenKind::Eof => write!(f, "eof"),

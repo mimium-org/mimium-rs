@@ -161,6 +161,7 @@ where
             "use" => TokenKind::Use,
             "pub" => TokenKind::Pub,
             "type" => TokenKind::Type,
+            "alias" => TokenKind::Alias,
             "_" => TokenKind::PlaceHolder,
             _ => TokenKind::Ident,
         })

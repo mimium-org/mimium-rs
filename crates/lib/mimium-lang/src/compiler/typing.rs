@@ -442,6 +442,8 @@ pub struct InferContext {
     pub env: Environment<(TypeNodeId, EvalStage)>,
     /// Constructor environment for user-defined sum types
     pub constructor_env: ConstructorEnv,
+    /// Type alias resolution map
+    pub type_aliases: HashMap<Symbol, TypeNodeId>,
     pub errors: Vec<Error>,
 }
 impl InferContext {
@@ -449,6 +451,7 @@ impl InferContext {
         builtins: &[(Symbol, TypeNodeId)],
         file_path: PathBuf,
         type_declarations: Option<&crate::ast::program::TypeDeclarationMap>,
+        type_aliases: Option<&crate::ast::program::TypeAliasMap>,
     ) -> Self {
         let mut res = Self {
             interm_idx: Default::default(),
@@ -461,6 +464,7 @@ impl InferContext {
             file_path,
             env: Environment::<(TypeNodeId, EvalStage)>::default(),
             constructor_env: Default::default(),
+            type_aliases: Default::default(),
             errors: Default::default(),
         };
         res.env.extend();
@@ -479,6 +483,10 @@ impl InferContext {
         // Register user-defined type constructors
         if let Some(type_decls) = type_declarations {
             res.register_type_declarations(type_decls);
+        }
+        // Register type aliases
+        if let Some(type_aliases) = type_aliases {
+            res.register_type_aliases(type_aliases);
         }
         res
     }
@@ -512,6 +520,32 @@ impl InferContext {
                     },
                 );
             }
+        }
+    }
+
+    /// Register type aliases from ModuleInfo into the type environment
+    fn register_type_aliases(&mut self, type_aliases: &crate::ast::program::TypeAliasMap) {
+        // Store type aliases for resolution during unification
+        for (alias_name, target_type) in type_aliases {
+            self.type_aliases.insert(*alias_name, *target_type);
+            // Also add to environment for name resolution
+            self.env
+                .add_bind(&[(*alias_name, (*target_type, EvalStage::Persistent))]);
+        }
+    }
+
+    /// Resolve type aliases recursively
+    pub fn resolve_type_alias(&self, type_id: TypeNodeId) -> TypeNodeId {
+        match type_id.to_type() {
+            Type::TypeAlias(alias_name) => {
+                if let Some(resolved_type) = self.type_aliases.get(&alias_name) {
+                    // Recursively resolve in case the alias points to another alias
+                    self.resolve_type_alias(*resolved_type)
+                } else {
+                    type_id // Return original if not found (shouldn't happen)
+                }
+            }
+            _ => type_id, // Not an alias, return as-is
         }
     }
 }
@@ -797,7 +831,11 @@ impl InferContext {
         }
     }
     fn unify_types(&self, t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Error>> {
-        unify_types(t1, t2)
+        // Resolve type aliases before unification
+        let resolved_t1 = self.resolve_type_alias(t1);
+        let resolved_t2 = self.resolve_type_alias(t2);
+
+        unify_types(resolved_t1, resolved_t2)
             .map_err(|e| e.into_iter().map(|e| self.convert_unify_error(e)).collect())
     }
     // helper function
@@ -1451,8 +1489,14 @@ pub fn infer_root(
     builtin_types: &[(Symbol, TypeNodeId)],
     file_path: PathBuf,
     type_declarations: Option<&crate::ast::program::TypeDeclarationMap>,
+    type_aliases: Option<&crate::ast::program::TypeAliasMap>,
 ) -> InferContext {
-    let mut ctx = InferContext::new(builtin_types, file_path.clone(), type_declarations);
+    let mut ctx = InferContext::new(
+        builtin_types,
+        file_path.clone(),
+        type_declarations,
+        type_aliases,
+    );
     let _t = ctx
         .infer_type(e)
         .unwrap_or(Type::Failure.into_id_with_location(e.to_location()));
@@ -1468,7 +1512,7 @@ mod tests {
     use crate::utils::metadata::{Location, Span};
 
     fn create_test_context() -> InferContext {
-        InferContext::new(&[], PathBuf::from("test"), None)
+        InferContext::new(&[], PathBuf::from("test"), None, None)
     }
 
     fn create_test_location() -> Location {

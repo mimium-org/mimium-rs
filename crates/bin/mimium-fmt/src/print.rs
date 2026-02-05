@@ -628,6 +628,22 @@ pub mod program {
                     .append(allocator.text(" = "))
                     .append(allocator.text(variants_str))
             }
+            ProgramStatement::TypeAlias {
+                visibility,
+                name,
+                target_type,
+            } => {
+                let vis_doc = if visibility == mimium_lang::ast::program::Visibility::Public {
+                    allocator.text("pub ")
+                } else {
+                    allocator.nil()
+                };
+                vis_doc
+                    .append(allocator.text("type "))
+                    .append(allocator.text(name.to_string()))
+                    .append(allocator.text(" = "))
+                    .append(types::pretty(target_type, allocator))
+            }
         });
         allocator.intersperse(stmt_docs, "\n")
     }

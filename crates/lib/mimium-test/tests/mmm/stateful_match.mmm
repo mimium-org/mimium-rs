@@ -1,0 +1,18 @@
+type Direction = Up | Down
+
+fn counter(inc) {
+    inc + self
+}
+
+fn move_player(dir: Direction) {
+    match dir {
+        Up => 1.0,
+        Down => 2.0
+    }
+}
+
+fn dsp() {
+    let result1 = move_player(Up)
+    let result2 = move_player(Down)
+    result1 + result2
+}

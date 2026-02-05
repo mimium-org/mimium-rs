@@ -865,6 +865,43 @@ fn enum_simple_tuple() {
     assert_eq!(res, ans);
 }
 
+#[wasm_bindgen_test(unsupported = test)]
+fn type_alias_simple() {
+    // Test simple type alias: type alias Freq = float
+    let res = run_file_test_mono("type_alias_simple.mmm", 1).unwrap();
+    let ans = vec![880.0]; // let x: Freq = 440.0; x * 2.0 = 880.0
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_alias_comprehensive() {
+    // Test multiple type aliases used in functions
+    // oscillator(440.0, 0.5) * 2.0 = (440.0 * 0.5) * 2.0 = 220.0 * 2.0 = 440.0
+    let res = run_file_test_mono("type_alias_comprehensive.mmm", 1).unwrap();
+    let ans = vec![440.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn stateful_match() {
+    // Test basic enum matching without stateful functions first
+    // move_player(Up) = 1.0, move_player(Down) = 2.0
+    // Total: 1.0 + 2.0 = 3.0
+    let res = run_file_test_mono("stateful_match.mmm", 1).unwrap();
+    let ans = vec![3.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn stateful_in_match() {
+    // Test stateful function called within match expression
+    // dir = Up, so counter(1.0) is called
+    // First call: 1.0 + 0 = 1.0 (initial state 0)
+    let res = run_file_test_mono("stateful_in_match.mmm", 1).unwrap();
+    let ans = vec![1.0];
+    assert_eq!(res, ans);
+}
+
 // #[wasm_bindgen_test(unsupported = test)]
 // fn map_record() {
 //     let res = run_file_test_stereo("map_record.mmm", 1).unwrap();
@@ -875,3 +912,30 @@ fn enum_simple_tuple() {
 //     let ans = vec![6000.0, 22.0];
 //     assert_eq!(res, ans);
 // }
+
+#[wasm_bindgen_test(unsupported = test)]
+fn union_type_basic() {
+    // Test basic union type: type Color = Red | Green | Blue
+    // getColorValue(Red) * 100.0 = 1.0 * 100.0 = 100.0
+    let res = run_file_test_mono("union_type_basic.mmm", 1).unwrap();
+    let ans = vec![100.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn union_type_multi_arg() {
+    // Test union type with multi-arg syntax (treated as tuple)
+    // calculateArea(Rectangle((5.0, 2.5))) = 5.0 * 2.5 = 12.5
+    let res = run_file_test_mono("union_type_multi_arg.mmm", 1).unwrap();
+    let ans = vec![12.5];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn mixed_type_syntax() {
+    // Test mixing type aliases and union types
+    // generateWave(Square, 440.0, 0.5) = 440.0 * 0.5 * 1.5 = 330.0
+    let res = run_file_test_mono("mixed_type_syntax.mmm", 1).unwrap();
+    let ans = vec![330.0];
+    assert_eq!(res, ans);
+}
