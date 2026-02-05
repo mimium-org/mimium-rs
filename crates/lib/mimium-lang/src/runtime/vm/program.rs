@@ -117,9 +117,10 @@ impl std::fmt::Display for Program {
             let _ = write!(f, "upindexes: {:?}  ", fns.1.upindexes);
             let _ = writeln!(f, "state_skeleton: {:?}", fns.1.state_skeleton);
             let _ = writeln!(f, "constants:  {:?}", fns.1.constants);
+            let _ = writeln!(f, "jump_tables: {:?}", fns.1.jump_tables);
             let _ = writeln!(f, "instructions:");
             for inst in fns.1.bytecodes.iter() {
-                let _ = writeln!(f, "  {}", inst);
+                let _ = writeln!(f, "  {inst}");
             }
         }
         let _ = write!(
