@@ -830,6 +830,15 @@ fn sum_type_basic() {
     assert_eq!(res, ans);
 }
 
+// Phase 3: User-defined sum types with explicit constructors
+#[wasm_bindgen_test(unsupported = test)]
+fn enum_basic() {
+    // Test user-defined enum type: type MyEnum = One | Two | Three
+    let res = run_file_test_mono("enum_basic.mmm", 1).unwrap();
+    let ans = vec![6.0]; // test(One)=1 + test(Two)=2 + test(Three)=3 = 6
+    assert_eq!(res, ans);
+}
+
 // #[wasm_bindgen_test(unsupported = test)]
 // fn map_record() {
 //     let res = run_file_test_stereo("map_record.mmm", 1).unwrap();

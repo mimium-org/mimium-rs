@@ -7,7 +7,7 @@ use crate::utils::metadata::Location;
 use crate::utils::{environment::Environment, error::ReportableError};
 use crate::{function, integer, numeric, unit};
 use itertools::Itertools;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -415,6 +415,18 @@ impl ReportableError for Error {
     }
 }
 
+/// Information about a constructor in a user-defined sum type
+#[derive(Clone, Debug)]
+pub struct ConstructorInfo {
+    /// The type of the sum type this constructor belongs to
+    pub sum_type: TypeNodeId,
+    /// The index (tag) of this constructor in the sum type
+    pub tag_index: usize,
+}
+
+/// Map from constructor name to its info
+pub type ConstructorEnv = HashMap<Symbol, ConstructorInfo>;
+
 #[derive(Clone, Debug)]
 pub struct InferContext {
     interm_idx: IntermediateId,
@@ -426,6 +438,8 @@ pub struct InferContext {
     result_memo: BTreeMap<ExprKey, TypeNodeId>,
     file_path: PathBuf,
     pub env: Environment<(TypeNodeId, EvalStage)>,
+    /// Constructor environment for user-defined sum types
+    pub constructor_env: ConstructorEnv,
     pub errors: Vec<Error>,
 }
 impl InferContext {
@@ -440,6 +454,7 @@ impl InferContext {
             result_memo: Default::default(),
             file_path,
             env: Environment::<(TypeNodeId, EvalStage)>::default(),
+            constructor_env: Default::default(),
             errors: Default::default(),
         };
         res.env.extend();
@@ -456,6 +471,33 @@ impl InferContext {
             .collect::<Vec<_>>();
         res.env.add_bind(&builtins);
         res
+    }
+
+    /// Register type declarations from ModuleInfo into the constructor environment
+    pub fn register_type_declarations(
+        &mut self,
+        type_declarations: &crate::ast::program::TypeDeclarationMap,
+    ) {
+        for (type_name, variants) in type_declarations {
+            // Create the UserSum type
+            let variant_names: Vec<Symbol> = variants.iter().map(|v| v.name).collect();
+            let sum_type = Type::UserSum {
+                name: *type_name,
+                variants: variant_names.clone(),
+            }
+            .into_id();
+
+            // Register each constructor
+            for (tag_index, variant) in variants.iter().enumerate() {
+                self.constructor_env.insert(
+                    variant.name,
+                    ConstructorInfo {
+                        sum_type,
+                        tag_index,
+                    },
+                );
+            }
+        }
     }
 }
 impl InferContext {
@@ -506,8 +548,9 @@ impl InferContext {
         .collect()
     }
 
-    /// Get the type associated with a constructor name from a union type
+    /// Get the type associated with a constructor name from a union or user-defined sum type
     /// For primitive types in unions like `float | string`, the constructor names are "float" and "string"
+    /// For user-defined sum types like `type MyEnum = One | Two`, the constructor names are "One" and "Two"
     fn get_constructor_type_from_union(
         &self,
         union_ty: TypeNodeId,
@@ -526,6 +569,16 @@ impl InferContext {
                 }
                 // Constructor not found in union - return Unknown as placeholder
                 Type::Unknown.into_id_with_location(union_ty.to_loc())
+            }
+            Type::UserSum { name: _, variants } => {
+                // For user-defined sum types, check if constructor_name is one of the variants
+                if variants.contains(&constructor_name) {
+                    // For now, user-defined constructors without payload return Unit type
+                    // The constructor pattern just checks the tag, no value extraction
+                    Type::Primitive(PType::Unit).into_id_with_location(union_ty.to_loc())
+                } else {
+                    Type::Unknown.into_id_with_location(union_ty.to_loc())
+                }
             }
             // If not a union type, check if it matches the constructor directly
             other => {
@@ -1061,6 +1114,11 @@ impl InferContext {
                 then.map_or(Ok(unit!()), |t| self.infer_type(t))
             }
             Expr::Var(name) => {
+                // First check if this is a constructor from a user-defined sum type
+                if let Some(constructor_info) = self.constructor_env.get(name) {
+                    // Return the sum type for this constructor
+                    return Ok(constructor_info.sum_type);
+                }
                 // Aliases and wildcards are already resolved by convert_qualified_names
                 let res = self.unwrap_result(self.lookup(*name, loc).map_err(|e| vec![e]));
                 Ok(self.instantiate(res))
@@ -1227,7 +1285,20 @@ pub fn infer_root(
     builtin_types: &[(Symbol, TypeNodeId)],
     file_path: PathBuf,
 ) -> InferContext {
+    infer_root_with_type_decls(e, builtin_types, file_path, None)
+}
+
+pub fn infer_root_with_type_decls(
+    e: ExprNodeId,
+    builtin_types: &[(Symbol, TypeNodeId)],
+    file_path: PathBuf,
+    type_declarations: Option<&crate::ast::program::TypeDeclarationMap>,
+) -> InferContext {
     let mut ctx = InferContext::new(builtin_types, file_path.clone());
+    // Register user-defined type constructors before type inference
+    if let Some(type_decls) = type_declarations {
+        ctx.register_type_declarations(type_decls);
+    }
     let _t = ctx
         .infer_type(e)
         .unwrap_or(Type::Failure.into_id_with_location(e.to_location()));

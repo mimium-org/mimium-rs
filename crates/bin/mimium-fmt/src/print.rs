@@ -88,6 +88,17 @@ mod types {
                     .collect::<Vec<_>>();
                 allocator.intersperse(docs, allocator.text(" | "))
             }
+            Type::UserSum { name, variants } => {
+                let variants_str = variants
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                allocator
+                    .text(name.to_string())
+                    .append(allocator.text(" = "))
+                    .append(allocator.text(variants_str))
+            }
             Type::TypeScheme(_) => unreachable!(),
             Type::Intermediate(_) => unreachable!(),
             Type::Ref(_) => unreachable!(),
@@ -588,6 +599,33 @@ pub mod program {
                     .append(allocator.text("use "))
                     .append(allocator.text(path_str))
                     .append(allocator.text(target_str))
+            }
+            ProgramStatement::TypeDeclaration {
+                visibility,
+                name,
+                variants,
+            } => {
+                let vis_doc = if visibility == mimium_lang::ast::program::Visibility::Public {
+                    allocator.text("pub ")
+                } else {
+                    allocator.nil()
+                };
+                let variants_str = variants
+                    .iter()
+                    .map(|v| {
+                        if let Some(_payload) = &v.payload {
+                            format!("{}(...)", v.name)
+                        } else {
+                            v.name.to_string()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                vis_doc
+                    .append(allocator.text("type "))
+                    .append(allocator.text(name.to_string()))
+                    .append(allocator.text(" = "))
+                    .append(allocator.text(variants_str))
             }
         });
         allocator.intersperse(stmt_docs, "\n")

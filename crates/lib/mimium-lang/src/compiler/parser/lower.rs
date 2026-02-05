@@ -152,6 +152,9 @@ impl<'a> Lowerer<'a> {
                     (Some(SyntaxKind::UseStmt), Some(id)) => self
                         .lower_use_stmt(id, visibility)
                         .unwrap_or(ProgramStatement::Error),
+                    (Some(SyntaxKind::TypeDecl), Some(id)) => self
+                        .lower_type_decl(id, visibility)
+                        .unwrap_or(ProgramStatement::Error),
                     (Some(_), _) => {
                         let expr_nodes = self.collect_expr_nodes(node);
                         let expr = self.lower_expr_sequence(&expr_nodes);
@@ -331,6 +334,67 @@ impl<'a> Lowerer<'a> {
         } else {
             Some(QualifiedPath::new(segments))
         }
+    }
+
+    /// Lower type declaration: type Name = Variant1 | Variant2 | ...
+    fn lower_type_decl(
+        &self,
+        node: GreenNodeId,
+        visibility: Visibility,
+    ) -> Option<ProgramStatement> {
+        use crate::ast::program::VariantDef;
+
+        // Find the type name (first Ident token after 'type' keyword)
+        let name_idx = self.find_token(node, |kind| matches!(kind, TokenKind::Ident))?;
+        let name = self.token_text(name_idx)?.to_symbol();
+
+        // Collect all VariantDef children
+        let variants: Vec<VariantDef> = self
+            .arena
+            .children(node)
+            .map(|children| {
+                children
+                    .iter()
+                    .copied()
+                    .filter(|child| self.arena.kind(*child) == Some(SyntaxKind::VariantDef))
+                    .filter_map(|child| self.lower_variant_def(child))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if variants.is_empty() {
+            return None;
+        }
+
+        Some(ProgramStatement::TypeDeclaration {
+            visibility,
+            name,
+            variants,
+        })
+    }
+
+    /// Lower a single variant definition: Name or Name(Type)
+    fn lower_variant_def(&self, node: GreenNodeId) -> Option<crate::ast::program::VariantDef> {
+        use crate::ast::program::VariantDef;
+
+        // Variant name is the first Ident token
+        let name_idx = self.find_token(node, |kind| matches!(kind, TokenKind::Ident))?;
+        let name = self.token_text(name_idx)?.to_symbol();
+
+        // Check for optional payload type (any type node inside the VariantDef)
+        let payload = self.arena.children(node).and_then(|children| {
+            children
+                .iter()
+                .find(|c| {
+                    self.arena
+                        .kind(**c)
+                        .map(Self::is_type_kind)
+                        .unwrap_or(false)
+                })
+                .map(|type_node| self.lower_type(*type_node))
+        });
+
+        Some(VariantDef::new(name, payload))
     }
 
     fn lower_let_decl(&self, node: GreenNodeId) -> Option<ProgramStatement> {
@@ -682,6 +746,12 @@ impl<'a> Lowerer<'a> {
                 }
                 Some(SyntaxKind::ConstructorPattern) => {
                     return self.lower_constructor_pattern(child);
+                }
+                Some(SyntaxKind::Identifier) => {
+                    // Bare identifier in pattern: treat as constructor (e.g., One, Two)
+                    if let Some(text) = self.text_of_first_token(child) {
+                        return MatchPattern::Constructor(text.to_symbol(), None);
+                    }
                 }
                 _ => {}
             }

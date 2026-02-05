@@ -50,6 +50,21 @@ pub enum UseTarget {
     Wildcard,
 }
 
+/// A variant definition for user-defined sum types
+#[derive(Clone, Debug, PartialEq)]
+pub struct VariantDef {
+    /// The name of the variant constructor
+    pub name: Symbol,
+    /// Optional payload type for the variant
+    pub payload: Option<TypeNodeId>,
+}
+
+impl VariantDef {
+    pub fn new(name: Symbol, payload: Option<TypeNodeId>) -> Self {
+        Self { name, payload }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProgramStatement {
     FnDefinition {
@@ -80,6 +95,12 @@ pub enum ProgramStatement {
         path: QualifiedPath,
         /// The import target type
         target: UseTarget,
+    },
+    /// Type declaration: type Name = Variant1 | Variant2 | ...
+    TypeDeclaration {
+        visibility: Visibility,
+        name: Symbol,
+        variants: Vec<VariantDef>,
     },
     Comment(Symbol),
     DocComment(Symbol),
@@ -162,6 +183,9 @@ pub type UseAliasMap = HashMap<Symbol, Symbol>;
 /// Used for relative path resolution within modules.
 pub type ModuleContextMap = HashMap<Symbol, Vec<Symbol>>;
 
+/// Map from type name to its variant definitions.
+pub type TypeDeclarationMap = HashMap<Symbol, Vec<VariantDef>>;
+
 /// Module-related information collected during parsing.
 /// Contains visibility information for module members and use aliases.
 #[derive(Clone, Debug, Default)]
@@ -174,6 +198,8 @@ pub struct ModuleInfo {
     pub module_context_map: ModuleContextMap,
     /// List of wildcard import base paths (e.g., `use foo::*` stores "foo")
     pub wildcard_imports: Vec<Symbol>,
+    /// Map from type name to its variant definitions
+    pub type_declarations: TypeDeclarationMap,
 }
 
 impl ModuleInfo {
@@ -350,6 +376,17 @@ fn stmts_from_program_with_prefix(
                 target,
             } => {
                 process_use_statement(&visibility, &path, &target, module_prefix, module_info);
+                None
+            }
+            ProgramStatement::TypeDeclaration {
+                visibility: _,
+                name,
+                variants,
+            } => {
+                // Store type declaration for later use in type environment
+                // For now, register as a type alias in module info
+                let mangled_name = mangle_qualified_name(module_prefix, name);
+                module_info.type_declarations.insert(mangled_name, variants);
                 None
             }
             ProgramStatement::Error => Some(vec![(

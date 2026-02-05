@@ -472,7 +472,7 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 right: t2,
             }]);
         }
-        (Type::Union(union_types), t) => {
+        (Type::Union(union_types), _t) => {
             // Check if all types in the union can unify with t
             // Union is subtype of t only if all members are subtypes
             let all_match = union_types
@@ -485,6 +485,26 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 left: t1,
                 right: t2,
             }]);
+        }
+        // UserSum type support: same UserSum types are identical
+        (
+            Type::UserSum {
+                name: n1,
+                variants: v1,
+            },
+            Type::UserSum {
+                name: n2,
+                variants: v2,
+            },
+        ) => {
+            if n1 == n2 && v1 == v2 {
+                Relation::Identical
+            } else {
+                return Err(vec![Error::TypeMismatch {
+                    left: t1,
+                    right: t2,
+                }]);
+            }
         }
         (_p1, _p2) => {
             return Err(vec![Error::TypeMismatch {

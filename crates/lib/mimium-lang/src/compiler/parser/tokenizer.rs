@@ -160,6 +160,7 @@ where
             "mod" => TokenKind::Mod,
             "use" => TokenKind::Use,
             "pub" => TokenKind::Pub,
+            "type" => TokenKind::Type,
             "_" => TokenKind::PlaceHolder,
             _ => TokenKind::Ident,
         })

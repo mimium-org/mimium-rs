@@ -218,6 +218,8 @@ pub enum SyntaxKind {
     StageDecl,
     ModuleDecl,
     UseStmt,
+    TypeDecl,
+    VariantDef,
 
     // Module-related
     QualifiedPath,
@@ -290,6 +292,8 @@ impl std::fmt::Display for SyntaxKind {
             SyntaxKind::StageDecl => write!(f, "StageDecl"),
             SyntaxKind::ModuleDecl => write!(f, "ModuleDecl"),
             SyntaxKind::UseStmt => write!(f, "UseStmt"),
+            SyntaxKind::TypeDecl => write!(f, "TypeDecl"),
+            SyntaxKind::VariantDef => write!(f, "VariantDef"),
             SyntaxKind::QualifiedPath => write!(f, "QualifiedPath"),
             SyntaxKind::VisibilityPub => write!(f, "VisibilityPub"),
             SyntaxKind::UseTargetMultiple => write!(f, "UseTargetMultiple"),

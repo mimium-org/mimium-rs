@@ -191,7 +191,9 @@ where
                 | SyntaxKind::MatchArm
                 | SyntaxKind::MatchArmList
                 | SyntaxKind::MatchPattern
-                | SyntaxKind::ConstructorPattern => print_leaf_children(children, ctx, allocator),
+                | SyntaxKind::ConstructorPattern
+                | SyntaxKind::TypeDecl
+                | SyntaxKind::VariantDef => print_leaf_children(children, ctx, allocator),
                 SyntaxKind::Error => allocator.text("/* error */"),
             }
         }

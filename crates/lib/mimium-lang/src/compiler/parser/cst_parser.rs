@@ -337,6 +337,7 @@ impl<'a> Parser<'a> {
                 Some(TokenKind::Sharp) => this.parse_stage_decl(),
                 Some(TokenKind::Mod) => this.parse_module_decl(),
                 Some(TokenKind::Use) => this.parse_use_stmt(),
+                Some(TokenKind::Type) => this.parse_type_decl(),
                 _ => {
                     // Try parsing as expression
                     this.parse_expr();
@@ -427,6 +428,38 @@ impl<'a> Parser<'a> {
             while this.check(TokenKind::DoubleColon) {
                 this.bump(); // consume '::'
                 this.expect(TokenKind::Ident);
+            }
+        });
+    }
+
+    /// Parse type declaration: type Name = Variant1 | Variant2 | ...
+    fn parse_type_decl(&mut self) {
+        self.emit_node(SyntaxKind::TypeDecl, |this| {
+            this.expect(TokenKind::Type);
+            this.expect(TokenKind::Ident); // type name
+
+            this.expect(TokenKind::Assign); // =
+
+            // Parse variant definitions separated by |
+            this.parse_variant_def();
+            while this.check(TokenKind::LambdaArgBeginEnd) {
+                this.bump(); // consume '|'
+                this.parse_variant_def();
+            }
+        });
+    }
+
+    /// Parse a single variant definition: Name or Name(type)
+    fn parse_variant_def(&mut self) {
+        self.emit_node(SyntaxKind::VariantDef, |this| {
+            // Variant name (must be identifier)
+            this.expect(TokenKind::Ident);
+
+            // Optional payload type: Name(Type)
+            if this.check(TokenKind::ParenBegin) {
+                this.bump(); // consume '('
+                this.parse_type();
+                this.expect(TokenKind::ParenEnd);
             }
         });
     }

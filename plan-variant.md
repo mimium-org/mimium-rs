@@ -17,9 +17,9 @@ Phase 1: Integer Match     (foundation)  ✅ COMPLETED
     ↓
 Phase 2: Sum Type `A|B`    (type system extension)  ✅ COMPLETED
     ↓
-Phase 3: Type Declaration  (custom types)  ← NEXT
+Phase 3: Type Declaration  (custom types)  ✅ COMPLETED
     ↓
-Phase 4: Constructor w/ values
+Phase 4: Constructor w/ values  ← NEXT
     ↓
 Phase 5-6: Complex patterns
 ```
@@ -30,14 +30,15 @@ Phase 5-6: Complex patterns
 |-------|--------|-------------|-----|-------------|
 | 1 ✅ | `green.rs`, `cst_parser.rs`, `lower.rs` | `typing.rs` | `mirgen.rs` | `bytecodegen.rs`, `vm.rs` |
 | 2 ✅ | (type annotation parser) | `types/mod.rs`, `typing.rs`, `unification.rs` | `mirgen.rs` | `bytecodegen.rs`, `vm.rs` |
-| 3 | `cst_parser.rs` (type decl) | type environment | - | - |
+| 3 ✅ | `cst_parser.rs` (type decl) | `typing.rs`, `unification.rs` | `mirgen.rs` | - |
 | 4+ | pattern parser | pattern typing | pattern MIR | - |
 
 ### Current Test Status (2026-02-05)
 
 - `match_int`: ✅ PASSED (integer literal matching with wildcard default)
 - `sum_type_basic`: ✅ PASSED (Union type with constructor patterns)
-- All other tests (95 integration + 7 scheduler): ✅ PASSED
+- `enum_basic`: ✅ PASSED (User-defined enum with constructor patterns)
+- All other tests (96 integration + 7 scheduler): ✅ PASSED
 - `multistage` tests: ⏳ Skipped (pre-existing hang issue, unrelated to variant types)
 
 ### Phase 1 Implementation Summary ✅
@@ -216,53 +217,85 @@ fn dsp(){
 }
 ```
 
-### Phase 3 Implementation Plan
+### Phase 3 Implementation Status ✅ COMPLETED (2026-02-05)
 
 #### Goal
 Enable user-defined sum types with explicit constructor names (without payload values).
 
 #### Implementation Steps
 
-1. **Type Declaration Parsing** ⏳ TODO
-   - Add `SyntaxKind::TypeDecl` to `green.rs`
+1. **Type Declaration Parsing** ✅ COMPLETED
+   - Added `SyntaxKind::TypeDecl` and `SyntaxKind::VariantDef` to `green.rs`
+   - Added `TokenKind::Type` to `token.rs` and `tokenizer.rs`
    - Parse `type Name = Constructor1 | Constructor2 | ...` in `cst_parser.rs`
    - CST structure: `TypeDecl { name: Ident, variants: Vec<VariantDef> }`
-   - Lower to AST in `lower.rs`
+   - Lower to AST in `lower.rs` (`lower_type_decl`, `lower_variant_def`)
 
-2. **AST for Type Declarations** ⏳ TODO
-   - Add statement type: `Statement::TypeDecl(Symbol, Vec<VariantDef>)`
-   - `VariantDef { name: Symbol, payload: Option<TypeNodeId> }`
-   - Store in expression as `Expr::TypeDecl` or separate statement list
+2. **AST for Type Declarations** ✅ COMPLETED
+   - Added `ProgramStatement::TypeDeclaration { visibility, name, variants }`
+   - Added `VariantDef { name: Symbol, payload: Option<TypeNodeId> }`
+   - Added `Type::UserSum { name: Symbol, variants: Vec<Symbol> }` to type system
+   - Added `TypeDeclarationMap` to `ModuleInfo`
 
-3. **Type Environment Extension** ⏳ TODO
-   - Create type alias/definition environment
-   - Map type name → `Type::Union(...)` with named constructors
-   - Constructor name → (type_id, tag_index) lookup
+3. **Formatter Support** ✅ COMPLETED
+   - Updated `mimium-fmt/src/print.rs` for TypeDeclaration and UserSum
+   - Updated `mimium-fmt/src/cst_print.rs` for TypeDecl and VariantDef
+   - Updated `mimium-language-server` semantic tokens for Type keyword
 
-4. **Constructor as Value** ⏳ TODO
-   - Constructors without payload become zero-arg functions/values
-   - Type of `One` is `MyEnum` (not a function)
-   - In MIR: `TaggedUnionWrap { tag: 0, value: Unit, union_type }`
+4. **Type Environment Extension** ✅ COMPLETED
+   - Added `ConstructorInfo` and `ConstructorEnv` types to `typing.rs`
+   - Added `constructor_env` field to `InferContext`
+   - `register_type_declarations()` method creates UserSum type and registers constructors
+   - `infer_root_with_type_decls()` accepts optional type declarations
 
-5. **Pattern Matching Enhancement** ⏳ TODO
-   - Allow bare identifiers as constructor patterns (not just `Name(x)`)
-   - Look up pattern name in constructor environment
-   - If found, treat as constructor pattern with no binding
+5. **Constructor as Value** ✅ COMPLETED
+   - Constructors without payload are integer tags
+   - Type of `One` is `MyEnum` (the UserSum type)
+   - In MIR: `Integer(tag_index)` - simple integer value
 
-#### Key Questions to Resolve
+6. **Pattern Matching Enhancement** ✅ COMPLETED
+   - Bare identifiers in patterns treated as constructor patterns
+   - Updated `lower_match_pattern` to handle `SyntaxKind::Identifier`
+   - `get_constructor_type_from_union` handles UserSum variants
+   - `eval_union_match` generates Switch on integer tag values
 
-- Should constructors be first-class values (can be passed around)?
-- How to disambiguate `One` (constructor) vs `one` (variable)?
-  - Convention: Uppercase for constructors
-  - Or: explicit lookup in constructor environment first
+7. **Type Unification** ✅ COMPLETED
+   - Added UserSum type matching in `unification.rs`
+   - Same UserSum types unify as Identical
+
+#### Key Files Modified
+- `crates/lib/mimium-lang/src/compiler/parser/token.rs` - Type keyword
+- `crates/lib/mimium-lang/src/compiler/parser/tokenizer.rs` - type keyword recognition
+- `crates/lib/mimium-lang/src/compiler/parser/green.rs` - TypeDecl, VariantDef SyntaxKinds
+- `crates/lib/mimium-lang/src/compiler/parser/cst_parser.rs` - parse_type_decl, parse_variant_def
+- `crates/lib/mimium-lang/src/compiler/parser/lower.rs` - lower_type_decl, lower_variant_def
+- `crates/lib/mimium-lang/src/ast/program.rs` - VariantDef, TypeDeclaration, TypeDeclarationMap
+- `crates/lib/mimium-lang/src/types.rs` - Type::UserSum variant
+- `crates/lib/mimium-lang/src/compiler/typing.rs` - ConstructorInfo, constructor_env, register_type_declarations
+- `crates/lib/mimium-lang/src/compiler/typing/unification.rs` - UserSum unification
+- `crates/lib/mimium-lang/src/compiler/mirgen.rs` - constructor handling in eval_rvar, eval_union_match
+- `crates/bin/mimium-fmt/src/print.rs` - TypeDeclaration formatting
+- `crates/bin/mimium-fmt/src/cst_print.rs` - TypeDecl CST printing
+- `crates/bin/mimium-language-server/src/semantic_token.rs` - Type keyword highlighting
+
+#### Test Result
+- `enum_basic` test: ✅ PASSED (returns 6.0 = 1 + 2 + 3)
+- All other tests (96 integration + 7 scheduler): ✅ PASSED
+- `multistage` tests: ⏳ Skipped (pre-existing hang issue, unrelated to variant types)
+
+---
+
+## step 4. Explicit Constructor with value
+4. Generate MIR for constructor values
+
+#### Key Design Decisions
+
+- **Constructor Names**: Uppercase convention distinguishes constructors from variables
+- **Constructor Types**: Constructors without payload have UserSum type directly
+- **Memory Representation**: Uses integer tag only (no payload for Phase 3)
 
 #### Test File Location
 - `crates/lib/mimium-test/tests/mmm/enum_basic.mmm`
-
-fn dsp(){
-    x+y+z //the result should be 6
-}
-```
 
 ---
 

@@ -100,6 +100,12 @@ pub enum Type {
     Code(TypeNodeId),
     /// Union (sum) type: A | B | C
     Union(Vec<TypeNodeId>),
+    /// User-defined sum type with named constructors (no payload)
+    /// Contains: (type_name, variant_names)
+    UserSum {
+        name: Symbol,
+        variants: Vec<Symbol>,
+    },
     Intermediate(Arc<RwLock<TypeVar>>),
     TypeScheme(TypeSchemeId),
     /// Any type is the top level, it can be unified with anything.
@@ -126,6 +132,16 @@ impl PartialEq for Type {
             (Type::Ref(a), Type::Ref(b)) => a == b,
             (Type::Code(a), Type::Code(b)) => a == b,
             (Type::Union(a), Type::Union(b)) => a == b,
+            (
+                Type::UserSum {
+                    name: n1,
+                    variants: v1,
+                },
+                Type::UserSum {
+                    name: n2,
+                    variants: v2,
+                },
+            ) => n1 == n2 && v1 == v2,
             (Type::TypeScheme(a), Type::TypeScheme(b)) => a == b,
             (Type::Any, Type::Any) => true,
             (Type::Failure, Type::Failure) => true,
@@ -339,6 +355,14 @@ impl Type {
                     .join("_");
                 format!("union_{}", mangled_types)
             }
+            Type::UserSum { name, variants } => {
+                let mangled_variants = variants
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join("_");
+                format!("usersum_{}_{}", name.as_str(), mangled_variants)
+            }
             Type::Any => "any".to_string(),
             Type::Failure => "fail".to_string(),
             Type::Unknown => "unknown".to_string(),
@@ -464,6 +488,10 @@ impl fmt::Display for Type {
                     " | "
                 );
                 write!(f, "{vf}")
+            }
+            Type::UserSum { name, variants } => {
+                let vf = format_vec!(variants, " | ");
+                write!(f, "{name} = {vf}")
             }
             Type::Intermediate(id) => {
                 write!(f, "{}", id.read().unwrap())
