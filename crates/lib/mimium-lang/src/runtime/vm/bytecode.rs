@@ -33,16 +33,19 @@ pub enum Instruction {
     Closure(Reg, Reg),
     /// register of the closure to be closed. other local closures will be released with this instruction.
     Close(Reg),
-    
+
     // New heap-based closure instructions (Phase 3)
     /// Create a closure on the heap. Destination, Function Index, Closure Size
     /// The closure data is allocated on the heap and a HeapIdx is stored in the destination register.
     MakeHeapClosure(Reg, Reg, TypeSize),
     /// Close upvalues of a heap-based closure. Address Register (HeapIdx)
     CloseHeapClosure(Reg),
+    /// Increment reference count of a heap object and register it for release at scope exit.
+    /// Used for call-by-value cloning of heap-allocated closures.
+    CloneHeap(Reg),
     /// Call a closure indirectly through heap storage. Function register (HeapIdx), nargs, nret
     CallIndirect(Reg, u8, TypeSize),
-    
+
     /// destination,source, size
     GetUpValue(Reg, Reg, TypeSize),
     SetUpValue(Reg, Reg, TypeSize),
@@ -162,6 +165,9 @@ impl std::fmt::Display for Instruction {
             }
             Instruction::CloseHeapClosure(addr) => {
                 write!(f, "{:<10} {}", "clsheapcls", addr)
+            }
+            Instruction::CloneHeap(addr) => {
+                write!(f, "{:<10} {}", "cloneheap", addr)
             }
             Instruction::CallIndirect(func, nargs, nret_req) => {
                 write!(f, "{:<10} {} {} {}", "callind", func, nargs, nret_req)

@@ -104,7 +104,7 @@ pub fn heap_release(storage: &mut HeapStorage, idx: HeapIdx) {
     if let Some(obj) = storage.get_mut(idx) {
         obj.refcount -= 1;
         log::trace!("heap_release: {:?} refcount -> {}", idx, obj.refcount);
-        
+
         if obj.refcount == 0 {
             log::trace!("heap_release: freeing {idx:?}");
             storage.remove(idx);
@@ -126,7 +126,11 @@ pub fn heap_release_closure(storage: &mut HeapStorage, idx: HeapIdx) {
     // First, decrement refcount
     let should_free = if let Some(obj) = storage.get_mut(idx) {
         obj.refcount -= 1;
-        log::trace!("heap_release_closure: {:?} refcount -> {}", idx, obj.refcount);
+        log::trace!(
+            "heap_release_closure: {:?} refcount -> {}",
+            idx,
+            obj.refcount
+        );
         obj.refcount == 0
     } else {
         log::warn!("heap_release_closure: invalid HeapIdx {idx:?}");
@@ -139,7 +143,7 @@ pub fn heap_release_closure(storage: &mut HeapStorage, idx: HeapIdx) {
         // understand the UpValue structure to properly identify closure references.
         // For now, we just remove the object without recursive handling.
         // TODO: Implement proper recursive release based on UpValue::Closed analysis
-        
+
         log::trace!("heap_release_closure: freeing {idx:?}");
         storage.remove(idx);
     }

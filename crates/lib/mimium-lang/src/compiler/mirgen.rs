@@ -307,7 +307,7 @@ impl Context {
     fn add_bind(&mut self, bind: (Symbol, VPtr)) {
         self.valenv.add_bind(&[bind]);
     }
-    
+
     /// Recursively insert CloseHeapClosure instructions for heap-allocated objects (closures)
     /// based on type information. This handles nested structures like tuples and records.
     fn insert_close_recursively(&mut self, v: VPtr, ty: TypeNodeId) {
@@ -315,7 +315,7 @@ impl Context {
             Type::Function { arg, ret } => {
                 // This is a closure - insert CloseHeapClosure for the closure itself
                 self.push_inst(Instruction::CloseHeapClosure(v.clone()));
-                
+
                 // For higher-order functions, we don't need to recurse into arg/ret here
                 // because the closure value itself is a single heap object.
                 // The arguments/return values will be processed when they are actually used.
@@ -347,7 +347,39 @@ impl Context {
             }
         }
     }
-    
+
+    /// Recursively insert CloneHeap instructions for heap-allocated objects.
+    /// This increments the reference count so that `release_heap_closures` at
+    /// scope exit will not free objects that are still reachable from another scope.
+    fn insert_clone_recursively(&mut self, v: VPtr, ty: TypeNodeId) {
+        match ty.to_type() {
+            Type::Function { .. } => {
+                self.push_inst(Instruction::CloneHeap(v.clone()));
+            }
+            Type::Tuple(elem_types) => {
+                for (i, elem_ty) in elem_types.iter().enumerate() {
+                    let elem_v = self.push_inst(Instruction::GetElement {
+                        value: v.clone(),
+                        ty,
+                        tuple_offset: i as u64,
+                    });
+                    self.insert_clone_recursively(elem_v, *elem_ty);
+                }
+            }
+            Type::Record(fields) => {
+                for (i, field) in fields.iter().enumerate() {
+                    let field_v = self.push_inst(Instruction::GetElement {
+                        value: v.clone(),
+                        ty,
+                        tuple_offset: i as u64,
+                    });
+                    self.insert_clone_recursively(field_v, field.ty);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn add_bind_pattern(
         &mut self,
         pattern: &TypedPattern,
@@ -1320,12 +1352,14 @@ impl Context {
                                     fn_proto: idx,
                                     size: 64,
                                 });
-                                let _ = ctx.insert_close_recursively(cls.clone(), rt);
+                                ctx.insert_close_recursively(cls.clone(), rt);
+                                ctx.insert_clone_recursively(cls.clone(), rt);
                                 let _ = ctx.push_inst(Instruction::Return(cls, rt));
                             }
                             (_, _) => {
                                 if rt.to_type().contains_function() {
-                                    let _ = ctx.insert_close_recursively(res.clone(), rt);
+                                    ctx.insert_close_recursively(res.clone(), rt);
+                                    ctx.insert_clone_recursively(res.clone(), rt);
                                     let _ = ctx.push_inst(Instruction::Return(res.clone(), rt));
                                 } else {
                                     let _ = ctx.push_inst(Instruction::Return(res.clone(), rt));

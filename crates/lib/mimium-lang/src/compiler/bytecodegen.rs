@@ -502,13 +502,22 @@ impl ByteCodeGenerator {
             mir::Instruction::MakeClosure { fn_proto, size } => {
                 let fn_idx = self.find(&fn_proto);
                 let dst = self.get_destination(dst, 1);
-                Some(VmInstruction::MakeHeapClosure(dst, fn_idx, size as TypeSize))
+                Some(VmInstruction::MakeHeapClosure(
+                    dst,
+                    fn_idx,
+                    size as TypeSize,
+                ))
             }
             mir::Instruction::CloseHeapClosure(src) => {
                 // Close upvalues of the heap-based closure
                 // This is called when a closure escapes its defining scope
                 let base = self.vregister.find_keep(&src).unwrap();
                 Some(VmInstruction::CloseHeapClosure(base))
+            }
+            mir::Instruction::CloneHeap(src) => {
+                // Increment reference count for call-by-value cloning
+                let base = self.vregister.find_keep(&src).unwrap();
+                Some(VmInstruction::CloneHeap(base))
             }
             mir::Instruction::CallIndirect(f, args, r_ty) => {
                 let rsize = Self::word_size_for_type(r_ty);

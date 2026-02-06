@@ -72,7 +72,7 @@ impl SystemPluginAudioWorker for SchedulerAudioWorker {
         while let Some(task_cls) = self.pop_task(time) {
             let closure = machine.get_closure(task_cls);
             machine.execute(closure.fn_proto_pos, Some(task_cls));
-            vm::drop_closure(&mut machine.closures, task_cls);
+            machine.drop_closure(task_cls);
         }
 
         0

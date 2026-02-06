@@ -66,23 +66,28 @@ pub enum Instruction {
     Closure(VPtr),
     //closes upvalues of specific closure. Always inserted right before Return instruction.
     CloseUpValues(VPtr, TypeNodeId),
-    
+
     // New heap-based closure instructions (Phase 2)
     /// Create a closure and allocate it on the heap
     /// MakeClosure(fn_proto, closure_size_in_words)
     /// Returns a HeapIdx that references the allocated closure
     MakeClosure {
-        fn_proto: VPtr,  // Function prototype index
-        size: u64,       // Total size in words (for heap allocation)
+        fn_proto: VPtr, // Function prototype index
+        size: u64,      // Total size in words (for heap allocation)
     },
     /// Close upvalues of a heap-based closure (like CloseUpValues but for heap closures)
     /// CloseHeapClosure(heap_addr)
     /// This closes upvalues when the closure escapes its defining scope
     CloseHeapClosure(VPtr),
+    /// Increment the reference count of a heap-allocated object.
+    /// Inserted whenever a heap object value is duplicated (call-by-value cloning).
+    /// At runtime this calls `heap_retain` and registers the object for release
+    /// when the current scope exits.
+    CloneHeap(VPtr),
     /// Call a closure indirectly through heap storage
     /// CallIndirect(heap_addr, args, return_type)
     CallIndirect(VPtr, Vec<(VPtr, TypeNodeId)>, TypeNodeId),
-    
+
     //label to funcproto  and localvar offset?
     GetUpValue(u64, TypeNodeId),
     SetUpValue(u64, VPtr, TypeNodeId),

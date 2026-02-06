@@ -129,6 +129,9 @@ impl std::fmt::Display for Instruction {
             Instruction::CloseHeapClosure(addr) => {
                 write!(f, "close_heap_closure {}", *addr)
             }
+            Instruction::CloneHeap(addr) => {
+                write!(f, "clone_heap {}", *addr)
+            }
             Instruction::CallIndirect(addr, args, rty) => {
                 write!(
                     f,
