@@ -118,6 +118,29 @@ impl std::fmt::Display for Instruction {
             Instruction::CloseUpValues(cls, ty) => {
                 write!(f, "close {} {}", *cls, ty.to_type())
             }
+            // New heap-based instructions (Phase 2)
+            Instruction::MakeClosure { fn_proto, size } => {
+                if let Value::Function(idx) = fn_proto.as_ref() {
+                    write!(f, "make_closure fn:{idx} size:{size}")
+                } else {
+                    write!(f, "make_closure fn:{} size:{size}", *fn_proto)
+                }
+            }
+            Instruction::CloseHeapClosure(addr) => {
+                write!(f, "close_heap_closure {}", *addr)
+            }
+            Instruction::CallIndirect(addr, args, rty) => {
+                write!(
+                    f,
+                    "call_indirect {} [{}] ->{}",
+                    *addr,
+                    args.iter()
+                        .map(|(a, _t)| a.to_string())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    rty.to_type()
+                )
+            }
             Instruction::GetUpValue(idx, ty) => write!(f, "getupval {idx} {}", ty.to_type()),
             Instruction::SetUpValue(dst, src, ty) => {
                 write!(f, "setupval {dst} {} {}", src, ty.to_type())

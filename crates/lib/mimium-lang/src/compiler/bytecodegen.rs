@@ -498,6 +498,46 @@ impl ByteCodeGenerator {
                 let dst = self.get_destination(dst, 1);
                 Some(VmInstruction::Closure(dst, idx))
             }
+            // New heap-based instructions (Phase 3)
+            mir::Instruction::MakeClosure { fn_proto, size } => {
+                let fn_idx = self.find(&fn_proto);
+                let dst = self.get_destination(dst, 1);
+                Some(VmInstruction::MakeHeapClosure(dst, fn_idx, size as TypeSize))
+            }
+            mir::Instruction::CloseHeapClosure(src) => {
+                // Close upvalues of the heap-based closure
+                // This is called when a closure escapes its defining scope
+                let base = self.vregister.find_keep(&src).unwrap();
+                Some(VmInstruction::CloseHeapClosure(base))
+            }
+            mir::Instruction::CallIndirect(f, args, r_ty) => {
+                let rsize = Self::word_size_for_type(r_ty);
+                match f.as_ref() {
+                    mir::Value::Register(_address) => {
+                        let bytecodes_dst =
+                            bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut());
+
+                        let (fadd, argsize) = self.prepare_function(bytecodes_dst, &f, &args);
+                        let s = self.find(&f);
+                        let d = self.get_destination(dst.clone(), rsize);
+                        bytecodes_dst.push(VmInstruction::CallIndirect(fadd, argsize, rsize));
+                        match rsize {
+                            0 => None,
+                            1 => Some(VmInstruction::Move(d, s)),
+                            n => Some(VmInstruction::MoveRange(d, s, n)),
+                        }
+                    }
+                    mir::Value::Function(_idx) => {
+                        unreachable!();
+                    }
+                    mir::Value::ExtFunction(label, _ty) => {
+                        let (dst, argsize, nret) =
+                            self.prepare_extfun(funcproto, bytecodes_dst, dst, &args, *label, r_ty);
+                        Some(VmInstruction::CallExtFun(dst, argsize, nret))
+                    }
+                    _ => unreachable!(),
+                }
+            }
             mir::Instruction::CloseUpValues(src, ty) => {
                 // src might contain multiple upvalues (e.g. tuple)
                 let flattened = ty.flatten();

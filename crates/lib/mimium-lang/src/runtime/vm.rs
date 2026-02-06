@@ -2,6 +2,7 @@ use core::slice;
 use slotmap::{DefaultKey, SlotMap};
 use std::{cell::RefCell, cmp::Ordering, collections::HashMap, ops::Range, rc::Rc};
 pub mod bytecode;
+pub mod heap;
 pub mod program;
 mod ringbuffer;
 pub use bytecode::*;
@@ -231,7 +232,8 @@ pub struct Machine {
     pub prog: Program,
     stack: Vec<RawVal>,
     base_pointer: u64,
-    pub closures: ClosureStorage,
+    pub closures: ClosureStorage, // TODO: Will be replaced by heap in later phases
+    pub heap: heap::HeapStorage,  // New unified heap storage
     pub ext_fun_table: Vec<(Symbol, ExtFunType)>,
     pub ext_cls_table: Vec<(Symbol, ExtClsType)>,
     pub arrays: ArrayStorage,
@@ -369,6 +371,7 @@ impl Machine {
             stack: vec![],
             base_pointer: 0,
             closures: Default::default(),
+            heap: Default::default(),
             ext_fun_table: vec![],
             ext_cls_table: vec![],
             fn_map: HashMap::new(),
@@ -396,6 +399,7 @@ impl Machine {
             stack: vec![],
             base_pointer: 0,
             closures: Default::default(),
+            heap: Default::default(),
             ext_fun_table: vec![],
             ext_cls_table: vec![],
             fn_map: HashMap::new(),
@@ -518,6 +522,16 @@ impl Machine {
         let len = self.stack.len();
         &self.stack[(len - n)..]
     }
+    /// Extract the [`ClosureIdx`] stored inside a heap-allocated closure object.
+    ///
+    /// During the migration period the heap object wraps a single `ClosureIdx`
+    /// in `data[0]`.  External callers (e.g. the scheduler plugin) can use this
+    /// to obtain the underlying closure index from a `HeapIdx` value that lives
+    /// on the VM stack.
+    pub fn get_closure_idx_from_heap(&self, heap_idx: heap::HeapIdx) -> ClosureIdx {
+        let heap_obj = self.heap.get(heap_idx).expect("Invalid HeapIdx");
+        Self::get_as::<ClosureIdx>(heap_obj.data[0])
+    }
     fn get_upvalue_offset(upper_base: usize, offset: OpenUpValue) -> usize {
         upper_base + offset.pos
     }
@@ -611,6 +625,81 @@ impl Machine {
             .insert(Closure::new(&self.prog, self.base_pointer, fn_i, upv_map));
         ClosureIdx(idx)
     }
+
+    /// Allocate a closure on the heap storage (Phase 4 implementation)
+    /// Returns a HeapIdx that can be stored in a register
+    fn allocate_heap_closure(
+        &mut self,
+        fn_i: usize,
+        upv_map: &mut LocalUpValueMap,
+    ) -> heap::HeapIdx {
+        // For now, create a traditional closure and store its index in the heap
+        // TODO: Eventually migrate to storing closure data directly in heap
+        let closure_idx = self.allocate_closure(fn_i, upv_map);
+
+        // Create a heap object containing the ClosureIdx
+        // Layout: [closure_idx_as_raw_val]
+        let heap_obj = heap::HeapObject::with_data(vec![Self::to_value(closure_idx)]);
+        let heap_idx = self.heap.insert(heap_obj);
+
+        log::trace!(
+            "allocate_heap_closure: fn_i={fn_i}, heap_idx={heap_idx:?}, closure_idx={closure_idx:?}"
+        );
+        heap_idx
+    }
+
+    /// Release a heap-based closure
+    fn release_heap_closure(&mut self, heap_idx: heap::HeapIdx) {
+        log::trace!("release_heap_closure: heap_idx={heap_idx:?}");
+
+        // Extract the ClosureIdx from the heap object before releasing
+        if let Some(heap_obj) = self.heap.get(heap_idx) {
+            if !heap_obj.data.is_empty() {
+                let closure_idx = Self::get_as::<ClosureIdx>(heap_obj.data[0]);
+                let closure = self.get_closure(closure_idx);
+                if !closure.is_closed {
+                    drop_closure(&mut self.closures, closure_idx);
+                }
+            }
+        }
+
+        // Release the heap object itself
+        heap::heap_release(&mut self.heap, heap_idx);
+    }
+
+    /// Close upvalues of a heap-based closure (does not release the heap object)
+    fn close_heap_upvalues(&mut self, heap_idx: heap::HeapIdx) {
+        log::trace!("close_heap_upvalues: heap_idx={heap_idx:?}");
+
+        // Extract the ClosureIdx and close its upvalues
+        if let Some(heap_obj) = self.heap.get(heap_idx) {
+            if !heap_obj.data.is_empty() {
+                let closure_idx = Self::get_as::<ClosureIdx>(heap_obj.data[0]);
+                // Close upvalues directly by ClosureIdx without corrupting the stack
+                self.close_upvalues_by_idx(closure_idx);
+            }
+        }
+    }
+
+    /// Release heap-based closures that are no longer needed
+    fn release_heap_closures(&mut self, local_heap_closures: &[heap::HeapIdx]) {
+        // TODO: Implement proper reference counting or escape analysis for heap closures
+        // 
+        // Current issue: heap closures may escape the function scope (as return values,
+        // captured in upvalues, passed to scheduler, etc.), so we cannot safely release
+        // them here without proper lifetime tracking.
+        // 
+        // For now, we intentionally leak heap objects to ensure correctness.
+        // The underlying Closure objects are still managed via refcount in closures SlotMap.
+        for _heap_idx in local_heap_closures.iter() {
+            // Intentionally do nothing - heap objects will accumulate
+            // TODO: Implement one of:
+            // 1. Reference counting on HeapObject
+            // 2. Escape analysis to determine which closures can be safely released
+            // 3. GC-based heap management
+        }
+    }
+
     /// This API is used for defining higher-order external function that returns some external rust closure.
     /// Because the native closure cannot be called with CallCls directly, the vm appends an additional function the program,
     /// that wraps external closure call with an internal closure.
@@ -667,6 +756,12 @@ impl Machine {
     }
     fn close_upvalues(&mut self, src: Reg) {
         let clsidx = Self::get_as::<ClosureIdx>(self.get_stack(src as _));
+        self.close_upvalues_by_idx(clsidx);
+    }
+    /// Close all open upvalues of the given closure, copying stack values into
+    /// the upvalue cells so the closure can outlive the current stack frame.
+    fn close_upvalues_by_idx(&mut self, clsidx: ClosureIdx) {
+        let closure_base_ptr = self.get_closure(clsidx).base_ptr as usize;
 
         let clsidxs = self
             .get_closure(clsidx)
@@ -676,8 +771,7 @@ impl Machine {
                 let upv = &mut *upv.borrow_mut();
                 match upv {
                     UpValue::Open(ov) => {
-                        let (_range, ov_raw) =
-                            self.get_open_upvalue(self.base_pointer as usize, *ov);
+                        let (_range, ov_raw) = self.get_open_upvalue(closure_base_ptr, *ov);
                         let is_closure = ov.is_closure;
                         *upv = UpValue::Closed(ov_raw.to_vec(), is_closure);
                         is_closure.then_some(Self::get_as::<ClosureIdx>(ov_raw[0]))
@@ -717,6 +811,7 @@ impl Machine {
     /// as a result of the call.
     pub fn execute(&mut self, func_i: usize, cls_i: Option<ClosureIdx>) -> ReturnCode {
         let mut local_closures: Vec<ClosureIdx> = vec![];
+        let mut local_heap_closures: Vec<heap::HeapIdx> = vec![];
         let mut upv_map = LocalUpValueMap::default();
         let mut pcounter = 0;
         // if cfg!(test) {
@@ -808,14 +903,46 @@ impl Machine {
                 Instruction::Close(src) => {
                     self.close_upvalues(src);
                 }
+                // New heap-based instructions (Phase 4)
+                Instruction::MakeHeapClosure(dst, fn_index, _size) => {
+                    let fn_proto_pos = self.get_stack(fn_index as i64) as usize;
+                    let heap_idx = self.allocate_heap_closure(fn_proto_pos, &mut upv_map);
+                    local_heap_closures.push(heap_idx);
+                    // Store the heap index (not closure index) in the register
+                    self.set_stack(dst as i64, Self::to_value(heap_idx));
+                }
+                Instruction::CloseHeapClosure(src) => {
+                    let heap_addr = self.get_stack(src as i64);
+                    let heap_idx = Self::get_as::<heap::HeapIdx>(heap_addr);
+                    self.close_heap_upvalues(heap_idx);
+                }
+                Instruction::CallIndirect(func, nargs, nret_req) => {
+                    // Get heap index from the register
+                    let heap_addr = self.get_stack(func as i64);
+                    let heap_idx = Self::get_as::<heap::HeapIdx>(heap_addr);
+
+                    // Extract the ClosureIdx from the heap object
+                    let heap_obj = self.heap.get(heap_idx).expect("Invalid heap index");
+                    let cls_i = Self::get_as::<ClosureIdx>(heap_obj.data[0]);
+
+                    let cls = self.get_closure(cls_i);
+                    let pos_of_f = cls.fn_proto_pos;
+                    self.states_stack.push(cls_i);
+                    self.call_function(func, nargs, nret_req, move |machine| {
+                        machine.execute(pos_of_f, Some(cls_i))
+                    });
+                    self.states_stack.pop();
+                }
                 Instruction::Return0 => {
                     self.stack.truncate((self.base_pointer - 1) as usize);
                     self.release_open_closures(&local_closures);
+                    self.release_heap_closures(&local_heap_closures);
                     return 0;
                 }
                 Instruction::Return(iret, nret) => {
                     let _ = self.return_general(iret, nret);
                     self.release_open_closures(&local_closures);
+                    self.release_heap_closures(&local_heap_closures);
                     return nret.into();
                 }
                 Instruction::GetUpValue(dst, index, _size) => {
@@ -828,19 +955,13 @@ impl Machine {
                             UpValue::Open(i) => {
                                 let upper_base = cls.base_ptr as usize;
                                 let (_range, rawv) = self.get_open_upvalue(upper_base, *i);
-                                // log::trace!("open {}", unsafe {
-                                //     std::mem::transmute::<u64, f64>(rawv[0])
-                                // });
-                                // assert_eq!(rawv.len(), size as usize);
                                 let rawv: &[RawVal] = unsafe { std::mem::transmute(rawv) };
                                 rawv
                             }
                             UpValue::Closed(rawval, _) => {
-                                //force borrow because closure cell and stack never collisions
                                 let rawv: &[RawVal] =
                                     unsafe { std::mem::transmute(rawval.as_slice()) };
                                 rawv
-                                //
                             }
                         };
                         self.set_stack_range(dst as i64, vs);

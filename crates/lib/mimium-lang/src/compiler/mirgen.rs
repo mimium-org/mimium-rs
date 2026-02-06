@@ -307,6 +307,47 @@ impl Context {
     fn add_bind(&mut self, bind: (Symbol, VPtr)) {
         self.valenv.add_bind(&[bind]);
     }
+    
+    /// Recursively insert CloseHeapClosure instructions for heap-allocated objects (closures)
+    /// based on type information. This handles nested structures like tuples and records.
+    fn insert_close_recursively(&mut self, v: VPtr, ty: TypeNodeId) {
+        match ty.to_type() {
+            Type::Function { arg, ret } => {
+                // This is a closure - insert CloseHeapClosure for the closure itself
+                self.push_inst(Instruction::CloseHeapClosure(v.clone()));
+                
+                // For higher-order functions, we don't need to recurse into arg/ret here
+                // because the closure value itself is a single heap object.
+                // The arguments/return values will be processed when they are actually used.
+            }
+            Type::Tuple(elem_types) => {
+                // Recursively process each element of the tuple
+                for (i, elem_ty) in elem_types.iter().enumerate() {
+                    let elem_v = self.push_inst(Instruction::GetElement {
+                        value: v.clone(),
+                        ty,
+                        tuple_offset: i as u64,
+                    });
+                    self.insert_close_recursively(elem_v, *elem_ty);
+                }
+            }
+            Type::Record(fields) => {
+                // Recursively process each field of the record
+                for (i, field) in fields.iter().enumerate() {
+                    let field_v = self.push_inst(Instruction::GetElement {
+                        value: v.clone(),
+                        ty,
+                        tuple_offset: i as u64,
+                    });
+                    self.insert_close_recursively(field_v, field.ty);
+                }
+            }
+            _ => {
+                // Other types (primitives, arrays, etc.) don't need closing
+            }
+        }
+    }
+    
     fn add_bind_pattern(
         &mut self,
         pattern: &TypedPattern,
@@ -323,7 +364,7 @@ impl Context {
                     let gv = Arc::new(Value::Global(v.clone()));
                     if t.is_function() {
                         //globally allocated closures are immidiately closed, not to be disposed
-                        self.push_inst(Instruction::CloseUpValues(v.clone(), ty));
+                        self.insert_close_recursively(v.clone(), ty);
                     }
                     self.push_inst(Instruction::SetGlobal(gv.clone(), v.clone(), ty));
                     self.add_bind((*id, gv))
@@ -549,7 +590,7 @@ impl Context {
                 let ftype = numeric!();
                 let fntype = function!(vec![], ftype);
                 let getnow = Arc::new(Value::ExtFunction("_mimium_getnow".to_symbol(), fntype));
-                self.push_inst(Instruction::CallCls(getnow, vec![], ftype))
+                self.push_inst(Instruction::CallIndirect(getnow, vec![], ftype))
             }
             Literal::SampleRate => {
                 let ftype = numeric!();
@@ -558,7 +599,7 @@ impl Context {
                     "_mimium_getsamplerate".to_symbol(),
                     fntype,
                 ));
-                self.push_inst(Instruction::CallCls(samplerate, vec![], ftype))
+                self.push_inst(Instruction::CallIndirect(samplerate, vec![], ftype))
             }
             Literal::SelfLit | Literal::PlaceHolder => unreachable!(),
         }
@@ -597,7 +638,11 @@ impl Context {
             LookupRes::Local(v) => match v.as_ref() {
                 Value::Function(i) => {
                     let reg = self.push_inst(Instruction::Uinteger(*i as u64));
-                    self.push_inst(Instruction::Closure(reg))
+                    // TODO: Calculate actual closure size based on upvalues and state
+                    self.push_inst(Instruction::MakeClosure {
+                        fn_proto: reg,
+                        size: 64,
+                    })
                 }
                 _ => {
                     let ptr = self.eval_expr_as_address(e);
@@ -760,13 +805,17 @@ impl Context {
                 let res = match v.as_ref() {
                     Value::Function(idx) => {
                         let f = self.push_inst(Instruction::Uinteger(*idx as u64));
-                        self.push_inst(Instruction::Closure(f))
+                        // TODO: Calculate actual closure size
+                        self.push_inst(Instruction::MakeClosure {
+                            fn_proto: f,
+                            size: 64,
+                        })
                     }
                     _ => v.clone(),
                 };
                 if t.to_type().contains_function() {
                     //higher-order function need to close immidiately
-                    self.push_inst(Instruction::CloseUpValues(res.clone(), t));
+                    self.insert_close_recursively(res.clone(), t);
                 }
                 (res, t, s)
             })
@@ -789,7 +838,11 @@ impl Context {
         let e = match e.as_ref() {
             Value::Function(idx) => {
                 let cpos = self.push_inst(Instruction::Uinteger(*idx as u64));
-                self.push_inst(Instruction::Closure(cpos))
+                // TODO: Calculate actual closure size
+                self.push_inst(Instruction::MakeClosure {
+                    fn_proto: cpos,
+                    size: 64,
+                })
             }
             _ => e,
         };
@@ -1152,7 +1205,7 @@ impl Context {
                             self.emit_fncall(*idx as u64, atvvec.clone(), monomorphized_rt)
                         }
                         Value::Register(_) => (
-                            self.push_inst(Instruction::CallCls(
+                            self.push_inst(Instruction::CallIndirect(
                                 v.clone(),
                                 atvvec.clone(),
                                 monomorphized_rt,
@@ -1167,7 +1220,7 @@ impl Context {
                         //closure
                         //do not increment state size for closure
                         (
-                            self.push_inst(Instruction::CallCls(
+                            self.push_inst(Instruction::CallIndirect(
                                 f_to_call.clone(),
                                 atvvec.clone(),
                                 monomorphized_rt,
@@ -1262,14 +1315,17 @@ impl Context {
                             }
                             (Value::Function(i), _) => {
                                 let idx = ctx.push_inst(Instruction::Uinteger(*i as u64));
-                                let cls = ctx.push_inst(Instruction::Closure(idx));
-                                let _ = ctx.push_inst(Instruction::CloseUpValues(cls.clone(), rt));
+                                // TODO: Calculate actual closure size
+                                let cls = ctx.push_inst(Instruction::MakeClosure {
+                                    fn_proto: idx,
+                                    size: 64,
+                                });
+                                let _ = ctx.insert_close_recursively(cls.clone(), rt);
                                 let _ = ctx.push_inst(Instruction::Return(cls, rt));
                             }
                             (_, _) => {
                                 if rt.to_type().contains_function() {
-                                    let _ =
-                                        ctx.push_inst(Instruction::CloseUpValues(res.clone(), rt));
+                                    let _ = ctx.insert_close_recursively(res.clone(), rt);
                                     let _ = ctx.push_inst(Instruction::Return(res.clone(), rt));
                                 } else {
                                     let _ = ctx.push_inst(Instruction::Return(res.clone(), rt));
@@ -1286,7 +1342,11 @@ impl Context {
                     f
                 } else {
                     let idxcell = self.push_inst(Instruction::Uinteger(c_idx.0));
-                    self.push_inst(Instruction::Closure(idxcell))
+                    // TODO: Calculate actual closure size
+                    self.push_inst(Instruction::MakeClosure {
+                        fn_proto: idxcell,
+                        size: 64,
+                    })
                 };
                 (res, ty, vec![])
             }
