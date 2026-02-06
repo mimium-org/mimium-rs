@@ -936,3 +936,53 @@ fn mixed_type_syntax() {
     let ans = vec![330.0];
     assert_eq!(res, ans);
 }
+
+// ============ Match Exhaustiveness Tests (should fail) ============
+
+#[wasm_bindgen_test(unsupported = test)]
+fn match_exhaustiveness_fail_union() {
+    // Test non-exhaustive match on union type (missing 'string' branch)
+    let errs = run_error_test("match_exhaustiveness_fail_union.mmm", false);
+    assert!(!errs.is_empty(), "Expected exhaustiveness error");
+
+    // Check that the error message mentions non-exhaustive match
+    let err_message = errs[0].get_message();
+    assert!(
+        err_message.contains("not exhaustive"),
+        "Expected 'not exhaustive' in error message, got: {err_message}"
+    );
+
+    // Check that 'string' is mentioned as missing
+    assert!(
+        err_message.contains("string")
+            || errs[0]
+                .get_labels()
+                .iter()
+                .any(|(_, label)| label.contains("string")),
+        "Expected 'string' to be mentioned as missing pattern, got: {err_message}"
+    );
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn match_exhaustiveness_fail_enum() {
+    // Test non-exhaustive match on enum type (missing 'Third' constructor)
+    let errs = run_error_test("match_exhaustiveness_fail_enum.mmm", false);
+    assert!(!errs.is_empty(), "Expected exhaustiveness error");
+
+    // Check that the error message mentions non-exhaustive match
+    let err_message = errs[0].get_message();
+    assert!(
+        err_message.contains("not exhaustive"),
+        "Expected 'not exhaustive' in error message, got: {err_message}",
+    );
+
+    // Check that 'Third' is mentioned as missing
+    assert!(
+        err_message.contains("Third")
+            || errs[0]
+                .get_labels()
+                .iter()
+                .any(|(_, label)| label.contains("Third")),
+        "Expected 'Third' to be mentioned as missing pattern, got: {err_message}",
+    );
+}

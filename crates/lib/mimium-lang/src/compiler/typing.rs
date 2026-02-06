@@ -93,6 +93,11 @@ pub enum Error {
         found: TypeNodeId,
         location: Location,
     },
+    /// Match expression is not exhaustive (missing patterns)
+    NonExhaustiveMatch {
+        missing_constructors: Vec<Symbol>,
+        location: Location,
+    },
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -195,6 +200,17 @@ impl ReportableError for Error {
                     "Expected a union type but found {}",
                     found.to_type().to_string_for_error()
                 )
+            }
+            Error::NonExhaustiveMatch {
+                missing_constructors,
+                ..
+            } => {
+                let missing = missing_constructors
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("Match expression is not exhaustive. Missing patterns: {missing}")
             }
         }
     }
@@ -411,6 +427,17 @@ impl ReportableError for Error {
                     ),
                 )]
             }
+            Error::NonExhaustiveMatch {
+                missing_constructors,
+                location,
+            } => {
+                let missing = missing_constructors
+                    .iter()
+                    .map(|s| format!("\"{s}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                vec![(location.clone(), format!("Missing patterns: {missing}"))]
+            }
         }
     }
 }
@@ -444,6 +471,8 @@ pub struct InferContext {
     pub constructor_env: ConstructorEnv,
     /// Type alias resolution map
     pub type_aliases: HashMap<Symbol, TypeNodeId>,
+    /// Match expressions to check for exhaustiveness after type resolution
+    match_expressions: Vec<(ExprNodeId, TypeNodeId)>,
     pub errors: Vec<Error>,
 }
 impl InferContext {
@@ -465,6 +494,7 @@ impl InferContext {
             env: Environment::<(TypeNodeId, EvalStage)>::default(),
             constructor_env: Default::default(),
             type_aliases: Default::default(),
+            match_expressions: Default::default(),
             errors: Default::default(),
         };
         res.env.extend();
@@ -1456,6 +1486,9 @@ impl InferContext {
                     })
                     .collect();
 
+                // Record Match expression for exhaustiveness checking after type resolution
+                self.match_expressions.push((e, scrut_ty));
+
                 if arm_tys.is_empty() {
                     Ok(Type::Primitive(PType::Unit).into_id_with_location(loc))
                 } else {
@@ -1482,6 +1515,117 @@ impl InferContext {
             }
         }
     }
+
+    /// Check if a match expression is exhaustive
+    /// Returns a list of missing constructor names if not exhaustive
+    fn check_match_exhaustiveness(
+        &self,
+        scrutinee_ty: TypeNodeId,
+        arms: &[crate::ast::MatchArm],
+    ) -> Option<Vec<Symbol>> {
+        // Get all constructors required for the scrutinee type
+        let required_constructors = self.get_all_constructors(scrutinee_ty);
+
+        // If there are no constructors (e.g., primitive types), no exhaustiveness check needed
+        if required_constructors.is_empty() {
+            return None;
+        }
+
+        // Check if there's a wildcard pattern (covers everything)
+        let has_wildcard = arms.iter().any(|arm| {
+            matches!(
+                &arm.pattern,
+                crate::ast::MatchPattern::Wildcard
+                    | crate::ast::MatchPattern::Variable(_)
+                    | crate::ast::MatchPattern::Tuple(_)
+            )
+        });
+
+        // If there's a wildcard, the match is exhaustive
+        if has_wildcard {
+            return None;
+        }
+
+        // Collect constructors covered by patterns (only Constructor patterns contribute)
+        let covered_constructors: Vec<Symbol> = arms
+            .iter()
+            .filter_map(|arm| {
+                if let crate::ast::MatchPattern::Constructor(name, _) = &arm.pattern {
+                    Some(*name)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Find missing constructors
+        let missing: Vec<Symbol> = required_constructors
+            .into_iter()
+            .filter(|req| !covered_constructors.contains(req))
+            .collect();
+
+        if missing.is_empty() {
+            None
+        } else {
+            Some(missing)
+        }
+    }
+
+    /// Get all constructor names for a type
+    /// For union types like `float | string`, returns ["float", "string"]
+    /// For UserSum types, returns all constructor names
+    fn get_all_constructors(&self, ty: TypeNodeId) -> Vec<Symbol> {
+        // First resolve type aliases, then substitute intermediate types
+        let resolved = self.resolve_type_alias(ty);
+        let substituted = Self::substitute_type(resolved);
+
+        match substituted.to_type() {
+            Type::Union(variants) => {
+                // For union types, get the constructor name for each variant
+                variants
+                    .iter()
+                    .filter_map(|v| {
+                        let v_resolved = Self::substitute_type(*v);
+                        Self::type_constructor_name(&v_resolved.to_type())
+                    })
+                    .collect()
+            }
+            Type::UserSum { name: _, variants } => {
+                // For UserSum types, collect all constructor names
+                variants.iter().map(|(name, _)| *name).collect()
+            }
+            _ => {
+                // For non-union/sum types, no constructors to check
+                Vec::new()
+            }
+        }
+    }
+
+    /// Check exhaustiveness for all recorded Match expressions
+    /// This should be called after type resolution (substitute_all_intermediates)
+    pub fn check_all_match_exhaustiveness(&mut self) {
+        let match_expressions = std::mem::take(&mut self.match_expressions);
+
+        let errors: Vec<_> = match_expressions
+            .into_iter()
+            .filter_map(|(match_expr, scrut_ty)| {
+                if let Expr::Match(_scrutinee, arms) = &match_expr.to_expr() {
+                    let resolved_scrut_ty = self.resolve_type_alias(scrut_ty);
+                    let substituted_scrut_ty = Self::substitute_type(resolved_scrut_ty);
+
+                    self.check_match_exhaustiveness(substituted_scrut_ty, arms)
+                        .map(|missing| Error::NonExhaustiveMatch {
+                            missing_constructors: missing,
+                            location: match_expr.to_location(),
+                        })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        self.errors.extend(errors);
+    }
 }
 
 pub fn infer_root(
@@ -1501,6 +1645,7 @@ pub fn infer_root(
         .infer_type(e)
         .unwrap_or(Type::Failure.into_id_with_location(e.to_location()));
     ctx.substitute_all_intermediates();
+    ctx.check_all_match_exhaustiveness();
     ctx
 }
 
