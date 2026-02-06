@@ -1806,11 +1806,11 @@ impl Context {
             // Explicit wildcard default case
             self.add_new_basicblock();
             let block_idx = self.get_ctxdata().current_bb as u64;
-            
+
             // Reset state offset for default arm
             self.get_ctxdata().next_state_offset = None;
             self.get_ctxdata().push_sum = 0;
-            
+
             let (result_val, _, arm_states) = self.eval_expr(arm.body);
             all_arm_states.push(arm_states);
             case_results.push(result_val);
@@ -1840,10 +1840,9 @@ impl Context {
                     .get_mut(*block_idx as usize)
                     .unwrap();
                 // Insert PushStateOffset at the end of the block (before result)
-                block.0.push((
-                    Arc::new(Value::None),
-                    Instruction::PushStateOffset(offset),
-                ));
+                block
+                    .0
+                    .push((Arc::new(Value::None), Instruction::PushStateOffset(offset)));
             }
         }
 
@@ -1857,10 +1856,9 @@ impl Context {
                     .body
                     .get_mut(default_idx as usize)
                     .unwrap();
-                block.0.push((
-                    Arc::new(Value::None),
-                    Instruction::PushStateOffset(offset),
-                ));
+                block
+                    .0
+                    .push((Arc::new(Value::None), Instruction::PushStateOffset(offset)));
             }
         }
 
@@ -2621,13 +2619,15 @@ pub fn compile_with_module_info(
         typecheck_with_module_info(expr, builtin_types, file_path.clone(), module_info);
     if errors.is_empty() {
         let top_type = infer_ctx.infer_type(expr).unwrap();
-        let expr = interpreter::expand_macro(expr, top_type, macro_env);
+        let expr =
+            interpreter::expand_macro(expr, top_type, macro_env, infer_ctx.constructor_env.clone());
 
         log::trace!(
             "ast after macro expansion: {:?}",
             expr.to_expr().simple_print()
         );
         let expr = parser::add_global_context(expr, file_path.clone().unwrap_or_default());
+
         let mut ctx = Context::new(infer_ctx, file_path.clone());
         let _res = ctx.eval_expr(expr);
         ctx.program.file_path = file_path.clone();
