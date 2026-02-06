@@ -1,0 +1,6 @@
+// Test case: Invalid direct recursive type alias (infinite expansion)
+type alias A = A
+
+fn dsp() -> float {
+    0.0
+}

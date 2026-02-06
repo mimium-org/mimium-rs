@@ -1,3 +1,4 @@
+use crate::ast::program::TypeAliasMap;
 use crate::ast::{Expr, Literal, RecordField};
 use crate::compiler::{EvalStage, intrinsics};
 use crate::interner::{ExprKey, ExprNodeId, Symbol, ToSymbol, TypeNodeId};
@@ -96,6 +97,12 @@ pub enum Error {
     /// Match expression is not exhaustive (missing patterns)
     NonExhaustiveMatch {
         missing_constructors: Vec<Symbol>,
+        location: Location,
+    },
+    /// Recursive type alias detected (infinite expansion)
+    RecursiveTypeAlias {
+        type_name: Symbol,
+        cycle: Vec<Symbol>,
         location: Location,
     },
 }
@@ -211,6 +218,18 @@ impl ReportableError for Error {
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("Match expression is not exhaustive. Missing patterns: {missing}")
+            }
+            Error::RecursiveTypeAlias {
+                type_name, cycle, ..
+            } => {
+                let cycle_str = cycle
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" -> ");
+                format!(
+                    "Recursive type alias '{type_name}' detected. Cycle: {cycle_str} -> {type_name}"
+                )
             }
         }
     }
@@ -438,6 +457,21 @@ impl ReportableError for Error {
                     .join(", ");
                 vec![(location.clone(), format!("Missing patterns: {missing}"))]
             }
+            Error::RecursiveTypeAlias {
+                type_name,
+                cycle,
+                location,
+            } => {
+                let cycle_str = cycle
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" -> ");
+                vec![(
+                    location.clone(),
+                    format!("Type alias '{type_name}' creates a cycle: {cycle_str} -> {type_name}"),
+                )]
+            }
         }
     }
 }
@@ -475,6 +509,12 @@ pub struct InferContext {
     match_expressions: Vec<(ExprNodeId, TypeNodeId)>,
     pub errors: Vec<Error>,
 }
+struct TypeCycle(pub Vec<Symbol>);
+struct CycleDetectResult {
+    pub cycle: Option<TypeCycle>,
+    pub visited: Vec<Symbol>,
+}
+
 impl InferContext {
     pub fn new(
         builtins: &[(Symbol, TypeNodeId)],
@@ -551,6 +591,73 @@ impl InferContext {
                 );
             }
         }
+
+        // Check for recursive type declarations (not allowed without 'rec' keyword)
+        self.check_type_declaration_recursion(type_declarations);
+    }
+
+    /// Check for recursive references in type declarations
+    /// Until 'type rec' syntax is implemented, all recursion is forbidden
+    fn check_type_declaration_recursion(
+        &mut self,
+        type_declarations: &crate::ast::program::TypeDeclarationMap,
+    ) {
+        for (type_name, variants) in type_declarations {
+            if let Some(location) = self.is_type_declaration_recursive(*type_name, variants) {
+                self.errors.push(Error::RecursiveTypeAlias {
+                    type_name: *type_name,
+                    cycle: vec![*type_name],
+                    location,
+                });
+            }
+        }
+    }
+
+    /// Check if a type declaration contains recursive references
+    /// Returns Some(location) if recursion is found, None otherwise
+    fn is_type_declaration_recursive(
+        &self,
+        type_name: Symbol,
+        variants: &[crate::ast::program::VariantDef],
+    ) -> Option<Location> {
+        variants.iter().find_map(|variant| {
+            variant
+                .payload
+                .filter(|&payload_type| self.type_references_name(payload_type, type_name))
+                .map(|payload_type| payload_type.to_loc())
+        })
+    }
+
+    /// Check if a type references a specific type name (for recursion detection)
+    fn type_references_name(&self, type_id: TypeNodeId, target_name: Symbol) -> bool {
+        match type_id.to_type() {
+            Type::TypeAlias(name) if name == target_name => true,
+            Type::TypeAlias(name) => {
+                // Follow type alias to see if it eventually references target
+                if let Some(resolved_type) = self.type_aliases.get(&name) {
+                    self.type_references_name(*resolved_type, target_name)
+                } else {
+                    false
+                }
+            }
+            Type::Function { arg, ret } => {
+                self.type_references_name(arg, target_name)
+                    || self.type_references_name(ret, target_name)
+            }
+            Type::Tuple(elements) | Type::Union(elements) => elements
+                .iter()
+                .any(|t| self.type_references_name(*t, target_name)),
+            Type::Array(elem) | Type::Code(elem) => self.type_references_name(elem, target_name),
+            Type::Record(fields) => fields
+                .iter()
+                .any(|f| self.type_references_name(f.ty, target_name)),
+            Type::UserSum { name, .. } if name == target_name => true,
+            Type::UserSum { variants, .. } => variants
+                .iter()
+                .filter_map(|(_, payload)| *payload)
+                .any(|p| self.type_references_name(p, target_name)),
+            _ => false,
+        }
     }
 
     /// Register type aliases from ModuleInfo into the type environment
@@ -561,6 +668,107 @@ impl InferContext {
             // Also add to environment for name resolution
             self.env
                 .add_bind(&[(*alias_name, (*target_type, EvalStage::Persistent))]);
+        }
+
+        // Check for circular type aliases
+        self.check_type_alias_cycles(type_aliases);
+    }
+
+    /// Check for circular references in type aliases
+    fn check_type_alias_cycles(&mut self, type_aliases: &TypeAliasMap) {
+        let errors: Vec<_> = type_aliases
+            .iter()
+            .filter_map(|(alias_name, target_type)| {
+                Self::detect_type_alias_cycle(*alias_name, type_aliases).map(|cycle| {
+                    Error::RecursiveTypeAlias {
+                        type_name: *alias_name,
+                        cycle,
+                        location: target_type.to_loc(),
+                    }
+                })
+            })
+            .collect();
+
+        self.errors.extend(errors);
+    }
+
+    /// Detect a cycle starting from a given type alias name
+    /// Returns Some(cycle) if a cycle is found, None otherwise
+    fn detect_type_alias_cycle(start: Symbol, type_aliases: &TypeAliasMap) -> Option<Vec<Symbol>> {
+        Self::detect_cycle_helper(start, vec![], vec![], type_aliases)
+            .cycle
+            .map(|t| t.0)
+    }
+
+    /// Helper function for cycle detection with mutable state
+    fn detect_cycle_helper(
+        current: Symbol,
+        visited: Vec<Symbol>,
+        path: Vec<Symbol>,
+        type_aliases: &TypeAliasMap,
+    ) -> CycleDetectResult {
+        // If we've seen this type before in the current path, we have a cycle
+        if let Some(cycle_start) = path.iter().position(|&s| s == current) {
+            return CycleDetectResult {
+                cycle: Some(TypeCycle(path[cycle_start..].to_vec())),
+                visited,
+            };
+        }
+
+        // If we've already fully processed this node, skip it
+        if visited.binary_search(&current).is_ok() {
+            return CycleDetectResult {
+                cycle: None,
+                visited,
+            };
+        }
+
+        let new_path = [path, vec![current]].concat();
+
+        let result = type_aliases.get(&current).and_then(|target_type| {
+            Self::find_type_aliases_in_type(*target_type)
+                .into_iter()
+                .find_map(|ref_alias| {
+                    let res = Self::detect_cycle_helper(
+                        ref_alias,
+                        visited.clone(),
+                        new_path.clone(),
+                        type_aliases,
+                    );
+                    if res.cycle.is_some() { Some(res) } else { None }
+                })
+        });
+
+        CycleDetectResult {
+            cycle: result.and_then(|r| r.cycle),
+            visited: { [visited, vec![current]].concat() },
+        }
+    }
+
+    /// Find all type alias names referenced in a type
+    fn find_type_aliases_in_type(type_id: TypeNodeId) -> Vec<Symbol> {
+        match type_id.to_type() {
+            Type::TypeAlias(name) => vec![name],
+            Type::Function { arg, ret } => {
+                let mut aliases = Self::find_type_aliases_in_type(arg);
+                aliases.extend(Self::find_type_aliases_in_type(ret));
+                aliases
+            }
+            Type::Tuple(elements) | Type::Union(elements) => elements
+                .iter()
+                .flat_map(|t| Self::find_type_aliases_in_type(*t))
+                .collect(),
+            Type::Array(elem) | Type::Code(elem) => Self::find_type_aliases_in_type(elem),
+            Type::Record(fields) => fields
+                .iter()
+                .flat_map(|f| Self::find_type_aliases_in_type(f.ty))
+                .collect(),
+            Type::UserSum { variants, .. } => variants
+                .iter()
+                .filter_map(|(_, payload)| *payload)
+                .flat_map(Self::find_type_aliases_in_type)
+                .collect(),
+            _ => vec![],
         }
     }
 

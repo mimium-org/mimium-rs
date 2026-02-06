@@ -1,5 +1,5 @@
 use mimium_audiodriver::driver::{Driver, RuntimeData};
-use mimium_lang::{interner::ToSymbol, utils::error::report};
+use mimium_lang::utils::error::report;
 use mimium_test::*;
 use wasm_bindgen_test::*;
 
@@ -984,5 +984,47 @@ fn match_exhaustiveness_fail_enum() {
                 .iter()
                 .any(|(_, label)| label.contains("Third")),
         "Expected 'Third' to be mentioned as missing pattern, got: {err_message}",
+    );
+}
+
+// ============ Recursive Type Declaration Tests ============
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_recursive_invalid_direct() {
+    // Test invalid direct recursive type alias: type A = A
+    let errs = run_error_test("type_recursive_invalid_direct.mmm", false);
+    assert!(!errs.is_empty(), "Expected circular type error");
+
+    let err_message = errs[0].get_message();
+    assert!(
+        err_message.contains("ircular") || err_message.contains("ecursive"),
+        "Expected circular/recursive type error, got: {err_message}"
+    );
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_recursive_invalid_mutual() {
+    // Test invalid mutual recursive type aliases: type A = B, type B = A
+    let errs = run_error_test("type_recursive_invalid_mutual.mmm", false);
+    assert!(!errs.is_empty(), "Expected circular type error");
+
+    let err_message = errs[0].get_message();
+    assert!(
+        err_message.contains("ircular") || err_message.contains("ecursive"),
+        "Expected circular/recursive type error, got: {err_message}"
+    );
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_recursive_invalid_list() {
+    // Test recursive type in constructor: type List = Nil | Cons(float, List)
+    // Currently this should fail until 'type rec' syntax is implemented
+    let errs = run_error_test("type_recursive_invalid_list.mmm", false);
+    assert!(!errs.is_empty(), "Expected recursive type error");
+
+    let err_message = errs[0].get_message();
+    assert!(
+        err_message.contains("ircular") || err_message.contains("ecursive"),
+        "Expected circular/recursive type error, got: {err_message}"
     );
 }
