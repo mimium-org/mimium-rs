@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::interner::{Symbol, TypeNodeId};
 use crate::mir::{self, Mir};
 use crate::runtime::vm::bytecode::{ConstPos, GlobalPos, Reg};
-use crate::runtime::vm::program::WordSize;
+use crate::runtime::vm::program::{JumpTable, WordSize};
 use crate::runtime::vm::{self, StateOffset};
 use crate::types::{PType, RecordTypeField, Type, TypeSize};
 use crate::utils::half_float::HFloat;
@@ -148,6 +148,25 @@ impl ByteCodeGenerator {
             Type::Function { arg: _, ret: _ } => 1,
             Type::Ref(_) => 1,
             Type::Code(_) => todo!(),
+            Type::Union(variants) => {
+                // Tagged union: 1 word for tag + max size of any variant
+                let max_variant_size = variants
+                    .iter()
+                    .map(|v| Self::word_size_for_type(*v))
+                    .max()
+                    .unwrap_or(0);
+                1 + max_variant_size
+            }
+            Type::UserSum { variants, .. } => {
+                // Tagged UserSum: 1 word for tag + max size of any variant payload
+                let max_variant_size = variants
+                    .iter()
+                    .filter_map(|(_, payload_ty)| *payload_ty)
+                    .map(Self::word_size_for_type)
+                    .max()
+                    .unwrap_or(0);
+                1 + max_variant_size
+            }
             _ => {
                 //todo: this may contain intermediate types
                 1
@@ -642,6 +661,288 @@ impl ByteCodeGenerator {
             mir::Instruction::Phi(_, _) => {
                 unreachable!()
             }
+            mir::Instruction::PhiSwitch(_) => {
+                unreachable!("PhiSwitch should be handled within Switch processing")
+            }
+            // Tagged Union instructions (Phase 2)
+            // Represents tagged unions as (tag, value) tuples using consecutive registers
+            mir::Instruction::TaggedUnionWrap {
+                tag,
+                value,
+                union_type,
+            } => {
+                // Get total word size for the tagged union (includes tag + max variant size)
+                let total_size = Self::word_size_for_type(union_type);
+                // Value size is total - 1 (for the tag)
+                let value_size = total_size - 1;
+
+                // Allocate consecutive registers for (tag, value)
+                let dst_reg = self.vregister.push_stack(&dst, total_size as u64);
+
+                // Store tag in first register
+                let tag_pos = funcproto.add_new_constant(tag);
+                bytecodes_dst
+                    .unwrap_or_else(|| funcproto.bytecodes.as_mut())
+                    .push(VmInstruction::MoveConst(dst_reg, tag_pos as ConstPos));
+
+                // Store value in subsequent register(s)
+                let val_reg = self.find(&value);
+                let val_dst = dst_reg + 1;
+
+                if value_size == 1 {
+                    Some(VmInstruction::Move(val_dst, val_reg))
+                } else {
+                    Some(VmInstruction::MoveRange(val_dst, val_reg, value_size))
+                }
+            }
+            mir::Instruction::TaggedUnionGetTag(union_val) => {
+                // Extract tag (first register of the tagged union tuple)
+                let union_reg = self.find_keep(&union_val);
+                let dst_reg = self.get_destination(dst, 1);
+
+                // Tag is at union_reg + 0
+                Some(VmInstruction::Move(dst_reg, union_reg))
+            }
+            mir::Instruction::TaggedUnionGetValue(union_val, value_ty) => {
+                // Extract value (second register onwards of the tagged union tuple)
+                let union_reg = self.find_keep(&union_val);
+                let value_size = Self::word_size_for_type(value_ty);
+                let dst_reg = self.get_destination(dst, value_size);
+
+                // Value starts at union_reg + 1
+                let value_reg = union_reg + 1;
+
+                if value_size == 1 {
+                    Some(VmInstruction::Move(dst_reg, value_reg))
+                } else {
+                    Some(VmInstruction::MoveRange(dst_reg, value_reg, value_size))
+                }
+            }
+            mir::Instruction::Switch {
+                scrutinee,
+                cases,
+                default_block,
+                merge_block,
+            } => {
+                // Switch is compiled using JmpTable instruction
+                // For exhaustive matches (default_block = None):
+                //   Structure: [JmpTable] [case0_body, Move, Jmp] ... [caseN_body, Move] [merge_block]
+                // For non-exhaustive matches (default_block = Some):
+                //   Structure: [JmpTable] [case0_body, Move, Jmp] ... [default_body, Move] [merge_block]
+                let scrut_reg = self.find(&scrutinee);
+
+                // Reserve jump table index BEFORE processing child blocks
+                // This ensures the outer switch gets the correct index even if nested switches
+                // add their tables first during child block processing
+                let table_idx = funcproto.jump_tables.len() as u8;
+                // Add placeholder - will be filled in later
+                funcproto.jump_tables.push(JumpTable {
+                    min: 0,
+                    offsets: vec![],
+                });
+
+                // Get PhiSwitch destination register
+                let merge_block_mir = &mirfunc.body[merge_block as usize];
+                let (phi_dst, phi_inst) = merge_block_mir.0.first().unwrap();
+                let phi_reg = self.vregister.add_newvalue(phi_dst);
+
+                // Helper closure to emit instructions for a basic block
+                let mut emit_block = |this: &mut Self, block: &mir::Block| -> Vec<VmInstruction> {
+                    block.0.iter().fold(vec![], |mut bytes, (bdst, binst)| {
+                        if let Some(vm_inst) = this.emit_instruction(
+                            funcproto,
+                            Some(&mut bytes),
+                            mirfunc.clone(),
+                            bdst.clone(),
+                            binst.clone(),
+                            config,
+                        ) {
+                            bytes.push(vm_inst);
+                        }
+                        bytes
+                    })
+                };
+
+                // Collect all bytecodes for each case block
+                let all_block_bytes: Vec<Vec<VmInstruction>> = cases
+                    .iter()
+                    .map(|(_, block_idx)| {
+                        let block = &mirfunc.body[*block_idx as usize];
+                        emit_block(self, block)
+                    })
+                    .collect();
+
+                // Default block - only emit if explicitly present
+                let default_bytes = if let Some(default_idx) = default_block {
+                    let default_block_mir = &mirfunc.body[default_idx as usize];
+                    emit_block(self, default_block_mir)
+                } else {
+                    vec![]
+                };
+                let has_default = default_block.is_some();
+
+                // Now that all blocks are processed, we can find the result registers
+                // Use find_keep since these values come from different blocks and need to remain available
+                let result_regs: Vec<Reg> = if let mir::Instruction::PhiSwitch(results) = phi_inst {
+                    results.iter().map(|r| self.find_keep(r)).collect()
+                } else {
+                    panic!("Expected PhiSwitch in merge block");
+                };
+
+                // Merge block remaining instructions
+                let merge_bytes: Vec<VmInstruction> =
+                    merge_block_mir
+                        .0
+                        .iter()
+                        .skip(1)
+                        .fold(vec![], |mut bytes, (bdst, binst)| {
+                            if let Some(vm_inst) = self.emit_instruction(
+                                funcproto,
+                                Some(&mut bytes),
+                                mirfunc.clone(),
+                                bdst.clone(),
+                                binst.clone(),
+                                config,
+                            ) {
+                                bytes.push(vm_inst);
+                            }
+                            bytes
+                        });
+
+                // Calculate sizes:
+                // - Most case segments: [body..., Move, Jmp]
+                // - Last segment (exhaustive case or default): [body..., Move] (no Jmp needed)
+                let num_cases = all_block_bytes.len();
+                let case_segment_sizes: Vec<usize> = all_block_bytes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, b)| {
+                        if !has_default && i == num_cases - 1 {
+                            // Last case in exhaustive match - no Jmp needed
+                            b.len() + 1 // body + Move
+                        } else {
+                            b.len() + 2 // body + Move + Jmp
+                        }
+                    })
+                    .collect();
+
+                // Default segment size (only if has_default)
+                let default_segment_size = if has_default {
+                    default_bytes.len() + 1 // body + Move (no Jmp needed)
+                } else {
+                    0
+                };
+
+                // Build dense jump table for O(1) lookup
+                // Calculate min/max values from cases
+                let min_val = cases.iter().map(|(v, _)| *v).min().unwrap_or(0);
+                let max_val = cases.iter().map(|(v, _)| *v).max().unwrap_or(0);
+
+                // Calculate offsets for each case using scan (cumulative sum)
+                let case_offsets: Vec<(i64, i16)> = cases
+                    .iter()
+                    .zip(case_segment_sizes.iter())
+                    .scan(1i16, |offset, ((lit_val, _), seg_size)| {
+                        let current = *offset;
+                        *offset += *seg_size as i16;
+                        Some((*lit_val, current))
+                    })
+                    .collect();
+
+                // Default offset: for exhaustive matches, use last case; otherwise, after all cases
+                let default_offset = if has_default {
+                    // Separate default block - offset is after all case blocks
+                    case_offsets
+                        .last()
+                        .map(|(_, off)| {
+                            *off + case_segment_sizes.last().copied().unwrap_or(0) as i16
+                        })
+                        .unwrap_or(1)
+                } else {
+                    // Exhaustive match - use last case as default
+                    case_offsets.last().map(|(_, off)| *off).unwrap_or(1)
+                };
+
+                // Build dense array: fill with default, then set specific case offsets
+                // Add one extra slot at the end for the default offset (used for out-of-range values)
+                let table_size = (max_val - min_val + 1) as usize + 1; // +1 for default slot
+                let offsets = case_offsets.iter().fold(
+                    vec![default_offset; table_size],
+                    |mut offsets, (lit_val, offset)| {
+                        offsets[(lit_val - min_val) as usize] = *offset;
+                        offsets
+                    },
+                );
+
+                // Update the placeholder jump table that was reserved earlier
+                funcproto.jump_tables[table_idx as usize] = JumpTable {
+                    min: min_val,
+                    offsets,
+                };
+
+                // Build the bytecode sequence
+                let switch_bytes: Vec<VmInstruction> =
+                    if has_default {
+                        // Non-exhaustive: has a separate default block
+                        std::iter::once(VmInstruction::JmpTable(scrut_reg, table_idx))
+                            .chain(all_block_bytes.iter().enumerate().flat_map(
+                                |(i, block_bytes)| {
+                                    let remaining_size: usize =
+                                        case_segment_sizes[i + 1..].iter().sum::<usize>()
+                                            + default_segment_size
+                                            + 1;
+                                    block_bytes
+                                        .iter()
+                                        .cloned()
+                                        .chain(std::iter::once(VmInstruction::Move(
+                                            phi_reg,
+                                            result_regs[i],
+                                        )))
+                                        .chain(std::iter::once(VmInstruction::Jmp(
+                                            remaining_size as i16,
+                                        )))
+                                },
+                            ))
+                            .chain(default_bytes.iter().cloned())
+                            .chain(std::iter::once(VmInstruction::Move(
+                                phi_reg,
+                                *result_regs.last().unwrap(),
+                            )))
+                            .chain(merge_bytes.iter().cloned())
+                            .collect()
+                    } else {
+                        // Exhaustive: last case falls through to merge
+                        std::iter::once(VmInstruction::JmpTable(scrut_reg, table_idx))
+                            .chain(all_block_bytes.iter().enumerate().flat_map(
+                                |(i, block_bytes)| {
+                                    let is_last = i == num_cases - 1;
+                                    let remaining_size: usize =
+                                        case_segment_sizes[i + 1..].iter().sum::<usize>() + 1;
+                                    block_bytes
+                                        .iter()
+                                        .cloned()
+                                        .chain(std::iter::once(VmInstruction::Move(
+                                            phi_reg,
+                                            result_regs[i],
+                                        )))
+                                        .chain(if is_last {
+                                            // Last case - no Jmp, falls through to merge
+                                            None
+                                        } else {
+                                            Some(VmInstruction::Jmp(remaining_size as i16))
+                                        })
+                                },
+                            ))
+                            .chain(merge_bytes.iter().cloned())
+                            .collect()
+                    };
+
+                // Output everything to the destination
+                let bytecodes_dst = bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut());
+                bytecodes_dst.extend(switch_bytes);
+
+                None
+            }
             mir::Instruction::Return(v, rty) => {
                 let nret = Self::word_size_for_type(rty);
                 let inst = match v.as_ref() {
@@ -695,6 +996,8 @@ impl ByteCodeGenerator {
             mir::Instruction::CosF(v1) => self.emit_binop1(VmInstruction::CosF, dst, v1),
             mir::Instruction::AbsF(v1) => self.emit_binop1(VmInstruction::AbsF, dst, v1),
             mir::Instruction::SqrtF(v1) => self.emit_binop1(VmInstruction::SqrtF, dst, v1),
+            mir::Instruction::CastFtoI(v1) => self.emit_binop1(VmInstruction::CastFtoI, dst, v1),
+            mir::Instruction::CastItoF(v1) => self.emit_binop1(VmInstruction::CastItoF, dst, v1),
             mir::Instruction::AddI(v1, v2) => self.emit_binop2(VmInstruction::AddI, dst, v1, v2),
             mir::Instruction::SubI(v1, v2) => self.emit_binop2(VmInstruction::SubI, dst, v1, v2),
             mir::Instruction::MulI(v1, v2) => self.emit_binop2(VmInstruction::MulI, dst, v1, v2),
@@ -744,8 +1047,8 @@ impl ByteCodeGenerator {
                 todo!("SetArrayElem is not used in the current implementation");
             }
 
-            _ => {
-                unimplemented!()
+            instr => {
+                unimplemented!("Instruction not implemented: {:?}", instr)
             }
         }
     }
@@ -789,6 +1092,7 @@ impl ByteCodeGenerator {
                 func.bytecodes.push(i);
             }
         });
+
         (mirfunc.label.to_string(), func)
     }
     pub fn generate(&mut self, mir: Mir, config: Config) -> vm::Program {

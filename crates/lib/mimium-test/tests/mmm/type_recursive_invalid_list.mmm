@@ -1,0 +1,15 @@
+// Test case: Recursive type in constructor payload (currently not allowed without 'rec' keyword)
+// This should fail until 'type rec' syntax is implemented
+type List = Nil | Cons(float, List)
+
+fn length(list: List) -> float {
+    match list {
+        Nil => 0.0,
+        Cons(_, tail) => 1.0 + length(tail)
+    }
+}
+
+fn dsp() -> float {
+    let mylist = Cons(1.0, Cons(2.0, Cons(3.0, Nil)))
+    length(mylist)
+}

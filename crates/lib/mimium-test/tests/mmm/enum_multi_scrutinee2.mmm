@@ -1,0 +1,21 @@
+// Multi-scrutinee pattern matching test
+// Match on tuple of enums simultaneously
+
+type MyEnum =   One(float)
+              | Two((float,float))
+
+fn test(myenum: MyEnum, myenum2: MyEnum){
+  match (myenum, myenum2) {
+    (One(v1), One(v2)) => v1+v2,
+    (Two((x,y)), Two((x2,y2))) => x+y+x2+y2,
+    _ => 100
+  }
+}
+
+fn dsp(){
+    let x = test(One(1),One(2)) //3
+    let y = test(One(1),Two((2,3))) //100
+    let z = test(Two((1,2)),One(3)) // 100
+    let zz = test(Two((1,2)),Two((3,4))) //10
+    x+y+z+zz //expected result:213
+}

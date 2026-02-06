@@ -1,0 +1,19 @@
+// Test mixing type aliases and union types
+type alias Frequency = float
+type alias Amplitude = float
+
+type WaveType = Sine | Square | Sawtooth
+
+fn generateWave(wave_type: WaveType, freq: Frequency, amp: Amplitude) -> float {
+    match wave_type {
+        Sine => freq * amp,
+        Square => freq * amp * 1.5,
+        Sawtooth => freq * amp * 0.8,
+    }
+}
+
+fn dsp() {
+    let frequency: Frequency = 440.0;
+    let amplitude: Amplitude = 0.5;
+    generateWave(Square, frequency, amplitude) // 440.0 * 0.5 * 1.5 = 330.0
+}

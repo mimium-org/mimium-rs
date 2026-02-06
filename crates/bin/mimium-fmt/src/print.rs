@@ -81,7 +81,26 @@ mod types {
                     .append(ret_doc)
             }
             Type::Code(ty) => allocator.text("`").append(types::pretty(ty, allocator)),
+            Type::Union(items) => {
+                let docs = items
+                    .into_iter()
+                    .map(|item| types::pretty(item, allocator))
+                    .collect::<Vec<_>>();
+                allocator.intersperse(docs, allocator.text(" | "))
+            }
+            Type::UserSum { name, variants } => {
+                let variants_str = variants
+                    .iter()
+                    .map(|(v, _)| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                allocator
+                    .text(name.to_string())
+                    .append(allocator.text(" = "))
+                    .append(allocator.text(variants_str))
+            }
             Type::TypeScheme(_) => unreachable!(),
+            Type::TypeAlias(name) => allocator.text(name.to_string()),
             Type::Intermediate(_) => unreachable!(),
             Type::Ref(_) => unreachable!(),
             Type::Failure => unreachable!(),
@@ -421,6 +440,10 @@ mod expr {
                     .append(allocator.text("!"))
                     .append(allocator.intersperse(args, ", ").parens())
             }
+            Expr::Match(scrutinee, arms) => {
+                // TODO: proper pretty printing for match
+                allocator.text("match /* todo */")
+            }
         }
     }
 }
@@ -577,6 +600,49 @@ pub mod program {
                     .append(allocator.text("use "))
                     .append(allocator.text(path_str))
                     .append(allocator.text(target_str))
+            }
+            ProgramStatement::TypeDeclaration {
+                visibility,
+                name,
+                variants,
+            } => {
+                let vis_doc = if visibility == mimium_lang::ast::program::Visibility::Public {
+                    allocator.text("pub ")
+                } else {
+                    allocator.nil()
+                };
+                let variants_str = variants
+                    .iter()
+                    .map(|v| {
+                        if let Some(_payload) = &v.payload {
+                            format!("{}(...)", v.name)
+                        } else {
+                            v.name.to_string()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                vis_doc
+                    .append(allocator.text("type "))
+                    .append(allocator.text(name.to_string()))
+                    .append(allocator.text(" = "))
+                    .append(allocator.text(variants_str))
+            }
+            ProgramStatement::TypeAlias {
+                visibility,
+                name,
+                target_type,
+            } => {
+                let vis_doc = if visibility == mimium_lang::ast::program::Visibility::Public {
+                    allocator.text("pub ")
+                } else {
+                    allocator.nil()
+                };
+                vis_doc
+                    .append(allocator.text("type "))
+                    .append(allocator.text(name.to_string()))
+                    .append(allocator.text(" = "))
+                    .append(types::pretty(target_type, allocator))
             }
         });
         allocator.intersperse(stmt_docs, "\n")

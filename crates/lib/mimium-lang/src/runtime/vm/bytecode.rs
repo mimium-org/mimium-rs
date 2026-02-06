@@ -4,6 +4,7 @@ pub type Reg = u8; // register position
 pub type ConstPos = u16;
 pub type GlobalPos = u8;
 pub type Offset = i16;
+pub type ShotrOffset = i8;
 //24bit unsigned integer for shiftsate
 pub type StateOffset = intx::U24;
 /// Instructions for bytecode. Currently, each instructon has the 64 bit size(Tag, up to 3 bytes arguments.)
@@ -57,6 +58,11 @@ pub enum Instruction {
     Jmp(Offset),
     /// jump to instruction over the offset if the value in the first argument was negative.
     JmpIfNeg(Reg, Offset),
+    /// Jump table for switch/match expressions.
+    /// (scrutinee_reg, table_index)
+    /// Looks up the scrutinee value in the jump table and jumps to the corresponding offset.
+    /// If not found, jumps to the default offset stored in the jump table.
+    JmpTable(Reg, u8),
 
     /// Primitive Operations.
     /// Destination, Src1, Src2
@@ -160,6 +166,9 @@ impl std::fmt::Display for Instruction {
                 write!(f, "{:<10} {} {} {}", "setglobal", dst, src, size)
             }
             Instruction::JmpIfNeg(dst, cond) => write!(f, "{:<10} {} {}", "jmpifneg", dst, cond),
+            Instruction::JmpTable(scrut, table_idx) => {
+                write!(f, "{:<10} {} {}", "jmptable", scrut, table_idx)
+            }
             Instruction::AbsF(dst, src) => write!(f, "{:<10} {} {}", "absf", dst, src),
             Instruction::NegF(dst, src) => write!(f, "{:<10} {} {}", "negf", dst, src),
             Instruction::SinF(dst, src) => write!(f, "{:<10} {} {}", "sin", dst, src),

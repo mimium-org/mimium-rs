@@ -29,12 +29,14 @@ pub enum Value {
     Function(usize),
     /// native function (Rust function item or closure)
     ExtFunction(Symbol, TypeNodeId),
+    /// Constructor with payload: (name, tag_index, sum_type)
+    Constructor(Symbol, usize, TypeNodeId),
     /// internal state
     None,
 }
 
 pub type VPtr = Arc<Value>;
-
+type Bbindex = u64;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
     Uinteger(u64),
@@ -74,11 +76,36 @@ pub enum Instruction {
     GetState(TypeNodeId),
 
     //condition,  basic block index for then statement, else statement, and merge block
-    JmpIf(VPtr, u64, u64, u64),
+    JmpIf(VPtr, Bbindex, Bbindex, Bbindex),
     // basic block index (for return statement)
     Jmp(i16),
     //merge
     Phi(VPtr, VPtr),
+    /// Multi-way branch for match expressions
+    /// Switch(scrutinee, cases, default_block, merge_block)
+    /// cases: Vec<(literal_value_as_i64, block_index)>
+    Switch {
+        scrutinee: VPtr,
+        /// Each case is (literal_value as i64, block_index)
+        cases: Vec<(i64, Bbindex)>,
+        /// Default block for non-exhaustive matches; None if exhaustive
+        default_block: Option<Bbindex>,
+        merge_block: Bbindex,
+    },
+    /// Phi for switch - merges values from multiple branches
+    PhiSwitch(Vec<VPtr>),
+
+    /// Tagged Union operations for sum types
+    /// Wrap a value into a tagged union: (tag, value, union_type)
+    TaggedUnionWrap {
+        tag: u64,
+        value: VPtr,
+        union_type: TypeNodeId,
+    },
+    /// Extract tag from a tagged union
+    TaggedUnionGetTag(VPtr),
+    /// Extract value from a tagged union (assuming correct tag)
+    TaggedUnionGetValue(VPtr, TypeNodeId),
 
     Return(VPtr, TypeNodeId),
     //value to update state

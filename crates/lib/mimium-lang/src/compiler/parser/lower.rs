@@ -41,6 +41,14 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Recursively unwrap `Expr::Paren` nodes, returning the innermost expression.
+    fn unwrap_paren(expr: ExprNodeId) -> ExprNodeId {
+        match expr.to_expr() {
+            Expr::Paren(inner) => Self::unwrap_paren(inner),
+            _ => expr,
+        }
+    }
+
     /// Lower a full program node into the existing `Program` structure.
     pub fn lower_program(&self, root: GreenNodeId) -> Program {
         let (mut program_statements, pending_statements, pending_span) = self
@@ -151,6 +159,9 @@ impl<'a> Lowerer<'a> {
                         .unwrap_or(ProgramStatement::Error),
                     (Some(SyntaxKind::UseStmt), Some(id)) => self
                         .lower_use_stmt(id, visibility)
+                        .unwrap_or(ProgramStatement::Error),
+                    (Some(SyntaxKind::TypeDecl), Some(id)) => self
+                        .lower_type_decl(id, visibility)
                         .unwrap_or(ProgramStatement::Error),
                     (Some(_), _) => {
                         let expr_nodes = self.collect_expr_nodes(node);
@@ -329,6 +340,103 @@ impl<'a> Lowerer<'a> {
         } else {
             Some(QualifiedPath::new(segments))
         }
+    }
+
+    /// Lower type declaration or type alias
+    /// Type alias: type Name = BaseType
+    /// Type declaration: type Name = Variant1 | Variant2(Type) | ...
+    fn lower_type_decl(
+        &self,
+        node: GreenNodeId,
+        visibility: Visibility,
+    ) -> Option<ProgramStatement> {
+        use crate::ast::program::VariantDef;
+
+        // Find the type name (first Ident token after 'type' keyword)
+        let name_idx = self.find_token(node, |kind| matches!(kind, TokenKind::Ident))?;
+        let name = self.token_text(name_idx)?.to_symbol();
+
+        // Check if this is a type alias (has a type but no variant definitions)
+        // or a variant declaration (has variant definitions)
+        let variants: Vec<VariantDef> = self
+            .arena
+            .children(node)
+            .map(|children| {
+                children
+                    .iter()
+                    .copied()
+                    .filter(|child| self.arena.kind(*child) == Some(SyntaxKind::VariantDef))
+                    .filter_map(|child| self.lower_variant_def(child))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if variants.is_empty() {
+            // This is a type alias - look for a type annotation
+            let type_node = self.find_child(node, |kind| {
+                matches!(
+                    kind,
+                    SyntaxKind::TypeAnnotation | SyntaxKind::PrimitiveType | SyntaxKind::TypeIdent
+                )
+            })?;
+            let target_type = self.lower_type(type_node);
+
+            Some(ProgramStatement::TypeAlias {
+                visibility,
+                name,
+                target_type,
+            })
+        } else {
+            // This is a variant declaration
+            Some(ProgramStatement::TypeDeclaration {
+                visibility,
+                name,
+                variants,
+            })
+        }
+    }
+
+    /// Lower a single variant definition: Name or Name(Type)
+    fn lower_variant_def(&self, node: GreenNodeId) -> Option<crate::ast::program::VariantDef> {
+        use crate::ast::program::VariantDef;
+
+        // Variant name is the first Ident token
+        let name_idx = self.find_token(node, |kind| matches!(kind, TokenKind::Ident))?;
+        let name = self.token_text(name_idx)?.to_symbol();
+
+        // Check for optional payload type (any type node inside the VariantDef)
+        let payload = self.arena.children(node).and_then(|children| {
+            let type_nodes: Vec<_> = children
+                .iter()
+                .filter(|c| {
+                    self.arena
+                        .kind(**c)
+                        .map(Self::is_type_kind)
+                        .unwrap_or(false)
+                })
+                .collect();
+
+            match type_nodes.len() {
+                0 => None,
+                1 => {
+                    // Single type - use as-is
+                    Some(self.lower_type(*type_nodes[0]))
+                }
+                _ => {
+                    // Multiple types - treat as tuple (for Rectangle(float, float) syntax)
+                    let elem_types: Vec<_> = type_nodes
+                        .iter()
+                        .map(|node| self.lower_type(**node))
+                        .collect();
+
+                    // Use default location for implicit tuple
+                    let loc = Location::default();
+                    Some(Type::Tuple(elem_types).into_id_with_location(loc))
+                }
+            }
+        });
+
+        Some(VariantDef::new(name, payload))
     }
 
     fn lower_let_decl(&self, node: GreenNodeId) -> Option<ProgramStatement> {
@@ -520,6 +628,7 @@ impl<'a> Lowerer<'a> {
                 let else_expr = expr_children.get(2).map(|&id| self.lower_expr(id));
                 Expr::If(cond, then_expr, else_expr).into_id(loc)
             }
+            Some(SyntaxKind::MatchExpr) => self.lower_match_expr(node, loc),
             Some(SyntaxKind::BlockExpr) => {
                 let stmts = self.lower_block_statements(node);
                 Expr::Block(into_then_expr(&stmts)).into_id(loc)
@@ -540,12 +649,12 @@ impl<'a> Lowerer<'a> {
             }
             Some(SyntaxKind::ParenExpr) => {
                 let inner_nodes = self.child_exprs(node);
-                let inner = if inner_nodes.is_empty() {
+                if inner_nodes.is_empty() {
                     Expr::Error.into_id(loc.clone())
                 } else {
+                    // Unwrap parenthesized expressions directly
                     self.lower_expr_sequence(&inner_nodes)
-                };
-                Expr::Paren(inner).into_id(loc)
+                }
             }
             Some(SyntaxKind::MacroExpansion) => {
                 let (callee, args) = self.lower_macro_expand(node);
@@ -579,6 +688,247 @@ impl<'a> Lowerer<'a> {
             }
             _ => Expr::Error.into_id(loc),
         }
+    }
+
+    /// Lower a match expression from CST to AST
+    fn lower_match_expr(&self, node: GreenNodeId, loc: Location) -> ExprNodeId {
+        use crate::ast::MatchArm;
+
+        let children: Vec<GreenNodeId> = self
+            .arena
+            .children(node)
+            .map(|c| c.to_vec())
+            .unwrap_or_default();
+
+        // Find scrutinee (first expression child)
+        let scrutinee = children
+            .iter()
+            .find(|&&c| self.arena.kind(c).map(Self::is_expr_kind) == Some(true))
+            .map(|&c| self.lower_expr(c))
+            .unwrap_or_else(|| Expr::Error.into_id(loc.clone()));
+
+        // Find MatchArmList
+        let arm_list = children
+            .iter()
+            .find(|&&c| self.arena.kind(c) == Some(SyntaxKind::MatchArmList));
+
+        let arms: Vec<MatchArm> = arm_list
+            .and_then(|&list| self.arena.children(list))
+            .map(|arm_nodes| {
+                arm_nodes
+                    .iter()
+                    .filter(|&&c| self.arena.kind(c) == Some(SyntaxKind::MatchArm))
+                    .map(|&arm| self.lower_match_arm(arm))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Expr::Match(scrutinee, arms).into_id(loc)
+    }
+
+    /// Lower a single match arm from CST to AST
+    fn lower_match_arm(&self, node: GreenNodeId) -> crate::ast::MatchArm {
+        use crate::ast::{MatchArm, MatchPattern};
+
+        let children: Vec<GreenNodeId> = self
+            .arena
+            .children(node)
+            .map(|c| c.iter().copied().collect())
+            .unwrap_or_default();
+
+        // Find pattern
+        let pattern_node = children
+            .iter()
+            .find(|&&c| self.arena.kind(c) == Some(SyntaxKind::MatchPattern));
+
+        let pattern = pattern_node
+            .map(|&pat| self.lower_match_pattern(pat))
+            .unwrap_or(MatchPattern::Wildcard);
+
+        // Find body expression (skip MatchPattern node to avoid matching pattern's literals)
+        let body = children
+            .iter()
+            .filter(|&&c| self.arena.kind(c) != Some(SyntaxKind::MatchPattern))
+            .find(|&&c| self.arena.kind(c).map(Self::is_expr_kind) == Some(true))
+            .map(|&c| self.lower_expr(c))
+            .unwrap_or_else(|| {
+                Expr::Error.into_id(self.location_from_span(self.node_span(node).unwrap_or(0..0)))
+            });
+
+        MatchArm { pattern, body }
+    }
+
+    /// Lower a match pattern from CST to AST
+    fn lower_match_pattern(&self, node: GreenNodeId) -> crate::ast::MatchPattern {
+        use crate::ast::{Literal, MatchPattern};
+        use crate::interner::ToSymbol;
+
+        let children: Vec<GreenNodeId> = self
+            .arena
+            .children(node)
+            .map(|c| c.to_vec())
+            .unwrap_or_default();
+
+        for &child in &children {
+            match self.arena.kind(child) {
+                Some(SyntaxKind::IntLiteral) => {
+                    if let Some(text) = self.text_of_first_token(child) {
+                        if let Ok(n) = text.parse::<i64>() {
+                            return MatchPattern::Literal(Literal::Int(n));
+                        }
+                    }
+                }
+                Some(SyntaxKind::FloatLiteral) => {
+                    if let Some(text) = self.text_of_first_token(child) {
+                        return MatchPattern::Literal(Literal::Float(text.to_symbol()));
+                    }
+                }
+                Some(SyntaxKind::PlaceHolderLiteral) => {
+                    return MatchPattern::Wildcard;
+                }
+                Some(SyntaxKind::ConstructorPattern) => {
+                    return self.lower_constructor_pattern(child);
+                }
+                Some(SyntaxKind::TuplePattern) => {
+                    // Tuple pattern for multi-scrutinee matching: (pat1, pat2, ...)
+                    return self.lower_match_tuple_pattern(child);
+                }
+                Some(SyntaxKind::Identifier) => {
+                    // Bare identifier in pattern: treat as constructor (e.g., One, Two)
+                    if let Some(text) = self.text_of_first_token(child) {
+                        return MatchPattern::Constructor(text.to_symbol(), None);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        MatchPattern::Wildcard
+    }
+
+    /// Lower a constructor pattern from CST to AST
+    /// e.g., Float(x), String(s), MyType(binding), MyType, Two((x, y))
+    fn lower_constructor_pattern(&self, node: GreenNodeId) -> crate::ast::MatchPattern {
+        use crate::ast::MatchPattern;
+        use crate::interner::ToSymbol;
+
+        let children: Vec<GreenNodeId> = self
+            .arena
+            .children(node)
+            .map(|c| c.to_vec())
+            .unwrap_or_default();
+
+        let mut constructor_name: Option<Symbol> = None;
+        let mut inner_pattern: Option<Box<MatchPattern>> = None;
+
+        for &child in &children {
+            match self.arena.kind(child) {
+                Some(SyntaxKind::Identifier) => {
+                    if let Some(text) = self.text_of_first_token(child) {
+                        if constructor_name.is_none() {
+                            constructor_name = Some(text.to_symbol());
+                        } else {
+                            // Second identifier is a variable binding pattern
+                            inner_pattern =
+                                Some(Box::new(MatchPattern::Variable(text.to_symbol())));
+                        }
+                    }
+                }
+                Some(SyntaxKind::PlaceHolderLiteral) => {
+                    // Discard binding with _
+                    inner_pattern = Some(Box::new(MatchPattern::Wildcard));
+                }
+                Some(SyntaxKind::TuplePattern) => {
+                    // Nested tuple pattern like (x, y)
+                    inner_pattern = Some(Box::new(self.lower_tuple_pattern(child)));
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(name) = constructor_name {
+            MatchPattern::Constructor(name, inner_pattern)
+        } else {
+            MatchPattern::Wildcard
+        }
+    }
+
+    /// Lower a tuple pattern from CST to AST
+    /// e.g., (x, y), (a, b, c)
+    /// Also handles unwrapping spurious nesting like ((x, y)) in constructor patterns
+    fn lower_tuple_pattern(&self, node: GreenNodeId) -> crate::ast::MatchPattern {
+        use crate::ast::MatchPattern;
+        use crate::interner::ToSymbol;
+
+        let children: Vec<GreenNodeId> = self
+            .arena
+            .children(node)
+            .map(|c| c.to_vec())
+            .unwrap_or_default();
+
+        let mut patterns = Vec::new();
+
+        for &child in &children {
+            match self.arena.kind(child) {
+                Some(SyntaxKind::Identifier) => {
+                    if let Some(text) = self.text_of_first_token(child) {
+                        patterns.push(MatchPattern::Variable(text.to_symbol()));
+                    }
+                }
+                Some(SyntaxKind::SinglePattern) => {
+                    // SinglePattern contains an identifier for variable binding
+                    if let Some(text) = self.text_of_first_token(child) {
+                        patterns.push(MatchPattern::Variable(text.to_symbol()));
+                    }
+                }
+                Some(SyntaxKind::PlaceHolderLiteral) => {
+                    patterns.push(MatchPattern::Wildcard);
+                }
+                Some(SyntaxKind::TuplePattern) => {
+                    // Nested tuple pattern
+                    patterns.push(self.lower_tuple_pattern(child));
+                }
+                _ => {}
+            }
+        }
+
+        // Unwrap spurious single-element tuple nesting
+        // This handles cases like ((x, y)) in constructor patterns where
+        // the outer parens are just for the constructor call syntax
+        if patterns.len() == 1 {
+            if let MatchPattern::Tuple(_) = &patterns[0] {
+                return patterns.pop().unwrap();
+            }
+        }
+
+        MatchPattern::Tuple(patterns)
+    }
+
+    /// Lower a tuple pattern in match expression from CST to AST
+    /// This handles (pat1, pat2, ...) where each element is a full match pattern
+    /// (can be literals, constructors, wildcards, or nested tuples)
+    fn lower_match_tuple_pattern(&self, node: GreenNodeId) -> crate::ast::MatchPattern {
+        use crate::ast::MatchPattern;
+
+        let children: Vec<GreenNodeId> = self
+            .arena
+            .children(node)
+            .map(|c| c.to_vec())
+            .unwrap_or_default();
+
+        let mut patterns = Vec::new();
+
+        for &child in &children {
+            match self.arena.kind(child) {
+                Some(SyntaxKind::MatchPattern) => {
+                    // Recursively lower each match pattern
+                    patterns.push(self.lower_match_pattern(child));
+                }
+                _ => {}
+            }
+        }
+
+        MatchPattern::Tuple(patterns)
     }
 
     fn lower_lambda(&self, node: GreenNodeId) -> (Vec<TypedId>, ExprNodeId) {
@@ -864,7 +1214,11 @@ impl<'a> Lowerer<'a> {
             Expr::Error.into_id_without_span()
         };
 
-        let args = self.lower_arg_list(node);
+        let args = self
+            .lower_arg_list(node)
+            .into_iter()
+            .map(Self::unwrap_paren)
+            .collect();
         let call_span = self.node_span(node).unwrap_or_else(|| callee.to_span());
         let loc = self.location_from_span(merge_spans(callee.to_span(), call_span));
         Expr::Apply(callee, args).into_id(loc)
@@ -1282,6 +1636,7 @@ impl<'a> Lowerer<'a> {
                 | SyntaxKind::EscapeExpr
                 | SyntaxKind::LambdaExpr
                 | SyntaxKind::IfExpr
+                | SyntaxKind::MatchExpr
                 | SyntaxKind::BlockExpr
                 | SyntaxKind::TupleExpr
                 | SyntaxKind::RecordExpr
@@ -1423,6 +1778,7 @@ impl<'a> Lowerer<'a> {
                 | SyntaxKind::FunctionType
                 | SyntaxKind::ArrayType
                 | SyntaxKind::CodeType
+                | SyntaxKind::UnionType
                 | SyntaxKind::TypeIdent
         )
     }
@@ -1525,7 +1881,51 @@ impl<'a> Lowerer<'a> {
                     .unwrap_or_else(|| Type::Unknown.into_id_with_location(loc.clone()));
                 Type::Code(inner).into_id_with_location(loc)
             }
-            _ => Type::Unknown.into_id_with_location(loc),
+            Some(SyntaxKind::UnionType) => {
+                let elem_types = self
+                    .arena
+                    .children(node)
+                    .into_iter()
+                    .flatten()
+                    .filter(|child| {
+                        self.arena
+                            .kind(**child)
+                            .map(Self::is_type_kind)
+                            .unwrap_or(false)
+                    })
+                    .map(|child| self.lower_type(*child))
+                    .collect::<Vec<_>>();
+                Type::Union(elem_types).into_id_with_location(loc)
+            }
+            Some(SyntaxKind::TypeIdent) => {
+                // Type name reference in type annotation (e.g., MyEnum)
+                // TypeIdent node contains a child Ident token
+                if let Some(children) = self.arena.children(node) {
+                    for child in children {
+                        if let Some(token_index) = self.get_token_index(*child)
+                            && let Some(token) = self.tokens.get(token_index)
+                            && matches!(token.kind, TokenKind::Ident)
+                        {
+                            let type_name = token.text(self.source).to_symbol();
+                            return Type::TypeAlias(type_name).into_id_with_location(loc);
+                        }
+                    }
+                }
+                Type::Unknown.into_id_with_location(loc)
+            }
+            _ => {
+                // Check if this is an identifier token (type name reference)
+                if let Some(token_index) = self.get_token_index(node)
+                    && let Some(token) = self.tokens.get(token_index)
+                    && matches!(token.kind, TokenKind::Ident)
+                {
+                    // Type name - store as TypeAlias for later resolution
+                    let type_name = token.text(self.source).to_symbol();
+                    Type::TypeAlias(type_name).into_id_with_location(loc)
+                } else {
+                    Type::Unknown.into_id_with_location(loc)
+                }
+            }
         }
     }
 }
@@ -1843,6 +2243,71 @@ fn dsp() { add(1.0, 2.0) }
                 assert!(matches!(target, UseTarget::Single));
             }
             _ => panic!("Expected UseStatement, got {:?}", stmt),
+        }
+    }
+
+    #[test]
+    fn test_parse_match_expr() {
+        let source = "fn test_match(num) { match num { 0 => 100, 1 => 200, _ => 300 } }";
+        let prog = parse_source(source);
+
+        assert!(!prog.statements.is_empty());
+        let stmt = &prog.statements[0].0;
+        match stmt {
+            ProgramStatement::FnDefinition { body, .. } => {
+                let body_expr = body.to_expr();
+                match body_expr {
+                    Expr::Match(scrutinee, arms) => {
+                        // Check scrutinee is a variable
+                        match scrutinee.to_expr() {
+                            Expr::Var(name) => assert_eq!(name.as_str(), "num"),
+                            other => panic!("Expected Var, got {other:?}"),
+                        }
+
+                        // Check arms
+                        assert_eq!(arms.len(), 3);
+
+                        // Check first arm: 0 => 100
+                        match &arms[0].pattern {
+                            crate::ast::MatchPattern::Literal(crate::ast::Literal::Int(0)) => {}
+                            other => panic!("Expected pattern Literal(Int(0)), got {:?}", other),
+                        }
+                        // Body literals are converted to Float in mimium
+                        match arms[0].body.to_expr() {
+                            Expr::Literal(crate::ast::Literal::Float(s)) => {
+                                assert_eq!(s.as_str(), "100");
+                            }
+                            other => panic!("Expected body Literal(Float(100)), got {:?}", other),
+                        }
+
+                        // Check second arm: 1 => 200
+                        match &arms[1].pattern {
+                            crate::ast::MatchPattern::Literal(crate::ast::Literal::Int(1)) => {}
+                            other => panic!("Expected pattern Literal(Int(1)), got {:?}", other),
+                        }
+                        match arms[1].body.to_expr() {
+                            Expr::Literal(crate::ast::Literal::Float(s)) => {
+                                assert_eq!(s.as_str(), "200");
+                            }
+                            other => panic!("Expected body Literal(Float(200)), got {:?}", other),
+                        }
+
+                        // Check third arm: _ => 300
+                        match &arms[2].pattern {
+                            crate::ast::MatchPattern::Wildcard => {}
+                            other => panic!("Expected Wildcard, got {:?}", other),
+                        }
+                        match arms[2].body.to_expr() {
+                            Expr::Literal(crate::ast::Literal::Float(s)) => {
+                                assert_eq!(s.as_str(), "300");
+                            }
+                            other => panic!("Expected body Literal(Float(300)), got {:?}", other),
+                        }
+                    }
+                    other => panic!("Expected Match expr, got {:?}", other),
+                }
+            }
+            _ => panic!("Expected FnDefinition, got {:?}", stmt),
         }
     }
 }

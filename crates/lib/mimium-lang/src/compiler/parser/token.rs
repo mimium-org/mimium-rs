@@ -77,9 +77,11 @@ pub enum TokenKind {
     Macro,       // macro
     Arrow,       // ->
     LeftArrow,   // <-
+    FatArrow,    // =>
     PlaceHolder, // _
     If,
     Else,
+    Match, // match
 
     // Directives
     Include,
@@ -88,9 +90,11 @@ pub enum TokenKind {
     Main,     // main
 
     // Module keywords
-    Mod, // mod
-    Use, // use
-    Pub, // pub
+    Mod,   // mod
+    Use,   // use
+    Pub,   // pub
+    Type,  // type
+    Alias, // alias
 
     // Trivia (whitespace and comments)
     LineBreak,
@@ -158,9 +162,11 @@ impl fmt::Display for TokenKind {
             TokenKind::Macro => write!(f, "macro"),
             TokenKind::Arrow => write!(f, "->"),
             TokenKind::LeftArrow => write!(f, "<-"),
+            TokenKind::FatArrow => write!(f, "=>"),
             TokenKind::PlaceHolder => write!(f, "_"),
             TokenKind::If => write!(f, "if"),
             TokenKind::Else => write!(f, "else"),
+            TokenKind::Match => write!(f, "match"),
             TokenKind::Include => write!(f, "include"),
             TokenKind::LineBreak => write!(f, "linebreak"),
             TokenKind::Whitespace => write!(f, "whitespace"),
@@ -173,6 +179,8 @@ impl fmt::Display for TokenKind {
             TokenKind::Mod => write!(f, "mod"),
             TokenKind::Use => write!(f, "use"),
             TokenKind::Pub => write!(f, "pub"),
+            TokenKind::Type => write!(f, "type"),
+            TokenKind::Alias => write!(f, "alias"),
             TokenKind::Sharp => write!(f, "#"),
             TokenKind::Error => write!(f, "error"),
             TokenKind::Eof => write!(f, "eof"),

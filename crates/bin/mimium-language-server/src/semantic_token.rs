@@ -112,8 +112,12 @@ fn token_kind_to_semantic_index(kind: TokenKind) -> Option<usize> {
         | TokenKind::DoubleDot
         | TokenKind::PlaceHolder
         | TokenKind::Sharp
+        | TokenKind::FatArrow
         | TokenKind::Error
         | TokenKind::Eof => return None,
+        TokenKind::Match => get_token_id(&SemanticTokenType::KEYWORD),
+        TokenKind::Type => get_token_id(&SemanticTokenType::KEYWORD),
+        TokenKind::Alias => get_token_id(&SemanticTokenType::KEYWORD),
     };
     Some(token_type)
 }

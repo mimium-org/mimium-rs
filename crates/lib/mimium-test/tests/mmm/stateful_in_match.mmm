@@ -1,0 +1,14 @@
+type Direction = Up | Down
+
+fn counter(inc) {
+    inc + self
+}
+
+fn dsp() {
+    // Test calling stateful function inside match
+    let dir = Up
+    match dir {
+        Up => counter(1.0),
+        Down => counter(2.0)
+    }
+}

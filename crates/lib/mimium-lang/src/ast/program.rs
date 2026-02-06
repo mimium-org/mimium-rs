@@ -50,6 +50,21 @@ pub enum UseTarget {
     Wildcard,
 }
 
+/// A variant definition for user-defined sum types
+#[derive(Clone, Debug, PartialEq)]
+pub struct VariantDef {
+    /// The name of the variant constructor
+    pub name: Symbol,
+    /// Optional payload type for the variant
+    pub payload: Option<TypeNodeId>,
+}
+
+impl VariantDef {
+    pub fn new(name: Symbol, payload: Option<TypeNodeId>) -> Self {
+        Self { name, payload }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProgramStatement {
     FnDefinition {
@@ -81,10 +96,26 @@ pub enum ProgramStatement {
         /// The import target type
         target: UseTarget,
     },
+    /// Type alias: type Alias = BaseType
+    TypeAlias {
+        visibility: Visibility,
+        name: Symbol,
+        target_type: crate::interner::TypeNodeId,
+    },
+    /// Type declaration: type Name = Variant1 | Variant2 | ...
+    TypeDeclaration {
+        visibility: Visibility,
+        name: Symbol,
+        variants: Vec<VariantDef>,
+    },
     Comment(Symbol),
     DocComment(Symbol),
     Error,
 }
+/// Map from type name to list of variants
+pub type TypeDeclarationMap = HashMap<Symbol, Vec<VariantDef>>;
+/// Map from type alias name to target type
+pub type TypeAliasMap = HashMap<Symbol, crate::interner::TypeNodeId>;
 
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Program {
@@ -174,6 +205,10 @@ pub struct ModuleInfo {
     pub module_context_map: ModuleContextMap,
     /// List of wildcard import base paths (e.g., `use foo::*` stores "foo")
     pub wildcard_imports: Vec<Symbol>,
+    /// Type declarations for user-defined sum types
+    pub type_declarations: TypeDeclarationMap,
+    /// Type aliases for simple type aliases
+    pub type_aliases: TypeAliasMap,
 }
 
 impl ModuleInfo {
@@ -350,6 +385,26 @@ fn stmts_from_program_with_prefix(
                 target,
             } => {
                 process_use_statement(&visibility, &path, &target, module_prefix, module_info);
+                None
+            }
+            ProgramStatement::TypeAlias {
+                visibility: _,
+                name,
+                target_type,
+            } => {
+                // Store type alias for later use in type environment
+                let mangled_name = mangle_qualified_name(module_prefix, name);
+                module_info.type_aliases.insert(mangled_name, target_type);
+                None
+            }
+            ProgramStatement::TypeDeclaration {
+                visibility: _,
+                name,
+                variants,
+            } => {
+                // Store type declaration for later use in type environment
+                let mangled_name = mangle_qualified_name(module_prefix, name);
+                module_info.type_declarations.insert(mangled_name, variants);
                 None
             }
             ProgramStatement::Error => Some(vec![(

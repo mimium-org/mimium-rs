@@ -1,0 +1,28 @@
+`{ 
+	${
+	letrec additive = |n,gen|{
+	    if (n>1){
+			let n_lifted = lift_f(n)
+	        let next = additive(n-1 ,gen)
+`|rate|{|r3|{|r2|{|r1|{osc(r1*1)/1}(r2)+osc(r2*2)/2}(r3)+osc(r*3)/3}(rate) + osc(rate*4)/4
+	    }
+	}
+	`{
+		let PI = 3.14159265359
+        let phasor = |freq|{
+            (self + freq/samplerate)%1.0
+        }
+        let sinwave= |freq|{
+            phasor(freq)*2.0*PI |> sin
+        }
+        let osc = |freq|{
+        sinwave(freq) * 0.5
+        }
+		let dsp = | |{
+		    let f = 200
+		    let r = f |> $additive(5,`osc)
+		    (r,r)
+		}
+	}
+	}
+}

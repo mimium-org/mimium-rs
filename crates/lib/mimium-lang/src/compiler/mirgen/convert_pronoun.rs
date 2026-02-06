@@ -232,6 +232,30 @@ where
             let errs = [err, err2].concat();
             (ConvertResult { expr, found_any }, errs)
         }
+        Expr::Match(scrutinee, arms) => {
+            let (scrutinee_res, mut errs) = conversion(scrutinee);
+            let new_arms: Vec<_> = arms
+                .into_iter()
+                .map(|arm| {
+                    let (body_res, body_errs) = conversion(arm.body);
+                    errs.extend(body_errs);
+                    (
+                        crate::ast::MatchArm {
+                            pattern: arm.pattern,
+                            body: body_res.expr,
+                        },
+                        body_res.found_any,
+                    )
+                })
+                .collect();
+            let found_any = scrutinee_res.found_any | new_arms.iter().any(|(_, found)| *found);
+            let expr = Expr::Match(
+                scrutinee_res.expr,
+                new_arms.into_iter().map(|(arm, _)| arm).collect(),
+            )
+            .into_id(loc);
+            (ConvertResult { expr, found_any }, errs)
+        }
         _ => (
             ConvertResult {
                 expr: e_id,

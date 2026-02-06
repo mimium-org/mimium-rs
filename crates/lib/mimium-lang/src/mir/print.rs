@@ -50,6 +50,15 @@ impl std::fmt::Display for Value {
             Value::ExtFunction(label, t) => {
                 write!(f, "extfun {label} {}", t.to_type())
             }
+            Value::Constructor(name, tag, sum_type) => {
+                write!(
+                    f,
+                    "constructor {}(tag={}, {})",
+                    name,
+                    tag,
+                    sum_type.to_type()
+                )
+            }
             Value::State(v) => write!(f, "state({})", *v),
             Value::None => write!(f, "none"),
         }
@@ -127,6 +136,51 @@ impl std::fmt::Display for Instruction {
             Instruction::JmpIf(cond, tbb, ebb, pbb) => write!(f, "jmpif {cond} {tbb} {ebb} {pbb}"),
             Instruction::Jmp(bb) => write!(f, "jmp {bb}"),
             Instruction::Phi(t, e) => write!(f, "phi {t} {e}"),
+            Instruction::Switch {
+                scrutinee,
+                cases,
+                default_block,
+                merge_block,
+            } => {
+                let cases_str = cases
+                    .iter()
+                    .map(|(lit, b)| format!("{lit}->{b}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let default_str = match default_block {
+                    Some(b) => format!("default:{b}"),
+                    None => "exhaustive".to_string(),
+                };
+                write!(
+                    f,
+                    "switch {scrutinee} [{cases_str}] {default_str} merge:{merge_block}"
+                )
+            }
+            Instruction::PhiSwitch(values) => {
+                let vals_str = values
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "phiswitch [{vals_str}]")
+            }
+            Instruction::TaggedUnionWrap {
+                tag,
+                value,
+                union_type,
+            } => {
+                write!(
+                    f,
+                    "union_wrap tag:{tag} value:{value} type:{}",
+                    union_type.to_type()
+                )
+            }
+            Instruction::TaggedUnionGetTag(v) => {
+                write!(f, "union_get_tag {v}")
+            }
+            Instruction::TaggedUnionGetValue(v, ty) => {
+                write!(f, "union_get_value {v} type:{}", ty.to_type())
+            }
             Instruction::Return(a, rty) => write!(f, "ret {} {}", *a, rty.to_type()),
             Instruction::ReturnFeed(v, rty) => write!(f, "retfeed {} {}", *v, rty.to_type()),
             Instruction::Delay(max, a, b) => write!(f, "delay {max} {} {}", *a, *b),
@@ -161,8 +215,8 @@ impl std::fmt::Display for Instruction {
             Instruction::Le(a, b) => write!(f, "le {} {}", *a, *b),
             Instruction::And(a, b) => write!(f, "and {} {}", *a, *b),
             Instruction::Or(a, b) => write!(f, "or {} {}", *a, *b),
-            Instruction::CastFtoI(_) => todo!(),
-            Instruction::CastItoF(_) => todo!(),
+            Instruction::CastFtoI(v) => write!(f, "ftoi {v}"),
+            Instruction::CastItoF(v) => write!(f, "itof {v}"),
             Instruction::CastItoB(_) => todo!(),
             Instruction::Error => write!(f, "error"),
             Instruction::Array(values, ty) => {

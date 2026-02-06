@@ -1,0 +1,16 @@
+// Test case: Non-exhaustive match on enum (UserSum) type
+// Should fail because 'Third' constructor is missing
+
+type MyEnum = First(float) | Second(float, float) | Third(float, float, float)
+
+fn process(e: MyEnum) -> float {
+    match e {
+        First(x) => x,
+        Second(x, y) => x + y
+    }
+}
+
+fn dsp() {
+    let v = First(42.0);
+    process(v)
+}

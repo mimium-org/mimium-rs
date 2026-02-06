@@ -160,6 +160,12 @@ fn collect_defined_names(expr: ExprNodeId, names: &mut HashSet<Symbol>) {
                 collect_defined_names(t, names);
             }
         }
+        Expr::Match(scrutinee, arms) => {
+            collect_defined_names(scrutinee, names);
+            for arm in arms {
+                collect_defined_names(arm.body, names);
+            }
+        }
         // Leaf nodes - no names to collect
         Expr::Var(_) | Expr::QualifiedVar(_) | Expr::Literal(_) | Expr::Error => {}
     }
@@ -432,8 +438,19 @@ fn convert_expr(ctx: &mut ResolveContext, e_id: ExprNodeId) -> ExprNodeId {
             Expr::Feed(sym, new_e).into_id(loc)
         }
         Expr::Paren(e) => {
-            let new_e = convert_expr(ctx, e);
-            Expr::Paren(new_e).into_id(loc)
+            // Unwrap parenthesized expressions
+            convert_expr(ctx, e)
+        }
+        Expr::Match(scrutinee, arms) => {
+            let new_scrutinee = convert_expr(ctx, scrutinee);
+            let new_arms = arms
+                .into_iter()
+                .map(|arm| crate::ast::MatchArm {
+                    pattern: arm.pattern,
+                    body: convert_expr(ctx, arm.body),
+                })
+                .collect();
+            Expr::Match(new_scrutinee, new_arms).into_id(loc)
         }
 
         // Leaf nodes that don't need transformation

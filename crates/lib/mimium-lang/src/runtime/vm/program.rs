@@ -9,6 +9,18 @@ use state_tree::tree::StateTreeSkeleton;
 
 /// Function prototype definition in the bytecode program.
 
+/// Jump table for switch/match expressions.
+/// Uses a dense array for O(1) lookup when case values are within range.
+/// The last element of `offsets` is the default offset for out-of-range values.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct JumpTable {
+    /// Minimum case value (used to calculate array index: index = value - min)
+    pub min: i64,
+    /// Dense array of offsets. Index = (value - min).
+    /// The last element is the default offset for values outside [min, min + len - 2].
+    pub offsets: Vec<i16>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FuncProto {
     pub nparam: usize,
@@ -17,6 +29,8 @@ pub struct FuncProto {
     pub bytecodes: Vec<Instruction>,
     pub constants: Vec<RawVal>,
     pub delay_sizes: Vec<u64>,
+    /// Jump tables for switch/match expressions.
+    pub jump_tables: Vec<JumpTable>,
     /// StateTree skeleton information inherited from MIR for this function's state layout
     pub state_skeleton: StateTreeSkeleton<mir::StateType>,
 }
@@ -30,6 +44,7 @@ impl Default for FuncProto {
             bytecodes: Vec::new(),
             constants: Vec::new(),
             delay_sizes: Vec::new(),
+            jump_tables: Vec::new(),
             state_skeleton: StateTreeSkeleton::FnCall(vec![]), // Initialize as empty FnCall
         }
     }
@@ -102,6 +117,7 @@ impl std::fmt::Display for Program {
             let _ = write!(f, "upindexes: {:?}  ", fns.1.upindexes);
             let _ = writeln!(f, "state_skeleton: {:?}", fns.1.state_skeleton);
             let _ = writeln!(f, "constants:  {:?}", fns.1.constants);
+            let _ = writeln!(f, "jump_tables: {:?}", fns.1.jump_tables);
             let _ = writeln!(f, "instructions:");
             for inst in fns.1.bytecodes.iter() {
                 let _ = writeln!(f, "  {inst}");

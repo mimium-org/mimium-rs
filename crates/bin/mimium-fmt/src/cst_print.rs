@@ -170,6 +170,7 @@ where
                 SyntaxKind::RecordType => print_record_type(children, ctx, allocator),
                 SyntaxKind::ArrayType => print_array_type(children, ctx, allocator),
                 SyntaxKind::CodeType => print_code_type(children, ctx, allocator),
+                SyntaxKind::UnionType => print_union_type(children, ctx, allocator),
                 // Statement wrapper
                 SyntaxKind::Statement => print_statement(children, ctx, allocator),
                 SyntaxKind::AssignExpr => print_assign_expr(children, ctx, allocator),
@@ -186,6 +187,13 @@ where
                     print_use_target_wildcard(children, ctx, allocator)
                 }
                 SyntaxKind::VisibilityPub => print_visibility_pub(children, ctx, allocator),
+                SyntaxKind::MatchExpr
+                | SyntaxKind::MatchArm
+                | SyntaxKind::MatchArmList
+                | SyntaxKind::MatchPattern
+                | SyntaxKind::ConstructorPattern
+                | SyntaxKind::TypeDecl
+                | SyntaxKind::VariantDef => print_leaf_children(children, ctx, allocator),
                 SyntaxKind::Error => allocator.text("/* error */"),
             }
         }
@@ -1379,6 +1387,20 @@ where
     A: Clone,
 {
     // `type
+    print_leaf_children(children, ctx, allocator)
+}
+
+fn print_union_type<'a, D, A>(
+    children: &[GreenNodeId],
+    ctx: &PrintContext,
+    allocator: &'a D,
+) -> DocBuilder<'a, D, A>
+where
+    D: DocAllocator<'a, A>,
+    D::Doc: Clone + Pretty<'a, D, A>,
+    A: Clone,
+{
+    // A | B | C
     print_leaf_children(children, ctx, allocator)
 }
 

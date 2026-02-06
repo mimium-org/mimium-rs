@@ -98,8 +98,18 @@ pub enum Type {
     Ref(TypeNodeId),
     //(experimental) code-type for multi-stage computation that will be evaluated on the next stage
     Code(TypeNodeId),
+    /// Union (sum) type: A | B | C
+    Union(Vec<TypeNodeId>),
+    /// User-defined sum type with named variants: type Name = A | B | C
+    /// Each variant is (name, optional payload type)
+    UserSum {
+        name: Symbol,
+        variants: Vec<(Symbol, Option<TypeNodeId>)>,
+    },
     Intermediate(Arc<RwLock<TypeVar>>),
     TypeScheme(TypeSchemeId),
+    /// Type alias or type name reference that needs to be resolved during type inference
+    TypeAlias(Symbol),
     /// Any type is the top level, it can be unified with anything.
     Any,
     /// Failure type: it is bottom type that can be unified to any type and return bottom type.
@@ -123,7 +133,19 @@ impl PartialEq for Type {
             }
             (Type::Ref(a), Type::Ref(b)) => a == b,
             (Type::Code(a), Type::Code(b)) => a == b,
+            (Type::Union(a), Type::Union(b)) => a == b,
+            (
+                Type::UserSum {
+                    name: n1,
+                    variants: v1,
+                },
+                Type::UserSum {
+                    name: n2,
+                    variants: v2,
+                },
+            ) => n1 == n2 && v1 == v2,
             (Type::TypeScheme(a), Type::TypeScheme(b)) => a == b,
+            (Type::TypeAlias(a), Type::TypeAlias(b)) => a == b,
             (Type::Any, Type::Any) => true,
             (Type::Failure, Type::Failure) => true,
             (Type::Unknown, Type::Unknown) => true,
@@ -145,6 +167,7 @@ impl Type {
             Type::Record(t) => t
                 .iter()
                 .any(|RecordTypeField { ty, .. }| ty.to_type().contains_function()),
+            Type::Union(t) => t.iter().any(|t| t.to_type().contains_function()),
             _ => false,
         }
     }
@@ -158,6 +181,7 @@ impl Type {
             Type::Record(t) => t
                 .iter()
                 .any(|RecordTypeField { ty, .. }| ty.to_type().contains_code()),
+            Type::Union(t) => t.iter().any(|t| t.to_type().contains_code()),
             _ => false,
         }
     }
@@ -175,6 +199,7 @@ impl Type {
             }
             Type::Ref(t) => t.to_type().contains_type_scheme(),
             Type::Code(t) => t.to_type().contains_type_scheme(),
+            Type::Union(t) => t.iter().any(|t| t.to_type().contains_type_scheme()),
             _ => false,
         }
     }
@@ -325,6 +350,23 @@ impl Type {
                     .unwrap_or_else(|| format!("ivar_{}", tv.var.0))
             }
             Type::TypeScheme(id) => format!("scheme_{}", id.0),
+            Type::TypeAlias(name) => format!("alias_{}", name.as_str()),
+            Type::Union(v) => {
+                let mangled_types = v
+                    .iter()
+                    .map(|x| x.to_type().to_mangled_string())
+                    .collect::<Vec<_>>()
+                    .join("_");
+                format!("union_{}", mangled_types)
+            }
+            Type::UserSum { name, variants } => {
+                let variant_str = variants
+                    .iter()
+                    .map(|(s, _)| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join("_");
+                format!("{}_{}", name.as_str(), variant_str)
+            }
             Type::Any => "any".to_string(),
             Type::Failure => "fail".to_string(),
             Type::Unknown => "unknown".to_string(),
@@ -444,12 +486,28 @@ impl fmt::Display for Type {
             Type::Ref(x) => write!(f, "&{}", x.to_type()),
 
             Type::Code(c) => write!(f, "<{}>", c.to_type()),
+            Type::Union(v) => {
+                let vf = format_vec!(
+                    v.iter().map(|x| x.to_type().clone()).collect::<Vec<_>>(),
+                    " | "
+                );
+                write!(f, "{vf}")
+            }
+            Type::UserSum { name, variants } => {
+                let variant_str = variants
+                    .iter()
+                    .map(|(s, _)| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                write!(f, "{} = {}", name.as_str(), variant_str)
+            }
             Type::Intermediate(id) => {
                 write!(f, "{}", id.read().unwrap())
             }
             Type::TypeScheme(id) => {
                 write!(f, "g({})", id.0)
             }
+            Type::TypeAlias(name) => write!(f, "{}", name.as_str()),
             Type::Any => write!(f, "any"),
             Type::Failure => write!(f, "!"),
             Type::Unknown => write!(f, "unknown"),

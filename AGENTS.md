@@ -24,6 +24,7 @@ The language implements its own virtual machine (VM) and instruction set to exec
 ## Best practices for general works
 
 - If you need to create temporary files for testing, make it in `tmp` directory in the repository, which will be ignored from git. Do not try to write to system's `/tmp` or `/dev/null` which will require additional approval by author.
+- You can check intermediate representations with `--emit-cst` `--emit-ast` `--emit-mir` `--emit-bytecode` options. Also, you can check final output with CSV format by using `--output-format=csv` without blocking with GUI.
 
 ## Best practices of writing Rust
 
