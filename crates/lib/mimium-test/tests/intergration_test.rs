@@ -850,6 +850,13 @@ fn enum_multi_scrutinee() {
     let ans = vec![160.0]; // test_simple(1,1)=10 + test_simple(1,2)=20 + test_simple(2,1)=30 + test_simple(3,3)=100 = 160
     assert_eq!(res, ans);
 }
+
+#[wasm_bindgen_test(unsupported = test)]
+fn enum_macro() {
+    let res = run_file_test_mono("enum_macro.mmm", 1).unwrap();
+    let ans = vec![3.0]; // mymacro(One(100.0))=1.0 + mymacro(Two(200.0))=2.0 = 3.0
+    assert_eq!(res, ans);
+}
 #[wasm_bindgen_test(unsupported = test)]
 fn enum_multi_scrutinee2() {
     let res = run_file_test_mono("enum_multi_scrutinee2.mmm", 1).unwrap();

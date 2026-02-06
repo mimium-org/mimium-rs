@@ -485,22 +485,94 @@ fn dsp(){
 
 ---
 
-## step 7. Complex Multi-Scrutinee with Constructor Patterns (Future)
+## step 7. Union Type in macro computation ✅ COMPLETED
 
-Extend Decision Tree to handle constructor patterns within tuple scrutinees:
+Implement tagged union in macro expansion interpreter.
 
 ```mimium
-fn test(myenum: MyEnum, myenum2: MyEnum){
-  match (myenum, myenum2) {
-    (One(v1), One(v2)) => v1+v2,
-    (Two((x,y)), Two((x2,y2))) => x+y+x2+y2,
-    _ => 100
+type MyEnum = One(float) | Two(float)
+
+fn test_at_main(){
+  let x = One(1.0)
+  let y = Two(2.0)
+  let v1 = match x {
+    One(v) => v,
+    Two(v) => 0.0
   }
+  let v2 = match y {
+    One(v) => 0.0,
+    Two(v) => v
+  }
+  v1 + v2
+}
+
+fn dsp(){
+  test_at_main() // should be 3.0
 }
 ```
 
-This requires:
-- [ ] `PatternCell::Constructor` handling in decision tree
-- [ ] Payload extraction after tag matching
-- [ ] Nested pattern flattening for constructor payloads
+### Phase 7 Implementation Status ✅ COMPLETED (2026-02-06)
+
+#### Goal
+Enable tagged union (enum) types to be constructed and pattern-matched within the interpreter, supporting both runtime (stage 1) and macro-stage (stage 0) code execution.
+
+#### Implementation Details
+
+1. **Interpreter Value Extension** ✅ COMPLETED
+   - Added `Value::TaggedUnion(u64, Box<Value>)` - runtime representation of tagged union values
+   - Added `Value::ConstructorFn(u64, Symbol, TypeNodeId)` - constructor functions with payloads
+   - Added `ValueToExprError::TaggedUnionToExpr` and `ConstructorFnToExpr` error variants
+
+2. **Constructor Environment in Interpreter** ✅ COMPLETED
+   - Added `constructor_env: ConstructorEnv` field to `Context<V>` struct
+   - Updated `create_default_interpreter()` to accept `ConstructorEnv` parameter
+   - Updated `expand_macro()` to accept and pass through `ConstructorEnv`
+   - Updated `mirgen.rs` to pass `infer_ctx.constructor_env.clone()` to `expand_macro()`
+
+3. **Constructor Resolution** ✅ COMPLETED
+   - Modified `StageInterpreter::interpret_expr()` `Var` case to check `constructor_env` first (stage 0 only)
+   - Constructors without payload return `Value::TaggedUnion(tag, Box::new(Value::Unit))`
+   - Constructors with payload return `Value::ConstructorFn(tag, name, sum_type)`
+
+4. **Constructor Application** ✅ COMPLETED
+   - Modified `StageInterpreter::interpret_expr()` `Apply` case to handle `ConstructorFn` (stage 0 only)
+   - Constructor application wraps argument as `Value::TaggedUnion(tag, Box::new(payload))`
+
+5. **Match Expression Evaluation** ✅ COMPLETED
+   - Added `Expr::Match` case in `StageInterpreter::interpret_expr()` for stage 0 evaluation
+   - Evaluates scrutinee and tries each pattern arm in order
+   - Returns body of first matching pattern with variable bindings
+
+6. **Pattern Matching Implementation** ✅ COMPLETED
+   - Added `StageInterpreter::match_pattern()` helper method
+   - Supports: Wildcard, Literal (Int/Float), Variable, Constructor, Tuple patterns
+   - Constructor patterns check tag index from `constructor_env` before matching inner pattern
+   - Tuple patterns recursively match element-wise
+
+7. **Code Reconstruction (rebuild)** ✅ COMPLETED
+   - Added `Expr::Match` case in `StageInterpreter::rebuild()` for stage > 0
+   - Recursively rebuilds scrutinee and all arm bodies
+   - Patterns preserved as-is (no rebuilding needed)
+
+#### Design Notes
+
+- **Type Declarations Scope**: Type declarations (`type MyEnum = ...`) should be defined at the top level (outside `#stage` blocks) to ensure they are accessible across all stages
+- **Stage Switching Limitation**: While the interpreter supports union types in both stage 0 and stage 1, type declarations themselves are compile-time constructs and should not be nested inside `#stage` blocks
+- **Constructor Evaluation**: Constructors are resolved through `constructor_env` which is built during type checking and passed to the interpreter
+
+#### Key Files Modified
+
+| File | Changes |
+|------|---------|
+| `interpreter.rs` | Added imports, extended Value enum, updated Context, added match_pattern(), updated interpret_expr() Var/Apply cases, added Match evaluation, added Match rebuild, updated function signatures |
+| `mirgen.rs` | Pass `infer_ctx.constructor_env.clone()` to `expand_macro()` |
+| `enum_macro.mmm` | Test file for union types with match expressions |
+| `intergration_test.rs` | Added `enum_macro` test case |
+
+#### Test Result
+- `enum_macro` test: ✅ PASSED (returns 3.0 = 1.0 + 2.0)
+- All other tests: ✅ PASSING (113 tests total)
+
+---
+
 

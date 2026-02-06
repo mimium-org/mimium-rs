@@ -7,6 +7,7 @@ use itertools::Itertools;
 
 use crate::ast::{Expr, Literal, RecordField};
 use crate::compiler::EvalStage;
+use crate::compiler::typing::ConstructorEnv;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
 use crate::plugin::{MacroFunType, MacroFunction, MacroInfo};
@@ -35,6 +36,7 @@ where
 {
     pub stage: EvalStage,
     pub env: Environment<(V, EvalStage)>,
+    pub constructor_env: ConstructorEnv,
 }
 
 ///Trait for defining general reduction rules of Lambda calculus, independent of the primitive types, even if it is untyped.
@@ -67,7 +69,12 @@ pub trait GeneralInterpreter {
             })
             .collect_vec();
         ctx.env.add_bind(binds.as_slice());
-        let res = self.eval(ctx, e);
+        // Use interpret_expr at stage 0 to check constructor_env
+        let res = if ctx.stage == EvalStage::Stage(0) {
+            self.interpret_expr(ctx, e)
+        } else {
+            self.eval(ctx, e)
+        };
         ctx.env.to_outer();
         res
     }
@@ -86,7 +93,12 @@ pub trait GeneralInterpreter {
             .collect_vec();
         ctx.env.extend();
         ctx.env.add_bind(binds.as_slice());
-        let res = self.eval(&mut ctx, e);
+        // Use interpret_expr at stage 0 to check constructor_env
+        let res = if ctx.stage == EvalStage::Stage(0) {
+            self.interpret_expr(&mut ctx, e)
+        } else {
+            self.eval(&mut ctx, e)
+        };
         ctx.env.to_outer();
         res
     }
@@ -104,7 +116,13 @@ pub trait GeneralInterpreter {
                 {
                     self.deref_store(val)
                 }
-                LookupRes::None => panic!("Variable {name} not found"),
+                LookupRes::None => {
+                    // At stage 0, check constructor_env before panicking
+                    if ctx.stage == EvalStage::Stage(0) {
+                        return self.interpret_expr(ctx, expr);
+                    }
+                    panic!("Variable {name} not found")
+                }
                 LookupRes::Local((_, bounded_stage))
                 | LookupRes::UpValue(_, (_, bounded_stage))
                 | LookupRes::Global((_, bounded_stage)) => {
@@ -167,6 +185,10 @@ pub trait GeneralInterpreter {
                 ValueTrait::make_closure(body, names, ctx.env.clone())
             }
             Expr::Apply(f, a) => {
+                // At stage 0, use interpret_expr to handle ConstructorFn
+                if ctx.stage == EvalStage::Stage(0) {
+                    return self.interpret_expr(ctx, expr);
+                }
                 let fv = self.eval(ctx, f);
                 let args = a
                     .clone()
@@ -186,6 +208,7 @@ pub trait GeneralInterpreter {
                     let new_ctx = Context {
                         env: c_env,
                         stage: ctx.stage,
+                        constructor_env: ctx.constructor_env.clone(),
                     };
                     self.eval_with_closure_env(binds.as_slice(), new_ctx, body)
                 } else if let Some((_, e)) = fv.get_as_fixpoint() {
@@ -207,6 +230,8 @@ pub enum ValueToExprError {
     ClosureToExpr,
     FixpointToExpr,
     ExternalFnToExpr,
+    TaggedUnionToExpr,
+    ConstructorFnToExpr,
 }
 trait MultiStageInterpreter {
     type Value: Clone + ValueTrait + std::fmt::Debug + TryInto<ExprNodeId, Error = ValueToExprError>;
@@ -245,6 +270,8 @@ pub enum Value {
     Code(ExprNodeId),
     ExternalFn(ExtFunction),
     Store(Rc<RefCell<Value>>),
+    TaggedUnion(u64, Box<Value>),
+    ConstructorFn(u64, Symbol, TypeNodeId),
 }
 impl From<&Box<dyn MacroFunction>> for Value {
     fn from(macro_fn: &Box<dyn MacroFunction>) -> Self {
@@ -340,6 +367,14 @@ impl TryInto<ExprNodeId> for Value {
                 // Dereference the Store and convert the inner value
                 store.borrow().clone().try_into()
             }
+            Value::TaggedUnion(_, _) => {
+                // TaggedUnion cannot be converted to ExprNodeId without constructor_env
+                Err(ValueToExprError::TaggedUnionToExpr)
+            }
+            Value::ConstructorFn(_, _, _) => {
+                // Constructor functions cannot be converted to ExprNodeId
+                Err(ValueToExprError::ConstructorFnToExpr)
+            }
         }
     }
 }
@@ -352,6 +387,83 @@ impl MultiStageInterpreter for StageInterpreter {
 }
 
 impl StageInterpreter {
+    /// Try to match a pattern against a value. Returns Some(bindings) if successful.
+    fn match_pattern(
+        &self,
+        constructor_env: &ConstructorEnv,
+        pattern: &crate::ast::MatchPattern,
+        value: &Value,
+    ) -> Option<Vec<(Symbol, Value)>> {
+        use crate::ast::MatchPattern;
+
+        match (pattern, value) {
+            // Wildcard matches anything
+            (MatchPattern::Wildcard, _) => Some(vec![]),
+
+            // Literal integer match
+            (MatchPattern::Literal(Literal::Int(expected)), Value::Number(actual)) => {
+                if (*expected as f64 - *actual).abs() < 1e-6 {
+                    Some(vec![])
+                } else {
+                    None
+                }
+            }
+
+            // Literal float match
+            (MatchPattern::Literal(Literal::Float(expected)), Value::Number(actual)) => {
+                let expected_val: f64 = expected.to_string().parse().unwrap();
+                if (expected_val - *actual).abs() < 1e-6 {
+                    Some(vec![])
+                } else {
+                    None
+                }
+            }
+
+            // Variable pattern - binds the value
+            (MatchPattern::Variable(name), _) => Some(vec![(*name, value.clone())]),
+
+            // Constructor pattern
+            (
+                MatchPattern::Constructor(ctor_name, bind_pattern),
+                Value::TaggedUnion(tag, payload),
+            ) => {
+                // Look up constructor info to check tag
+                if let Some(ctor_info) = constructor_env.get(ctor_name) {
+                    if ctor_info.tag_index as u64 == *tag {
+                        // Tag matches - check inner pattern
+                        match bind_pattern.as_ref() {
+                            Some(inner_pattern) => {
+                                self.match_pattern(constructor_env, inner_pattern, payload)
+                            }
+                            None => Some(vec![]),
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+
+            // Tuple pattern
+            (MatchPattern::Tuple(patterns), Value::Tuple(values)) => {
+                if patterns.len() != values.len() {
+                    return None;
+                }
+                let mut bindings = vec![];
+                for (pat, val) in patterns.iter().zip(values.iter()) {
+                    match self.match_pattern(constructor_env, pat, val) {
+                        Some(mut b) => bindings.append(&mut b),
+                        None => return None,
+                    }
+                }
+                Some(bindings)
+            }
+
+            _ => None,
+        }
+    }
+
     /// Evaluate an address expression to get a mutable reference to a Store.
     /// Handles Var, FieldAccess, ArrayAccess, and Proj recursively.
     fn eval_address(&mut self, ctx: &mut Context<Value>, expr: ExprNodeId) -> Rc<RefCell<Value>> {
@@ -424,6 +536,75 @@ impl GeneralInterpreter for StageInterpreter {
             Value::Code(self.rebuild(ctx, expr))
         } else {
             match expr.to_expr() {
+                Expr::Var(name) => {
+                    // First check if it's a constructor
+                    if let Some(ctor_info) = ctx.constructor_env.get(&name) {
+                        // Check if it has a payload
+                        if ctor_info.payload_type.is_some() {
+                            // Constructor with payload - return ConstructorFn
+                            return Value::ConstructorFn(
+                                ctor_info.tag_index as u64,
+                                name,
+                                ctor_info.sum_type,
+                            );
+                        } else {
+                            // Constructor without payload - return TaggedUnion with Unit
+                            return Value::TaggedUnion(
+                                ctor_info.tag_index as u64,
+                                Box::new(Value::Unit),
+                            );
+                        }
+                    }
+                    // Otherwise, delegate to the general eval
+                    self.eval(ctx, expr)
+                }
+                Expr::Apply(f, a) => {
+                    // Evaluate function - use interpret_expr for Var to check constructors
+                    let fv = match f.to_expr() {
+                        Expr::Var(_) => self.interpret_expr(ctx, f),
+                        _ => self.eval(ctx, f),
+                    };
+
+                    // Handle constructor function application
+                    if let Value::ConstructorFn(tag, _name, _sum_type) = fv {
+                        // Constructor with payload - wrap the argument
+                        let args: Vec<Value> =
+                            a.into_iter().map(|arg| self.eval(ctx, arg)).collect();
+                        if args.len() != 1 {
+                            panic!("Constructor expects exactly 1 argument");
+                        }
+                        return Value::TaggedUnion(tag, Box::new(args[0].clone()));
+                    }
+
+                    // Otherwise, handle normal function application
+                    let args = a
+                        .clone()
+                        .into_iter()
+                        .map(|arg| {
+                            (
+                                self.eval(ctx, arg),
+                                Type::Unknown.into_id_with_location(arg.to_location()),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    if let Some(ext_fn) = fv.clone().get_as_external_fn() {
+                        ext_fn.borrow()(args.as_slice())
+                    } else if let Some((c_env, names, body)) = fv.clone().get_as_closure() {
+                        log::trace!("entering closure app with names: {names:?}");
+                        let binds = names.into_iter().zip(args).collect_vec();
+                        let new_ctx = Context {
+                            env: c_env,
+                            stage: ctx.stage,
+                            constructor_env: ctx.constructor_env.clone(),
+                        };
+                        self.eval_with_closure_env(binds.as_slice(), new_ctx, body)
+                    } else if let Some((_, e)) = fv.get_as_fixpoint() {
+                        let new_app = Expr::Apply(e, a.clone()).into_id(expr.to_location());
+                        self.eval(ctx, new_app)
+                    } else {
+                        panic!("apply to non-functional type")
+                    }
+                }
                 Expr::ArrayLiteral(ev) => {
                     let elements = ev.into_iter().map(|e| self.eval(ctx, e)).collect();
                     Value::Array(elements)
@@ -539,6 +720,26 @@ impl GeneralInterpreter for StageInterpreter {
                     ctx.stage = EvalStage::Stage(0); // Decrease the stage back
                     res
                 }
+                Expr::Match(scrutinee, arms) => {
+                    // Evaluate scrutinee
+                    let scrutinee_val = self.eval(ctx, scrutinee);
+
+                    // Try each arm in order
+                    for arm in arms {
+                        let pattern = &arm.pattern;
+                        let body = arm.body;
+
+                        // Check if pattern matches
+                        if let Some(bindings) =
+                            self.match_pattern(&ctx.constructor_env, pattern, &scrutinee_val)
+                        {
+                            // Pattern matched - evaluate body with bindings
+                            return self.eval_in_new_env(&bindings, ctx, body);
+                        }
+                    }
+
+                    panic!("No pattern matched in match expression");
+                }
                 // apply, lambda, let, letrec, escape, bracket, etc. will be handled by the interpreter trait
                 _ => self.eval(ctx, expr),
             }
@@ -575,7 +776,12 @@ impl StageInterpreter {
                 ctx.stage = ctx.stage.decrement();
                 log::trace!("Unstaging escape expression, stage => {:?}", ctx.stage);
 
-                let v = self.eval(ctx, inner);
+                // Use interpret_expr at stage 0 to check constructor_env
+                let v = if ctx.stage == EvalStage::Stage(0) {
+                    self.interpret_expr(ctx, inner)
+                } else {
+                    self.eval(ctx, inner)
+                };
                 ctx.stage = ctx.stage.increment();
                 v.try_into()
                     .expect("Failed to convert escape expression to ExprNodeId")
@@ -647,6 +853,17 @@ impl StageInterpreter {
             Expr::Block(b) => {
                 Expr::Block(b.map(|eid| self.rebuild(ctx, eid))).into_id(e.to_location())
             }
+            Expr::Match(scrutinee, arms) => {
+                let rebuilt_scrutinee = self.rebuild(ctx, scrutinee);
+                let rebuilt_arms = arms
+                    .into_iter()
+                    .map(|arm| crate::ast::MatchArm {
+                        pattern: arm.pattern,
+                        body: self.rebuild(ctx, arm.body),
+                    })
+                    .collect();
+                Expr::Match(rebuilt_scrutinee, rebuilt_arms).into_id(e.to_location())
+            }
             _ => e,
         }
     }
@@ -654,6 +871,7 @@ impl StageInterpreter {
 
 pub fn create_default_interpreter(
     extern_macros: &[Box<dyn MacroFunction>],
+    constructor_env: ConstructorEnv,
 ) -> (StageInterpreter, Context<Value>) {
     let mut env = Environment::new();
 
@@ -670,6 +888,7 @@ pub fn create_default_interpreter(
     let ctx = Context {
         stage: EvalStage::Stage(0),
         env,
+        constructor_env,
     };
     (StageInterpreter::default(), ctx)
 }
@@ -680,8 +899,9 @@ pub fn expand_macro(
     expr: ExprNodeId,
     top_type: TypeNodeId,
     extern_macros: &[Box<dyn MacroFunction>],
+    constructor_env: ConstructorEnv,
 ) -> ExprNodeId {
-    let (mut interpreter, mut ctx) = create_default_interpreter(extern_macros);
+    let (mut interpreter, mut ctx) = create_default_interpreter(extern_macros, constructor_env);
     expand_macro_rec(expr, &mut ctx, &mut interpreter, top_type)
 }
 fn expand_macro_rec(

@@ -1,0 +1,21 @@
+type MyEnum = One(float) | Two(float)
+
+#stage(macro)
+fn mymacro(){
+  let x = One(1.0)
+  let y = Two(2.0)
+  let v1 = match x {
+    One(v) => v,
+    Two(v) => 0.0
+  }
+  let v2 = match y {
+    One(v) => 0.0,
+    Two(v) => v
+  }
+  lift_f(v1 + v2)
+}
+
+#stage(main)
+fn dsp(){
+  mymacro!() // will be 3.0
+}
