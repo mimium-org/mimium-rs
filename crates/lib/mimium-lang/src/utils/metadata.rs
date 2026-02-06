@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 
-use crate::interner::{Symbol, ToSymbol};
-
 pub type Span = std::ops::Range<usize>;
 
 #[derive(Clone, Debug, PartialEq)]

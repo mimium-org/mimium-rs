@@ -12,12 +12,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use thiserror::Error;
 
 mod unification;
 pub(crate) use unification::Relation;
 use unification::{Error as UnificationError, unify_types};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Error)]
+#[error("Type Inference Error")]
 pub enum Error {
     TypeMismatch {
         left: (TypeNodeId, Location),
@@ -53,7 +55,7 @@ pub enum Error {
         loc: Location,
     },
     DuplicateKeyInParams(Vec<(Symbol, Location)>),
-    // The error of records, which contains both subtypes and supertypes.
+    /// The error of records, which contains both subtypes and supertypes.
     IncompatibleKeyInRecord {
         left: (Vec<(Symbol, TypeNodeId)>, Location),
         right: (Vec<(Symbol, TypeNodeId)>, Location),
@@ -106,13 +108,7 @@ pub enum Error {
         location: Location,
     },
 }
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Type Inference Error")
-    }
-}
 
-impl std::error::Error for Error {}
 impl ReportableError for Error {
     fn get_message(&self) -> String {
         match self {

@@ -258,7 +258,7 @@ impl LanguageServer for Backend {
             }
         };
 
-        debug!("formatted: {:#?}", formatted);
+        debug!("formatted: {formatted:#?}");
 
         let last_line = rope.len_lines().saturating_sub(1);
         let last_char = rope.line(last_line).len_chars();

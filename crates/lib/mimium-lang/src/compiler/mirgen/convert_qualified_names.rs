@@ -15,6 +15,8 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use thiserror::Error;
+
 use crate::ast::Expr;
 use crate::ast::program::{ModuleInfo, resolve_qualified_path};
 use crate::interner::{ExprNodeId, Symbol, ToSymbol};
@@ -23,7 +25,8 @@ use crate::utils::error::ReportableError;
 use crate::utils::metadata::Location;
 
 /// Error types specific to qualified name resolution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Error)]
+#[error("Private member access")]
 pub enum Error {
     /// Attempted to access a private module member
     PrivateMemberAccess {
@@ -32,16 +35,6 @@ pub enum Error {
         location: Location,
     },
 }
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::PrivateMemberAccess { .. } => write!(f, "Private member access"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
 
 impl ReportableError for Error {
     fn get_message(&self) -> String {

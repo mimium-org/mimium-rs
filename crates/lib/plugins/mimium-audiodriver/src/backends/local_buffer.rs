@@ -4,13 +4,10 @@ use std::sync::{
 };
 
 use mimium_lang::{
-    ExecContext,
     compiler::IoChannelInfo,
-    interner::ToSymbol,
-    plugin::{DynSystemPlugin, ExtClsInfo},
-    runtime::{self, Time, vm},
+    plugin::ExtClsInfo,
+    runtime::{Time, vm},
 };
-use ringbuf::traits::Split;
 
 use crate::driver::{Driver, RuntimeData, SampleRate};
 

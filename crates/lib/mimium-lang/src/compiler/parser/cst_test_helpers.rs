@@ -65,10 +65,7 @@ pub fn collect_nodes_by_kind(
 /// Panics if not found, with a descriptive message.
 pub fn assert_cst_contains_kind(arena: &GreenNodeArena, node_id: GreenNodeId, kind: SyntaxKind) {
     if find_node_by_kind(arena, node_id, kind).is_none() {
-        panic!(
-            "Expected to find {:?} in subtree rooted at {:?}",
-            kind, node_id
-        );
+        panic!("Expected to find {kind:?} in subtree rooted at {node_id:?}");
     }
 }
 
@@ -90,10 +87,7 @@ pub fn assert_cst_has_child_kind(
         .unwrap_or(false);
 
     if !has_child {
-        panic!(
-            "Expected direct child of kind {:?} in node {:?}",
-            expected_kind, node_id
-        );
+        panic!("Expected direct child of kind {expected_kind:?} in node {node_id:?}");
     }
 }
 
@@ -116,8 +110,7 @@ pub fn assert_node_count(
     let actual_count = count_nodes_by_kind(arena, node_id, kind);
     assert_eq!(
         actual_count, expected_count,
-        "Expected {} nodes of kind {:?}, found {}",
-        expected_count, kind, actual_count
+        "Expected {expected_count} nodes of kind {kind:?}, found {actual_count}"
     );
 }
 
@@ -125,10 +118,7 @@ pub fn assert_node_count(
 pub fn assert_tokens_present(tokens: &[Token], expected_kinds: &[TokenKind]) {
     for expected_kind in expected_kinds {
         if !tokens.iter().any(|t| t.kind == *expected_kind) {
-            panic!(
-                "Expected token kind {:?} not found in token list",
-                expected_kind
-            );
+            panic!("Expected token kind {expected_kind:?} not found in token list");
         }
     }
 }
@@ -155,9 +145,7 @@ pub fn assert_cst_depth_at_least(arena: &GreenNodeArena, node_id: GreenNodeId, m
     let actual_depth = get_cst_depth(arena, node_id);
     assert!(
         actual_depth >= min_depth,
-        "Expected CST depth >= {}, found {}",
-        min_depth,
-        actual_depth
+        "Expected CST depth >= {min_depth}, found {actual_depth}"
     );
 }
 

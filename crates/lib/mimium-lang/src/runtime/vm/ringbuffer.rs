@@ -30,7 +30,8 @@ impl<'a> Ringbuffer<'a> {
     }
     pub fn process(&mut self, input: RawVal, time_raw: u64) -> RawVal {
         let len = self.data.len() as u64;
-        let res = unsafe {
+
+        unsafe {
             let time = f64::from_bits(time_raw) as u64;
             let read_idx = *self.read_idx;
             *self.write_idx = (read_idx + time) % len;
@@ -39,7 +40,6 @@ impl<'a> Ringbuffer<'a> {
             *self.data.get_unchecked_mut(write_idx as usize) = input;
             *self.read_idx = (read_idx + 1) % len;
             res
-        };
-        res
+        }
     }
 }

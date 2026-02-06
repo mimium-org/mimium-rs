@@ -22,6 +22,7 @@ intx = "0.1.0"
 itertools.workspace = true
 wasm-bindgen.workspace = true
 state-tree = { workspace = true }
+thiserror = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 homedir = { version = "0.3.4" }
 mimalloc = { version = "0.1.43" }

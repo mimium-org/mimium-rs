@@ -171,11 +171,7 @@ impl SamplerPlugin {
         let abs_path = match std::fs::canonicalize(&rel_path_str) {
             Ok(p) => p.to_string_lossy().to_string(),
             Err(e) => {
-                mimium_lang::log::error!(
-                    "Failed to resolve audio file path '{}': {}",
-                    rel_path_str,
-                    e
-                );
+                mimium_lang::log::error!("Failed to resolve audio file path '{rel_path_str}': {e}");
                 return Self::error_fallback();
             }
         };
@@ -188,7 +184,7 @@ impl SamplerPlugin {
             let vec = match load_wavfile_to_vec(&abs_path) {
                 Ok(v) => Arc::new(v),
                 Err(e) => {
-                    mimium_lang::log::error!("Failed to load audio file '{}': {}", abs_path, e);
+                    mimium_lang::log::error!("Failed to load audio file '{abs_path}': {e}");
                     return Self::error_fallback();
                 }
             };
@@ -234,7 +230,7 @@ impl SamplerPlugin {
                 vm.set_stack(0, Machine::to_value(val));
             }
             None => {
-                mimium_lang::log::error!("Invalid sample index: {}", sample_idx);
+                mimium_lang::log::error!("Invalid sample index: {sample_idx}");
                 vm.set_stack(0, Machine::to_value(0.0));
             }
         }

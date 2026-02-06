@@ -31,7 +31,7 @@ pub(super) fn resolve_include(
                 .into_iter()
                 .map(|e| -> Box<dyn ReportableError> {
                     Box::new(SimpleError {
-                        message: format!("Parse error: {:?}", e),
+                        message: format!("Parse error: {e:?}"),
                         span: loc.clone(),
                     })
                 })

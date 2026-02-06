@@ -278,10 +278,9 @@ impl<'a> Lowerer<'a> {
                         if let Some(token_idx) = self.get_token_index(*child)
                             && let Some(token) = self.tokens.get(token_idx)
                             && token.kind == TokenKind::Ident
+                            && let Some(text) = self.token_text(token_idx)
                         {
-                            if let Some(text) = self.token_text(token_idx) {
-                                segments.push(text.to_symbol());
-                            }
+                            segments.push(text.to_symbol());
                         }
                     }
                 }
@@ -304,10 +303,9 @@ impl<'a> Lowerer<'a> {
                 if let Some(token_idx) = self.get_token_index(*child)
                     && let Some(token) = self.tokens.get(token_idx)
                     && token.kind == TokenKind::Ident
+                    && let Some(text) = self.token_text(token_idx)
                 {
-                    if let Some(text) = self.token_text(token_idx) {
-                        symbols.push(text.to_symbol());
-                    }
+                    symbols.push(text.to_symbol());
                 }
             }
         }

@@ -39,7 +39,7 @@ mod lift_arrayf {
     use crate::code;
     use crate::interner::TypeNodeId;
     use crate::interpreter::Value;
-    use crate::types::TypeSchemeId;
+
     use crate::{
         function, numeric,
         types::{PType, Type},
@@ -131,10 +131,7 @@ mod split_tail {
     use crate::interpreter::Value;
     use crate::plugin::CommonFunction;
     use crate::types::TypeSchemeId;
-    use crate::{
-        function,
-        types::{PType, Type},
-    };
+    use crate::{function, types::Type};
 
     fn machine_function(
         machine: &mut crate::runtime::vm::Machine,
@@ -219,10 +216,7 @@ mod split_head {
     use crate::interpreter::Value;
     use crate::plugin::CommonFunction;
     use crate::types::TypeSchemeId;
-    use crate::{
-        function,
-        types::{PType, Type},
-    };
+    use crate::{function, types::Type};
 
     fn machine_function(
         machine: &mut crate::runtime::vm::Machine,
@@ -464,7 +458,7 @@ mod prepend {
 }
 
 mod map {
-    use super::*;
+
     use crate::interner::ToSymbol;
     use crate::interner::TypeNodeId;
     use crate::interpreter::Value;

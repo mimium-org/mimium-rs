@@ -746,11 +746,11 @@ where
         let node = ctx.arena.get(child);
 
         // Check if this is an ArgList node - format specially
-        if let mimium_lang::compiler::parser::green::GreenNode::Internal { kind, .. } = node {
-            if *kind == SyntaxKind::ArgList {
-                result = result.append(cst_to_doc(child, ctx, allocator));
-                continue;
-            }
+        if let mimium_lang::compiler::parser::green::GreenNode::Internal { kind, .. } = node
+            && *kind == SyntaxKind::ArgList
+        {
+            result = result.append(cst_to_doc(child, ctx, allocator));
+            continue;
         }
 
         // For other children (callee, @, time), concatenate directly
@@ -1682,14 +1682,11 @@ where
         if let mimium_lang::compiler::parser::green::GreenNode::Token { token_index, .. } = node {
             let token = &ctx.tokens[*token_index];
 
-            match token.kind {
-                TokenKind::Use => {
-                    result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
-                    result = result.append(allocator.space());
-                    seen_use = true;
-                    continue;
-                }
-                _ => {}
+            if token.kind == TokenKind::Use {
+                result = result.append(emit_token_with_trivia(*token_index, ctx, allocator));
+                result = result.append(allocator.space());
+                seen_use = true;
+                continue;
             }
         }
 
