@@ -1060,6 +1060,20 @@ fn type_recursive_tree() {
         }
     }
 }
+#[wasm_bindgen_test(unsupported = test)]
+fn type_recursive_tree_macro() {
+    let (file, src) = load_src("type_recursive_tree_macro.mmm");
+    let res = run_source_test(&src, 1, false, Some(file));
+    match res {
+        Ok(res) => assert_eq!(res, vec![28.0]),
+        Err(errs) => {
+            for err in &errs {
+                eprintln!("Error: {}", err.get_message());
+            }
+            panic!("type_recursive_tree failed");
+        }
+    }
+}
 
 #[wasm_bindgen_test(unsupported = test)]
 fn type_recursive_option() {
