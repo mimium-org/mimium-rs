@@ -142,6 +142,30 @@ pub enum Instruction {
         ptr: VPtr,
         inner_type: TypeNodeId,
     },
+    /// Increment the reference count of a boxed heap object.
+    /// Inserted when a Boxed value is duplicated (call-by-value cloning).
+    BoxClone {
+        ptr: VPtr,
+    },
+    /// Decrement the reference count of a boxed heap object.
+    /// When the count reaches 0 the heap object is freed.
+    /// Inserted when a Boxed value goes out of scope.
+    BoxRelease {
+        ptr: VPtr,
+        inner_type: TypeNodeId,
+    },
+    /// Write a value into an already-allocated heap object (destructive update).
+    /// Used for future mutable patterns on boxed values.
+    BoxStore {
+        ptr: VPtr,
+        value: VPtr,
+        inner_type: TypeNodeId,
+    },
+    /// Clone all boxed references within a UserSum (variant) value.
+    /// This is used when passing UserSum values to functions (call-by-value).
+    /// At runtime, walks the value's structure using type information and
+    /// increments reference counts for any Boxed fields.
+    CloneUserSum { value: VPtr, ty: TypeNodeId },
 
     Return(VPtr, TypeNodeId),
     //value to update state
@@ -262,10 +286,10 @@ impl From<TypeNodeId> for StateType {
             Type::Record(fields) => StateType(
                 fields
                     .iter()
-                    .map(|RecordTypeField { ty, .. }| ty.word_size())
+                    .map(|RecordTypeField { ty, .. }| ty.word_size() as u64)
                     .sum(),
             ),
-            Type::Tuple(elems) => StateType(elems.iter().map(|ty| ty.word_size()).sum()),
+            Type::Tuple(elems) => StateType(elems.iter().map(|ty| ty.word_size() as u64).sum()),
             Type::Array(_elem_ty) => StateType(1),
             _ => todo!(),
         }

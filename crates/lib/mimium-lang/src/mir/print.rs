@@ -213,6 +213,26 @@ impl std::fmt::Display for Instruction {
             Instruction::BoxLoad { ptr, inner_type } => {
                 write!(f, "box_load {ptr} type:{}", inner_type.to_type())
             }
+            Instruction::BoxClone { ptr } => {
+                write!(f, "box_clone {ptr}")
+            }
+            Instruction::BoxRelease { ptr, inner_type } => {
+                write!(f, "box_release {ptr} type:{}", inner_type.to_type())
+            }
+            Instruction::BoxStore {
+                ptr,
+                value,
+                inner_type,
+            } => {
+                write!(
+                    f,
+                    "box_store {ptr} {value} type:{}",
+                    inner_type.to_type()
+                )
+            }
+            Instruction::CloneUserSum { value, ty } => {
+                write!(f, "clone_usersum {} type:{}", *value, ty.to_type())
+            }
             Instruction::Return(a, rty) => write!(f, "ret {} {}", *a, rty.to_type()),
             Instruction::ReturnFeed(v, rty) => write!(f, "retfeed {} {}", *v, rty.to_type()),
             Instruction::Delay(max, a, b) => write!(f, "delay {max} {} {}", *a, *b),

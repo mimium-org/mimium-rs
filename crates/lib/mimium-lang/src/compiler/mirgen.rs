@@ -320,6 +320,13 @@ impl Context {
                 // because the closure value itself is a single heap object.
                 // The arguments/return values will be processed when they are actually used.
             }
+            Type::Boxed(inner) => {
+                // Boxed value going out of scope — decrement its reference count
+                self.push_inst(Instruction::BoxRelease {
+                    ptr: v.clone(),
+                    inner_type: inner,
+                });
+            }
             Type::Tuple(elem_types) => {
                 // Recursively process each element of the tuple
                 for (i, elem_ty) in elem_types.iter().enumerate() {
@@ -356,6 +363,10 @@ impl Context {
             Type::Function { .. } => {
                 self.push_inst(Instruction::CloneHeap(v.clone()));
             }
+            Type::Boxed(_inner) => {
+                // Boxed value being duplicated — increment its reference count
+                self.push_inst(Instruction::BoxClone { ptr: v.clone() });
+            }
             Type::Tuple(elem_types) => {
                 for (i, elem_ty) in elem_types.iter().enumerate() {
                     let elem_v = self.push_inst(Instruction::GetElement {
@@ -375,6 +386,15 @@ impl Context {
                     });
                     self.insert_clone_recursively(field_v, field.ty);
                 }
+            }
+            Type::UserSum { .. } => {
+                // For UserSum (variant types with recursive/boxed payload),
+                // insert a dynamic clone instruction that will traverse the value at runtime
+                // and clone any boxed references it contains
+                self.push_inst(Instruction::CloneUserSum {
+                    value: v.clone(),
+                    ty,
+                });
             }
             _ => {}
         }
@@ -850,8 +870,13 @@ impl Context {
                     }
                     _ => v.clone(),
                 };
+                // Clone heap-allocated values (closures and boxed values) before passing to function
+                // This implements call-by-value semantics with reference counting
+                if t.to_type().contains_function() || t.to_type().contains_boxed() {
+                    self.insert_clone_recursively(res.clone(), t);
+                }
+                // Close heap-allocated values after cloning (for higher-order functions)
                 if t.to_type().contains_function() {
-                    //higher-order function need to close immidiately
                     self.insert_close_recursively(res.clone(), t);
                 }
                 (res, t, s)
@@ -1391,7 +1416,7 @@ impl Context {
                                 let _ = ctx.push_inst(Instruction::Return(cls, rt));
                             }
                             (_, _) => {
-                                if rt.to_type().contains_function() {
+                                if rt.to_type().contains_function() || rt.to_type().contains_boxed() {
                                     ctx.insert_close_recursively(res.clone(), rt);
                                     ctx.insert_clone_recursively(res.clone(), rt);
                                     let _ = ctx.push_inst(Instruction::Return(res.clone(), rt));

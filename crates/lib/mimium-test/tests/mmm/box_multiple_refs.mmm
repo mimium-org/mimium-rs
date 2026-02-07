@@ -1,0 +1,21 @@
+// Test case: Multiple variables referencing the same boxed value
+// BoxClone should properly manage reference counts
+type rec Tree = Leaf(float) | Node(Tree, Tree)
+
+fn tree_sum(tree: Tree) -> float {
+    match tree {
+        Leaf(value) => value,
+        Node(left, right) => tree_sum(left) + tree_sum(right)
+    }
+}
+
+fn dsp() -> float {
+    let subtree = Node(Leaf(2.0), Leaf(3.0))
+    // subtree is cloned for each use
+    let tree1 = Node(Leaf(1.0), subtree)
+    let tree2 = Node(subtree, Leaf(4.0))
+    
+    let s1 = tree_sum(tree1)  // 1.0 + 2.0 + 3.0 = 6.0
+    let s2 = tree_sum(tree2)  // 2.0 + 3.0 + 4.0 = 9.0
+    s1 + s2  // 6.0 + 9.0 = 15.0
+}

@@ -132,47 +132,9 @@ fn gen_raw_float(n: &f64) -> vm::RawVal {
 impl ByteCodeGenerator {
     /// Calculate byte size of the value for type T based on 1 word size (=currently 64bit).
     /// The base word size may change depending on the backend in the future.
-    /// Currently, the string type is a immutable Symbol, so the word size is 1.
-    /// In the future, string may be represented as a fat pointer, pair of pointer and length.
+    /// Calculate word size for a type. Now delegates to TypeNodeId::word_size().
     pub(crate) fn word_size_for_type(ty: TypeNodeId) -> TypeSize {
-        match ty.to_type() {
-            Type::Primitive(PType::Unit) => 0,
-            Type::Primitive(PType::String) => 1,
-            Type::Primitive(_) => 1,
-            Type::Array(_) => 1, //array is represented as a pointer to the special storage
-            Type::Tuple(types) => types.iter().map(|t| Self::word_size_for_type(*t)).sum(),
-            Type::Record(types) => types
-                .iter()
-                .map(|RecordTypeField { ty, .. }| Self::word_size_for_type(*ty))
-                .sum(),
-            Type::Function { arg: _, ret: _ } => 1,
-            Type::Ref(_) => 1,
-            Type::Boxed(_) => 1, // heap-allocated: single HeapIdx word
-            Type::Code(_) => todo!(),
-            Type::Union(variants) => {
-                // Tagged union: 1 word for tag + max size of any variant
-                let max_variant_size = variants
-                    .iter()
-                    .map(|v| Self::word_size_for_type(*v))
-                    .max()
-                    .unwrap_or(0);
-                1 + max_variant_size
-            }
-            Type::UserSum { variants, .. } => {
-                // Tagged UserSum: 1 word for tag + max size of any variant payload
-                let max_variant_size = variants
-                    .iter()
-                    .filter_map(|(_, payload_ty)| *payload_ty)
-                    .map(Self::word_size_for_type)
-                    .max()
-                    .unwrap_or(0);
-                1 + max_variant_size
-            }
-            _ => {
-                //todo: this may contain intermediate types
-                1
-            }
-        }
+        ty.word_size()
     }
 
     fn get_binop(&mut self, v1: Arc<mir::Value>, v2: Arc<mir::Value>) -> (Reg, Reg) {
@@ -784,6 +746,26 @@ impl ByteCodeGenerator {
                 let src_reg = self.find(&ptr);
                 let dst_reg = self.get_destination(dst, inner_size);
                 Some(VmInstruction::BoxLoad(dst_reg, src_reg, inner_size))
+            }
+            mir::Instruction::BoxClone { ptr } => {
+                let src_reg = self.vregister.find_keep(&ptr).unwrap();
+                Some(VmInstruction::BoxClone(src_reg))
+            }
+            mir::Instruction::BoxRelease { ptr, .. } => {
+                let src_reg = self.vregister.find_keep(&ptr).unwrap();
+                Some(VmInstruction::BoxRelease(src_reg))
+            }
+            mir::Instruction::BoxStore { ptr, value, inner_type } => {
+                let inner_size = Self::word_size_for_type(inner_type);
+                let ptr_reg = self.vregister.find_keep(&ptr).unwrap();
+                let val_reg = self.find(&value);
+                Some(VmInstruction::BoxStore(ptr_reg, val_reg, inner_size))
+            }
+            mir::Instruction::CloneUserSum { value, ty } => {
+                // Clone all boxed references within a UserSum value
+                let value_reg = self.vregister.find_keep(&value).unwrap();
+                let size = Self::word_size_for_type(ty);
+                Some(VmInstruction::CloneUserSum(value_reg, size, ty))
             }
             mir::Instruction::Switch {
                 scrutinee,

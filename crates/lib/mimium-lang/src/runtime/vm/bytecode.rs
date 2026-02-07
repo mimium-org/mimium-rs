@@ -1,4 +1,4 @@
-use crate::{types::TypeSize, utils::half_float::HFloat};
+use crate::{interner::TypeNodeId, types::TypeSize, utils::half_float::HFloat};
 
 pub type Reg = u8; // register position
 pub type ConstPos = u16;
@@ -54,6 +54,18 @@ pub enum Instruction {
     /// BoxLoad(destination, source_HeapIdx, inner_word_size)
     /// Reads inner_word_size words from heap and stores to destination registers.
     BoxLoad(Reg, Reg, TypeSize),
+    /// Increment the reference count of a boxed heap object.
+    /// BoxClone(heap_ptr_reg)
+    BoxClone(Reg),
+    /// Decrement the reference count of a boxed heap object and free if count reaches 0.
+    /// BoxRelease(heap_ptr_reg)
+    BoxRelease(Reg),
+    /// Write a value into an already-allocated heap object (destructive update).
+    /// BoxStore(heap_ptr_reg, src_reg, inner_word_size)
+    BoxStore(Reg, Reg, TypeSize),
+    /// Clone all boxed references within a UserSum value.
+    /// CloneUserSum(value_reg, value_size, type_id)
+    CloneUserSum(Reg, TypeSize, TypeNodeId),
 
     /// destination,source, size
     GetUpValue(Reg, Reg, TypeSize),
@@ -186,6 +198,18 @@ impl std::fmt::Display for Instruction {
             }
             Instruction::BoxLoad(dst, src, size) => {
                 write!(f, "{:<10} {} {} {}", "boxload", dst, src, size)
+            }
+            Instruction::BoxClone(src) => {
+                write!(f, "{:<10} {}", "boxclone", src)
+            }
+            Instruction::BoxRelease(src) => {
+                write!(f, "{:<10} {}", "boxrelease", src)
+            }
+            Instruction::BoxStore(dst, src, size) => {
+                write!(f, "{:<10} {} {} {}", "boxstore", dst, src, size)
+            }
+            Instruction::CloneUserSum(src, size, ty) => {
+                write!(f, "{:<10} {} {} type:{}", "clone_usersum", src, size, ty.to_type())
             }
             Instruction::Delay(dst, src, time) => {
                 write!(f, "{:<10} {} {} {}", "delay", dst, src, time)

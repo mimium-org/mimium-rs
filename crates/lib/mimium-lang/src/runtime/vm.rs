@@ -13,7 +13,7 @@ pub use program::{FuncProto, Program};
 
 use crate::{
     compiler::bytecodegen::ByteCodeGenerator,
-    interner::Symbol,
+    interner::{Symbol, TypeNodeId},
     plugin::{ExtClsInfo, ExtClsType, ExtFunInfo, ExtFunType, MachineFunction},
     runtime::vm::program::WordSize,
     types::{Type, TypeSize},
@@ -972,6 +972,35 @@ impl Machine {
                     let data: Vec<u64> = heap_obj.data[..inner_size as usize].to_vec();
                     self.set_stack_range(dst as i64, &data);
                 }
+                Instruction::BoxClone(src) => {
+                    let heap_addr = self.get_stack(src as i64);
+                    let heap_idx = Self::get_as::<heap::HeapIdx>(heap_addr);
+                    heap::heap_retain(&mut self.heap, heap_idx);
+                }
+                Instruction::BoxRelease(src) => {
+                    let heap_addr = self.get_stack(src as i64);
+                    let heap_idx = Self::get_as::<heap::HeapIdx>(heap_addr);
+                    heap::heap_release(&mut self.heap, heap_idx);
+                }
+                Instruction::BoxStore(ptr_reg, src, inner_size) => {
+                    let heap_addr = self.get_stack(ptr_reg as i64);
+                    let heap_idx = Self::get_as::<heap::HeapIdx>(heap_addr);
+                    let (_, src_data) = self.get_stack_range(src as i64, inner_size);
+                    let data = src_data.to_vec();
+                    let heap_obj = self
+                        .heap
+                        .get_mut(heap_idx)
+                        .expect("BoxStore: invalid heap index");
+                    heap_obj.data[..inner_size as usize].copy_from_slice(&data);
+                }
+                Instruction::CloneUserSum(value_reg, value_size, ty) => {
+                    // Clone all boxed references within a UserSum value
+                    // This walks through the value structure and increments reference counts
+                    // for any HeapIdx (boxed pointers) found within
+                    let (_, value_data) = self.get_stack_range(value_reg as i64, value_size);
+                    let value_vec = value_data.to_vec();
+                    Self::clone_usersum_recursive(&value_vec, &ty, &mut self.heap);
+                }
                 Instruction::CallIndirect(func, nargs, nret_req) => {
                     // Get heap index from the register
                     let heap_addr = self.get_stack(func as i64);
@@ -1301,6 +1330,75 @@ impl Machine {
             -1
         }
     }
+    
+    /// Recursively clone all boxed references within a UserSum value.
+    /// This is called at runtime to walk the value structure and increment
+    /// reference counts for any heap-allocated objects within variant payloads.
+    fn clone_usersum_recursive(
+        value_data: &[RawVal],
+        ty: &TypeNodeId,
+        heap: &mut heap::HeapStorage,
+    ) {
+        use crate::types::Type;
+        match ty.to_type() {
+            Type::Boxed(_) => {
+                // Found a boxed pointer - increment its reference count
+                if !value_data.is_empty() {
+                    let heap_idx = Self::get_as::<heap::HeapIdx>(value_data[0]);
+                    heap::heap_retain(heap, heap_idx);
+                }
+            }
+            Type::UserSum { variants, .. } => {
+                // UserSum value structure: [tag (1 word)] [payload (variable size)]
+                if value_data.is_empty() {
+                    return;
+                }
+                let tag = value_data[0] as usize;
+                if tag >= variants.len() {
+                    return;
+                }
+                // Get the payload type for this variant
+                if let Some(payload_ty) = variants[tag].1 {
+                    // Recursively clone the payload starting at offset 1 (after tag)
+                    Self::clone_usersum_recursive(&value_data[1..], &payload_ty, heap);
+                }
+            }
+            Type::Tuple(elem_types) => {
+                // For tuples, recursively clone each element
+                let mut offset = 0;
+                for elem_ty in elem_types {
+                    let elem_size = elem_ty.word_size() as usize;
+                    if offset + elem_size <= value_data.len() {
+                        Self::clone_usersum_recursive(
+                            &value_data[offset..offset + elem_size],
+                            &elem_ty,
+                            heap,
+                        );
+                    }
+                    offset += elem_size;
+                }
+            }
+            Type::Record(fields) => {
+                // For records, recursively clone each field
+                let mut offset = 0;
+                for field in fields {
+                    let field_size = field.ty.word_size() as usize;
+                    if offset + field_size <= value_data.len() {
+                        Self::clone_usersum_recursive(
+                            &value_data[offset..offset + field_size],
+                            &field.ty,
+                            heap,
+                        );
+                    }
+                    offset += field_size;
+                }
+            }
+            _ => {
+                // Primitive types don't need cloning
+            }
+        }
+    }
+    
     pub fn execute_main(&mut self) -> ReturnCode {
         // 0 is always base pointer to the main function
         self.base_pointer += 1;

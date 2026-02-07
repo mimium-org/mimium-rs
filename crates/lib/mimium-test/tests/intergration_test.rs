@@ -1075,3 +1075,48 @@ fn type_recursive_option() {
         }
     }
 }
+
+#[wasm_bindgen_test(unsupported = test)]
+fn box_clone_sharing() {
+    let (file, src) = load_src("box_clone_sharing.mmm");
+    let res = run_source_test(&src, 1, false, Some(file));
+    match res {
+        Ok(res) => assert_eq!(res, vec![9.0]),
+        Err(errs) => {
+            for err in &errs {
+                eprintln!("Error: {}", err.get_message());
+            }
+            panic!("box_clone_sharing failed");
+        }
+    }
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn box_nested_scopes() {
+    let (file, src) = load_src("box_nested_scopes.mmm");
+    let res = run_source_test(&src, 1, false, Some(file));
+    match res {
+        Ok(res) => assert_eq!(res, vec![11.0]),
+        Err(errs) => {
+            for err in &errs {
+                eprintln!("Error: {}", err.get_message());
+            }
+            panic!("box_nested_scopes failed");
+        }
+    }
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn box_multiple_refs() {
+    let (file, src) = load_src("box_multiple_refs.mmm");
+    let res = run_source_test(&src, 1, false, Some(file));
+    match res {
+        Ok(res) => assert_eq!(res, vec![15.0]),
+        Err(errs) => {
+            for err in &errs {
+                eprintln!("Error: {}", err.get_message());
+            }
+            panic!("box_multiple_refs failed");
+        }
+    }
+}
