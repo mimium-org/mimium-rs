@@ -107,13 +107,24 @@ pub enum ProgramStatement {
         visibility: Visibility,
         name: Symbol,
         variants: Vec<VariantDef>,
+        /// Whether this type was declared with `type rec` (allows recursive references)
+        is_recursive: bool,
     },
     Comment(Symbol),
     DocComment(Symbol),
     Error,
 }
-/// Map from type name to list of variants
-pub type TypeDeclarationMap = HashMap<Symbol, Vec<VariantDef>>;
+
+/// Information about a type declaration, including its variants and recursion flag
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypeDeclInfo {
+    pub variants: Vec<VariantDef>,
+    /// Whether this type was declared with `type rec` (allows recursive references)
+    pub is_recursive: bool,
+}
+
+/// Map from type name to type declaration info
+pub type TypeDeclarationMap = HashMap<Symbol, TypeDeclInfo>;
 /// Map from type alias name to target type
 pub type TypeAliasMap = HashMap<Symbol, crate::interner::TypeNodeId>;
 
@@ -401,10 +412,17 @@ fn stmts_from_program_with_prefix(
                 visibility: _,
                 name,
                 variants,
+                is_recursive,
             } => {
                 // Store type declaration for later use in type environment
                 let mangled_name = mangle_qualified_name(module_prefix, name);
-                module_info.type_declarations.insert(mangled_name, variants);
+                module_info.type_declarations.insert(
+                    mangled_name,
+                    TypeDeclInfo {
+                        variants,
+                        is_recursive,
+                    },
+                );
                 None
             }
             ProgramStatement::Error => Some(vec![(

@@ -1,0 +1,15 @@
+// Test case: Option type with recursive variant (for nullable values)
+type rec Option = Some(float) | None
+
+fn unwrap_or(opt: Option, default: float) -> float {
+    match opt {
+        Some(value) => value,
+        None => default
+    }
+}
+
+fn dsp() -> float {
+    let some_value = Some(42.0)
+    let none_value = None
+    unwrap_or(some_value, 0.0) + unwrap_or(none_value, 10.0)  // 42.0 + 10.0 = 52.0
+}

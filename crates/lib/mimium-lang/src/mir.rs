@@ -129,6 +129,20 @@ pub enum Instruction {
     /// Extract value from a tagged union (assuming correct tag)
     TaggedUnionGetValue(VPtr, TypeNodeId),
 
+    /// Box a value by heap-allocating it.
+    /// Stores the given value into a new heap object and returns a HeapIdx.
+    /// Used for recursive variant types where self-references are wrapped in Boxed.
+    BoxAlloc {
+        value: VPtr,
+        inner_type: TypeNodeId,
+    },
+    /// Unbox a heap-allocated value by loading its content from the heap.
+    /// Takes a HeapIdx and returns the loaded value of the inner type.
+    BoxLoad {
+        ptr: VPtr,
+        inner_type: TypeNodeId,
+    },
+
     Return(VPtr, TypeNodeId),
     //value to update state
     ReturnFeed(VPtr, TypeNodeId),

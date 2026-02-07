@@ -95,6 +95,7 @@ pub enum TokenKind {
     Pub,   // pub
     Type,  // type
     Alias, // alias
+    Rec,   // rec
 
     // Trivia (whitespace and comments)
     LineBreak,
@@ -181,6 +182,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Pub => write!(f, "pub"),
             TokenKind::Type => write!(f, "type"),
             TokenKind::Alias => write!(f, "alias"),
+            TokenKind::Rec => write!(f, "rec"),
             TokenKind::Sharp => write!(f, "#"),
             TokenKind::Error => write!(f, "error"),
             TokenKind::Eof => write!(f, "eof"),

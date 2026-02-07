@@ -1018,7 +1018,7 @@ fn type_recursive_invalid_mutual() {
 #[wasm_bindgen_test(unsupported = test)]
 fn type_recursive_invalid_list() {
     // Test recursive type in constructor: type List = Nil | Cons(float, List)
-    // Currently this should fail until 'type rec' syntax is implemented
+    // This should still fail because it doesn't use 'rec' keyword
     let errs = run_error_test("type_recursive_invalid_list.mmm", false);
     assert!(!errs.is_empty(), "Expected recursive type error");
 
@@ -1027,4 +1027,51 @@ fn type_recursive_invalid_list() {
         err_message.contains("ircular") || err_message.contains("ecursive"),
         "Expected circular/recursive type error, got: {err_message}"
     );
+}
+
+
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_recursive_list() {
+    let (file, src) = load_src("type_recursive_list.mmm");
+    let res = run_source_test(&src, 1, false, Some(file));
+    match res {
+        Ok(res) => assert_eq!(res, vec![6.0]),
+        Err(errs) => {
+            for err in &errs {
+                eprintln!("Error: {}", err.get_message());
+            }
+            panic!("type_recursive_list failed");
+        }
+    }
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_recursive_tree() {
+    let (file, src) = load_src("type_recursive_tree.mmm");
+    let res = run_source_test(&src, 1, false, Some(file));
+    match res {
+        Ok(res) => assert_eq!(res, vec![28.0]),
+        Err(errs) => {
+            for err in &errs {
+                eprintln!("Error: {}", err.get_message());
+            }
+            panic!("type_recursive_tree failed");
+        }
+    }
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_recursive_option() {
+    let (file, src) = load_src("type_recursive_option.mmm");
+    let res = run_source_test(&src, 1, false, Some(file));
+    match res {
+        Ok(res) => assert_eq!(res, vec![52.0]),
+        Err(errs) => {
+            for err in &errs {
+                eprintln!("Error: {}", err.get_message());
+            }
+            panic!("type_recursive_option failed");
+        }
+    }
 }

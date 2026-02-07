@@ -56,6 +56,7 @@ fn occur_check(id1: IntermediateId, t2: TypeNodeId) -> bool {
                 .as_slice(),
         ),
         Type::Union(types) => vec_cls(types),
+        Type::Boxed(b) => cls(*b),
         _ => false,
     }
 }
@@ -486,24 +487,44 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 right: t2,
             }]);
         }
-        // UserSum type support: same UserSum types are identical
-        (
-            Type::UserSum {
-                name: n1,
-                variants: v1,
-            },
-            Type::UserSum {
-                name: n2,
-                variants: v2,
-            },
-        ) => {
-            if n1 == n2 && v1 == v2 {
+        // UserSum type support: nominal typing — same name means identical type
+        (Type::UserSum { name: n1, .. }, Type::UserSum { name: n2, .. }) => {
+            if n1 == n2 {
                 Relation::Identical
             } else {
                 return Err(vec![Error::TypeMismatch {
                     left: t1,
                     right: t2,
                 }]);
+            }
+        }
+        // Boxed type support: unify inner types
+        (Type::Boxed(b1), Type::Boxed(b2)) => unify_types(*b1, *b2)?,
+        // Implicit boxing coercion: T can be treated as Boxed(T)
+        // Boxing is a transparent coercion — T and Boxed(T) are considered identical
+        // because the compiler automatically inserts box/unbox operations.
+        (Type::Boxed(inner), _t2) => {
+            let inner_res = unify_types(*inner, t2r);
+            match inner_res {
+                Ok(_) => Relation::Identical,
+                Err(_) => {
+                    return Err(vec![Error::TypeMismatch {
+                        left: t1,
+                        right: t2,
+                    }]);
+                }
+            }
+        }
+        (_t1, Type::Boxed(inner)) => {
+            let inner_res = unify_types(t1r, *inner);
+            match inner_res {
+                Ok(_) => Relation::Identical,
+                Err(_) => {
+                    return Err(vec![Error::TypeMismatch {
+                        left: t1,
+                        right: t2,
+                    }]);
+                }
             }
         }
         (_p1, _p2) => {

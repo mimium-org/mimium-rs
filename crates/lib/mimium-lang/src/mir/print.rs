@@ -207,6 +207,12 @@ impl std::fmt::Display for Instruction {
             Instruction::TaggedUnionGetValue(v, ty) => {
                 write!(f, "union_get_value {v} type:{}", ty.to_type())
             }
+            Instruction::BoxAlloc { value, inner_type } => {
+                write!(f, "box_alloc {value} type:{}", inner_type.to_type())
+            }
+            Instruction::BoxLoad { ptr, inner_type } => {
+                write!(f, "box_load {ptr} type:{}", inner_type.to_type())
+            }
             Instruction::Return(a, rty) => write!(f, "ret {} {}", *a, rty.to_type()),
             Instruction::ReturnFeed(v, rty) => write!(f, "retfeed {} {}", *v, rty.to_type()),
             Instruction::Delay(max, a, b) => write!(f, "delay {max} {} {}", *a, *b),

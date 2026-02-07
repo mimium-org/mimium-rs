@@ -954,6 +954,24 @@ impl Machine {
                     let heap_idx = Self::get_as::<heap::HeapIdx>(heap_addr);
                     heap::heap_retain(&mut self.heap, heap_idx);
                 }
+                Instruction::BoxAlloc(dst, src, inner_size) => {
+                    // Allocate a heap object and copy data from stack
+                    let (_, src_data) = self.get_stack_range(src as i64, inner_size);
+                    let data = src_data.to_vec();
+                    let heap_idx = self.heap.insert(heap::HeapObject::with_data(data));
+                    self.set_stack(dst as i64, Self::to_value(heap_idx));
+                }
+                Instruction::BoxLoad(dst, src, inner_size) => {
+                    // Load data from heap to stack
+                    let heap_addr = self.get_stack(src as i64);
+                    let heap_idx = Self::get_as::<heap::HeapIdx>(heap_addr);
+                    let heap_obj = self
+                        .heap
+                        .get(heap_idx)
+                        .expect("BoxLoad: invalid heap index");
+                    let data: Vec<u64> = heap_obj.data[..inner_size as usize].to_vec();
+                    self.set_stack_range(dst as i64, &data);
+                }
                 Instruction::CallIndirect(func, nargs, nret_req) => {
                     // Get heap index from the register
                     let heap_addr = self.get_stack(func as i64);

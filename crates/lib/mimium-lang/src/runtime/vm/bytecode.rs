@@ -46,6 +46,15 @@ pub enum Instruction {
     /// Call a closure indirectly through heap storage. Function register (HeapIdx), nargs, nret
     CallIndirect(Reg, u8, TypeSize),
 
+    /// Box a value by allocating it on the heap.
+    /// BoxAlloc(destination_for_HeapIdx, source_value, inner_word_size)
+    /// Allocates a heap object of inner_word_size, copies from source, stores HeapIdx in destination.
+    BoxAlloc(Reg, Reg, TypeSize),
+    /// Unbox a heap-allocated value by loading from heap.
+    /// BoxLoad(destination, source_HeapIdx, inner_word_size)
+    /// Reads inner_word_size words from heap and stores to destination registers.
+    BoxLoad(Reg, Reg, TypeSize),
+
     /// destination,source, size
     GetUpValue(Reg, Reg, TypeSize),
     SetUpValue(Reg, Reg, TypeSize),
@@ -171,6 +180,12 @@ impl std::fmt::Display for Instruction {
             }
             Instruction::CallIndirect(func, nargs, nret_req) => {
                 write!(f, "{:<10} {} {} {}", "callind", func, nargs, nret_req)
+            }
+            Instruction::BoxAlloc(dst, src, size) => {
+                write!(f, "{:<10} {} {} {}", "boxalloc", dst, src, size)
+            }
+            Instruction::BoxLoad(dst, src, size) => {
+                write!(f, "{:<10} {} {} {}", "boxload", dst, src, size)
             }
             Instruction::Delay(dst, src, time) => {
                 write!(f, "{:<10} {} {} {}", "delay", dst, src, time)

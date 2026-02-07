@@ -147,6 +147,7 @@ impl ByteCodeGenerator {
                 .sum(),
             Type::Function { arg: _, ret: _ } => 1,
             Type::Ref(_) => 1,
+            Type::Boxed(_) => 1, // heap-allocated: single HeapIdx word
             Type::Code(_) => todo!(),
             Type::Union(variants) => {
                 // Tagged union: 1 word for tag + max size of any variant
@@ -734,14 +735,19 @@ impl ByteCodeGenerator {
                     .unwrap_or_else(|| funcproto.bytecodes.as_mut())
                     .push(VmInstruction::MoveConst(dst_reg, tag_pos as ConstPos));
 
-                // Store value in subsequent register(s)
-                let val_reg = self.find(&value);
-                let val_dst = dst_reg + 1;
-
-                if value_size == 1 {
-                    Some(VmInstruction::Move(val_dst, val_reg))
+                // For no-payload constructors (Value::None), skip the value copy
+                if matches!(value.as_ref(), mir::Value::None) || value_size == 0 {
+                    None
                 } else {
-                    Some(VmInstruction::MoveRange(val_dst, val_reg, value_size))
+                    // Store value in subsequent register(s)
+                    let val_reg = self.find(&value);
+                    let val_dst = dst_reg + 1;
+
+                    if value_size == 1 {
+                        Some(VmInstruction::Move(val_dst, val_reg))
+                    } else {
+                        Some(VmInstruction::MoveRange(val_dst, val_reg, value_size))
+                    }
                 }
             }
             mir::Instruction::TaggedUnionGetTag(union_val) => {
@@ -766,6 +772,18 @@ impl ByteCodeGenerator {
                 } else {
                     Some(VmInstruction::MoveRange(dst_reg, value_reg, value_size))
                 }
+            }
+            mir::Instruction::BoxAlloc { value, inner_type } => {
+                let inner_size = Self::word_size_for_type(inner_type);
+                let src_reg = self.find(&value);
+                let dst_reg = self.get_destination(dst, 1); // HeapIdx is 1 word
+                Some(VmInstruction::BoxAlloc(dst_reg, src_reg, inner_size))
+            }
+            mir::Instruction::BoxLoad { ptr, inner_type } => {
+                let inner_size = Self::word_size_for_type(inner_type);
+                let src_reg = self.find(&ptr);
+                let dst_reg = self.get_destination(dst, inner_size);
+                Some(VmInstruction::BoxLoad(dst_reg, src_reg, inner_size))
             }
             mir::Instruction::Switch {
                 scrutinee,

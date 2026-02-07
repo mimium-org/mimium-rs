@@ -106,6 +106,10 @@ pub enum Type {
         name: Symbol,
         variants: Vec<(Symbol, Option<TypeNodeId>)>,
     },
+    /// Heap-allocated boxed type for recursive data structures.
+    /// Introduced by `type rec` declarations to wrap self-references.
+    /// At runtime, represented as a single HeapIdx word.
+    Boxed(TypeNodeId),
     Intermediate(Arc<RwLock<TypeVar>>),
     TypeScheme(TypeSchemeId),
     /// Type alias or type name reference that needs to be resolved during type inference
@@ -144,6 +148,7 @@ impl PartialEq for Type {
                     variants: v2,
                 },
             ) => n1 == n2 && v1 == v2,
+            (Type::Boxed(a), Type::Boxed(b)) => a == b,
             (Type::TypeScheme(a), Type::TypeScheme(b)) => a == b,
             (Type::TypeAlias(a), Type::TypeAlias(b)) => a == b,
             (Type::Any, Type::Any) => true,
@@ -168,6 +173,7 @@ impl Type {
                 .iter()
                 .any(|RecordTypeField { ty, .. }| ty.to_type().contains_function()),
             Type::Union(t) => t.iter().any(|t| t.to_type().contains_function()),
+            Type::Boxed(t) => t.to_type().contains_function(),
             _ => false,
         }
     }
@@ -182,6 +188,7 @@ impl Type {
                 .iter()
                 .any(|RecordTypeField { ty, .. }| ty.to_type().contains_code()),
             Type::Union(t) => t.iter().any(|t| t.to_type().contains_code()),
+            Type::Boxed(t) => t.to_type().contains_code(),
             _ => false,
         }
     }
@@ -200,6 +207,7 @@ impl Type {
             Type::Ref(t) => t.to_type().contains_type_scheme(),
             Type::Code(t) => t.to_type().contains_type_scheme(),
             Type::Union(t) => t.iter().any(|t| t.to_type().contains_type_scheme()),
+            Type::Boxed(t) => t.to_type().contains_type_scheme(),
             _ => false,
         }
     }
@@ -295,6 +303,7 @@ impl Type {
                 )
             }
             Type::Ref(x) => format!("&{}", x.to_type().to_string_for_error()),
+            Type::Boxed(x) => format!("boxed({})", x.to_type().to_string_for_error()),
             Type::Code(c) => format!("`({})", c.to_type().to_string_for_error()),
             Type::Intermediate(_id) => "?".to_string(),
             // if no special treatment is needed, forward to the Display implementation
@@ -342,6 +351,7 @@ impl Type {
                 )
             }
             Type::Ref(x) => format!("ref_{}", x.to_type().to_mangled_string()),
+            Type::Boxed(x) => format!("boxed_{}", x.to_type().to_mangled_string()),
             Type::Code(c) => format!("code_{}", c.to_type().to_mangled_string()),
             Type::Intermediate(tvar) => {
                 let tv = tvar.read().unwrap();
@@ -421,6 +431,7 @@ impl TypeNodeId {
                 ret: apply_scalar(ret, &mut closure),
             },
             Type::Ref(x) => Type::Ref(apply_scalar(x, &mut closure)),
+            Type::Boxed(x) => Type::Boxed(apply_scalar(x, &mut closure)),
             Type::Code(c) => Type::Code(apply_scalar(c, &mut closure)),
             Type::Intermediate(id) => Type::Intermediate(id.clone()),
             _ => self.to_type(),
@@ -484,6 +495,7 @@ impl fmt::Display for Type {
                 write!(f, "({})->{}", arg.to_type(), ret.to_type())
             }
             Type::Ref(x) => write!(f, "&{}", x.to_type()),
+            Type::Boxed(x) => write!(f, "boxed({})", x.to_type()),
 
             Type::Code(c) => write!(f, "<{}>", c.to_type()),
             Type::Union(v) => {

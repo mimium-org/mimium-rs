@@ -320,7 +320,7 @@ impl<'a> Parser<'a> {
                 Some(TokenKind::Mod) => this.parse_module_decl(),
                 Some(TokenKind::Use) => this.parse_use_stmt(),
                 Some(TokenKind::Type) => {
-                    // Check if this is "type alias" or just "type"
+                    // Check if this is "type alias", "type rec", or just "type"
                     if this.peek_ahead(1) == Some(TokenKind::Alias) {
                         this.parse_type_alias_decl();
                     } else {
@@ -1701,9 +1701,14 @@ impl<'a> Parser<'a> {
 
     /// Parse type declaration (Union/Sum types only)
     /// Type declaration: type Name = Variant1 | Variant2(Type) | ...
+    /// Recursive type:   type rec Name = Variant1 | Variant2(Type, Name) | ...
     fn parse_type_decl(&mut self) {
         self.emit_node(SyntaxKind::TypeDecl, |this| {
             this.expect(TokenKind::Type);
+            // Optionally consume 'rec' keyword for recursive types
+            if this.check(TokenKind::Rec) {
+                this.bump(); // consume 'rec'
+            }
             this.expect(TokenKind::Ident); // type name
             this.expect(TokenKind::Assign); // =
 

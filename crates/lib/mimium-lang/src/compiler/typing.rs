@@ -558,24 +558,86 @@ impl InferContext {
     }
 
     /// Register type declarations from ModuleInfo into the constructor environment
+    /// Register type declarations from ModuleInfo into the constructor environment
     fn register_type_declarations(
         &mut self,
         type_declarations: &crate::ast::program::TypeDeclarationMap,
     ) {
-        for (type_name, variants) in type_declarations {
-            // Create the UserSum type with variant names and payload types
+        // First pass: Create all UserSum types without recursive wrapping
+        // and register type names so that TypeAlias can be resolved
+        let mut sum_types: std::collections::HashMap<Symbol, TypeNodeId> =
+            std::collections::HashMap::new();
+
+        for (type_name, decl_info) in type_declarations {
+            let variants = &decl_info.variants;
             let variant_data: Vec<(Symbol, Option<TypeNodeId>)> =
                 variants.iter().map(|v| (v.name, v.payload)).collect();
+
             let sum_type = Type::UserSum {
                 name: *type_name,
-                variants: variant_data,
+                variants: variant_data.clone(),
             }
             .into_id();
 
-            // Register the type name itself
-            self.env.add_bind(&[(*type_name, (sum_type, self.stage))]);
+            sum_types.insert(*type_name, sum_type);
+            // Register the type name itself as Persistent so it's accessible from all stages
+            self.env
+                .add_bind(&[(*type_name, (sum_type, EvalStage::Persistent))]);
+        }
+
+        // Second pass: For recursive types, wrap self-references in Boxed
+        for (type_name, decl_info) in type_declarations {
+            if !decl_info.is_recursive {
+                continue;
+            }
+
+            let variants = &decl_info.variants;
+            let sum_type_id = sum_types[type_name];
+
+            // Transform recursive references to Boxed
+            let variant_data: Vec<(Symbol, Option<TypeNodeId>)> = variants
+                .iter()
+                .map(|v| {
+                    let wrapped_payload = v.payload.map(|payload_type| {
+                        Self::wrap_recursive_refs_static(payload_type, *type_name, sum_type_id)
+                    });
+                    (v.name, wrapped_payload)
+                })
+                .collect();
+
+            // Update the UserSum type with wrapped variants
+            let new_sum_type = Type::UserSum {
+                name: *type_name,
+                variants: variant_data.clone(),
+            }
+            .into_id();
+
+            // Update the binding as Persistent
+            self.env
+                .add_bind(&[(*type_name, (new_sum_type, EvalStage::Persistent))]);
 
             // Register each constructor
+            for (tag_index, (variant_name, payload_type)) in variant_data.iter().enumerate() {
+                self.constructor_env.insert(
+                    *variant_name,
+                    ConstructorInfo {
+                        sum_type: new_sum_type,
+                        tag_index,
+                        payload_type: *payload_type,
+                    },
+                );
+            }
+        }
+
+        // Register constructors for non-recursive types
+        for (type_name, decl_info) in type_declarations {
+            if decl_info.is_recursive {
+                continue;
+            }
+
+            let sum_type = sum_types[type_name];
+            let variants = &decl_info.variants;
+
             for (tag_index, variant) in variants.iter().enumerate() {
                 self.constructor_env.insert(
                     variant.name,
@@ -592,14 +654,66 @@ impl InferContext {
         self.check_type_declaration_recursion(type_declarations);
     }
 
+    /// Wrap direct self-references in Boxed type for recursive type declarations
+    /// This is a static function that transforms TypeAlias(self_name) -> Boxed(sum_type_id)
+    /// in Tuple/Record positions. Does NOT recurse into Function/Array which already provide indirection.
+    fn wrap_recursive_refs_static(
+        ty: TypeNodeId,
+        self_name: Symbol,
+        sum_type_id: TypeNodeId,
+    ) -> TypeNodeId {
+        match ty.to_type() {
+            Type::TypeAlias(name) if name == self_name => {
+                // Direct self-reference: wrap the sum type in Boxed
+                Type::Boxed(sum_type_id).into_id()
+            }
+            Type::Tuple(elements) => {
+                // Recursively wrap in tuple elements
+                let wrapped_elements: Vec<TypeNodeId> = elements
+                    .iter()
+                    .map(|&elem| Self::wrap_recursive_refs_static(elem, self_name, sum_type_id))
+                    .collect();
+                Type::Tuple(wrapped_elements).into_id()
+            }
+            Type::Record(fields) => {
+                // Recursively wrap in record fields
+                let wrapped_fields: Vec<RecordTypeField> = fields
+                    .iter()
+                    .map(|field| RecordTypeField {
+                        key: field.key,
+                        ty: Self::wrap_recursive_refs_static(field.ty, self_name, sum_type_id),
+                        has_default: field.has_default,
+                    })
+                    .collect();
+                Type::Record(wrapped_fields).into_id()
+            }
+            Type::Union(elements) => {
+                // Recursively wrap in union elements
+                let wrapped_elements: Vec<TypeNodeId> = elements
+                    .iter()
+                    .map(|&elem| Self::wrap_recursive_refs_static(elem, self_name, sum_type_id))
+                    .collect();
+                Type::Union(wrapped_elements).into_id()
+            }
+            // Do NOT recurse into Function, Array, Code, or Boxed - they already provide indirection
+            _ => ty,
+        }
+    }
+
     /// Check for recursive references in type declarations
-    /// Until 'type rec' syntax is implemented, all recursion is forbidden
+    /// Recursion is only allowed when the `rec` keyword is used
     fn check_type_declaration_recursion(
         &mut self,
         type_declarations: &crate::ast::program::TypeDeclarationMap,
     ) {
-        for (type_name, variants) in type_declarations {
-            if let Some(location) = self.is_type_declaration_recursive(*type_name, variants) {
+        for (type_name, decl_info) in type_declarations {
+            // Skip the recursion check for types declared with `type rec`
+            if decl_info.is_recursive {
+                continue;
+            }
+            if let Some(location) =
+                self.is_type_declaration_recursive(*type_name, &decl_info.variants)
+            {
                 self.errors.push(Error::RecursiveTypeAlias {
                     type_name: *type_name,
                     cycle: vec![*type_name],
@@ -644,6 +758,7 @@ impl InferContext {
                 .iter()
                 .any(|t| self.type_references_name(*t, target_name)),
             Type::Array(elem) | Type::Code(elem) => self.type_references_name(elem, target_name),
+            Type::Boxed(inner) => self.type_references_name(inner, target_name),
             Type::Record(fields) => fields
                 .iter()
                 .any(|f| self.type_references_name(f.ty, target_name)),

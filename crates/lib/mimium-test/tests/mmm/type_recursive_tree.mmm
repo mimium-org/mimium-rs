@@ -1,0 +1,24 @@
+// Test case: Binary tree with recursive variant type
+type rec Tree = Leaf(float) | Node(Tree, float, Tree)
+
+fn tree_sum(tree: Tree) -> float {
+    match tree {
+        Leaf(value) => value,
+        Node(left, value, right) => tree_sum(left) + value + tree_sum(right)
+    }
+}
+
+fn dsp() -> float {
+    // Tree structure:
+    //       5.0
+    //      /   \
+    //   3.0     7.0
+    //   / \     / \
+    // 1.0 2.0 6.0 4.0
+    let tree = Node(
+        Node(Leaf(1.0), 3.0, Leaf(2.0)),
+        5.0,
+        Node(Leaf(6.0), 7.0, Leaf(4.0))
+    )
+    tree_sum(tree)  // 1.0 + 3.0 + 2.0 + 5.0 + 6.0 + 7.0 + 4.0 = 28.0
+}

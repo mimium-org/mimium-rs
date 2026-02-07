@@ -162,6 +162,7 @@ where
             "pub" => TokenKind::Pub,
             "type" => TokenKind::Type,
             "alias" => TokenKind::Alias,
+            "rec" => TokenKind::Rec,
             "_" => TokenKind::PlaceHolder,
             _ => TokenKind::Ident,
         })

@@ -653,9 +653,14 @@ impl Context {
         // Check if this is a constructor from a user-defined sum type
         if let Some(constructor_info) = self.typeenv.constructor_env.get(&name) {
             if constructor_info.payload_type.is_none() {
-                // For constructors without payload, just return the tag as an integer
+                // No-payload constructor: generate a TaggedUnionWrap with no value.
+                // This allocates a full-sized union on the register stack with the correct tag.
                 let tag = constructor_info.tag_index as u64;
-                return self.push_inst(Instruction::Integer(tag as i64));
+                return self.push_inst(Instruction::TaggedUnionWrap {
+                    tag,
+                    value: Arc::new(Value::None),
+                    union_type: constructor_info.sum_type,
+                });
             }
             // For constructors with payload, we return a special value that will be
             // handled by Apply to generate TaggedUnionWrap
@@ -1038,7 +1043,17 @@ impl Context {
                 let v = self.eval_literal(lit, &span);
                 (v, ty, vec![])
             }
-            Expr::Var(_name) => (self.eval_rvar(e, ty), ty, vec![]),
+            Expr::Var(_name) => {
+                // When the type checker says a variable has type Boxed(T),
+                // the MIR bind_pattern has already unboxed it to type T.
+                // Use the inner type for the actual load.
+                let load_ty = if let Type::Boxed(inner) = ty.to_type() {
+                    inner
+                } else {
+                    ty
+                };
+                (self.eval_rvar(e, load_ty), load_ty, vec![])
+            }
             Expr::QualifiedVar(_path) => {
                 unreachable!("Qualified Var should be removed in the previous step.")
             }
@@ -1135,13 +1150,32 @@ impl Context {
                 let (f_val, ft, app_state) = self.eval_expr(*f);
 
                 // Check if this is a constructor call with payload
-                if let Value::Constructor(_name, tag_index, sum_type) = f_val.as_ref() {
-                    // Evaluate the payload argument
+                if let Value::Constructor(name, tag_index, sum_type) = f_val.as_ref() {
+                    // Evaluate the payload arguments
                     let (arg_vals, arg_states) = self.eval_args(args);
-                    let (payload_val, _payload_ty) = arg_vals
-                        .first()
-                        .expect("Constructor with payload must have an argument")
-                        .clone();
+
+                    // Build the payload: single arg → use directly, multiple args → construct a tuple
+                    let (payload_val, payload_ty) = if arg_vals.len() == 1 {
+                        arg_vals.into_iter().next().unwrap()
+                    } else {
+                        // Multiple arguments: construct a tuple payload
+                        let elem_tys: Vec<TypeNodeId> = arg_vals.iter().map(|(_, t)| *t).collect();
+                        let tuple_ty = Type::Tuple(elem_tys).into_id();
+                        let tuple_ptr = self.push_inst(Instruction::Alloc(tuple_ty));
+                        for (i, (elem_val, elem_ty)) in arg_vals.iter().enumerate() {
+                            let dest = self.push_inst(Instruction::GetElement {
+                                value: tuple_ptr.clone(),
+                                ty: tuple_ty,
+                                tuple_offset: i as u64,
+                            });
+                            self.push_inst(Instruction::Store(dest, elem_val.clone(), *elem_ty));
+                        }
+                        let loaded = self.push_inst(Instruction::Load(tuple_ptr, tuple_ty));
+                        (loaded, tuple_ty)
+                    };
+
+                    // Box any Boxed fields in the payload before wrapping
+                    let payload_val = self.box_fields_if_needed(payload_val, payload_ty, *name);
 
                     // Generate TaggedUnionWrap instruction
                     let result = self.push_inst(Instruction::TaggedUnionWrap {
@@ -1732,6 +1766,95 @@ impl Context {
         }
     }
 
+    /// Auto-box fields in a constructor payload that need Boxed wrapping.
+    ///
+    /// When a constructor's registered payload type contains Boxed fields (from
+    /// `type rec` declarations), the actual argument values are plain (non-heap)
+    /// values. This function inserts BoxAlloc instructions to heap-allocate them.
+    ///
+    /// For a single-field payload that is directly Boxed, wraps it directly.
+    /// For a tuple payload, reconstructs the tuple with any Boxed fields wrapped.
+    fn box_fields_if_needed(
+        &mut self,
+        payload_val: VPtr,
+        actual_ty: TypeNodeId,
+        constructor_name: Symbol,
+    ) -> VPtr {
+        use crate::types::Type;
+
+        // Look up the constructor's registered payload type (which includes Boxed)
+        let expected_payload_ty = self
+            .typeenv
+            .constructor_env
+            .get(&constructor_name)
+            .and_then(|info| info.payload_type);
+
+        let Some(expected_ty) = expected_payload_ty else {
+            return payload_val;
+        };
+
+        match expected_ty.to_type() {
+            Type::Boxed(inner) => {
+                // Entire payload is Boxed — wrap it
+                self.push_inst(Instruction::BoxAlloc {
+                    value: payload_val,
+                    inner_type: inner,
+                })
+            }
+            Type::Tuple(expected_elems) => {
+                // Check if any element is Boxed; if so we need to rebuild the tuple
+                let actual_elems = match actual_ty.to_type() {
+                    Type::Tuple(elems) => elems,
+                    _ => return payload_val, // not a tuple, nothing to do
+                };
+
+                let has_boxed = expected_elems
+                    .iter()
+                    .any(|e| matches!(e.to_type(), Type::Boxed(_)));
+
+                if !has_boxed {
+                    return payload_val;
+                }
+
+                // Rebuild the tuple, boxing any Boxed-typed fields
+                let mut new_elems: Vec<(VPtr, TypeNodeId)> = Vec::new();
+                for (i, (expected_elem_ty, actual_elem_ty)) in
+                    expected_elems.iter().zip(actual_elems.iter()).enumerate()
+                {
+                    let elem_val = self.push_inst(Instruction::GetElement {
+                        value: payload_val.clone(),
+                        ty: actual_ty,
+                        tuple_offset: i as u64,
+                    });
+
+                    let elem_val = if let Type::Boxed(inner) = expected_elem_ty.to_type() {
+                        self.push_inst(Instruction::BoxAlloc {
+                            value: elem_val,
+                            inner_type: inner,
+                        })
+                    } else {
+                        elem_val
+                    };
+
+                    new_elems.push((elem_val, *expected_elem_ty));
+                }
+
+                // Build a new tuple from the (possibly boxed) elements
+                let tuple_ptr = self.push_inst(Instruction::Alloc(expected_ty));
+                for (i, (elem_val, elem_ty)) in new_elems.iter().enumerate() {
+                    let dest = self.push_inst(Instruction::GetElement {
+                        value: tuple_ptr.clone(),
+                        ty: expected_ty,
+                        tuple_offset: i as u64,
+                    });
+                    self.push_inst(Instruction::Store(dest, elem_val.clone(), *elem_ty));
+                }
+                self.push_inst(Instruction::Load(tuple_ptr, expected_ty))
+            }
+            _ => payload_val,
+        }
+    }
+
     /// Bind variables from a match pattern to extracted values
     /// Handles variable bindings, tuple patterns, and nested patterns
     fn bind_pattern(&mut self, pattern: &crate::ast::MatchPattern, value: VPtr, ty: TypeNodeId) {
@@ -1766,7 +1889,17 @@ impl Context {
                             ty,
                             tuple_offset: i as u64,
                         });
-                        self.bind_pattern(pat, elem_val, *elem_ty);
+                        // If the element type is Boxed, unbox it before binding
+                        let (elem_val, bind_ty) = if let Type::Boxed(inner) = elem_ty.to_type() {
+                            let unboxed = self.push_inst(Instruction::BoxLoad {
+                                ptr: elem_val,
+                                inner_type: inner,
+                            });
+                            (unboxed, inner)
+                        } else {
+                            (elem_val, *elem_ty)
+                        };
+                        self.bind_pattern(pat, elem_val, bind_ty);
                     }
                 }
             }
