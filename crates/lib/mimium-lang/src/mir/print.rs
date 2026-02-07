@@ -233,6 +233,9 @@ impl std::fmt::Display for Instruction {
             Instruction::CloneUserSum { value, ty } => {
                 write!(f, "clone_usersum {} type:{}", *value, ty.to_type())
             }
+            Instruction::ReleaseUserSum { value, ty } => {
+                write!(f, "release_usersum {} type:{}", *value, ty.to_type())
+            }
             Instruction::Return(a, rty) => write!(f, "ret {} {}", *a, rty.to_type()),
             Instruction::ReturnFeed(v, rty) => write!(f, "retfeed {} {}", *v, rty.to_type()),
             Instruction::Delay(max, a, b) => write!(f, "delay {max} {} {}", *a, *b),

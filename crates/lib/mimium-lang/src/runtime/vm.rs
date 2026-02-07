@@ -994,15 +994,23 @@ impl Machine {
                     heap_obj.data[..inner_size as usize].copy_from_slice(&data);
                 }
                 Instruction::CloneUserSum(value_reg, value_size, type_idx) => {
-                    // Clone all boxed references within a UserSum value
-                    // This walks through the value structure and increments reference counts
-                    // for any HeapIdx (boxed pointers) found within
                     let (_, value_data) = self.get_stack_range(value_reg as i64, value_size);
                     let value_vec = value_data.to_vec();
-                    // Look up TypeNodeId from type table
-                    let ty = self.prog.get_type_from_table(type_idx)
+                    let ty = self
+                        .prog
+                        .get_type_from_table(type_idx)
                         .expect("Invalid type table index in CloneUserSum");
                     Self::clone_usersum_recursive(&value_vec, &ty, &mut self.heap);
+                }
+                Instruction::ReleaseUserSum(value_reg, value_size, type_idx) => {
+                    let (_, value_data) = self.get_stack_range(value_reg as i64, value_size);
+                    let value_vec = value_data.to_vec();
+                    let ty = self
+                        .prog
+                        .get_type_from_table(type_idx)
+                        .expect("Invalid type table index in ReleaseUserSum");
+                    let tt = &self.prog.type_table;
+                    Self::release_usersum_recursive(&value_vec, &ty, &mut self.heap, tt);
                 }
                 Instruction::CallIndirect(func, nargs, nret_req) => {
                     // Get heap index from the register
@@ -1333,7 +1341,7 @@ impl Machine {
             -1
         }
     }
-    
+
     /// Recursively clone all boxed references within a UserSum value.
     /// This is called at runtime to walk the value structure and increment
     /// reference counts for any heap-allocated objects within variant payloads.
@@ -1396,12 +1404,142 @@ impl Machine {
                     offset += field_size;
                 }
             }
+            Type::TypeAlias(_name) => {
+                // In recursive type definitions, TypeAlias represents a self-reference
+                // that was wrapped in Boxed at the outer level but appears unboxed in
+                // the pre-boxing variant payload. The runtime value is a HeapIdx.
+                if !value_data.is_empty() {
+                    let heap_idx = Self::get_as::<heap::HeapIdx>(value_data[0]);
+                    heap::heap_retain(heap, heap_idx);
+                }
+            }
             _ => {
                 // Primitive types don't need cloning
             }
         }
     }
-    
+
+    /// Recursively release all boxed references within a UserSum value.
+    /// This is called at runtime when a UserSum value goes out of scope.
+    /// It walks the value structure and decrements reference counts for any heap-allocated objects.
+    fn release_usersum_recursive(
+        value_data: &[RawVal],
+        ty: &TypeNodeId,
+        heap: &mut heap::HeapStorage,
+        type_table: &[TypeNodeId],
+    ) {
+        use crate::types::Type;
+        match ty.to_type() {
+            Type::Boxed(inner) => {
+                // Found a boxed pointer - decrement its reference count.
+                // If refcount reaches 0, recursively release inner values before freeing.
+                if !value_data.is_empty() {
+                    let heap_idx = Self::get_as::<heap::HeapIdx>(value_data[0]);
+                    let should_release_inner = heap
+                        .get(heap_idx)
+                        .map(|obj| obj.refcount <= 1)
+                        .unwrap_or(false);
+                    if should_release_inner {
+                        // Before freeing, walk the inner data and release nested boxed values
+                        let inner_data = heap
+                            .get(heap_idx)
+                            .map(|obj| obj.data.clone())
+                            .unwrap_or_default();
+                        Self::release_usersum_recursive(&inner_data, &inner, heap, type_table);
+                    }
+                    heap::heap_release(heap, heap_idx);
+                }
+            }
+            Type::UserSum { variants, .. } => {
+                // UserSum value structure: [tag (1 word)] [payload (variable size)]
+                if value_data.is_empty() {
+                    return;
+                }
+                let tag = value_data[0] as usize;
+                if tag >= variants.len() {
+                    return;
+                }
+                // Get the payload type for this variant
+                if let Some(payload_ty) = variants[tag].1 {
+                    // Recursively release the payload starting at offset 1 (after tag)
+                    Self::release_usersum_recursive(
+                        &value_data[1..],
+                        &payload_ty,
+                        heap,
+                        type_table,
+                    );
+                }
+            }
+            Type::Tuple(elem_types) => {
+                // For tuples, recursively release each element
+                let mut offset = 0;
+                for elem_ty in elem_types {
+                    let elem_size = elem_ty.word_size() as usize;
+                    if offset + elem_size <= value_data.len() {
+                        Self::release_usersum_recursive(
+                            &value_data[offset..offset + elem_size],
+                            &elem_ty,
+                            heap,
+                            type_table,
+                        );
+                    }
+                    offset += elem_size;
+                }
+            }
+            Type::Record(fields) => {
+                // For records, recursively release each field
+                let mut offset = 0;
+                for field in fields {
+                    let field_size = field.ty.word_size() as usize;
+                    if offset + field_size <= value_data.len() {
+                        Self::release_usersum_recursive(
+                            &value_data[offset..offset + field_size],
+                            &field.ty,
+                            heap,
+                            type_table,
+                        );
+                    }
+                    offset += field_size;
+                }
+            }
+            Type::TypeAlias(name) => {
+                // In recursive type definitions, TypeAlias represents a self-reference
+                // that was wrapped in Boxed at the outer level but appears unboxed in
+                // the pre-boxing variant payload. The runtime value is a HeapIdx.
+                // Find the post-boxing UserSum type in the type_table for cascading release.
+                if !value_data.is_empty() {
+                    let heap_idx = Self::get_as::<heap::HeapIdx>(value_data[0]);
+                    // Look up the resolved UserSum type from the type_table
+                    let resolved_sum = type_table.iter().find(
+                        |tid| matches!(tid.to_type(), Type::UserSum { name: n, .. } if n == name),
+                    );
+                    let should_release_inner = heap
+                        .get(heap_idx)
+                        .map(|obj| obj.refcount <= 1)
+                        .unwrap_or(false);
+                    if should_release_inner {
+                        if let Some(inner_ty) = resolved_sum {
+                            let inner_data = heap
+                                .get(heap_idx)
+                                .map(|obj| obj.data.clone())
+                                .unwrap_or_default();
+                            Self::release_usersum_recursive(
+                                &inner_data,
+                                inner_ty,
+                                heap,
+                                type_table,
+                            );
+                        }
+                    }
+                    heap::heap_release(heap, heap_idx);
+                }
+            }
+            _ => {
+                // Primitive types don't need releasing
+            }
+        }
+    }
+
     pub fn execute_main(&mut self) -> ReturnCode {
         // 0 is always base pointer to the main function
         self.base_pointer += 1;

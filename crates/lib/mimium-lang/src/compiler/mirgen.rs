@@ -327,6 +327,15 @@ impl Context {
                     inner_type: inner,
                 });
             }
+            Type::UserSum { .. } => {
+                // UserSum value going out of scope - need to release any boxed values within
+                // We emit a ReleaseUserSum instruction that will walk the structure at runtime
+                // and decrement reference counts for any heap-allocated objects
+                self.push_inst(Instruction::ReleaseUserSum {
+                    value: v.clone(),
+                    ty,
+                });
+            }
             Type::Tuple(elem_types) => {
                 // Recursively process each element of the tuple
                 for (i, elem_ty) in elem_types.iter().enumerate() {
@@ -875,8 +884,8 @@ impl Context {
                 if t.to_type().contains_function() || t.to_type().contains_boxed() {
                     self.insert_clone_recursively(res.clone(), t);
                 }
-                // Close heap-allocated values after cloning (for higher-order functions)
-                if t.to_type().contains_function() {
+                // Close heap-allocated values after cloning (for higher-order functions and boxed values)
+                if t.to_type().contains_function() || t.to_type().contains_boxed() {
                     self.insert_close_recursively(res.clone(), t);
                 }
                 (res, t, s)
@@ -1478,22 +1487,35 @@ impl Context {
                 let is_global = self.get_ctxdata().func_i.0 == 0;
                 let is_function = matches!(bodyv.as_ref(), Value::Function(_));
 
-                if !is_global && !is_function {
+                let ptr = if !is_global && !is_function {
                     // ローカル変数の場合、常にAllocaとStoreを使う
                     let ptr = self.push_inst(Instruction::Alloc(t));
                     self.push_inst(Instruction::Store(ptr.clone(), bodyv, t));
-                    self.add_bind_pattern(pat, ptr, t, false);
+                    self.add_bind_pattern(pat, ptr.clone(), t, false);
+                    Some((ptr, t))
                 } else {
                     // グローバル変数や関数はこれまで通りの扱い
                     self.add_bind_pattern(pat, bodyv, t, is_global);
-                }
+                    None
+                };
 
-                if let Some(then_e) = then {
-                    let (r, t, s) = self.eval_expr(*then_e);
-                    (r, t, [states, s].concat())
+                let result = if let Some(then_e) = then {
+                    let (r, t_ret, s) = self.eval_expr(*then_e);
+                    (r, t_ret, [states, s].concat())
                 } else {
                     (Arc::new(Value::None), unit!(), states)
+                };
+
+                // ローカル変数がスコープから外れるときに解放
+                if let Some((ptr, ty)) = ptr {
+                    if ty.to_type().contains_boxed() || ty.to_type().contains_function() {
+                        // Load the value and release it
+                        let value = self.push_inst(Instruction::Load(ptr, ty));
+                        self.insert_close_recursively(value, ty);
+                    }
                 }
+
+                result
             }
             Expr::LetRec(id, body, then) => {
                 let is_global = self.get_ctxdata().func_i.0 == 0;

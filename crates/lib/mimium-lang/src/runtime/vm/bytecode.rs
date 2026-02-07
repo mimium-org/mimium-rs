@@ -68,6 +68,10 @@ pub enum Instruction {
     /// CloneUserSum(value_reg, value_size, type_table_index)
     /// The type_table_index is used to look up TypeNodeId from Program.type_table.
     CloneUserSum(Reg, TypeSize, TypeTableIndex),
+    /// Release all boxed references within a UserSum value.
+    /// ReleaseUserSum(value_reg, value_size, type_table_index)
+    /// The type_table_index is used to look up TypeNodeId from Program.type_table.
+    ReleaseUserSum(Reg, TypeSize, TypeTableIndex),
 
     /// destination,source, size
     GetUpValue(Reg, Reg, TypeSize),
@@ -212,6 +216,9 @@ impl std::fmt::Display for Instruction {
             }
             Instruction::CloneUserSum(src, size, type_idx) => {
                 write!(f, "{:<10} {} {} type_idx:{}", "clone_usersum", src, size, type_idx)
+            }
+            Instruction::ReleaseUserSum(src, size, type_idx) => {
+                write!(f, "{:<10} {} {} type_idx:{}", "release_usersum", src, size, type_idx)
             }
             Instruction::Delay(dst, src, time) => {
                 write!(f, "{:<10} {} {} {}", "delay", dst, src, time)
