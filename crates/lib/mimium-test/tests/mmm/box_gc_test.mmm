@@ -1,0 +1,26 @@
+// Test case: Box GC - verify that boxed values are properly released
+// This test creates and releases boxed List values multiple times
+// to ensure heap objects are properly garbage collected
+type rec List = Nil | Cons(float, List)
+
+fn sum(list: List) -> float {
+    match list {
+        Nil => 0.0,
+        Cons(head, tail) => head + sum(tail)
+    }
+}
+
+fn dsp() -> float {
+    // Create and destroy lists multiple times
+    // Each iteration should release the previous list's heap objects
+    let list1 = Cons(5.0, Cons(4.0, Cons(3.0, Cons(2.0, Cons(1.0, Nil)))));
+    let s1 = sum(list1);
+    
+    let list2 = Cons(4.0, Cons(3.0, Cons(2.0, Cons(1.0, Nil))));
+    let s2 = sum(list2);
+    
+    let list3 = Cons(3.0, Cons(2.0, Cons(1.0, Nil)));
+    let s3 = sum(list3);
+    
+    s1 + s2 + s3  // 15 + 10 + 6 = 31
+}

@@ -1120,3 +1120,18 @@ fn box_multiple_refs() {
         }
     }
 }
+
+#[wasm_bindgen_test(unsupported = test)]
+fn box_gc_test() {
+    let (file, src) = load_src("box_gc_test.mmm");
+    let res = run_source_test(&src, 1, false, Some(file));
+    match res {
+        Ok(res) => assert_eq!(res, vec![31.0]),
+        Err(errs) => {
+            for err in &errs {
+                eprintln!("Error: {}", err.get_message());
+            }
+            panic!("box_gc_test failed");
+        }
+    }
+}
