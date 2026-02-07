@@ -765,7 +765,10 @@ impl ByteCodeGenerator {
                 // Clone all boxed references within a UserSum value
                 let value_reg = self.vregister.find_keep(&value).unwrap();
                 let size = Self::word_size_for_type(ty);
-                Some(VmInstruction::CloneUserSum(value_reg, size, ty))
+                // Register type in type table and get index
+                let type_idx = self.program.add_type_to_table(ty)
+                    .expect("Type table overflow - too many UserSum types");
+                Some(VmInstruction::CloneUserSum(value_reg, size, type_idx))
             }
             mir::Instruction::Switch {
                 scrutinee,

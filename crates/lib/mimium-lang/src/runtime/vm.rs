@@ -993,12 +993,15 @@ impl Machine {
                         .expect("BoxStore: invalid heap index");
                     heap_obj.data[..inner_size as usize].copy_from_slice(&data);
                 }
-                Instruction::CloneUserSum(value_reg, value_size, ty) => {
+                Instruction::CloneUserSum(value_reg, value_size, type_idx) => {
                     // Clone all boxed references within a UserSum value
                     // This walks through the value structure and increments reference counts
                     // for any HeapIdx (boxed pointers) found within
                     let (_, value_data) = self.get_stack_range(value_reg as i64, value_size);
                     let value_vec = value_data.to_vec();
+                    // Look up TypeNodeId from type table
+                    let ty = self.prog.get_type_from_table(type_idx)
+                        .expect("Invalid type table index in CloneUserSum");
                     Self::clone_usersum_recursive(&value_vec, &ty, &mut self.heap);
                 }
                 Instruction::CallIndirect(func, nargs, nret_req) => {

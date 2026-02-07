@@ -5,6 +5,7 @@ pub type ConstPos = u16;
 pub type GlobalPos = u8;
 pub type Offset = i16;
 pub type ShotrOffset = i8;
+pub type TypeTableIndex = u8;
 //24bit unsigned integer for shiftsate
 pub type StateOffset = intx::U24;
 /// Instructions for bytecode. Currently, each instructon has the 64 bit size(Tag, up to 3 bytes arguments.)
@@ -64,8 +65,9 @@ pub enum Instruction {
     /// BoxStore(heap_ptr_reg, src_reg, inner_word_size)
     BoxStore(Reg, Reg, TypeSize),
     /// Clone all boxed references within a UserSum value.
-    /// CloneUserSum(value_reg, value_size, type_id)
-    CloneUserSum(Reg, TypeSize, TypeNodeId),
+    /// CloneUserSum(value_reg, value_size, type_table_index)
+    /// The type_table_index is used to look up TypeNodeId from Program.type_table.
+    CloneUserSum(Reg, TypeSize, TypeTableIndex),
 
     /// destination,source, size
     GetUpValue(Reg, Reg, TypeSize),
@@ -208,8 +210,8 @@ impl std::fmt::Display for Instruction {
             Instruction::BoxStore(dst, src, size) => {
                 write!(f, "{:<10} {} {} {}", "boxstore", dst, src, size)
             }
-            Instruction::CloneUserSum(src, size, ty) => {
-                write!(f, "{:<10} {} {} type:{}", "clone_usersum", src, size, ty.to_type())
+            Instruction::CloneUserSum(src, size, type_idx) => {
+                write!(f, "{:<10} {} {} type_idx:{}", "clone_usersum", src, size, type_idx)
             }
             Instruction::Delay(dst, src, time) => {
                 write!(f, "{:<10} {} {} {}", "delay", dst, src, time)

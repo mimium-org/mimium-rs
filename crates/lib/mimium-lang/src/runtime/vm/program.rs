@@ -79,6 +79,9 @@ pub struct Program {
     pub iochannels: Option<IoChannelInfo>,
     //hold absolute index of dsp function because the symbol interner can't be used in the audio thread
     pub dsp_index: Option<usize>,
+    /// Type table for CloneUserSum instruction.
+    /// Maps u8 index to TypeNodeId to keep instruction size within 64 bits.
+    pub type_table: Vec<TypeNodeId>,
 }
 impl Program {
     pub fn get_fun_index(&self, name: &str) -> Option<usize> {
@@ -97,6 +100,28 @@ impl Program {
         self.global_fn_table
             .get(dsp_i)
             .map(|(_, f)| &f.state_skeleton)
+    }
+
+    /// Add a type to the type table and return its index.
+    /// If the type already exists, returns the existing index.
+    /// Returns None if the type table is full (max 256 entries).
+    pub fn add_type_to_table(&mut self, ty: TypeNodeId) -> Option<u8> {
+        // Check if type already exists
+        if let Some(idx) = self.type_table.iter().position(|&t| t == ty) {
+            return Some(idx as u8);
+        }
+        // Add new type if table is not full
+        if self.type_table.len() < 256 {
+            self.type_table.push(ty);
+            Some((self.type_table.len() - 1) as u8)
+        } else {
+            None // Type table overflow
+        }
+    }
+
+    /// Get TypeNodeId from type table by index.
+    pub fn get_type_from_table(&self, idx: u8) -> Option<TypeNodeId> {
+        self.type_table.get(idx as usize).copied()
     }
     pub fn add_new_str(&mut self, s: String) -> usize {
         self.strings
