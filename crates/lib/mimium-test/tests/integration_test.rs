@@ -1147,3 +1147,42 @@ fn box_gc_test() {
         }
     }
 }
+
+// ============ Type Visibility Tests ============
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_visibility_private_alias_fail2() {
+    // Test that private type aliases cannot be accessed from outside
+    let res = run_error_test("type_visibility_private_alias_fail2.mmm", false);
+    assert!(!res.is_empty(), "Expected PrivateTypeAccess error");
+    // Check if any error message contains "private"
+    let has_private_error = res.iter().any(|err| err.get_message().contains("private"));
+    assert!(
+        has_private_error,
+        "Expected 'private' type access error, got: {}",
+        res.iter().map(|e| e.get_message()).collect::<Vec<_>>().join(", ")
+    );
+}
+#[wasm_bindgen_test(unsupported = test)]
+fn type_visibility_private_alias_fail() {
+    // Test that private type aliases cannot be accessed from outside
+    let res = run_error_test("type_visibility_private_alias_fail.mmm", false);
+    assert!(!res.is_empty(), "Expected PrivateTypeAccess error");
+    let err_message = res[0].get_message();
+    assert!(
+        err_message.contains("private"),
+        "Expected 'private' type access error, got: {err_message}"
+    );
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_visibility_private_declaration_fail() {
+    // Test that private type declarations cannot be accessed from outside
+    let res = run_error_test("type_visibility_private_declaration_fail.mmm", false);
+    assert!(!res.is_empty(), "Expected PrivateTypeAccess error");
+    let err_message = res[0].get_message();
+    assert!(
+        err_message.contains("private"),
+        "Expected 'private' type access error, got: {err_message}"
+    );
+}

@@ -1097,9 +1097,23 @@ impl<'a> Parser<'a> {
                 });
             }
             Some(TokenKind::Ident) => {
-                // Type variable or named type
+                // Type variable or named type (can be qualified path like mymath::PrivateNum)
                 self.emit_node(SyntaxKind::TypeIdent, |inner| {
-                    inner.bump();
+                    inner.bump(); // First identifier
+                    // Check for qualified path (::)
+                    while inner.check(TokenKind::DoubleColon) {
+                        inner.bump(); // Consume ::
+                        if inner.check(TokenKind::Ident) {
+                            inner.bump(); // Next identifier
+                        } else {
+                            inner.add_error(ParserError::unexpected_token(
+                                inner.current_token_index(),
+                                "identifier after ::",
+                                &format!("{:?}", inner.peek().unwrap_or(TokenKind::Eof)),
+                            ));
+                            break;
+                        }
+                    }
                 });
             }
             _ => {

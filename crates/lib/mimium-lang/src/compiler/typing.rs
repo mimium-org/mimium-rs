@@ -1143,14 +1143,30 @@ impl InferContext {
         match t.to_type() {
             Type::Unknown => self.gen_intermediate_type_with_location(loc.clone()),
             Type::TypeAlias(name) => {
-                log::trace!("Resolving TypeAlias: {}", name.as_str());
+                // Determine if this is a qualified path (contains '$') or a simple name
+                let resolved_name = if name.as_str().contains('$') {
+                    // Already a mangled name from qualified path (e.g., mymath$PrivateNum)
+                    // Use it directly
+                    name
+                } else if let Some(ref module_info) = self.module_info {
+                    // Simple name - check use_alias_map for resolution
+                    module_info
+                        .use_alias_map
+                        .get(&name)
+                        .copied()
+                        .unwrap_or(name)
+                } else {
+                    name
+                };
+
+                log::trace!("Resolving TypeAlias: {} -> {}", name.as_str(), resolved_name.as_str());
 
                 // Check visibility if module_info is available
                 if let Some(ref module_info) = self.module_info {
-                    if let Some(&is_public) = module_info.visibility_map.get(&name) {
+                    if let Some(&is_public) = module_info.visibility_map.get(&resolved_name) {
                         if !is_public {
-                            // Type is private - check if we're accessing it from within the same module
-                            let type_path: Vec<&str> = name.as_str().split('$').collect();
+                            // Type is private - report error for accessing it from outside
+                            let type_path: Vec<&str> = resolved_name.as_str().split('$').collect();
                             if type_path.len() > 1 {
                                 // This is a module member type
                                 let module_path: Vec<crate::interner::Symbol> = type_path
@@ -1172,17 +1188,17 @@ impl InferContext {
                 }
 
                 // Resolve type alias by looking it up in the environment
-                match self.lookup(name, loc.clone()) {
+                match self.lookup(resolved_name, loc.clone()) {
                     Ok(resolved_ty) => {
                         log::trace!(
                             "Resolved TypeAlias {} to {}",
-                            name.as_str(),
+                            resolved_name.as_str(),
                             resolved_ty.to_type()
                         );
                         resolved_ty
                     }
                     Err(_) => {
-                        log::warn!("TypeAlias {} not found, treating as Unknown", name.as_str());
+                        log::warn!("TypeAlias {} not found, treating as Unknown", resolved_name.as_str());
                         // If not found, treat as Unknown and convert to intermediate
                         self.gen_intermediate_type_with_location(loc.clone())
                     }
