@@ -51,7 +51,9 @@ fn box_gc_test() {
         "Heap should be empty after program completion, but has {heap_size_3} objects"
     );
 
-    println!("✓ Box GC test passed: heap size = {heap_size_3} (improved from initial implementation)");
+    println!(
+        "✓ Box GC test passed: heap size = {heap_size_3} (improved from initial implementation)"
+    );
 }
 
 #[wasm_bindgen_test(unsupported = test)]

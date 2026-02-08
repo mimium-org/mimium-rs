@@ -224,11 +224,7 @@ impl std::fmt::Display for Instruction {
                 value,
                 inner_type,
             } => {
-                write!(
-                    f,
-                    "box_store {ptr} {value} type:{}",
-                    inner_type.to_type()
-                )
+                write!(f, "box_store {ptr} {value} type:{}", inner_type.to_type())
             }
             Instruction::CloneUserSum { value, ty } => {
                 write!(f, "clone_usersum {} type:{}", *value, ty.to_type())

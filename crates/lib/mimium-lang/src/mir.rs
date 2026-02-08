@@ -165,12 +165,18 @@ pub enum Instruction {
     /// This is used when passing UserSum values to functions (call-by-value).
     /// At runtime, walks the value's structure using type information and
     /// increments reference counts for any Boxed fields.
-    CloneUserSum { value: VPtr, ty: TypeNodeId },
+    CloneUserSum {
+        value: VPtr,
+        ty: TypeNodeId,
+    },
     /// Release all boxed references within a UserSum (variant) value.
     /// This is used when a UserSum value goes out of scope.
     /// At runtime, walks the value's structure using type information and
     /// decrements reference counts for any Boxed fields.
-    ReleaseUserSum { value: VPtr, ty: TypeNodeId },
+    ReleaseUserSum {
+        value: VPtr,
+        ty: TypeNodeId,
+    },
 
     Return(VPtr, TypeNodeId),
     //value to update state

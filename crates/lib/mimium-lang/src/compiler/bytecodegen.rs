@@ -755,7 +755,11 @@ impl ByteCodeGenerator {
                 let src_reg = self.vregister.find_keep(&ptr).unwrap();
                 Some(VmInstruction::BoxRelease(src_reg))
             }
-            mir::Instruction::BoxStore { ptr, value, inner_type } => {
+            mir::Instruction::BoxStore {
+                ptr,
+                value,
+                inner_type,
+            } => {
                 let inner_size = Self::word_size_for_type(inner_type);
                 let ptr_reg = self.vregister.find_keep(&ptr).unwrap();
                 let val_reg = self.find(&value);
@@ -766,7 +770,9 @@ impl ByteCodeGenerator {
                 let value_reg = self.vregister.find_keep(&value).unwrap();
                 let size = Self::word_size_for_type(ty);
                 // Register type in type table and get index
-                let type_idx = self.program.add_type_to_table(ty)
+                let type_idx = self
+                    .program
+                    .add_type_to_table(ty)
                     .expect("Type table overflow - too many UserSum types");
                 Some(VmInstruction::CloneUserSum(value_reg, size, type_idx))
             }
@@ -775,7 +781,9 @@ impl ByteCodeGenerator {
                 let value_reg = self.vregister.find_keep(&value).unwrap();
                 let size = Self::word_size_for_type(ty);
                 // Register type in type table and get index
-                let type_idx = self.program.add_type_to_table(ty)
+                let type_idx = self
+                    .program
+                    .add_type_to_table(ty)
                     .expect("Type table overflow - too many UserSum types");
                 Some(VmInstruction::ReleaseUserSum(value_reg, size, type_idx))
             }

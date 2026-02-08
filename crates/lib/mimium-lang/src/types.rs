@@ -469,7 +469,7 @@ impl TypeNodeId {
 
     /// Calculate the size in words (u64) required to store a value of this type.
     /// This is used for stack allocation and register management.
-    /// 
+    ///
     /// - Primitives (except Unit): 1 word
     /// - Unit: 0 words
     /// - Arrays/Functions/Refs/Boxed: 1 word (pointer)
@@ -492,11 +492,7 @@ impl TypeNodeId {
             Type::Code(_) => 1,
             Type::Union(variants) => {
                 // Tagged union: 1 word for tag + max size of any variant
-                let max_variant_size = variants
-                    .iter()
-                    .map(|v| v.word_size())
-                    .max()
-                    .unwrap_or(0);
+                let max_variant_size = variants.iter().map(|v| v.word_size()).max().unwrap_or(0);
                 1 + max_variant_size
             }
             Type::UserSum { variants, .. } => {

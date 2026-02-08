@@ -215,10 +215,18 @@ impl std::fmt::Display for Instruction {
                 write!(f, "{:<10} {} {} {}", "boxstore", dst, src, size)
             }
             Instruction::CloneUserSum(src, size, type_idx) => {
-                write!(f, "{:<10} {} {} type_idx:{}", "clone_usersum", src, size, type_idx)
+                write!(
+                    f,
+                    "{:<10} {} {} type_idx:{}",
+                    "clone_usersum", src, size, type_idx
+                )
             }
             Instruction::ReleaseUserSum(src, size, type_idx) => {
-                write!(f, "{:<10} {} {} type_idx:{}", "release_usersum", src, size, type_idx)
+                write!(
+                    f,
+                    "{:<10} {} {} type_idx:{}",
+                    "release_usersum", src, size, type_idx
+                )
             }
             Instruction::Delay(dst, src, time) => {
                 write!(f, "{:<10} {} {} {}", "delay", dst, src, time)

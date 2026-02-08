@@ -1024,12 +1024,10 @@ fn type_recursive_invalid_list() {
 
     let err_message = errs[0].get_message();
     assert!(
-        err_message.contains("ircular") || err_message.contains("ecursive"),
+        err_message.contains("circular") || err_message.contains("ecursive"),
         "Expected circular/recursive type error, got: {err_message}"
     );
 }
-
-
 
 #[wasm_bindgen_test(unsupported = test)]
 fn type_recursive_list() {
