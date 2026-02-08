@@ -112,6 +112,12 @@ pub enum Error {
         type_name: Symbol,
         location: Location,
     },
+    /// Public function leaking private type in its signature
+    PrivateTypeLeak {
+        function_name: Symbol,
+        private_type: Symbol,
+        location: Location,
+    },
 }
 
 impl ReportableError for Error {
@@ -244,6 +250,15 @@ impl ReportableError for Error {
                     .join("::");
                 format!(
                     "Type '{type_name}' in module '{path_str}' is private and cannot be accessed from outside"
+                )
+            }
+            Error::PrivateTypeLeak {
+                function_name,
+                private_type,
+                ..
+            } => {
+                format!(
+                    "Public function '{function_name}' cannot expose private type '{private_type}' in its signature"
                 )
             }
         }
@@ -502,6 +517,12 @@ impl ReportableError for Error {
                 vec![(
                     location.clone(),
                     format!("Type '{type_name}' in module '{path_str}' is private"),
+                )]
+            }
+            Error::PrivateTypeLeak { location, .. } => {
+                vec![(
+                    location.clone(),
+                    "private type leaked in public function signature".to_string(),
                 )]
             }
         }
@@ -1159,7 +1180,11 @@ impl InferContext {
                     name
                 };
 
-                log::trace!("Resolving TypeAlias: {} -> {}", name.as_str(), resolved_name.as_str());
+                log::trace!(
+                    "Resolving TypeAlias: {} -> {}",
+                    name.as_str(),
+                    resolved_name.as_str()
+                );
 
                 // Check visibility if module_info is available
                 if let Some(ref module_info) = self.module_info {
@@ -1198,7 +1223,10 @@ impl InferContext {
                         resolved_ty
                     }
                     Err(_) => {
-                        log::warn!("TypeAlias {} not found, treating as Unknown", resolved_name.as_str());
+                        log::warn!(
+                            "TypeAlias {} not found, treating as Unknown",
+                            resolved_name.as_str()
+                        );
                         // If not found, treat as Unknown and convert to intermediate
                         self.gen_intermediate_type_with_location(loc.clone())
                     }
@@ -1207,6 +1235,134 @@ impl InferContext {
             _ => t.apply_fn(|t| self.convert_unknown_to_intermediate(t, loc.clone())),
         }
     }
+
+    /// Check if a symbol is public based on the visibility map
+    fn is_public(&self, name: &Symbol) -> bool {
+        self.module_info
+            .as_ref()
+            .and_then(|info| info.visibility_map.get(name))
+            .is_some_and(|vis| *vis)
+    }
+
+    fn is_private(&self, name: &Symbol) -> bool {
+        !self.is_public(name)
+    }
+
+    /// Check if a public function leaks private types in its signature
+    fn check_private_type_leak(&mut self, name: Symbol, ty: TypeNodeId, loc: Location) {
+        // Check if the function is public
+        if !self.is_public(&name) {
+            return; // Private functions can use private types
+        }
+
+        // Check if the type contains any private type references
+        if let Some(type_name) = self.contains_private_type(ty) {
+            self.errors.push(Error::PrivateTypeLeak {
+                function_name: name,
+                private_type: type_name,
+                location: loc,
+            });
+        }
+    }
+
+    /// Recursively check if a type contains references to private types
+    /// Returns Some(type_name) if a private type is found
+    fn contains_private_type(&self, ty: TypeNodeId) -> Option<Symbol> {
+        let resolved = Self::substitute_type(ty);
+        match resolved.to_type() {
+            Type::TypeAlias(name) => {
+                // Check if this type alias is private
+                if self.is_private(&name) {
+                    return Some(name);
+                }
+
+                // If it's a qualified name, extract type name and check visibility
+                let name_str = name.as_str();
+                if name_str.contains("::") {
+                    let parts: Vec<&str> = name_str.split("::").collect();
+                    if parts.len() >= 2 {
+                        let module_path: Vec<Symbol> = parts[..parts.len() - 1]
+                            .iter()
+                            .map(|s| s.to_symbol())
+                            .collect();
+                        let type_name = parts[parts.len() - 1].to_symbol();
+
+                        let module_path_str = module_path
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join("::");
+                        let mangled_name =
+                            format!("{}::{}", module_path_str, type_name.as_str()).to_symbol();
+
+                        if self.is_private(&mangled_name) {
+                            return Some(type_name);
+                        }
+                    }
+                }
+                None
+            }
+            Type::Function { arg, ret } => {
+                // Check argument type (can be a single type or a record of multiple args)
+                if let Some(private_type) = self.contains_private_type(arg) {
+                    return Some(private_type);
+                }
+                // Check return type
+                self.contains_private_type(ret)
+            }
+            Type::Tuple(ref elements) => {
+                for elem_ty in elements.iter() {
+                    if let Some(private_type) = self.contains_private_type(*elem_ty) {
+                        return Some(private_type);
+                    }
+                }
+                None
+            }
+            Type::Array(elem_ty) => self.contains_private_type(elem_ty),
+            Type::Record(ref fields) => {
+                for field in fields.iter() {
+                    if let Some(private_type) = self.contains_private_type(field.ty) {
+                        return Some(private_type);
+                    }
+                }
+                None
+            }
+            Type::Union(ref variants) => {
+                for variant_ty in variants.iter() {
+                    if let Some(private_type) = self.contains_private_type(*variant_ty) {
+                        return Some(private_type);
+                    }
+                }
+                None
+            }
+            Type::Ref(inner_ty) => self.contains_private_type(inner_ty),
+            Type::Code(inner_ty) => self.contains_private_type(inner_ty),
+            Type::Boxed(inner_ty) => self.contains_private_type(inner_ty),
+            Type::UserSum { name, variants } => {
+                // Check if the user-defined sum type itself is private
+                if self.is_private(&name) {
+                    return Some(name);
+                }
+
+                // Check payload types of variants
+                for (_variant_name, payload_ty_opt) in variants.iter() {
+                    if let Some(payload_ty) = payload_ty_opt {
+                        if let Some(private_type) = self.contains_private_type(*payload_ty) {
+                            return Some(private_type);
+                        }
+                    }
+                }
+                None
+            }
+            Type::Intermediate(_)
+            | Type::Primitive(_)
+            | Type::TypeScheme(_)
+            | Type::Any
+            | Type::Failure
+            | Type::Unknown => None,
+        }
+    }
+
     fn convert_unify_error(&self, e: UnificationError) -> Error {
         let gen_loc = |span| Location::new(span, self.file_path.clone());
         match e {
@@ -1620,6 +1776,21 @@ impl InferContext {
 
                 let loc_p = tpat.to_loc();
                 let loc_b = body.to_location();
+
+                // Check for private type leak in public function declarations
+                // Use the original type before resolution to catch TypeAlias references
+                if let Pattern::Single(name) = &tpat.pat {
+                    eprintln!(
+                        "[DEBUG] Checking private type leak for Let binding: {}",
+                        name.as_str()
+                    );
+                    eprintln!(
+                        "[DEBUG] Original type before resolution: {:?}",
+                        tpat.ty.to_type()
+                    );
+                    self.check_private_type_leak(*name, tpat.ty, loc_p.clone());
+                }
+
                 let pat_t = self.bind_pattern((tpat.clone(), loc_p), (bodyt, loc_b));
                 let _pat_t = self.unwrap_result(pat_t);
                 match then {
@@ -1635,6 +1806,10 @@ impl InferContext {
                 let bodyt = self.infer_type_levelup(*body);
 
                 let _res = self.unify_types(idt, bodyt);
+
+                // Check if public function leaks private type in its declared signature
+                self.check_private_type_leak(id.id, id.ty, loc.clone());
+
                 match then {
                     Some(e) => self.infer_type(*e),
                     None => Ok(Type::Primitive(PType::Unit).into_id_with_location(loc)),

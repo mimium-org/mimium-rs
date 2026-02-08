@@ -1160,7 +1160,10 @@ fn type_visibility_private_alias_fail2() {
     assert!(
         has_private_error,
         "Expected 'private' type access error, got: {}",
-        res.iter().map(|e| e.get_message()).collect::<Vec<_>>().join(", ")
+        res.iter()
+            .map(|e| e.get_message())
+            .collect::<Vec<_>>()
+            .join(", ")
     );
 }
 #[wasm_bindgen_test(unsupported = test)]
@@ -1184,5 +1187,16 @@ fn type_visibility_private_declaration_fail() {
     assert!(
         err_message.contains("private"),
         "Expected 'private' type access error, got: {err_message}"
+    );
+}
+#[test]
+fn type_visibility_leak() {
+    // Test that public functions cannot leak private types in their signatures
+    let res = run_error_test("type_visibility_leak_fail.mmm", false);
+    assert!(!res.is_empty(), "Expected PrivateTypeLeak error");
+    let err_message = res[0].get_message();
+    assert!(
+        err_message.contains("private type") && err_message.contains("signature"),
+        "Expected private type leak error, got: {err_message}"
     );
 }

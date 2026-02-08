@@ -1,0 +1,11 @@
+// Test case: Public function leaking private type should fail
+
+type alias PrivateType = float
+
+pub fn leak_type(x: PrivateType) -> PrivateType {
+    x
+}
+
+fn dsp() -> float {
+    leak_type(440.0)
+}

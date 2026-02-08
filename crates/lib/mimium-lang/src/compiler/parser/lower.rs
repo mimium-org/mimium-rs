@@ -1908,7 +1908,7 @@ impl<'a> Lowerer<'a> {
                 // TypeIdent node contains child Ident tokens and DoubleColon tokens for qualified paths
                 if let Some(children) = self.arena.children(node) {
                     let mut path_segments = Vec::new();
-                    
+
                     for child in children {
                         if let Some(token_index) = self.get_token_index(*child)
                             && let Some(token) = self.tokens.get(token_index)
@@ -1919,7 +1919,7 @@ impl<'a> Lowerer<'a> {
                             // Skip DoubleColon tokens - they're just separators
                         }
                     }
-                    
+
                     if !path_segments.is_empty() {
                         // Join path segments with $ for mangled name
                         let type_name = path_segments.join("$").to_symbol();

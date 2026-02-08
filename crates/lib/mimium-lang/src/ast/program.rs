@@ -313,12 +313,12 @@ fn stmts_from_program_with_prefix(
                 .into_id_with_location(loc.clone());
                 // Use mangled name if inside a module
                 let mangled_name = mangle_qualified_name(module_prefix, name);
-                // Track visibility for module members
+                // Track visibility for all functions (both module members and top-level)
+                module_info
+                    .visibility_map
+                    .insert(mangled_name, visibility == Visibility::Public);
+                // Track module context for relative path resolution
                 if !module_prefix.is_empty() {
-                    module_info
-                        .visibility_map
-                        .insert(mangled_name, visibility == Visibility::Public);
-                    // Track module context for relative path resolution
                     module_info
                         .module_context_map
                         .insert(mangled_name, module_prefix.to_vec());
@@ -406,12 +406,12 @@ fn stmts_from_program_with_prefix(
                 // Store type alias for later use in type environment
                 let mangled_name = mangle_qualified_name(module_prefix, name);
                 module_info.type_aliases.insert(mangled_name, target_type);
-                // Track visibility for module members
+                // Track visibility for all type aliases (both module members and top-level)
+                module_info
+                    .visibility_map
+                    .insert(mangled_name, visibility == Visibility::Public);
+                // Track module context for relative path resolution
                 if !module_prefix.is_empty() {
-                    module_info
-                        .visibility_map
-                        .insert(mangled_name, visibility == Visibility::Public);
-                    // Track module context for relative path resolution
                     module_info
                         .module_context_map
                         .insert(mangled_name, module_prefix.to_vec());
