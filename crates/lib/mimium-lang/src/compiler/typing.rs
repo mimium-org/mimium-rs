@@ -9,7 +9,6 @@ use crate::utils::{environment::Environment, error::ReportableError};
 use crate::{function, integer, numeric, unit};
 use itertools::Itertools;
 use std::collections::{BTreeMap, HashMap};
-use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use thiserror::Error;
@@ -105,6 +104,12 @@ pub enum Error {
     RecursiveTypeAlias {
         type_name: Symbol,
         cycle: Vec<Symbol>,
+        location: Location,
+    },
+    /// Private type accessed from outside its module
+    PrivateTypeAccess {
+        module_path: Vec<Symbol>,
+        type_name: Symbol,
         location: Location,
     },
 }
@@ -225,6 +230,20 @@ impl ReportableError for Error {
                     .join(" -> ");
                 format!(
                     "Recursive type alias '{type_name}' detected. Cycle: {cycle_str} -> {type_name}. Use 'type rec' to declare recursive types."
+                )
+            }
+            Error::PrivateTypeAccess {
+                module_path,
+                type_name,
+                ..
+            } => {
+                let path_str = module_path
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                format!(
+                    "Type '{type_name}' in module '{path_str}' is private and cannot be accessed from outside"
                 )
             }
         }
@@ -465,7 +484,24 @@ impl ReportableError for Error {
                     .join(" -> ");
                 vec![(
                     location.clone(),
-                    format!("Type alias '{type_name}' creates a cycle: {cycle_str} -> {type_name}. Consider using 'type rec' instead of 'type alias'."),
+                    format!(
+                        "Type alias '{type_name}' creates a cycle: {cycle_str} -> {type_name}. Consider using 'type rec' instead of 'type alias'."
+                    ),
+                )]
+            }
+            Error::PrivateTypeAccess {
+                module_path,
+                type_name,
+                location,
+            } => {
+                let path_str = module_path
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                vec![(
+                    location.clone(),
+                    format!("Type '{type_name}' in module '{path_str}' is private"),
                 )]
             }
         }
@@ -501,6 +537,8 @@ pub struct InferContext {
     pub constructor_env: ConstructorEnv,
     /// Type alias resolution map
     pub type_aliases: HashMap<Symbol, TypeNodeId>,
+    /// Module information for visibility checking
+    module_info: Option<crate::ast::program::ModuleInfo>,
     /// Match expressions to check for exhaustiveness after type resolution
     match_expressions: Vec<(ExprNodeId, TypeNodeId)>,
     pub errors: Vec<Error>,
@@ -517,6 +555,7 @@ impl InferContext {
         file_path: PathBuf,
         type_declarations: Option<&crate::ast::program::TypeDeclarationMap>,
         type_aliases: Option<&crate::ast::program::TypeAliasMap>,
+        module_info: Option<crate::ast::program::ModuleInfo>,
     ) -> Self {
         let mut res = Self {
             interm_idx: Default::default(),
@@ -530,6 +569,7 @@ impl InferContext {
             env: Environment::<(TypeNodeId, EvalStage)>::default(),
             constructor_env: Default::default(),
             type_aliases: Default::default(),
+            module_info,
             match_expressions: Default::default(),
             errors: Default::default(),
         };
@@ -1133,6 +1173,33 @@ impl InferContext {
             Type::Unknown => self.gen_intermediate_type_with_location(loc.clone()),
             Type::TypeAlias(name) => {
                 log::trace!("Resolving TypeAlias: {}", name.as_str());
+
+                // Check visibility if module_info is available
+                if let Some(ref module_info) = self.module_info {
+                    if let Some(&is_public) = module_info.visibility_map.get(&name) {
+                        if !is_public {
+                            // Type is private - check if we're accessing it from within the same module
+                            let type_path: Vec<&str> = name.as_str().split('$').collect();
+                            if type_path.len() > 1 {
+                                // This is a module member type
+                                let module_path: Vec<crate::interner::Symbol> = type_path
+                                    [..type_path.len() - 1]
+                                    .iter()
+                                    .map(ToSymbol::to_symbol)
+                                    .collect();
+                                let type_name = type_path.last().unwrap().to_symbol();
+
+                                // Report error for private type access
+                                self.errors.push(Error::PrivateTypeAccess {
+                                    module_path,
+                                    type_name,
+                                    location: loc.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+
                 // Resolve type alias by looking it up in the environment
                 match self.lookup(name, loc.clone()) {
                     Ok(resolved_ty) => {
@@ -1953,12 +2020,14 @@ pub fn infer_root(
     file_path: PathBuf,
     type_declarations: Option<&crate::ast::program::TypeDeclarationMap>,
     type_aliases: Option<&crate::ast::program::TypeAliasMap>,
+    module_info: Option<crate::ast::program::ModuleInfo>,
 ) -> InferContext {
     let mut ctx = InferContext::new(
         builtin_types,
         file_path.clone(),
         type_declarations,
         type_aliases,
+        module_info,
     );
     let _t = ctx
         .infer_type(e)
@@ -1976,7 +2045,7 @@ mod tests {
     use crate::utils::metadata::{Location, Span};
 
     fn create_test_context() -> InferContext {
-        InferContext::new(&[], PathBuf::from("test"), None, None)
+        InferContext::new(&[], PathBuf::from("test"), None, None, None)
     }
 
     fn create_test_location() -> Location {

@@ -1425,7 +1425,8 @@ impl Context {
                                 let _ = ctx.push_inst(Instruction::Return(cls, rt));
                             }
                             (_, _) => {
-                                if rt.to_type().contains_function() || rt.to_type().contains_boxed() {
+                                if rt.to_type().contains_function() || rt.to_type().contains_boxed()
+                                {
                                     ctx.insert_close_recursively(res.clone(), rt);
                                     ctx.insert_clone_recursively(res.clone(), rt);
                                     let _ = ctx.push_inst(Instruction::Return(res.clone(), rt));
@@ -2812,6 +2813,7 @@ pub fn typecheck(
         file_path.clone().unwrap_or_default(),
         None,
         None,
+        None,
     );
     let errors = infer_ctx
         .errors
@@ -2850,6 +2852,7 @@ pub fn typecheck_with_module_info(
         file_path.clone().unwrap_or_default(),
         Some(&module_info.type_declarations),
         Some(&module_info.type_aliases),
+        Some(module_info.clone()),
     );
     let errors = infer_ctx
         .errors

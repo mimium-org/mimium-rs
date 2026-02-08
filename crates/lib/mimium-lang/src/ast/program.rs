@@ -399,17 +399,27 @@ fn stmts_from_program_with_prefix(
                 None
             }
             ProgramStatement::TypeAlias {
-                visibility: _,
+                visibility,
                 name,
                 target_type,
             } => {
                 // Store type alias for later use in type environment
                 let mangled_name = mangle_qualified_name(module_prefix, name);
                 module_info.type_aliases.insert(mangled_name, target_type);
+                // Track visibility for module members
+                if !module_prefix.is_empty() {
+                    module_info
+                        .visibility_map
+                        .insert(mangled_name, visibility == Visibility::Public);
+                    // Track module context for relative path resolution
+                    module_info
+                        .module_context_map
+                        .insert(mangled_name, module_prefix.to_vec());
+                }
                 None
             }
             ProgramStatement::TypeDeclaration {
-                visibility: _,
+                visibility,
                 name,
                 variants,
                 is_recursive,
@@ -423,6 +433,16 @@ fn stmts_from_program_with_prefix(
                         is_recursive,
                     },
                 );
+                // Track visibility for module members
+                if !module_prefix.is_empty() {
+                    module_info
+                        .visibility_map
+                        .insert(mangled_name, visibility == Visibility::Public);
+                    // Track module context for relative path resolution
+                    module_info
+                        .module_context_map
+                        .insert(mangled_name, module_prefix.to_vec());
+                }
                 None
             }
             ProgramStatement::Error => Some(vec![(
