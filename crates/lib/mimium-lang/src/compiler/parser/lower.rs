@@ -352,6 +352,11 @@ impl<'a> Lowerer<'a> {
     ) -> Option<ProgramStatement> {
         use crate::ast::program::VariantDef;
 
+        // Check if this is a recursive type declaration (has 'rec' keyword)
+        let is_recursive = self
+            .find_token(node, |kind| matches!(kind, TokenKind::Rec))
+            .is_some();
+
         // Find the type name (first Ident token after 'type' keyword)
         let name_idx = self.find_token(node, |kind| matches!(kind, TokenKind::Ident))?;
         let name = self.token_text(name_idx)?.to_symbol();
@@ -392,6 +397,7 @@ impl<'a> Lowerer<'a> {
                 visibility,
                 name,
                 variants,
+                is_recursive,
             })
         }
     }

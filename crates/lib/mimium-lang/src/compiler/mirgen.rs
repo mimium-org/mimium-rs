@@ -307,6 +307,108 @@ impl Context {
     fn add_bind(&mut self, bind: (Symbol, VPtr)) {
         self.valenv.add_bind(&[bind]);
     }
+
+    /// Recursively insert CloseHeapClosure instructions for heap-allocated objects (closures)
+    /// based on type information. This handles nested structures like tuples and records.
+    fn insert_close_recursively(&mut self, v: VPtr, ty: TypeNodeId) {
+        match ty.to_type() {
+            Type::Function { arg, ret } => {
+                // This is a closure - insert CloseHeapClosure for the closure itself
+                self.push_inst(Instruction::CloseHeapClosure(v.clone()));
+
+                // For higher-order functions, we don't need to recurse into arg/ret here
+                // because the closure value itself is a single heap object.
+                // The arguments/return values will be processed when they are actually used.
+            }
+            Type::Boxed(inner) => {
+                // Boxed value going out of scope — decrement its reference count
+                self.push_inst(Instruction::BoxRelease {
+                    ptr: v.clone(),
+                    inner_type: inner,
+                });
+            }
+            Type::UserSum { .. } => {
+                // UserSum value going out of scope - need to release any boxed values within
+                // We emit a ReleaseUserSum instruction that will walk the structure at runtime
+                // and decrement reference counts for any heap-allocated objects
+                self.push_inst(Instruction::ReleaseUserSum {
+                    value: v.clone(),
+                    ty,
+                });
+            }
+            Type::Tuple(elem_types) => {
+                // Recursively process each element of the tuple
+                for (i, elem_ty) in elem_types.iter().enumerate() {
+                    let elem_v = self.push_inst(Instruction::GetElement {
+                        value: v.clone(),
+                        ty,
+                        tuple_offset: i as u64,
+                    });
+                    self.insert_close_recursively(elem_v, *elem_ty);
+                }
+            }
+            Type::Record(fields) => {
+                // Recursively process each field of the record
+                for (i, field) in fields.iter().enumerate() {
+                    let field_v = self.push_inst(Instruction::GetElement {
+                        value: v.clone(),
+                        ty,
+                        tuple_offset: i as u64,
+                    });
+                    self.insert_close_recursively(field_v, field.ty);
+                }
+            }
+            _ => {
+                // Other types (primitives, arrays, etc.) don't need closing
+            }
+        }
+    }
+
+    /// Recursively insert CloneHeap instructions for heap-allocated objects.
+    /// This increments the reference count so that `release_heap_closures` at
+    /// scope exit will not free objects that are still reachable from another scope.
+    fn insert_clone_recursively(&mut self, v: VPtr, ty: TypeNodeId) {
+        match ty.to_type() {
+            Type::Function { .. } => {
+                self.push_inst(Instruction::CloneHeap(v.clone()));
+            }
+            Type::Boxed(_inner) => {
+                // Boxed value being duplicated — increment its reference count
+                self.push_inst(Instruction::BoxClone { ptr: v.clone() });
+            }
+            Type::Tuple(elem_types) => {
+                for (i, elem_ty) in elem_types.iter().enumerate() {
+                    let elem_v = self.push_inst(Instruction::GetElement {
+                        value: v.clone(),
+                        ty,
+                        tuple_offset: i as u64,
+                    });
+                    self.insert_clone_recursively(elem_v, *elem_ty);
+                }
+            }
+            Type::Record(fields) => {
+                for (i, field) in fields.iter().enumerate() {
+                    let field_v = self.push_inst(Instruction::GetElement {
+                        value: v.clone(),
+                        ty,
+                        tuple_offset: i as u64,
+                    });
+                    self.insert_clone_recursively(field_v, field.ty);
+                }
+            }
+            Type::UserSum { .. } => {
+                // For UserSum (variant types with recursive/boxed payload),
+                // insert a dynamic clone instruction that will traverse the value at runtime
+                // and clone any boxed references it contains
+                self.push_inst(Instruction::CloneUserSum {
+                    value: v.clone(),
+                    ty,
+                });
+            }
+            _ => {}
+        }
+    }
+
     fn add_bind_pattern(
         &mut self,
         pattern: &TypedPattern,
@@ -323,7 +425,7 @@ impl Context {
                     let gv = Arc::new(Value::Global(v.clone()));
                     if t.is_function() {
                         //globally allocated closures are immidiately closed, not to be disposed
-                        self.push_inst(Instruction::CloseUpValues(v.clone(), ty));
+                        self.insert_close_recursively(v.clone(), ty);
                     }
                     self.push_inst(Instruction::SetGlobal(gv.clone(), v.clone(), ty));
                     self.add_bind((*id, gv))
@@ -549,7 +651,7 @@ impl Context {
                 let ftype = numeric!();
                 let fntype = function!(vec![], ftype);
                 let getnow = Arc::new(Value::ExtFunction("_mimium_getnow".to_symbol(), fntype));
-                self.push_inst(Instruction::CallCls(getnow, vec![], ftype))
+                self.push_inst(Instruction::CallIndirect(getnow, vec![], ftype))
             }
             Literal::SampleRate => {
                 let ftype = numeric!();
@@ -558,7 +660,7 @@ impl Context {
                     "_mimium_getsamplerate".to_symbol(),
                     fntype,
                 ));
-                self.push_inst(Instruction::CallCls(samplerate, vec![], ftype))
+                self.push_inst(Instruction::CallIndirect(samplerate, vec![], ftype))
             }
             Literal::SelfLit | Literal::PlaceHolder => unreachable!(),
         }
@@ -580,9 +682,14 @@ impl Context {
         // Check if this is a constructor from a user-defined sum type
         if let Some(constructor_info) = self.typeenv.constructor_env.get(&name) {
             if constructor_info.payload_type.is_none() {
-                // For constructors without payload, just return the tag as an integer
+                // No-payload constructor: generate a TaggedUnionWrap with no value.
+                // This allocates a full-sized union on the register stack with the correct tag.
                 let tag = constructor_info.tag_index as u64;
-                return self.push_inst(Instruction::Integer(tag as i64));
+                return self.push_inst(Instruction::TaggedUnionWrap {
+                    tag,
+                    value: Arc::new(Value::None),
+                    union_type: constructor_info.sum_type,
+                });
             }
             // For constructors with payload, we return a special value that will be
             // handled by Apply to generate TaggedUnionWrap
@@ -597,7 +704,11 @@ impl Context {
             LookupRes::Local(v) => match v.as_ref() {
                 Value::Function(i) => {
                     let reg = self.push_inst(Instruction::Uinteger(*i as u64));
-                    self.push_inst(Instruction::Closure(reg))
+                    // TODO: Calculate actual closure size based on upvalues and state
+                    self.push_inst(Instruction::MakeClosure {
+                        fn_proto: reg,
+                        size: 64,
+                    })
                 }
                 _ => {
                     let ptr = self.eval_expr_as_address(e);
@@ -760,13 +871,22 @@ impl Context {
                 let res = match v.as_ref() {
                     Value::Function(idx) => {
                         let f = self.push_inst(Instruction::Uinteger(*idx as u64));
-                        self.push_inst(Instruction::Closure(f))
+                        // TODO: Calculate actual closure size
+                        self.push_inst(Instruction::MakeClosure {
+                            fn_proto: f,
+                            size: 64,
+                        })
                     }
                     _ => v.clone(),
                 };
-                if t.to_type().contains_function() {
-                    //higher-order function need to close immidiately
-                    self.push_inst(Instruction::CloseUpValues(res.clone(), t));
+                // Clone heap-allocated values (closures and boxed values) before passing to function
+                // This implements call-by-value semantics with reference counting
+                if t.to_type().contains_function() || t.to_type().contains_boxed() {
+                    self.insert_clone_recursively(res.clone(), t);
+                }
+                // Close heap-allocated values after cloning (for higher-order functions and boxed values)
+                if t.to_type().contains_function() || t.to_type().contains_boxed() {
+                    self.insert_close_recursively(res.clone(), t);
                 }
                 (res, t, s)
             })
@@ -789,7 +909,11 @@ impl Context {
         let e = match e.as_ref() {
             Value::Function(idx) => {
                 let cpos = self.push_inst(Instruction::Uinteger(*idx as u64));
-                self.push_inst(Instruction::Closure(cpos))
+                // TODO: Calculate actual closure size
+                self.push_inst(Instruction::MakeClosure {
+                    fn_proto: cpos,
+                    size: 64,
+                })
             }
             _ => e,
         };
@@ -953,7 +1077,17 @@ impl Context {
                 let v = self.eval_literal(lit, &span);
                 (v, ty, vec![])
             }
-            Expr::Var(_name) => (self.eval_rvar(e, ty), ty, vec![]),
+            Expr::Var(_name) => {
+                // When the type checker says a variable has type Boxed(T),
+                // the MIR bind_pattern has already unboxed it to type T.
+                // Use the inner type for the actual load.
+                let load_ty = if let Type::Boxed(inner) = ty.to_type() {
+                    inner
+                } else {
+                    ty
+                };
+                (self.eval_rvar(e, load_ty), load_ty, vec![])
+            }
             Expr::QualifiedVar(_path) => {
                 unreachable!("Qualified Var should be removed in the previous step.")
             }
@@ -1050,13 +1184,32 @@ impl Context {
                 let (f_val, ft, app_state) = self.eval_expr(*f);
 
                 // Check if this is a constructor call with payload
-                if let Value::Constructor(_name, tag_index, sum_type) = f_val.as_ref() {
-                    // Evaluate the payload argument
+                if let Value::Constructor(name, tag_index, sum_type) = f_val.as_ref() {
+                    // Evaluate the payload arguments
                     let (arg_vals, arg_states) = self.eval_args(args);
-                    let (payload_val, _payload_ty) = arg_vals
-                        .first()
-                        .expect("Constructor with payload must have an argument")
-                        .clone();
+
+                    // Build the payload: single arg → use directly, multiple args → construct a tuple
+                    let (payload_val, payload_ty) = if arg_vals.len() == 1 {
+                        arg_vals.into_iter().next().unwrap()
+                    } else {
+                        // Multiple arguments: construct a tuple payload
+                        let elem_tys: Vec<TypeNodeId> = arg_vals.iter().map(|(_, t)| *t).collect();
+                        let tuple_ty = Type::Tuple(elem_tys).into_id();
+                        let tuple_ptr = self.push_inst(Instruction::Alloc(tuple_ty));
+                        for (i, (elem_val, elem_ty)) in arg_vals.iter().enumerate() {
+                            let dest = self.push_inst(Instruction::GetElement {
+                                value: tuple_ptr.clone(),
+                                ty: tuple_ty,
+                                tuple_offset: i as u64,
+                            });
+                            self.push_inst(Instruction::Store(dest, elem_val.clone(), *elem_ty));
+                        }
+                        let loaded = self.push_inst(Instruction::Load(tuple_ptr, tuple_ty));
+                        (loaded, tuple_ty)
+                    };
+
+                    // Box any Boxed fields in the payload before wrapping
+                    let payload_val = self.box_fields_if_needed(payload_val, payload_ty, *name);
 
                     // Generate TaggedUnionWrap instruction
                     let result = self.push_inst(Instruction::TaggedUnionWrap {
@@ -1152,7 +1305,7 @@ impl Context {
                             self.emit_fncall(*idx as u64, atvvec.clone(), monomorphized_rt)
                         }
                         Value::Register(_) => (
-                            self.push_inst(Instruction::CallCls(
+                            self.push_inst(Instruction::CallIndirect(
                                 v.clone(),
                                 atvvec.clone(),
                                 monomorphized_rt,
@@ -1167,7 +1320,7 @@ impl Context {
                         //closure
                         //do not increment state size for closure
                         (
-                            self.push_inst(Instruction::CallCls(
+                            self.push_inst(Instruction::CallIndirect(
                                 f_to_call.clone(),
                                 atvvec.clone(),
                                 monomorphized_rt,
@@ -1262,14 +1415,19 @@ impl Context {
                             }
                             (Value::Function(i), _) => {
                                 let idx = ctx.push_inst(Instruction::Uinteger(*i as u64));
-                                let cls = ctx.push_inst(Instruction::Closure(idx));
-                                let _ = ctx.push_inst(Instruction::CloseUpValues(cls.clone(), rt));
+                                // TODO: Calculate actual closure size
+                                let cls = ctx.push_inst(Instruction::MakeClosure {
+                                    fn_proto: idx,
+                                    size: 64,
+                                });
+                                ctx.insert_close_recursively(cls.clone(), rt);
+                                ctx.insert_clone_recursively(cls.clone(), rt);
                                 let _ = ctx.push_inst(Instruction::Return(cls, rt));
                             }
                             (_, _) => {
-                                if rt.to_type().contains_function() {
-                                    let _ =
-                                        ctx.push_inst(Instruction::CloseUpValues(res.clone(), rt));
+                                if rt.to_type().contains_function() || rt.to_type().contains_boxed() {
+                                    ctx.insert_close_recursively(res.clone(), rt);
+                                    ctx.insert_clone_recursively(res.clone(), rt);
                                     let _ = ctx.push_inst(Instruction::Return(res.clone(), rt));
                                 } else {
                                     let _ = ctx.push_inst(Instruction::Return(res.clone(), rt));
@@ -1286,7 +1444,11 @@ impl Context {
                     f
                 } else {
                     let idxcell = self.push_inst(Instruction::Uinteger(c_idx.0));
-                    self.push_inst(Instruction::Closure(idxcell))
+                    // TODO: Calculate actual closure size
+                    self.push_inst(Instruction::MakeClosure {
+                        fn_proto: idxcell,
+                        size: 64,
+                    })
                 };
                 (res, ty, vec![])
             }
@@ -1325,22 +1487,35 @@ impl Context {
                 let is_global = self.get_ctxdata().func_i.0 == 0;
                 let is_function = matches!(bodyv.as_ref(), Value::Function(_));
 
-                if !is_global && !is_function {
+                let ptr = if !is_global && !is_function {
                     // ローカル変数の場合、常にAllocaとStoreを使う
                     let ptr = self.push_inst(Instruction::Alloc(t));
                     self.push_inst(Instruction::Store(ptr.clone(), bodyv, t));
-                    self.add_bind_pattern(pat, ptr, t, false);
+                    self.add_bind_pattern(pat, ptr.clone(), t, false);
+                    Some((ptr, t))
                 } else {
                     // グローバル変数や関数はこれまで通りの扱い
                     self.add_bind_pattern(pat, bodyv, t, is_global);
-                }
+                    None
+                };
 
-                if let Some(then_e) = then {
-                    let (r, t, s) = self.eval_expr(*then_e);
-                    (r, t, [states, s].concat())
+                let result = if let Some(then_e) = then {
+                    let (r, t_ret, s) = self.eval_expr(*then_e);
+                    (r, t_ret, [states, s].concat())
                 } else {
                     (Arc::new(Value::None), unit!(), states)
+                };
+
+                // ローカル変数がスコープから外れるときに解放
+                if let Some((ptr, ty)) = ptr {
+                    if ty.to_type().contains_boxed() || ty.to_type().contains_function() {
+                        // Load the value and release it
+                        let value = self.push_inst(Instruction::Load(ptr, ty));
+                        self.insert_close_recursively(value, ty);
+                    }
                 }
+
+                result
             }
             Expr::LetRec(id, body, then) => {
                 let is_global = self.get_ctxdata().func_i.0 == 0;
@@ -1638,6 +1813,95 @@ impl Context {
         }
     }
 
+    /// Auto-box fields in a constructor payload that need Boxed wrapping.
+    ///
+    /// When a constructor's registered payload type contains Boxed fields (from
+    /// `type rec` declarations), the actual argument values are plain (non-heap)
+    /// values. This function inserts BoxAlloc instructions to heap-allocate them.
+    ///
+    /// For a single-field payload that is directly Boxed, wraps it directly.
+    /// For a tuple payload, reconstructs the tuple with any Boxed fields wrapped.
+    fn box_fields_if_needed(
+        &mut self,
+        payload_val: VPtr,
+        actual_ty: TypeNodeId,
+        constructor_name: Symbol,
+    ) -> VPtr {
+        use crate::types::Type;
+
+        // Look up the constructor's registered payload type (which includes Boxed)
+        let expected_payload_ty = self
+            .typeenv
+            .constructor_env
+            .get(&constructor_name)
+            .and_then(|info| info.payload_type);
+
+        let Some(expected_ty) = expected_payload_ty else {
+            return payload_val;
+        };
+
+        match expected_ty.to_type() {
+            Type::Boxed(inner) => {
+                // Entire payload is Boxed — wrap it
+                self.push_inst(Instruction::BoxAlloc {
+                    value: payload_val,
+                    inner_type: inner,
+                })
+            }
+            Type::Tuple(expected_elems) => {
+                // Check if any element is Boxed; if so we need to rebuild the tuple
+                let actual_elems = match actual_ty.to_type() {
+                    Type::Tuple(elems) => elems,
+                    _ => return payload_val, // not a tuple, nothing to do
+                };
+
+                let has_boxed = expected_elems
+                    .iter()
+                    .any(|e| matches!(e.to_type(), Type::Boxed(_)));
+
+                if !has_boxed {
+                    return payload_val;
+                }
+
+                // Rebuild the tuple, boxing any Boxed-typed fields
+                let mut new_elems: Vec<(VPtr, TypeNodeId)> = Vec::new();
+                for (i, (expected_elem_ty, actual_elem_ty)) in
+                    expected_elems.iter().zip(actual_elems.iter()).enumerate()
+                {
+                    let elem_val = self.push_inst(Instruction::GetElement {
+                        value: payload_val.clone(),
+                        ty: actual_ty,
+                        tuple_offset: i as u64,
+                    });
+
+                    let elem_val = if let Type::Boxed(inner) = expected_elem_ty.to_type() {
+                        self.push_inst(Instruction::BoxAlloc {
+                            value: elem_val,
+                            inner_type: inner,
+                        })
+                    } else {
+                        elem_val
+                    };
+
+                    new_elems.push((elem_val, *expected_elem_ty));
+                }
+
+                // Build a new tuple from the (possibly boxed) elements
+                let tuple_ptr = self.push_inst(Instruction::Alloc(expected_ty));
+                for (i, (elem_val, elem_ty)) in new_elems.iter().enumerate() {
+                    let dest = self.push_inst(Instruction::GetElement {
+                        value: tuple_ptr.clone(),
+                        ty: expected_ty,
+                        tuple_offset: i as u64,
+                    });
+                    self.push_inst(Instruction::Store(dest, elem_val.clone(), *elem_ty));
+                }
+                self.push_inst(Instruction::Load(tuple_ptr, expected_ty))
+            }
+            _ => payload_val,
+        }
+    }
+
     /// Bind variables from a match pattern to extracted values
     /// Handles variable bindings, tuple patterns, and nested patterns
     fn bind_pattern(&mut self, pattern: &crate::ast::MatchPattern, value: VPtr, ty: TypeNodeId) {
@@ -1672,7 +1936,17 @@ impl Context {
                             ty,
                             tuple_offset: i as u64,
                         });
-                        self.bind_pattern(pat, elem_val, *elem_ty);
+                        // If the element type is Boxed, unbox it before binding
+                        let (elem_val, bind_ty) = if let Type::Boxed(inner) = elem_ty.to_type() {
+                            let unboxed = self.push_inst(Instruction::BoxLoad {
+                                ptr: elem_val,
+                                inner_type: inner,
+                            });
+                            (unboxed, inner)
+                        } else {
+                            (elem_val, *elem_ty)
+                        };
+                        self.bind_pattern(pat, elem_val, bind_ty);
                     }
                 }
             }

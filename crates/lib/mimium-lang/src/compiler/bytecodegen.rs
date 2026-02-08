@@ -132,46 +132,9 @@ fn gen_raw_float(n: &f64) -> vm::RawVal {
 impl ByteCodeGenerator {
     /// Calculate byte size of the value for type T based on 1 word size (=currently 64bit).
     /// The base word size may change depending on the backend in the future.
-    /// Currently, the string type is a immutable Symbol, so the word size is 1.
-    /// In the future, string may be represented as a fat pointer, pair of pointer and length.
+    /// Calculate word size for a type. Now delegates to TypeNodeId::word_size().
     pub(crate) fn word_size_for_type(ty: TypeNodeId) -> TypeSize {
-        match ty.to_type() {
-            Type::Primitive(PType::Unit) => 0,
-            Type::Primitive(PType::String) => 1,
-            Type::Primitive(_) => 1,
-            Type::Array(_) => 1, //array is represented as a pointer to the special storage
-            Type::Tuple(types) => types.iter().map(|t| Self::word_size_for_type(*t)).sum(),
-            Type::Record(types) => types
-                .iter()
-                .map(|RecordTypeField { ty, .. }| Self::word_size_for_type(*ty))
-                .sum(),
-            Type::Function { arg: _, ret: _ } => 1,
-            Type::Ref(_) => 1,
-            Type::Code(_) => todo!(),
-            Type::Union(variants) => {
-                // Tagged union: 1 word for tag + max size of any variant
-                let max_variant_size = variants
-                    .iter()
-                    .map(|v| Self::word_size_for_type(*v))
-                    .max()
-                    .unwrap_or(0);
-                1 + max_variant_size
-            }
-            Type::UserSum { variants, .. } => {
-                // Tagged UserSum: 1 word for tag + max size of any variant payload
-                let max_variant_size = variants
-                    .iter()
-                    .filter_map(|(_, payload_ty)| *payload_ty)
-                    .map(Self::word_size_for_type)
-                    .max()
-                    .unwrap_or(0);
-                1 + max_variant_size
-            }
-            _ => {
-                //todo: this may contain intermediate types
-                1
-            }
-        }
+        ty.word_size()
     }
 
     fn get_binop(&mut self, v1: Arc<mir::Value>, v2: Arc<mir::Value>) -> (Reg, Reg) {
@@ -498,6 +461,55 @@ impl ByteCodeGenerator {
                 let dst = self.get_destination(dst, 1);
                 Some(VmInstruction::Closure(dst, idx))
             }
+            // New heap-based instructions (Phase 3)
+            mir::Instruction::MakeClosure { fn_proto, size } => {
+                let fn_idx = self.find(&fn_proto);
+                let dst = self.get_destination(dst, 1);
+                Some(VmInstruction::MakeHeapClosure(
+                    dst,
+                    fn_idx,
+                    size as TypeSize,
+                ))
+            }
+            mir::Instruction::CloseHeapClosure(src) => {
+                // Close upvalues of the heap-based closure
+                // This is called when a closure escapes its defining scope
+                let base = self.vregister.find_keep(&src).unwrap();
+                Some(VmInstruction::CloseHeapClosure(base))
+            }
+            mir::Instruction::CloneHeap(src) => {
+                // Increment reference count for call-by-value cloning
+                let base = self.vregister.find_keep(&src).unwrap();
+                Some(VmInstruction::CloneHeap(base))
+            }
+            mir::Instruction::CallIndirect(f, args, r_ty) => {
+                let rsize = Self::word_size_for_type(r_ty);
+                match f.as_ref() {
+                    mir::Value::Register(_address) => {
+                        let bytecodes_dst =
+                            bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut());
+
+                        let (fadd, argsize) = self.prepare_function(bytecodes_dst, &f, &args);
+                        let s = self.find(&f);
+                        let d = self.get_destination(dst.clone(), rsize);
+                        bytecodes_dst.push(VmInstruction::CallIndirect(fadd, argsize, rsize));
+                        match rsize {
+                            0 => None,
+                            1 => Some(VmInstruction::Move(d, s)),
+                            n => Some(VmInstruction::MoveRange(d, s, n)),
+                        }
+                    }
+                    mir::Value::Function(_idx) => {
+                        unreachable!();
+                    }
+                    mir::Value::ExtFunction(label, _ty) => {
+                        let (dst, argsize, nret) =
+                            self.prepare_extfun(funcproto, bytecodes_dst, dst, &args, *label, r_ty);
+                        Some(VmInstruction::CallExtFun(dst, argsize, nret))
+                    }
+                    _ => unreachable!(),
+                }
+            }
             mir::Instruction::CloseUpValues(src, ty) => {
                 // src might contain multiple upvalues (e.g. tuple)
                 let flattened = ty.flatten();
@@ -685,14 +697,19 @@ impl ByteCodeGenerator {
                     .unwrap_or_else(|| funcproto.bytecodes.as_mut())
                     .push(VmInstruction::MoveConst(dst_reg, tag_pos as ConstPos));
 
-                // Store value in subsequent register(s)
-                let val_reg = self.find(&value);
-                let val_dst = dst_reg + 1;
-
-                if value_size == 1 {
-                    Some(VmInstruction::Move(val_dst, val_reg))
+                // For no-payload constructors (Value::None), skip the value copy
+                if matches!(value.as_ref(), mir::Value::None) || value_size == 0 {
+                    None
                 } else {
-                    Some(VmInstruction::MoveRange(val_dst, val_reg, value_size))
+                    // Store value in subsequent register(s)
+                    let val_reg = self.find(&value);
+                    let val_dst = dst_reg + 1;
+
+                    if value_size == 1 {
+                        Some(VmInstruction::Move(val_dst, val_reg))
+                    } else {
+                        Some(VmInstruction::MoveRange(val_dst, val_reg, value_size))
+                    }
                 }
             }
             mir::Instruction::TaggedUnionGetTag(union_val) => {
@@ -717,6 +734,50 @@ impl ByteCodeGenerator {
                 } else {
                     Some(VmInstruction::MoveRange(dst_reg, value_reg, value_size))
                 }
+            }
+            mir::Instruction::BoxAlloc { value, inner_type } => {
+                let inner_size = Self::word_size_for_type(inner_type);
+                let src_reg = self.find(&value);
+                let dst_reg = self.get_destination(dst, 1); // HeapIdx is 1 word
+                Some(VmInstruction::BoxAlloc(dst_reg, src_reg, inner_size))
+            }
+            mir::Instruction::BoxLoad { ptr, inner_type } => {
+                let inner_size = Self::word_size_for_type(inner_type);
+                let src_reg = self.find(&ptr);
+                let dst_reg = self.get_destination(dst, inner_size);
+                Some(VmInstruction::BoxLoad(dst_reg, src_reg, inner_size))
+            }
+            mir::Instruction::BoxClone { ptr } => {
+                let src_reg = self.vregister.find_keep(&ptr).unwrap();
+                Some(VmInstruction::BoxClone(src_reg))
+            }
+            mir::Instruction::BoxRelease { ptr, .. } => {
+                let src_reg = self.vregister.find_keep(&ptr).unwrap();
+                Some(VmInstruction::BoxRelease(src_reg))
+            }
+            mir::Instruction::BoxStore { ptr, value, inner_type } => {
+                let inner_size = Self::word_size_for_type(inner_type);
+                let ptr_reg = self.vregister.find_keep(&ptr).unwrap();
+                let val_reg = self.find(&value);
+                Some(VmInstruction::BoxStore(ptr_reg, val_reg, inner_size))
+            }
+            mir::Instruction::CloneUserSum { value, ty } => {
+                // Clone all boxed references within a UserSum value
+                let value_reg = self.vregister.find_keep(&value).unwrap();
+                let size = Self::word_size_for_type(ty);
+                // Register type in type table and get index
+                let type_idx = self.program.add_type_to_table(ty)
+                    .expect("Type table overflow - too many UserSum types");
+                Some(VmInstruction::CloneUserSum(value_reg, size, type_idx))
+            }
+            mir::Instruction::ReleaseUserSum { value, ty } => {
+                // Release all boxed references within a UserSum value
+                let value_reg = self.vregister.find_keep(&value).unwrap();
+                let size = Self::word_size_for_type(ty);
+                // Register type in type table and get index
+                let type_idx = self.program.add_type_to_table(ty)
+                    .expect("Type table overflow - too many UserSum types");
+                Some(VmInstruction::ReleaseUserSum(value_reg, size, type_idx))
             }
             mir::Instruction::Switch {
                 scrutinee,

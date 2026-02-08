@@ -101,6 +101,10 @@ mod types {
             }
             Type::TypeScheme(_) => unreachable!(),
             Type::TypeAlias(name) => allocator.text(name.to_string()),
+            Type::Boxed(inner) => allocator
+                .text("boxed(")
+                .append(types::pretty(inner, allocator))
+                .append(allocator.text(")")),
             Type::Intermediate(_) => unreachable!(),
             Type::Ref(_) => unreachable!(),
             Type::Failure => unreachable!(),
@@ -605,11 +609,17 @@ pub mod program {
                 visibility,
                 name,
                 variants,
+                is_recursive,
             } => {
                 let vis_doc = if visibility == mimium_lang::ast::program::Visibility::Public {
                     allocator.text("pub ")
                 } else {
                     allocator.nil()
+                };
+                let rec_doc = if is_recursive {
+                    allocator.text("type rec ")
+                } else {
+                    allocator.text("type ")
                 };
                 let variants_str = variants
                     .iter()
@@ -623,7 +633,7 @@ pub mod program {
                     .collect::<Vec<_>>()
                     .join(" | ");
                 vis_doc
-                    .append(allocator.text("type "))
+                    .append(rec_doc)
                     .append(allocator.text(name.to_string()))
                     .append(allocator.text(" = "))
                     .append(allocator.text(variants_str))

@@ -4,7 +4,7 @@ use mimium_lang::{
     plugin::SystemPluginAudioWorker,
     runtime::{
         Time,
-        vm::{self, ClosureIdx, Machine, ReturnCode},
+        vm::{self, ClosureIdx, Machine, ReturnCode, heap},
     },
 };
 
@@ -72,7 +72,7 @@ impl SystemPluginAudioWorker for SchedulerAudioWorker {
         while let Some(task_cls) = self.pop_task(time) {
             let closure = machine.get_closure(task_cls);
             machine.execute(closure.fn_proto_pos, Some(task_cls));
-            vm::drop_closure(&mut machine.closures, task_cls);
+            machine.drop_closure(task_cls);
         }
 
         0
@@ -101,7 +101,9 @@ impl SimpleScheduler {
     }
     pub fn schedule_at(&mut self, machine: &mut Machine) -> ReturnCode {
         let when = Machine::get_as::<f64>(machine.get_stack(0)) as u64;
-        let closure_idx = Machine::get_as::<ClosureIdx>(machine.get_stack(1));
+        // The stack now holds a HeapIdx (heap-allocated closure), not a raw ClosureIdx
+        let heap_idx = Machine::get_as::<heap::HeapIdx>(machine.get_stack(1));
+        let closure_idx = machine.get_closure_idx_from_heap(heap_idx);
         self.schedule_at_inner(Time(when), closure_idx);
         0
     }

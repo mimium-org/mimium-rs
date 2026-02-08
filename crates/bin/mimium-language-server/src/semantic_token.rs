@@ -59,6 +59,7 @@ fn token_kind_to_semantic_index(kind: TokenKind) -> Option<usize> {
         | TokenKind::Mod
         | TokenKind::Use
         | TokenKind::Pub
+        | TokenKind::Rec
         | TokenKind::Main => get_token_id(&SemanticTokenType::KEYWORD),
         TokenKind::IdentFunction => get_token_id(&SemanticTokenType::FUNCTION),
         TokenKind::IdentParameter => get_token_id(&SemanticTokenType::PARAMETER),

@@ -106,6 +106,10 @@ pub enum Type {
         name: Symbol,
         variants: Vec<(Symbol, Option<TypeNodeId>)>,
     },
+    /// Heap-allocated boxed type for recursive data structures.
+    /// Introduced by `type rec` declarations to wrap self-references.
+    /// At runtime, represented as a single HeapIdx word.
+    Boxed(TypeNodeId),
     Intermediate(Arc<RwLock<TypeVar>>),
     TypeScheme(TypeSchemeId),
     /// Type alias or type name reference that needs to be resolved during type inference
@@ -144,6 +148,7 @@ impl PartialEq for Type {
                     variants: v2,
                 },
             ) => n1 == n2 && v1 == v2,
+            (Type::Boxed(a), Type::Boxed(b)) => a == b,
             (Type::TypeScheme(a), Type::TypeScheme(b)) => a == b,
             (Type::TypeAlias(a), Type::TypeAlias(b)) => a == b,
             (Type::Any, Type::Any) => true,
@@ -168,6 +173,27 @@ impl Type {
                 .iter()
                 .any(|RecordTypeField { ty, .. }| ty.to_type().contains_function()),
             Type::Union(t) => t.iter().any(|t| t.to_type().contains_function()),
+            Type::Boxed(t) => t.to_type().contains_function(),
+            _ => false,
+        }
+    }
+    // check if contains any boxed type in its member.
+    // Boxed types need reference counting (clone/release)
+    pub fn contains_boxed(&self) -> bool {
+        match self {
+            Type::Boxed(_) => true,
+            Type::Tuple(t) => t.iter().any(|t| t.to_type().contains_boxed()),
+            Type::Record(t) => t
+                .iter()
+                .any(|RecordTypeField { ty, .. }| ty.to_type().contains_boxed()),
+            Type::Union(t) => t.iter().any(|t| t.to_type().contains_boxed()),
+            Type::UserSum { .. } => {
+                // UserSum types defined with 'type rec' always contain Boxed references
+                // for recursive self-references. Since we can't distinguish recursive
+                // from non-recursive UserSum at this level, we conservatively return true.
+                // This ensures proper reference counting for all variant types.
+                true
+            }
             _ => false,
         }
     }
@@ -182,6 +208,7 @@ impl Type {
                 .iter()
                 .any(|RecordTypeField { ty, .. }| ty.to_type().contains_code()),
             Type::Union(t) => t.iter().any(|t| t.to_type().contains_code()),
+            Type::Boxed(t) => t.to_type().contains_code(),
             _ => false,
         }
     }
@@ -200,6 +227,7 @@ impl Type {
             Type::Ref(t) => t.to_type().contains_type_scheme(),
             Type::Code(t) => t.to_type().contains_type_scheme(),
             Type::Union(t) => t.iter().any(|t| t.to_type().contains_type_scheme()),
+            Type::Boxed(t) => t.to_type().contains_type_scheme(),
             _ => false,
         }
     }
@@ -295,6 +323,7 @@ impl Type {
                 )
             }
             Type::Ref(x) => format!("&{}", x.to_type().to_string_for_error()),
+            Type::Boxed(x) => format!("boxed({})", x.to_type().to_string_for_error()),
             Type::Code(c) => format!("`({})", c.to_type().to_string_for_error()),
             Type::Intermediate(_id) => "?".to_string(),
             // if no special treatment is needed, forward to the Display implementation
@@ -342,6 +371,7 @@ impl Type {
                 )
             }
             Type::Ref(x) => format!("ref_{}", x.to_type().to_mangled_string()),
+            Type::Boxed(x) => format!("boxed_{}", x.to_type().to_mangled_string()),
             Type::Code(c) => format!("code_{}", c.to_type().to_mangled_string()),
             Type::Intermediate(tvar) => {
                 let tv = tvar.read().unwrap();
@@ -421,6 +451,7 @@ impl TypeNodeId {
                 ret: apply_scalar(ret, &mut closure),
             },
             Type::Ref(x) => Type::Ref(apply_scalar(x, &mut closure)),
+            Type::Boxed(x) => Type::Boxed(apply_scalar(x, &mut closure)),
             Type::Code(c) => Type::Code(apply_scalar(c, &mut closure)),
             Type::Intermediate(id) => Type::Intermediate(id.clone()),
             _ => self.to_type(),
@@ -434,6 +465,52 @@ impl TypeNodeId {
         F: Fn(Self, Self) -> R,
     {
         todo!()
+    }
+
+    /// Calculate the size in words (u64) required to store a value of this type.
+    /// This is used for stack allocation and register management.
+    /// 
+    /// - Primitives (except Unit): 1 word
+    /// - Unit: 0 words
+    /// - Arrays/Functions/Refs/Boxed: 1 word (pointer)
+    /// - Tuples/Records: sum of element sizes
+    /// - Union/UserSum: 1 word (tag) + max variant size
+    pub fn word_size(&self) -> TypeSize {
+        match self.to_type() {
+            Type::Primitive(PType::Unit) => 0,
+            Type::Primitive(PType::String) => 1,
+            Type::Primitive(_) => 1,
+            Type::Array(_) => 1, // pointer to array storage
+            Type::Tuple(types) => types.iter().map(|t| t.word_size()).sum(),
+            Type::Record(types) => types
+                .iter()
+                .map(|RecordTypeField { ty, .. }| ty.word_size())
+                .sum(),
+            Type::Function { .. } => 1,
+            Type::Ref(_) => 1,
+            Type::Boxed(_) => 1, // heap-allocated: single HeapIdx word
+            Type::Code(_) => 1,
+            Type::Union(variants) => {
+                // Tagged union: 1 word for tag + max size of any variant
+                let max_variant_size = variants
+                    .iter()
+                    .map(|v| v.word_size())
+                    .max()
+                    .unwrap_or(0);
+                1 + max_variant_size
+            }
+            Type::UserSum { variants, .. } => {
+                // Tagged UserSum: 1 word for tag + max size of any variant payload
+                let max_variant_size = variants
+                    .iter()
+                    .filter_map(|(_, payload_ty)| *payload_ty)
+                    .map(|t| t.word_size())
+                    .max()
+                    .unwrap_or(0);
+                1 + max_variant_size
+            }
+            _ => 1, // fallback for intermediate types
+        }
     }
 }
 
@@ -484,6 +561,7 @@ impl fmt::Display for Type {
                 write!(f, "({})->{}", arg.to_type(), ret.to_type())
             }
             Type::Ref(x) => write!(f, "&{}", x.to_type()),
+            Type::Boxed(x) => write!(f, "boxed({})", x.to_type()),
 
             Type::Code(c) => write!(f, "<{}>", c.to_type()),
             Type::Union(v) => {

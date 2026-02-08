@@ -118,6 +118,32 @@ impl std::fmt::Display for Instruction {
             Instruction::CloseUpValues(cls, ty) => {
                 write!(f, "close {} {}", *cls, ty.to_type())
             }
+            // New heap-based instructions (Phase 2)
+            Instruction::MakeClosure { fn_proto, size } => {
+                if let Value::Function(idx) = fn_proto.as_ref() {
+                    write!(f, "make_closure fn:{idx} size:{size}")
+                } else {
+                    write!(f, "make_closure fn:{} size:{size}", *fn_proto)
+                }
+            }
+            Instruction::CloseHeapClosure(addr) => {
+                write!(f, "close_heap_closure {}", *addr)
+            }
+            Instruction::CloneHeap(addr) => {
+                write!(f, "clone_heap {}", *addr)
+            }
+            Instruction::CallIndirect(addr, args, rty) => {
+                write!(
+                    f,
+                    "call_indirect {} [{}] ->{}",
+                    *addr,
+                    args.iter()
+                        .map(|(a, _t)| a.to_string())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    rty.to_type()
+                )
+            }
             Instruction::GetUpValue(idx, ty) => write!(f, "getupval {idx} {}", ty.to_type()),
             Instruction::SetUpValue(dst, src, ty) => {
                 write!(f, "setupval {dst} {} {}", src, ty.to_type())
@@ -180,6 +206,35 @@ impl std::fmt::Display for Instruction {
             }
             Instruction::TaggedUnionGetValue(v, ty) => {
                 write!(f, "union_get_value {v} type:{}", ty.to_type())
+            }
+            Instruction::BoxAlloc { value, inner_type } => {
+                write!(f, "box_alloc {value} type:{}", inner_type.to_type())
+            }
+            Instruction::BoxLoad { ptr, inner_type } => {
+                write!(f, "box_load {ptr} type:{}", inner_type.to_type())
+            }
+            Instruction::BoxClone { ptr } => {
+                write!(f, "box_clone {ptr}")
+            }
+            Instruction::BoxRelease { ptr, inner_type } => {
+                write!(f, "box_release {ptr} type:{}", inner_type.to_type())
+            }
+            Instruction::BoxStore {
+                ptr,
+                value,
+                inner_type,
+            } => {
+                write!(
+                    f,
+                    "box_store {ptr} {value} type:{}",
+                    inner_type.to_type()
+                )
+            }
+            Instruction::CloneUserSum { value, ty } => {
+                write!(f, "clone_usersum {} type:{}", *value, ty.to_type())
+            }
+            Instruction::ReleaseUserSum { value, ty } => {
+                write!(f, "release_usersum {} type:{}", *value, ty.to_type())
             }
             Instruction::Return(a, rty) => write!(f, "ret {} {}", *a, rty.to_type()),
             Instruction::ReturnFeed(v, rty) => write!(f, "retfeed {} {}", *v, rty.to_type()),

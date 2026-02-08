@@ -341,10 +341,13 @@ impl StageInterpreter {
                         .into_iter()
                         .map(|arg| self.eval_expr(ctx, arg))
                         .collect();
-                    if args.len() != 1 {
-                        panic!("Constructor expects exactly 1 argument");
-                    }
-                    return Value::TaggedUnion(tag, Box::new(args[0].clone()));
+                    // If multiple arguments, treat as tuple construction
+                    let payload = if args.len() == 1 {
+                        args[0].clone()
+                    } else {
+                        Value::Tuple(args)
+                    };
+                    return Value::TaggedUnion(tag, Box::new(payload));
                 }
 
                 // Prepare arguments for regular function application

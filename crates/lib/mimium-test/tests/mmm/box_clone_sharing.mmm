@@ -1,0 +1,26 @@
+// Test case: BoxClone - sharing the same boxed value across multiple function calls
+// The same List should be passed to multiple functions (call-by-value cloning)
+type rec List = Nil | Cons(float, List)
+
+fn sum(list: List) -> float {
+    match list {
+        Nil => 0.0,
+        Cons(head, tail) => head + sum(tail)
+    }
+}
+
+fn length(list: List) -> float {
+    match list {
+        Nil => 0.0,
+        Cons(_, tail) => 1.0 + length(tail)
+    }
+}
+
+fn dsp() -> float {
+    let mylist = Cons(1.0, Cons(2.0, Cons(3.0, Nil)))
+    // mylist is cloned when passed to sum and length
+    // BoxClone should increment refcount for each call
+    let s = sum(mylist)      // s = 6.0
+    let l = length(mylist)   // l = 3.0
+    s + l  // 6.0 + 3.0 = 9.0
+}
