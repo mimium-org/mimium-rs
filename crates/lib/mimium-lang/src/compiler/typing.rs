@@ -544,10 +544,6 @@ pub struct InferContext {
     pub errors: Vec<Error>,
 }
 struct TypeCycle(pub Vec<Symbol>);
-struct CycleDetectResult {
-    pub cycle: Option<TypeCycle>,
-    pub visited: Vec<Symbol>,
-}
 
 impl InferContext {
     pub fn new(
@@ -846,54 +842,29 @@ impl InferContext {
     /// Detect a cycle starting from a given type alias name
     /// Returns Some(cycle) if a cycle is found, None otherwise
     fn detect_type_alias_cycle(start: Symbol, type_aliases: &TypeAliasMap) -> Option<Vec<Symbol>> {
-        Self::detect_cycle_helper(start, vec![], vec![], type_aliases)
-            .cycle
-            .map(|t| t.0)
+        Self::detect_cycle_helper(start, vec![], type_aliases).map(|t| t.0)
     }
 
-    /// Helper function for cycle detection with mutable state
+    /// Helper function for cycle detection
     fn detect_cycle_helper(
         current: Symbol,
-        visited: Vec<Symbol>,
         path: Vec<Symbol>,
         type_aliases: &TypeAliasMap,
-    ) -> CycleDetectResult {
+    ) -> Option<TypeCycle> {
         // If we've seen this type before in the current path, we have a cycle
         if let Some(cycle_start) = path.iter().position(|&s| s == current) {
-            return CycleDetectResult {
-                cycle: Some(TypeCycle(path[cycle_start..].to_vec())),
-                visited,
-            };
-        }
-
-        // If we've already fully processed this node, skip it
-        if visited.binary_search(&current).is_ok() {
-            return CycleDetectResult {
-                cycle: None,
-                visited,
-            };
+            return Some(TypeCycle(path[cycle_start..].to_vec()));
         }
 
         let new_path = [path, vec![current]].concat();
 
-        let result = type_aliases.get(&current).and_then(|target_type| {
+        type_aliases.get(&current).and_then(|target_type| {
             Self::find_type_aliases_in_type(*target_type)
                 .into_iter()
                 .find_map(|ref_alias| {
-                    let res = Self::detect_cycle_helper(
-                        ref_alias,
-                        visited.clone(),
-                        new_path.clone(),
-                        type_aliases,
-                    );
-                    if res.cycle.is_some() { Some(res) } else { None }
+                    Self::detect_cycle_helper(ref_alias, new_path.clone(), type_aliases)
                 })
-        });
-
-        CycleDetectResult {
-            cycle: result.and_then(|r| r.cycle),
-            visited: { [visited, vec![current]].concat() },
-        }
+        })
     }
 
     /// Find all type alias names referenced in a type
