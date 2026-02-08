@@ -224,7 +224,7 @@ impl ReportableError for Error {
                     .collect::<Vec<_>>()
                     .join(" -> ");
                 format!(
-                    "Recursive type alias '{type_name}' detected. Cycle: {cycle_str} -> {type_name}"
+                    "Recursive type alias '{type_name}' detected. Cycle: {cycle_str} -> {type_name}. Use 'type rec' to declare recursive types."
                 )
             }
         }
@@ -465,7 +465,7 @@ impl ReportableError for Error {
                     .join(" -> ");
                 vec![(
                     location.clone(),
-                    format!("Type alias '{type_name}' creates a cycle: {cycle_str} -> {type_name}"),
+                    format!("Type alias '{type_name}' creates a cycle: {cycle_str} -> {type_name}. Consider using 'type rec' instead of 'type alias'."),
                 )]
             }
         }
