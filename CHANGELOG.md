@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## v3.2.0
+
+3.2.0 contains many new language features.
+
+## Added Features
+
+- **Abstract Data Type** with variant and type alias declaration syntax is introduced. `match` expression to decompose variants with pattern matching is also introduced. Recursive data structure like List and Tree is also supported.(#183, #184)
+- **Module Semantics** is introduces. This feature is very based on it of Rust. Users can export/import namespace of functions and types.(#180)
+
+Those change also contains some restructuring in VM deisgn and implementations, specifically for garbage collection.
+
+## Improved Features
+
+- Semantic highlighting in the language server is now fully functional by the refactoring of parser component. Code formatting is also supported in language server. Formatter can treat code without removing code trivias such as comments(though it is unstable in some situations)(#179,#181)
+
+
 ## v3.1.2
 
 ### Fixed bug
