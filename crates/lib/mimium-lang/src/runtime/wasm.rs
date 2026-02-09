@@ -8,7 +8,7 @@ pub mod engine;
 use crate::runtime::primitives::Word;
 use crate::runtime::vm::heap::{self, HeapStorage};
 use std::collections::HashMap;
-use wasmtime::{Caller, Engine, Linker, Module, Store};
+use wasmtime::{Caller, Config, Engine, Linker, Module, OptLevel, Store};
 
 /// WASM runtime state
 pub struct WasmRuntime {
@@ -48,9 +48,23 @@ impl Default for RuntimeState {
 }
 
 impl WasmRuntime {
-    /// Create a new WASM runtime
+    /// Create a new WASM runtime with JIT compilation
     pub fn new() -> Result<Self, String> {
-        let engine = Engine::default();
+        // Configure Wasmtime with JIT compiler and optimizations
+        let mut config = Config::new();
+        
+        // Enable Cranelift JIT compiler with optimization level Speed
+        config.cranelift_opt_level(OptLevel::Speed);
+        
+        // Enable parallel compilation for faster module loading
+        config.parallel_compilation(true);
+        
+        // Enable WASM features that may improve performance
+        config.wasm_simd(true); // SIMD operations
+        config.wasm_bulk_memory(true); // Bulk memory operations
+        
+        let engine = Engine::new(&config)
+            .map_err(|e| format!("Failed to create WASM engine: {e}"))?;
         let mut linker = Linker::new(&engine);
 
         // Register all runtime primitive host functions

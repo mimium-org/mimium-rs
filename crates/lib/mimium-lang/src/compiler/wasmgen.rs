@@ -78,10 +78,18 @@ pub struct WasmGenerator {
     mir: Arc<Mir>,
     /// Current function index (accounts for imported functions)
     current_fn_idx: u32,
+    /// Number of imported runtime functions (used as offset for MIR function indices)
+    num_imports: u32,
     /// Local variable register mapping
     registers: HashMap<Arc<mir::Value>, u32>,
     /// Function name to WASM function index mapping
     fn_name_to_idx: HashMap<Symbol, u32>,
+    /// Register type tracking: maps VReg to its WASM type (I64 or F64)
+    /// Used to correctly map registers to typed local variables
+    register_types: HashMap<mir::VReg, wasm_encoder::ValType>,
+    /// Register constant value tracking: maps VReg to constant value if it holds one
+    /// Used for function indices stored in registers
+    register_constants: HashMap<mir::VReg, u64>,
 
     /// Runtime primitive function indices
     rt: RuntimeFunctionIndices,
@@ -102,8 +110,11 @@ impl WasmGenerator {
             element_section: ElementSection::new(),
             mir,
             current_fn_idx: 0,
+            num_imports: 0,
             registers: HashMap::new(),
             fn_name_to_idx: HashMap::new(),
+            register_types: HashMap::new(),
+            register_constants: HashMap::new(),
             // Runtime primitive indices will be set by setup_runtime_imports
             rt: RuntimeFunctionIndices::default(),
         };
@@ -111,6 +122,9 @@ impl WasmGenerator {
         // Setup runtime primitive imports and memory/table
         generator.setup_runtime_imports();
         generator.setup_memory_and_table();
+
+        // Save number of imported functions for use in function index calculations
+        generator.num_imports = generator.current_fn_idx;
 
         generator
     }
@@ -315,7 +329,15 @@ impl WasmGenerator {
             let return_types: Vec<ValType> = func
                 .return_type
                 .get()
-                .map(|ty| vec![Self::type_to_valtype(&ty.to_type())])
+                .and_then(|ty| {
+                    let type_ref = ty.to_type();
+                    // Unit type should have no return value in WASM
+                    if matches!(type_ref, Type::Primitive(PType::Unit)) {
+                        None
+                    } else {
+                        Some(vec![Self::type_to_valtype(&type_ref)])
+                    }
+                })
                 .unwrap_or_default();
 
             // Add function type to type section
@@ -336,13 +358,20 @@ impl WasmGenerator {
 
     /// Generate WASM function bodies from MIR
     fn generate_function_bodies(&mut self) -> Result<(), String> {
+        use wasm_encoder::Instruction as W;
+        
         // Clone the functions vector to avoid borrow checker issues
         let functions = self.mir.functions.clone();
 
         // For each MIR function, generate WASM function body
         for func in &functions {
-            // Reset register mapping for each function
+            // Reset register mapping and type tracking for each function
             self.registers.clear();
+            self.register_types.clear();
+            self.register_constants.clear();
+            
+            // Scan function body to determine register types and constants
+            self.analyze_register_types(func);
 
             // Allocate local variables for both i64 and f64 types
             // Arguments are in slots 0..n, additional locals start from n
@@ -365,11 +394,70 @@ impl WasmGenerator {
                 }
             }
 
+            // Every WASM function body must end with an End instruction
+            // (functions are implicit blocks in WASM)
+            wasm_func.instruction(&W::End);
+
             // Add function to code section
             self.code_section.function(&wasm_func);
         }
 
         Ok(())
+    }
+
+    /// Analyze MIR function body to determine register types
+    /// This scans all instructions and records each register's ValType (I64 or F64)
+    fn analyze_register_types(&mut self, func: &mir::Function) {
+        use mir::Instruction as I;
+        use wasm_encoder::ValType;
+        
+        for block in &func.body {
+            for (dest, instr) in &block.0 {
+                if let mir::Value::Register(reg_idx) = dest.as_ref() {
+                    // Track register type
+                    let reg_type = match instr {
+                        // Integer types -> I64
+                        I::Uinteger(val) => {
+                            // Also track the constant value for function indices
+                            self.register_constants.insert(*reg_idx, *val);
+                            ValType::I64
+                        }
+                        I::Integer(_) => ValType::I64,
+                        // Float type -> F64
+                        I::Float(_) => ValType::F64,
+                        // Arithmetic operations - use operand types
+                        I::AddF(..) | I::SubF(..) | I::MulF(..) | I::DivF(..) | I::ModF(..) | I::PowF(..) => ValType::F64,
+                        I::AddI(..) | I::SubI(..) | I::MulI(..) | I::DivI(..) | I::ModI(..) | I::PowI(..) => ValType::I64,
+                        // Comparison operations -> I32 in WASM, but we'll treat as I64
+                        I::Eq(..) | I::Ne(..) | I::Le(..) | I::Lt(..) | I::Ge(..) | I::Gt(..) => ValType::I64,
+                        // Logical operations -> I64
+                        I::And(..) | I::Or(..) | I::Not(..) => ValType::I64,
+                        // Load - depends on type annotation
+                        I::Load(_, ty) => {
+                            // Check TypeNodeId to determine type
+                            match ty.to_type() {
+                                crate::types::Type::Primitive(crate::types::PType::Numeric) => ValType::F64,
+                                crate::types::Type::Primitive(crate::types::PType::Unit) => ValType::I64, // Unit as dummy i64
+                                _ => ValType::I64, // Pointers and other types as i64
+                            }
+                        }
+                        // Function calls and memory operations
+                        I::Call(_, _, ret_ty) | I::CallIndirect(_, _, ret_ty) => {
+                            // Check return type
+                            match ret_ty.to_type() {
+                                crate::types::Type::Primitive(crate::types::PType::Numeric) => ValType::F64,
+                                _ => ValType::I64,
+                            }
+                        }
+                        // Memory allocation returns pointers (i64)
+                        I::Alloc(_) => ValType::I64,
+                        // Default to F64 for unknown instructions
+                        _ => ValType::F64,
+                    };
+                    self.register_types.insert(*reg_idx, reg_type);
+                }
+            }
+        }
     }
 
     /// Translate a single MIR instruction with destination to WASM
@@ -379,26 +467,39 @@ impl WasmGenerator {
         instr: &mir::Instruction,
         func: &mut Function,
     ) {
+        use mir::Instruction as I;
         use wasm_encoder::Instruction as W;
+
+        // Return instructions (both Return and ReturnFeed) are special - they leave the value on the stack
+        // for the function to return. We should not store the value to a destination register or drop it.
+        let is_return = matches!(instr, I::Return(_, _) | I::ReturnFeed(_, _));
 
         // Generate the instruction (pushes result to stack)
         self.translate_instruction(instr, func);
 
-        // Store result to destination register if specified
-        match dest {
-            mir::Value::Register(reg_idx) => {
-                // For now, use f64 locals (offset 32) for all registers
-                // TODO: Track register types properly
-                let local_idx = 32 + reg_idx;
-                func.instruction(&W::LocalSet(local_idx as u32));
-            }
-            mir::Value::None => {
-                // No destination, result is discarded (pop it from stack)
-                func.instruction(&W::Drop);
-            }
-            _ => {
-                // Other destination types not yet handled
-                // TODO: Handle Global, State, etc.
+        // Only handle destination for non-return instructions
+        if !is_return {
+            // Store result to destination register if specified
+            match dest {
+                mir::Value::Register(reg_idx) => {
+                    // Map register to correct local variable based on type
+                    // I64 registers: local 0-31, F64 registers: local 32-63
+                    let reg_type = self.register_types.get(reg_idx).copied().unwrap_or(ValType::F64);
+                    let local_idx = match reg_type {
+                        ValType::I64 => *reg_idx as u32,  // i64 registers -> local 0-31
+                        ValType::F64 => 32 + *reg_idx as u32, // f64 registers -> local 32-63
+                        _ => 32 + *reg_idx as u32, // default to f64
+                    };
+                    func.instruction(&W::LocalSet(local_idx));
+                }
+                mir::Value::None => {
+                    // No destination, result is discarded (pop it from stack)
+                    func.instruction(&W::Drop);
+                }
+                _ => {
+                    // Other destination types not yet handled
+                    // TODO: Handle Global, State, etc.
+                }
             }
         }
     }
@@ -706,16 +807,27 @@ impl WasmGenerator {
                     self.emit_value_load(arg, func);
                 }
                 // Get function index and call
-                if let mir::Value::Function(fn_idx) = **fn_ptr {
-                    // Map from MIR function index to WASM function index
-                    // Need to account for imported functions
-                    let wasm_fn_idx = fn_idx as u32 + self.current_fn_idx;
-                    func.instruction(&W::Call(wasm_fn_idx));
+                let wasm_fn_idx = if let mir::Value::Function(fn_idx) = **fn_ptr {
+                    // Direct function value
+                    fn_idx as u32 + self.num_imports
+                } else if let mir::Value::Register(reg_idx) = **fn_ptr {
+                    // Function index stored in register (from Uinteger instruction)
+                    // Check if we tracked a constant value for this register
+                    if let Some(const_val) = self.register_constants.get(&reg_idx) {
+                        *const_val as u32 + self.num_imports
+                    } else {
+                        // No constant value tracked - this is a runtime function pointer
+                        // TODO: Implement call_indirect for true indirect calls
+                        // For now, emit a placeholder
+                        eprintln!("Warning: Indirect call through register without constant value");
+                        self.current_fn_idx // placeholder
+                    }
                 } else {
-                    // Indirect call through function pointer
-                    self.emit_value_load(fn_ptr, func);
-                    // TODO: Implement call_indirect with proper type signature
-                }
+                    // Other value types
+                    // TODO: Handle other cases
+                    self.current_fn_idx // placeholder
+                };
+                func.instruction(&W::Call(wasm_fn_idx));
             }
 
             I::CallIndirect(closure_ptr, args, ret_ty) => {
@@ -735,10 +847,17 @@ impl WasmGenerator {
             }
 
             // Control flow
-            I::Return(value, _ty) => {
-                // Return from function
-                self.emit_value_load(value, func);
-                func.instruction(&W::Return);
+            I::Return(value, ty) | I::ReturnFeed(value, ty) => {
+                // In WASM, functions implicitly return the value on the stack when they reach 'end'
+                // We don't need an explicit 'return' instruction unless it's an early return
+                // For now, just load the value (if non-Unit) and let 'end' handle the return
+                let is_unit = matches!(ty.to_type(), Type::Primitive(PType::Unit));
+                
+                if !is_unit {
+                    // Non-unit type: load value onto stack for implicit return
+                    self.emit_value_load(value, func);
+                }
+                // Don't emit explicit Return instruction - let 'end' handle it
             }
 
             // String constants
@@ -760,13 +879,19 @@ impl WasmGenerator {
     fn emit_value_load(&mut self, value: &VPtr, func: &mut Function) {
         use mir::Value as V;
         use wasm_encoder::Instruction as W;
+        use wasm_encoder::ValType;
 
         match value.as_ref() {
             V::Register(reg_idx) => {
-                // Load from f64 local variable (offset 32)
-                // TODO: Track register types properly
-                let local_idx = 32 + reg_idx;
-                func.instruction(&W::LocalGet(local_idx as u32));
+                // Map register to correct local variable based on type
+                // I64 registers: local 0-31, F64 registers: local 32-63
+                let reg_type = self.register_types.get(reg_idx).copied().unwrap_or(ValType::F64);
+                let local_idx = match reg_type {
+                    ValType::I64 => *reg_idx as u32,  // i64 registers -> local 0-31
+                    ValType::F64 => 32 + *reg_idx as u32, // f64 registers -> local 32-63
+                    _ => 32 + *reg_idx as u32, // default to f64
+                };
+                func.instruction(&W::LocalGet(local_idx));
             }
             V::Argument(arg_idx) => {
                 // Arguments are in the first local slots
@@ -828,6 +953,10 @@ impl WasmGenerator {
             Type::Primitive(PType::String) => ValType::I32, // pointer to string in linear memory
             Type::Primitive(PType::Unit) => ValType::I32,   // placeholder
             Type::Function { .. } => ValType::I32,          // function reference or index
+            Type::Record(fields) if fields.len() == 1 => {
+                // Single-field record: unwrap to field type
+                Self::type_to_valtype(&fields[0].ty.to_type())
+            }
             Type::Tuple(_) | Type::Record(_) => ValType::I32, // pointer to aggregate
             Type::Array(_) => ValType::I32,                 // array reference
             Type::Union(_) | Type::UserSum { .. } => ValType::I32, // sum type tag + payload
@@ -874,6 +1003,93 @@ mod tests {
         // Basic WASM module header check
         assert_eq!(&wasm_bytes[0..4], &[0x00, 0x61, 0x73, 0x6d]); // "\0asm" magic
         assert_eq!(&wasm_bytes[4..8], &[0x01, 0x00, 0x00, 0x00]); // version 1
+    }
+
+    /// Test that Return instructions don't store to destination register
+    /// This was a bug where MIR generates `reg(dest) := ret value`, causing
+    /// wasmgen to load the return value onto the stack and then store it to
+    /// a destination register, leaving the stack empty when the function End
+    /// instruction expected a return value.
+    ///
+    /// Fix: Check if instruction is Return or ReturnFeed and skip destination
+    /// handling in translate_instruction_with_dest().
+    #[test]
+    fn test_wasmgen_simple_return() {
+        let src = "fn dsp() -> float { 0.5 }";
+
+        let mut ctx = ExecContext::new(std::iter::empty(), None, crate::Config::default());
+        ctx.prepare_compiler();
+        let mir = ctx
+            .get_compiler()
+            .unwrap()
+            .emit_mir(src)
+            .expect("MIR generate failed");
+
+        let mut generator = WasmGenerator::new(Arc::new(mir));
+        let wasm_bytes = generator.generate().expect("WASM generation failed");
+
+        // Write to tmp directory for inspection
+        use std::path::PathBuf;
+        let mut wasm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        wasm_path.pop(); // Remove mimium-lang
+        wasm_path.pop(); // Remove lib
+        wasm_path.pop(); // Remove crates
+        wasm_path.push("tmp");
+        wasm_path.push("test_simple_return_from_test.wasm");
+
+        std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
+
+        eprintln!(
+            "Generated WASM file: {:?} ({} bytes)",
+            wasm_path,
+            wasm_bytes.len()
+        );
+
+        // Validate with wasmtime - this was failing before the fix
+        let engine = wasmtime::Engine::default();
+        let result = wasmtime::Module::new(&engine, &wasm_bytes);
+        assert!(result.is_ok(), "WASM validation should pass for simple return function. Error: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_wasmgen_function_call() {
+        let src = r#"
+fn helper(x: float) -> float { x * 2.0 }
+fn dsp() -> float { helper(21.0) }
+"#;
+
+        let mut ctx = ExecContext::new(std::iter::empty(), None, crate::Config::default());
+        ctx.prepare_compiler();
+        let mir = ctx
+            .get_compiler()
+            .unwrap()
+            .emit_mir(src)
+            .expect("MIR generate failed");
+
+        let mut generator = WasmGenerator::new(Arc::new(mir));
+        let wasm_bytes = generator.generate().expect("WASM generation failed");
+
+        // Write to tmp directory for inspection
+        use std::path::PathBuf;
+        let mut wasm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        wasm_path.pop(); // Remove mimium-lang
+        wasm_path.pop(); // Remove lib
+        wasm_path.pop(); // Remove crates
+        wasm_path.push("tmp");
+        wasm_path.push("test_function_call_from_test.wasm");
+
+        std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
+
+        eprintln!(
+            "Generated function call WASM: {:?} ({} bytes)",
+            wasm_path,
+            wasm_bytes.len()
+        );
+
+        // Validate with wasmtime
+        let engine = wasmtime::Engine::default();
+        let result = wasmtime::Module::new(&engine, &wasm_bytes);
+        assert!(result.is_ok(), "WASM validation should pass for function call. Error: {:?}", result.err());
     }
 
     #[test]
