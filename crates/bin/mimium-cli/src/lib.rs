@@ -466,7 +466,7 @@ pub fn run_file(
             use mimium_lang::compiler::wasmgen::WasmGenerator;
             use mimium_lang::runtime::wasm::engine::WasmEngine;
             use mimium_lang::utils::metadata::Location;
-            use std::sync::{Arc, Mutex};
+            use std::sync::Arc;
 
             ctx.prepare_compiler();
             let mir = ctx.get_compiler().unwrap().emit_mir(content)?;
@@ -504,9 +504,15 @@ pub fn run_file(
             let mut wasm_driver = WasmDriver::new();
             wasm_driver.set_wasm_engine(wasm_engine);
 
-            // Initialize the driver
-            // We create a dummy RuntimeData since WASM doesn't use it
-            let dummy_machine = mimium_lang::runtime::vm::Machine::new();
+            // Create a minimal dummy RuntimeData for WASM driver
+            // WASM driver doesn't actually use the VM, but Driver::init requires RuntimeData
+            use mimium_lang::runtime::vm;
+            let dummy_program = vm::Program::default();
+            let dummy_machine = vm::Machine::new(
+                dummy_program,
+                std::iter::empty(),  // No external functions
+                std::iter::empty(),  // No external closures
+            );
             let dummy_runtime_data = RuntimeData {
                 vm: dummy_machine,
                 sys_plugin_workers: Vec::new(),

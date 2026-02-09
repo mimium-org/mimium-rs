@@ -786,6 +786,9 @@ impl WasmGenerator {
         // Clone the functions vector to avoid borrow checker issues
         let functions = self.mir.functions.clone();
 
+        // Track the dsp function index if it exists
+        let mut dsp_idx = None;
+
         // Export all public functions
         for func in &functions {
             let fn_idx = *self
@@ -793,10 +796,21 @@ impl WasmGenerator {
                 .get(&func.label)
                 .ok_or_else(|| format!("Function {:?} not found in mapping", func.label))?;
 
+            // Check if this is the dsp function
+            if func.label.as_str() == "dsp" {
+                dsp_idx = Some(fn_idx);
+            }
+
             // Use the function name from the symbol interner
             let fn_name = format!("fn_{fn_idx}");
             self.export_section
                 .export(&fn_name, wasm_encoder::ExportKind::Func, fn_idx);
+        }
+
+        // Export the dsp function with its canonical name if it exists
+        if let Some(idx) = dsp_idx {
+            self.export_section
+                .export("dsp", wasm_encoder::ExportKind::Func, idx);
         }
 
         // Export memory so the host can access it

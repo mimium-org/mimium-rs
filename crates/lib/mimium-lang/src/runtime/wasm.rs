@@ -435,20 +435,73 @@ fn state_pop_host(mut caller: Caller<'_, RuntimeState>, offset: i64) {
 
 fn state_get_host(mut caller: Caller<'_, RuntimeState>, dst_ptr: i32, size_words: i32) {
     log::trace!("state_get_host: dst_ptr={dst_ptr}, size_words={size_words}");
-    // TODO: Implement actual state tree access
-    // For now, zero-fill the destination memory
+    
     let size = size_words as usize;
-    let memory = caller.data().memory.expect("Memory not initialized");
-    let zeros = vec![0u8; size * std::mem::size_of::<Word>()];
+    let state = caller.data_mut();
+    
+    // Get the current state from the stack
+    // If stack is empty or too small, initialize with zeros
+    let start_idx = state.state_stack.len().saturating_sub(size);
+    let state_values: Vec<Word> = if state.state_stack.len() >= size {
+        state.state_stack[start_idx..].to_vec()
+    } else {
+        // Initialize with zeros if not enough state values
+        vec![0u64; size]
+    };
+    
+    // Write to WASM linear memory
+    let memory = state.memory.expect("Memory not initialized");
+    let bytes: Vec<u8> = state_values
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect();
+    
     memory
-        .write(&mut caller.as_context_mut(), dst_ptr as usize, &zeros)
-        .expect("Failed to write to WASM memory");
+        .write(&mut caller.as_context_mut(), dst_ptr as usize, &bytes)
+        .expect("Failed to write state to WASM memory");
 }
 
-fn state_set_host(caller: Caller<'_, RuntimeState>, src_ptr: i32, size_words: i32) {
+fn state_set_host(mut caller: Caller<'_, RuntimeState>, src_ptr: i32, size_words: i32) {
     log::trace!("state_set_host: src_ptr={src_ptr}, size_words={size_words}");
-    // TODO: Implement actual state tree modification
-    let _ = caller;
+    
+    let size = size_words as usize;
+    let state = caller.data();
+    let memory = state.memory.expect("Memory not initialized");
+    
+    // Read from WASM linear memory
+    let mut bytes = vec![0u8; size * std::mem::size_of::<Word>()];
+    memory
+        .read(&caller, src_ptr as usize, &mut bytes)
+        .expect("Failed to read from WASM memory");
+    
+    // Convert bytes to Words
+    let state_values: Vec<Word> = bytes
+        .chunks(std::mem::size_of::<Word>())
+        .map(|chunk| {
+            let mut word_bytes = [0u8; 8];
+            word_bytes.copy_from_slice(chunk);
+            Word::from_le_bytes(word_bytes)
+        })
+        .collect();
+    
+    // Update the state stack
+    let state = caller.data_mut();
+    let start_idx = state.state_stack.len().saturating_sub(size);
+    
+    // If state_stack is too small, extend it
+    while state.state_stack.len() < size {
+        state.state_stack.push(0);
+    }
+    
+    // Update existing values or push new ones
+    for(i, &value) in state_values.iter().enumerate() {
+        let idx = start_idx + i;
+        if idx < state.state_stack.len() {
+            state.state_stack[idx] = value;
+        } else {
+            state.state_stack.push(value);
+        }
+    }
 }
 
 fn state_delay_host(
