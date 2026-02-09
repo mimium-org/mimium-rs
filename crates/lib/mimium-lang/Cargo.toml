@@ -23,6 +23,11 @@ itertools.workspace = true
 wasm-bindgen.workspace = true
 state-tree = { workspace = true }
 thiserror = { workspace = true }
+
+# WASM backend dependencies
+wasm-encoder = "0.221"
+wasmtime = "27.0"
+wat = "1.221"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 homedir = { version = "0.3.4" }
 mimalloc = { version = "0.1.43" }

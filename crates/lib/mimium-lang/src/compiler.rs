@@ -3,6 +3,7 @@ pub(crate) mod intrinsics;
 pub mod mirgen;
 pub mod parser;
 pub mod typing;
+pub mod wasmgen;
 use crate::plugin::{ExtFunTypeInfo, MacroFunction};
 use thiserror::Error;
 

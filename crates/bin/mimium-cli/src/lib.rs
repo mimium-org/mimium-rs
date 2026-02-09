@@ -101,6 +101,10 @@ pub struct Mode {
     /// Print bytecode and exit
     #[arg(long, default_value_t = false)]
     pub emit_bytecode: bool,
+
+    /// Generate WASM module and exit
+    #[arg(long, default_value_t = false)]
+    pub emit_wasm: bool,
 }
 
 pub enum RunMode {
@@ -108,6 +112,7 @@ pub enum RunMode {
     EmitAst,
     EmitMir,
     EmitByteCode,
+    EmitWasm,
     NativeAudio,
     WriteCsv {
         times: usize,
@@ -154,6 +159,14 @@ impl RunOptions {
             return Self {
                 mode: RunMode::EmitByteCode,
                 with_gui: true,
+                config,
+            };
+        }
+
+        if args.mode.emit_wasm {
+            return Self {
+                mode: RunMode::EmitWasm,
+                with_gui: false,
                 config,
             };
         }
@@ -375,6 +388,43 @@ pub fn run_file(
             ctx.add_plugin(plug);
             ctx.prepare_machine(content)?;
             println!("{}", ctx.get_vm().unwrap().prog);
+            Ok(())
+        }
+        RunMode::EmitWasm => {
+            use mimium_lang::utils::metadata::Location;
+            use std::sync::Arc;
+
+            ctx.prepare_compiler();
+            let mir = ctx.get_compiler().unwrap().emit_mir(content)?;
+
+            // Generate WASM module
+            let mut generator = compiler::wasmgen::WasmGenerator::new(Arc::new(mir));
+            let wasm_bytes = generator.generate().map_err(|e| {
+                vec![Box::new(mimium_lang::utils::error::SimpleError {
+                    message: e,
+                    span: Location::default(),
+                }) as Box<dyn ReportableError>]
+            })?;
+
+            // Output module info
+            println!("Generated WASM module ({} bytes)", wasm_bytes.len());
+            println!("Magic: {:?}", &wasm_bytes[0..4]);
+            println!("Version: {:?}", &wasm_bytes[4..8]);
+
+            // Write to file
+            if let Some(parent) = fullpath.parent() {
+                let wasm_path = parent
+                    .join(fullpath.file_stem().unwrap())
+                    .with_extension("wasm");
+                std::fs::write(&wasm_path, &wasm_bytes).map_err(|e| {
+                    vec![Box::new(mimium_lang::utils::error::SimpleError {
+                        message: e.to_string(),
+                        span: Location::default(),
+                    }) as Box<dyn ReportableError>]
+                })?;
+                println!("Written to: {}", wasm_path.display());
+            }
+
             Ok(())
         }
         _ => {
