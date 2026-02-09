@@ -1,0 +1,10 @@
+// Test external file module: mod foo; syntax (Rust-like)
+// This loads module_external_math.mmm from the same directory
+
+mod module_external_math
+
+fn dsp() {
+    // Access external module's public functions
+    module_external_math::sum(1.0, 2.0) + module_external_math::product(3.0, 4.0)
+    // Expected: 1+2 + 3*4 = 3 + 12 = 15
+}

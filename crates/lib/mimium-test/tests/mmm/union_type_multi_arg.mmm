@@ -1,0 +1,15 @@
+// Test union types with multiple argument syntax (implicitly treated as tuple)
+type Shape = Circle(float) | Rectangle(float, float)
+
+fn calculateArea(shape: Shape) -> float {
+    match shape {
+        Circle(radius) => radius * radius * 3.14,
+        Rectangle((width, height)) => width * height,
+    }
+}
+
+fn dsp() {
+    // Test with Rectangle - note: constructor uses (5.0, 2.5), pattern uses ((width, height))
+    let rect = Rectangle((5.0, 2.5));
+    calculateArea(rect)
+}

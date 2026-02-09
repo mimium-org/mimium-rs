@@ -23,7 +23,7 @@ pub fn run_bytecode_test(
     if retcode >= 0 {
         Ok(vm::Machine::get_as_array::<f64>(machine.get_top_n(n)))
     } else {
-        Err(vec![Box::new(runtime::Error(
+        Err(vec![Box::new(runtime::RuntimeError(
             runtime::ErrorKind::Unknown,
             Location::default(),
         ))])

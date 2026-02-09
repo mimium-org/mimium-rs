@@ -4,6 +4,7 @@ pub mod program;
 mod resolve_include;
 pub mod statement;
 use crate::ast::operators::Op;
+use crate::ast::program::QualifiedPath;
 use crate::interner::{ExprNodeId, Symbol, TypeNodeId, with_session_globals};
 use crate::pattern::{TypedId, TypedPattern};
 use crate::utils::metadata::{Location, Span};
@@ -59,10 +60,37 @@ pub struct RecordField {
     pub expr: ExprNodeId,
 }
 
+/// Pattern for match expressions
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum MatchPattern {
+    /// Literal pattern: matches a specific value (e.g., 0, 1, 2)
+    Literal(Literal),
+    /// Wildcard pattern: matches anything (_)
+    Wildcard,
+    /// Variable binding pattern: binds a value to a name
+    Variable(Symbol),
+    /// Constructor pattern for union types: TypeName(inner_pattern)
+    /// e.g., Float(x), String(s), Two((x, y))
+    /// The Symbol is the type/constructor name, the Option<Box<MatchPattern>> is the optional inner pattern
+    Constructor(Symbol, Option<Box<MatchPattern>>),
+    /// Tuple pattern: matches a tuple and binds its elements
+    /// e.g., (x, y), (a, b, c)
+    Tuple(Vec<MatchPattern>),
+}
+
+/// A single arm of a match expression
+#[derive(Clone, Debug, PartialEq)]
+pub struct MatchArm {
+    pub pattern: MatchPattern,
+    pub body: ExprNodeId,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     Literal(Literal), // literal, or special symbols (self, now, _)
     Var(Symbol),
+    QualifiedVar(QualifiedPath), // qualified name like modA::funcB
     Block(Option<ExprNodeId>),
     Tuple(Vec<ExprNodeId>),
     Proj(ExprNodeId, i64),
@@ -86,6 +114,7 @@ pub enum Expr {
     Let(TypedPattern, ExprNodeId, Option<ExprNodeId>),
     LetRec(TypedId, ExprNodeId, Option<ExprNodeId>),
     If(ExprNodeId, ExprNodeId, Option<ExprNodeId>),
+    Match(ExprNodeId, Vec<MatchArm>), // match expression: match scrutinee { pattern => expr, ... }
     //exprimental macro system using multi-stage computation
     Bracket(ExprNodeId),
     Escape(ExprNodeId),
@@ -148,6 +177,14 @@ impl ExprNodeId {
                 conv(&e1).min(conv_opt(&e2))
             }
             Expr::If(cond, then, orelse) => conv(&cond).min(conv(&then)).min(conv_opt(&orelse)),
+            Expr::Match(scrutinee, arms) => {
+                let arm_min = arms
+                    .iter()
+                    .map(|arm| arm.body.get_min_stage_rec(current_level))
+                    .min()
+                    .unwrap_or(current_level);
+                conv(&scrutinee).min(arm_min)
+            }
 
             _ => current_level,
         }
@@ -157,9 +194,9 @@ impl ExprNodeId {
 impl fmt::Display for Literal {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Literal::Float(n) => write!(f, "(float {})", n),
-            Literal::Int(n) => write!(f, "(int {})", n),
-            Literal::String(s) => write!(f, "\"{}\"", s),
+            Literal::Float(n) => write!(f, "(float {n})"),
+            Literal::Int(n) => write!(f, "(int {n})"),
+            Literal::String(s) => write!(f, "\"{s}\""),
             Literal::Now => write!(f, "now"),
             Literal::SampleRate => write!(f, "samplerate"),
             Literal::SelfLit => write!(f, "self"),
@@ -213,6 +250,12 @@ impl MiniPrint for Expr {
         match self {
             Expr::Literal(l) => l.simple_print(),
             Expr::Var(v) => format!("{v}"),
+            Expr::QualifiedVar(path) => path
+                .segments
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join("::"),
             Expr::Block(e) => e.map_or("".to_string(), |eid| {
                 format!("(block {})", eid.simple_print())
             }),
@@ -236,7 +279,7 @@ impl MiniPrint for Expr {
                     .map(|e| e.simple_print())
                     .collect::<Vec<String>>()
                     .join(", ");
-                format!("(array [{}])", items_str)
+                format!("(array [{items_str}])")
             }
             Expr::RecordLiteral(fields) => {
                 let fields_str = fields
@@ -244,7 +287,7 @@ impl MiniPrint for Expr {
                     .map(|f| f.simple_print())
                     .collect::<Vec<String>>()
                     .join(", ");
-                format!("(record {{{}}})", fields_str)
+                format!("(record {{{fields_str}}})")
             }
             Expr::ImcompleteRecord(fields) => {
                 let fields_str = fields
@@ -252,7 +295,7 @@ impl MiniPrint for Expr {
                     .map(|f| f.simple_print())
                     .collect::<Vec<String>>()
                     .join(", ");
-                format!("(incomplete-record {{{}, ..}})", fields_str)
+                format!("(incomplete-record {{{fields_str}, ..}})")
             }
             Expr::RecordUpdate(record, fields) => {
                 let fields_str = fields
@@ -308,6 +351,14 @@ impl MiniPrint for Expr {
                 then.simple_print(),
                 optelse.simple_print()
             ),
+            Expr::Match(scrutinee, arms) => {
+                let arms_str = arms
+                    .iter()
+                    .map(|arm| format!("{:?} => {}", arm.pattern, arm.body.simple_print()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("(match {} [{}])", scrutinee.simple_print(), arms_str)
+            }
             Expr::Bracket(e) => format!("(bracket {})", e.simple_print()),
             Expr::Escape(e) => format!("(escape {})", e.simple_print()),
             Expr::Error => "(error)".to_string(),

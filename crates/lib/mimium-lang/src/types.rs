@@ -98,8 +98,22 @@ pub enum Type {
     Ref(TypeNodeId),
     //(experimental) code-type for multi-stage computation that will be evaluated on the next stage
     Code(TypeNodeId),
+    /// Union (sum) type: A | B | C
+    Union(Vec<TypeNodeId>),
+    /// User-defined sum type with named variants: type Name = A | B | C
+    /// Each variant is (name, optional payload type)
+    UserSum {
+        name: Symbol,
+        variants: Vec<(Symbol, Option<TypeNodeId>)>,
+    },
+    /// Heap-allocated boxed type for recursive data structures.
+    /// Introduced by `type rec` declarations to wrap self-references.
+    /// At runtime, represented as a single HeapIdx word.
+    Boxed(TypeNodeId),
     Intermediate(Arc<RwLock<TypeVar>>),
     TypeScheme(TypeSchemeId),
+    /// Type alias or type name reference that needs to be resolved during type inference
+    TypeAlias(Symbol),
     /// Any type is the top level, it can be unified with anything.
     Any,
     /// Failure type: it is bottom type that can be unified to any type and return bottom type.
@@ -123,7 +137,20 @@ impl PartialEq for Type {
             }
             (Type::Ref(a), Type::Ref(b)) => a == b,
             (Type::Code(a), Type::Code(b)) => a == b,
+            (Type::Union(a), Type::Union(b)) => a == b,
+            (
+                Type::UserSum {
+                    name: n1,
+                    variants: v1,
+                },
+                Type::UserSum {
+                    name: n2,
+                    variants: v2,
+                },
+            ) => n1 == n2 && v1 == v2,
+            (Type::Boxed(a), Type::Boxed(b)) => a == b,
             (Type::TypeScheme(a), Type::TypeScheme(b)) => a == b,
+            (Type::TypeAlias(a), Type::TypeAlias(b)) => a == b,
             (Type::Any, Type::Any) => true,
             (Type::Failure, Type::Failure) => true,
             (Type::Unknown, Type::Unknown) => true,
@@ -145,6 +172,28 @@ impl Type {
             Type::Record(t) => t
                 .iter()
                 .any(|RecordTypeField { ty, .. }| ty.to_type().contains_function()),
+            Type::Union(t) => t.iter().any(|t| t.to_type().contains_function()),
+            Type::Boxed(t) => t.to_type().contains_function(),
+            _ => false,
+        }
+    }
+    // check if contains any boxed type in its member.
+    // Boxed types need reference counting (clone/release)
+    pub fn contains_boxed(&self) -> bool {
+        match self {
+            Type::Boxed(_) => true,
+            Type::Tuple(t) => t.iter().any(|t| t.to_type().contains_boxed()),
+            Type::Record(t) => t
+                .iter()
+                .any(|RecordTypeField { ty, .. }| ty.to_type().contains_boxed()),
+            Type::Union(t) => t.iter().any(|t| t.to_type().contains_boxed()),
+            Type::UserSum { .. } => {
+                // UserSum types defined with 'type rec' always contain Boxed references
+                // for recursive self-references. Since we can't distinguish recursive
+                // from non-recursive UserSum at this level, we conservatively return true.
+                // This ensures proper reference counting for all variant types.
+                true
+            }
             _ => false,
         }
     }
@@ -158,9 +207,31 @@ impl Type {
             Type::Record(t) => t
                 .iter()
                 .any(|RecordTypeField { ty, .. }| ty.to_type().contains_code()),
+            Type::Union(t) => t.iter().any(|t| t.to_type().contains_code()),
+            Type::Boxed(t) => t.to_type().contains_code(),
             _ => false,
         }
     }
+
+    pub fn contains_type_scheme(&self) -> bool {
+        match self {
+            Type::TypeScheme(_) => true,
+            Type::Array(t) => t.to_type().contains_type_scheme(),
+            Type::Tuple(t) => t.iter().any(|t| t.to_type().contains_type_scheme()),
+            Type::Record(t) => t
+                .iter()
+                .any(|RecordTypeField { ty, .. }| ty.to_type().contains_type_scheme()),
+            Type::Function { arg, ret } => {
+                arg.to_type().contains_type_scheme() || ret.to_type().contains_type_scheme()
+            }
+            Type::Ref(t) => t.to_type().contains_type_scheme(),
+            Type::Code(t) => t.to_type().contains_type_scheme(),
+            Type::Union(t) => t.iter().any(|t| t.to_type().contains_type_scheme()),
+            Type::Boxed(t) => t.to_type().contains_type_scheme(),
+            _ => false,
+        }
+    }
+
     pub fn is_intermediate(&self) -> Option<Arc<RwLock<TypeVar>>> {
         match self {
             Type::Intermediate(tvar) => Some(tvar.clone()),
@@ -252,10 +323,83 @@ impl Type {
                 )
             }
             Type::Ref(x) => format!("&{}", x.to_type().to_string_for_error()),
+            Type::Boxed(x) => format!("boxed({})", x.to_type().to_string_for_error()),
             Type::Code(c) => format!("`({})", c.to_type().to_string_for_error()),
             Type::Intermediate(_id) => "?".to_string(),
             // if no special treatment is needed, forward to the Display implementation
             x => x.to_string(),
+        }
+    }
+
+    /// Generate a mangled name for monomorphization.
+    /// This creates a unique string representation of the type that can be used
+    /// to create specialized function names.
+    pub fn to_mangled_string(&self) -> String {
+        match self {
+            Type::Primitive(p) => match p {
+                PType::Unit => "unit".to_string(),
+                PType::Int => "int".to_string(),
+                PType::Numeric => "num".to_string(),
+                PType::String => "str".to_string(),
+            },
+            Type::Array(a) => {
+                format!("arr_{}", a.to_type().to_mangled_string())
+            }
+            Type::Tuple(v) => {
+                let mangled_types = v
+                    .iter()
+                    .map(|x| x.to_type().to_mangled_string())
+                    .collect::<Vec<_>>()
+                    .join("_");
+                format!("tup_{mangled_types}")
+            }
+            Type::Record(v) => {
+                let mangled_fields = v
+                    .iter()
+                    .map(|RecordTypeField { key, ty, .. }| {
+                        format!("{}_{}", key.as_str(), ty.to_type().to_mangled_string())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("_");
+                format!("rec_{mangled_fields}")
+            }
+            Type::Function { arg, ret } => {
+                format!(
+                    "fn_{}_{}",
+                    arg.to_type().to_mangled_string(),
+                    ret.to_type().to_mangled_string()
+                )
+            }
+            Type::Ref(x) => format!("ref_{}", x.to_type().to_mangled_string()),
+            Type::Boxed(x) => format!("boxed_{}", x.to_type().to_mangled_string()),
+            Type::Code(c) => format!("code_{}", c.to_type().to_mangled_string()),
+            Type::Intermediate(tvar) => {
+                let tv = tvar.read().unwrap();
+                tv.parent
+                    .map(|p| p.to_type().to_mangled_string())
+                    .unwrap_or_else(|| format!("ivar_{}", tv.var.0))
+            }
+            Type::TypeScheme(id) => format!("scheme_{}", id.0),
+            Type::TypeAlias(name) => format!("alias_{}", name.as_str()),
+            Type::Union(v) => {
+                let mangled_types = v
+                    .iter()
+                    .map(|x| x.to_type().to_mangled_string())
+                    .collect::<Vec<_>>()
+                    .join("_");
+                format!("union_{}", mangled_types)
+            }
+            Type::UserSum { name, variants } => {
+                let variant_str = variants
+                    .iter()
+                    .map(|(s, _)| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join("_");
+                format!("{}_{}", name.as_str(), variant_str)
+            }
+            Type::Any => "any".to_string(),
+            Type::Failure => "fail".to_string(),
+            Type::Unknown => "unknown".to_string(),
         }
     }
 }
@@ -270,6 +414,12 @@ impl TypeNodeId {
             _ => *self,
         }
     }
+
+    /// Generate a mangled string for this type, useful for monomorphization.
+    pub fn to_mangled_string(&self) -> String {
+        self.to_type().to_mangled_string()
+    }
+
     pub fn apply_fn<F>(&self, mut closure: F) -> Self
     where
         F: FnMut(Self) -> Self,
@@ -301,6 +451,7 @@ impl TypeNodeId {
                 ret: apply_scalar(ret, &mut closure),
             },
             Type::Ref(x) => Type::Ref(apply_scalar(x, &mut closure)),
+            Type::Boxed(x) => Type::Boxed(apply_scalar(x, &mut closure)),
             Type::Code(c) => Type::Code(apply_scalar(c, &mut closure)),
             Type::Intermediate(id) => Type::Intermediate(id.clone()),
             _ => self.to_type(),
@@ -314,6 +465,48 @@ impl TypeNodeId {
         F: Fn(Self, Self) -> R,
     {
         todo!()
+    }
+
+    /// Calculate the size in words (u64) required to store a value of this type.
+    /// This is used for stack allocation and register management.
+    ///
+    /// - Primitives (except Unit): 1 word
+    /// - Unit: 0 words
+    /// - Arrays/Functions/Refs/Boxed: 1 word (pointer)
+    /// - Tuples/Records: sum of element sizes
+    /// - Union/UserSum: 1 word (tag) + max variant size
+    pub fn word_size(&self) -> TypeSize {
+        match self.to_type() {
+            Type::Primitive(PType::Unit) => 0,
+            Type::Primitive(PType::String) => 1,
+            Type::Primitive(_) => 1,
+            Type::Array(_) => 1, // pointer to array storage
+            Type::Tuple(types) => types.iter().map(|t| t.word_size()).sum(),
+            Type::Record(types) => types
+                .iter()
+                .map(|RecordTypeField { ty, .. }| ty.word_size())
+                .sum(),
+            Type::Function { .. } => 1,
+            Type::Ref(_) => 1,
+            Type::Boxed(_) => 1, // heap-allocated: single HeapIdx word
+            Type::Code(_) => 1,
+            Type::Union(variants) => {
+                // Tagged union: 1 word for tag + max size of any variant
+                let max_variant_size = variants.iter().map(|v| v.word_size()).max().unwrap_or(0);
+                1 + max_variant_size
+            }
+            Type::UserSum { variants, .. } => {
+                // Tagged UserSum: 1 word for tag + max size of any variant payload
+                let max_variant_size = variants
+                    .iter()
+                    .filter_map(|(_, payload_ty)| *payload_ty)
+                    .map(|t| t.word_size())
+                    .max()
+                    .unwrap_or(0);
+                1 + max_variant_size
+            }
+            _ => 1, // fallback for intermediate types
+        }
     }
 }
 
@@ -364,14 +557,31 @@ impl fmt::Display for Type {
                 write!(f, "({})->{}", arg.to_type(), ret.to_type())
             }
             Type::Ref(x) => write!(f, "&{}", x.to_type()),
+            Type::Boxed(x) => write!(f, "boxed({})", x.to_type()),
 
             Type::Code(c) => write!(f, "<{}>", c.to_type()),
+            Type::Union(v) => {
+                let vf = format_vec!(
+                    v.iter().map(|x| x.to_type().clone()).collect::<Vec<_>>(),
+                    " | "
+                );
+                write!(f, "{vf}")
+            }
+            Type::UserSum { name, variants } => {
+                let variant_str = variants
+                    .iter()
+                    .map(|(s, _)| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                write!(f, "{} = {}", name.as_str(), variant_str)
+            }
             Type::Intermediate(id) => {
                 write!(f, "{}", id.read().unwrap())
             }
             Type::TypeScheme(id) => {
                 write!(f, "g({})", id.0)
             }
+            Type::TypeAlias(name) => write!(f, "{}", name.as_str()),
             Type::Any => write!(f, "any"),
             Type::Failure => write!(f, "!"),
             Type::Unknown => write!(f, "unknown"),

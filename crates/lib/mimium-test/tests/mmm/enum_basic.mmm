@@ -1,0 +1,17 @@
+type MyEnum = One | Two | Three 
+
+fn test(myenum){
+  match myenum {
+    One => 1,
+    Two => 2,
+    Three => 3
+  }
+}
+
+let x = test(One)
+let y = test(Two)
+let z = test(Three)
+
+fn dsp(){
+    x+y+z //the result should be 6
+}

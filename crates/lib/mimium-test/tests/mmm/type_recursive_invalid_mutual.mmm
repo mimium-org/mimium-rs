@@ -1,0 +1,7 @@
+// Test case: Invalid mutual recursive type aliases (circular reference)
+type alias A = B
+type alias B = A
+
+fn dsp() -> float {
+    0.0
+}

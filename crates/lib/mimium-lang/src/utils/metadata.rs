@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 
-use crate::interner::{Symbol, ToSymbol};
-
 pub type Span = std::ops::Range<usize>;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -12,6 +10,13 @@ pub struct Location {
 impl Location {
     pub fn new(span: Span, path: PathBuf) -> Self {
         Self { span, path }
+    }
+
+    pub fn internal() -> Self {
+        Self {
+            span: Span { start: 0, end: 0 },
+            path: PathBuf::from("internal"),
+        }
     }
 }
 impl Default for Location {

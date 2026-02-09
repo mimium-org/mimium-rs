@@ -81,7 +81,30 @@ mod types {
                     .append(ret_doc)
             }
             Type::Code(ty) => allocator.text("`").append(types::pretty(ty, allocator)),
+            Type::Union(items) => {
+                let docs = items
+                    .into_iter()
+                    .map(|item| types::pretty(item, allocator))
+                    .collect::<Vec<_>>();
+                allocator.intersperse(docs, allocator.text(" | "))
+            }
+            Type::UserSum { name, variants } => {
+                let variants_str = variants
+                    .iter()
+                    .map(|(v, _)| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                allocator
+                    .text(name.to_string())
+                    .append(allocator.text(" = "))
+                    .append(allocator.text(variants_str))
+            }
             Type::TypeScheme(_) => unreachable!(),
+            Type::TypeAlias(name) => allocator.text(name.to_string()),
+            Type::Boxed(inner) => allocator
+                .text("boxed(")
+                .append(types::pretty(inner, allocator))
+                .append(allocator.text(")")),
             Type::Intermediate(_) => unreachable!(),
             Type::Ref(_) => unreachable!(),
             Type::Failure => unreachable!(),
@@ -101,6 +124,7 @@ mod patterns {
     {
         match pat {
             Pattern::Single(name) => allocator.text(name),
+            Pattern::Placeholder => allocator.text("_"),
             Pattern::Tuple(pats) => {
                 let docs = pats
                     .into_iter()
@@ -140,6 +164,8 @@ mod typedpattern {
 }
 
 mod expr {
+    use std::ops::Add;
+
     use mimium_lang::ast::operators::Op;
 
     use super::*;
@@ -158,6 +184,15 @@ mod expr {
             Expr::Literal(Literal::SampleRate) => allocator.text("samplerate"),
             Expr::Literal(Literal::PlaceHolder) => allocator.text("_"),
             Expr::Var(name) => allocator.text(name),
+            Expr::QualifiedVar(path) => {
+                let path_str = path
+                    .segments
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                allocator.text(path_str)
+            }
             Expr::Block(Some(e)) => allocator
                 .text("{")
                 .append(allocator.line())
@@ -174,10 +209,12 @@ mod expr {
                     .collect::<Vec<_>>();
                 allocator
                     .intersperse(docs, breakable_comma(allocator))
+                    .nest(get_indent_size() as isize)
+                    .group()
                     .parens()
             }
             Expr::Proj(e, idx) => pretty(e, allocator)
-                .append(allocator.text(".").append(allocator.text(idx.to_string())))
+                .append(allocator.text(".").add(allocator.text(idx.to_string())))
                 .group(),
             Expr::Apply(e1, e2) => {
                 let doc1 = pretty(e1, allocator);
@@ -188,6 +225,7 @@ mod expr {
                 doc1.append(
                     allocator
                         .intersperse(docs2, breakable_comma(allocator))
+                        .nest(get_indent_size() as isize)
                         .group()
                         .parens(),
                 )
@@ -205,6 +243,7 @@ mod expr {
                     .collect::<Vec<_>>();
                 allocator
                     .intersperse(docs, breakable_comma(allocator))
+                    .nest(get_indent_size() as isize)
                     .group()
                     .braces()
             }
@@ -249,9 +288,11 @@ mod expr {
 
             Expr::FieldAccess(expr_node_id, symbol) => {
                 let expr_doc = pretty(expr_node_id, allocator);
+                //concat without space
                 expr_doc
-                    .append(allocator.softline())
-                    .append(allocator.text(".").append(allocator.text(symbol)))
+                    // .append(allocator.softline_())
+                    .add(allocator.text("."))
+                    .add(allocator.text(symbol))
                     .group()
             }
             Expr::ArrayAccess(e, i) => pretty(e, allocator).append(pretty(i, allocator).brackets()),
@@ -403,6 +444,10 @@ mod expr {
                     .append(allocator.text("!"))
                     .append(allocator.intersperse(args, ", ").parens())
             }
+            Expr::Match(scrutinee, arms) => {
+                // TODO: proper pretty printing for match
+                allocator.text("match /* todo */")
+            }
         }
     }
 }
@@ -422,11 +467,8 @@ mod statement {
                 allocator
                     .text("let ")
                     .append(pat_doc)
-                    .append(allocator.text(" ="))
-                    .append(allocator.softline())
+                    .append(allocator.text(" = "))
                     .append(body_doc.group())
-                    .group()
-                    .nest(get_indent_size() as isize)
             }
             Statement::LetRec(id, body) => {
                 let body_doc = expr::pretty(body, allocator);
@@ -463,6 +505,7 @@ pub mod program {
     {
         let stmt_docs = prog.statements.into_iter().map(|(stmt, _span)| match stmt {
             ProgramStatement::FnDefinition {
+                visibility: _,
                 name,
                 args,
                 return_type,
@@ -501,7 +544,7 @@ pub mod program {
             }
             ProgramStatement::GlobalStatement(stmt) => statement::pretty(stmt, allocator),
             ProgramStatement::Import(symbol) => allocator
-                .text("import")
+                .text("include")
                 .append(allocator.text(symbol).double_quotes().parens()),
             ProgramStatement::Comment(symbol) => {
                 allocator.text("//").append(allocator.text(symbol))
@@ -513,6 +556,104 @@ pub mod program {
             ProgramStatement::StageDeclaration { stage } => allocator
                 .text(format!("#stage({stage})"))
                 .append(allocator.softline()),
+            ProgramStatement::ModuleDefinition {
+                visibility,
+                name,
+                body: _,
+            } => {
+                let vis_doc = if visibility == mimium_lang::ast::program::Visibility::Public {
+                    allocator.text("pub ")
+                } else {
+                    allocator.nil()
+                };
+                vis_doc
+                    .append(allocator.text("mod "))
+                    .append(allocator.text(name.to_string()))
+                    .append(allocator.text(" { /* ... */ }"))
+            }
+            ProgramStatement::UseStatement {
+                visibility,
+                path,
+                target,
+            } => {
+                use mimium_lang::ast::program::UseTarget;
+                let vis_doc = if visibility == mimium_lang::ast::program::Visibility::Public {
+                    allocator.text("pub ")
+                } else {
+                    allocator.nil()
+                };
+                let path_str = path
+                    .segments
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                let target_str = match target {
+                    UseTarget::Single => String::new(),
+                    UseTarget::Multiple(names) => {
+                        let names_str = names
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("::{{{names_str}}}")
+                    }
+                    UseTarget::Wildcard => "::*".to_string(),
+                };
+                vis_doc
+                    .append(allocator.text("use "))
+                    .append(allocator.text(path_str))
+                    .append(allocator.text(target_str))
+            }
+            ProgramStatement::TypeDeclaration {
+                visibility,
+                name,
+                variants,
+                is_recursive,
+            } => {
+                let vis_doc = if visibility == mimium_lang::ast::program::Visibility::Public {
+                    allocator.text("pub ")
+                } else {
+                    allocator.nil()
+                };
+                let rec_doc = if is_recursive {
+                    allocator.text("type rec ")
+                } else {
+                    allocator.text("type ")
+                };
+                let variants_str = variants
+                    .iter()
+                    .map(|v| {
+                        if let Some(_payload) = &v.payload {
+                            format!("{}(...)", v.name)
+                        } else {
+                            v.name.to_string()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                vis_doc
+                    .append(rec_doc)
+                    .append(allocator.text(name.to_string()))
+                    .append(allocator.text(" = "))
+                    .append(allocator.text(variants_str))
+            }
+            ProgramStatement::TypeAlias {
+                visibility,
+                name,
+                target_type,
+            } => {
+                let vis_doc = if visibility == mimium_lang::ast::program::Visibility::Public {
+                    allocator.text("pub ")
+                } else {
+                    allocator.nil()
+                };
+                vis_doc
+                    .append(allocator.text("type "))
+                    .append(allocator.text(name.to_string()))
+                    .append(allocator.text(" = "))
+                    .append(types::pretty(target_type, allocator))
+            }
         });
         allocator.intersperse(stmt_docs, "\n")
     }
@@ -523,8 +664,10 @@ pub fn pretty_print(
     file_path: &Option<PathBuf>,
     width: usize,
 ) -> Result<String, Vec<Box<dyn ReportableError>>> {
-    use mimium_lang::compiler::parser::parse;
-    let (prog, errs) = parse(src, file_path.clone());
+    use mimium_lang::compiler::parser::parse_program;
+    use mimium_lang::compiler::parser::parser_errors_to_reportable;
+    let (prog, parse_errs) = parse_program(src, file_path.clone().unwrap_or_default());
+    let errs = parser_errors_to_reportable(src, file_path.clone().unwrap_or_default(), parse_errs);
     if !errs.is_empty() {
         return Err(errs);
     }

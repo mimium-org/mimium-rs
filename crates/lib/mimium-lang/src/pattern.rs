@@ -3,10 +3,12 @@ use crate::interner::{ExprNodeId, Symbol, TypeNodeId};
 use crate::types::Type;
 use crate::utils::metadata::{Location, Span};
 use crate::utils::miniprint::MiniPrint;
+use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     Single(Symbol),
+    Placeholder, // Represents '_' pattern that ignores the value
     Tuple(Vec<Self>),
     Record(Vec<(Symbol, Self)>),
     Error,
@@ -16,6 +18,7 @@ impl std::fmt::Display for Pattern {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Pattern::Single(id) => write!(f, "{id}"),
+            Pattern::Placeholder => write!(f, "_"),
             Pattern::Tuple(vec) => {
                 let s = vec
                     .iter()
@@ -130,17 +133,9 @@ impl TypedPattern {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
+#[error("Failed to convert pattern. The pattern did not matched to single identifier.")]
 pub struct ConversionError;
-impl std::fmt::Display for ConversionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Failed to convert pattern. The pattern did not matched to single identifier."
-        )
-    }
-}
-impl std::error::Error for ConversionError {}
 
 impl From<TypedId> for TypedPattern {
     fn from(value: TypedId) -> Self {

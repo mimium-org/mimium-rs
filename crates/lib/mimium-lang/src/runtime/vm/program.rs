@@ -9,6 +9,18 @@ use state_tree::tree::StateTreeSkeleton;
 
 /// Function prototype definition in the bytecode program.
 
+/// Jump table for switch/match expressions.
+/// Uses a dense array for O(1) lookup when case values are within range.
+/// The last element of `offsets` is the default offset for out-of-range values.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct JumpTable {
+    /// Minimum case value (used to calculate array index: index = value - min)
+    pub min: i64,
+    /// Dense array of offsets. Index = (value - min).
+    /// The last element is the default offset for values outside [min, min + len - 2].
+    pub offsets: Vec<i16>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FuncProto {
     pub nparam: usize,
@@ -17,6 +29,8 @@ pub struct FuncProto {
     pub bytecodes: Vec<Instruction>,
     pub constants: Vec<RawVal>,
     pub delay_sizes: Vec<u64>,
+    /// Jump tables for switch/match expressions.
+    pub jump_tables: Vec<JumpTable>,
     /// StateTree skeleton information inherited from MIR for this function's state layout
     pub state_skeleton: StateTreeSkeleton<mir::StateType>,
 }
@@ -30,6 +44,7 @@ impl Default for FuncProto {
             bytecodes: Vec::new(),
             constants: Vec::new(),
             delay_sizes: Vec::new(),
+            jump_tables: Vec::new(),
             state_skeleton: StateTreeSkeleton::FnCall(vec![]), // Initialize as empty FnCall
         }
     }
@@ -64,6 +79,9 @@ pub struct Program {
     pub iochannels: Option<IoChannelInfo>,
     //hold absolute index of dsp function because the symbol interner can't be used in the audio thread
     pub dsp_index: Option<usize>,
+    /// Type table for CloneUserSum instruction.
+    /// Maps u8 index to TypeNodeId to keep instruction size within 64 bits.
+    pub type_table: Vec<TypeNodeId>,
 }
 impl Program {
     pub fn get_fun_index(&self, name: &str) -> Option<usize> {
@@ -82,6 +100,28 @@ impl Program {
         self.global_fn_table
             .get(dsp_i)
             .map(|(_, f)| &f.state_skeleton)
+    }
+
+    /// Add a type to the type table and return its index.
+    /// If the type already exists, returns the existing index.
+    /// Returns None if the type table is full (max 256 entries).
+    pub fn add_type_to_table(&mut self, ty: TypeNodeId) -> Option<u8> {
+        // Check if type already exists
+        if let Some(idx) = self.type_table.iter().position(|&t| t == ty) {
+            return Some(idx as u8);
+        }
+        // Add new type if table is not full
+        if self.type_table.len() < 256 {
+            self.type_table.push(ty);
+            Some((self.type_table.len() - 1) as u8)
+        } else {
+            None // Type table overflow
+        }
+    }
+
+    /// Get TypeNodeId from type table by index.
+    pub fn get_type_from_table(&self, idx: u8) -> Option<TypeNodeId> {
+        self.type_table.get(idx as usize).copied()
     }
     pub fn add_new_str(&mut self, s: String) -> usize {
         self.strings
@@ -102,9 +142,10 @@ impl std::fmt::Display for Program {
             let _ = write!(f, "upindexes: {:?}  ", fns.1.upindexes);
             let _ = writeln!(f, "state_skeleton: {:?}", fns.1.state_skeleton);
             let _ = writeln!(f, "constants:  {:?}", fns.1.constants);
+            let _ = writeln!(f, "jump_tables: {:?}", fns.1.jump_tables);
             let _ = writeln!(f, "instructions:");
             for inst in fns.1.bytecodes.iter() {
-                let _ = writeln!(f, "  {}", inst);
+                let _ = writeln!(f, "  {inst}");
             }
         }
         let _ = write!(

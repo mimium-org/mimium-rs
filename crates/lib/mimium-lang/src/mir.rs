@@ -29,12 +29,14 @@ pub enum Value {
     Function(usize),
     /// native function (Rust function item or closure)
     ExtFunction(Symbol, TypeNodeId),
+    /// Constructor with payload: (name, tag_index, sum_type)
+    Constructor(Symbol, usize, TypeNodeId),
     /// internal state
     None,
 }
 
 pub type VPtr = Arc<Value>;
-
+type Bbindex = u64;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
     Uinteger(u64),
@@ -64,6 +66,28 @@ pub enum Instruction {
     Closure(VPtr),
     //closes upvalues of specific closure. Always inserted right before Return instruction.
     CloseUpValues(VPtr, TypeNodeId),
+
+    // New heap-based closure instructions (Phase 2)
+    /// Create a closure and allocate it on the heap
+    /// MakeClosure(fn_proto, closure_size_in_words)
+    /// Returns a HeapIdx that references the allocated closure
+    MakeClosure {
+        fn_proto: VPtr, // Function prototype index
+        size: u64,      // Total size in words (for heap allocation)
+    },
+    /// Close upvalues of a heap-based closure (like CloseUpValues but for heap closures)
+    /// CloseHeapClosure(heap_addr)
+    /// This closes upvalues when the closure escapes its defining scope
+    CloseHeapClosure(VPtr),
+    /// Increment the reference count of a heap-allocated object.
+    /// Inserted whenever a heap object value is duplicated (call-by-value cloning).
+    /// At runtime this calls `heap_retain` and registers the object for release
+    /// when the current scope exits.
+    CloneHeap(VPtr),
+    /// Call a closure indirectly through heap storage
+    /// CallIndirect(heap_addr, args, return_type)
+    CallIndirect(VPtr, Vec<(VPtr, TypeNodeId)>, TypeNodeId),
+
     //label to funcproto  and localvar offset?
     GetUpValue(u64, TypeNodeId),
     SetUpValue(u64, VPtr, TypeNodeId),
@@ -74,11 +98,85 @@ pub enum Instruction {
     GetState(TypeNodeId),
 
     //condition,  basic block index for then statement, else statement, and merge block
-    JmpIf(VPtr, u64, u64, u64),
+    JmpIf(VPtr, Bbindex, Bbindex, Bbindex),
     // basic block index (for return statement)
     Jmp(i16),
     //merge
     Phi(VPtr, VPtr),
+    /// Multi-way branch for match expressions
+    /// Switch(scrutinee, cases, default_block, merge_block)
+    /// cases: Vec<(literal_value_as_i64, block_index)>
+    Switch {
+        scrutinee: VPtr,
+        /// Each case is (literal_value as i64, block_index)
+        cases: Vec<(i64, Bbindex)>,
+        /// Default block for non-exhaustive matches; None if exhaustive
+        default_block: Option<Bbindex>,
+        merge_block: Bbindex,
+    },
+    /// Phi for switch - merges values from multiple branches
+    PhiSwitch(Vec<VPtr>),
+
+    /// Tagged Union operations for sum types
+    /// Wrap a value into a tagged union: (tag, value, union_type)
+    TaggedUnionWrap {
+        tag: u64,
+        value: VPtr,
+        union_type: TypeNodeId,
+    },
+    /// Extract tag from a tagged union
+    TaggedUnionGetTag(VPtr),
+    /// Extract value from a tagged union (assuming correct tag)
+    TaggedUnionGetValue(VPtr, TypeNodeId),
+
+    /// Box a value by heap-allocating it.
+    /// Stores the given value into a new heap object and returns a HeapIdx.
+    /// Used for recursive variant types where self-references are wrapped in Boxed.
+    BoxAlloc {
+        value: VPtr,
+        inner_type: TypeNodeId,
+    },
+    /// Unbox a heap-allocated value by loading its content from the heap.
+    /// Takes a HeapIdx and returns the loaded value of the inner type.
+    BoxLoad {
+        ptr: VPtr,
+        inner_type: TypeNodeId,
+    },
+    /// Increment the reference count of a boxed heap object.
+    /// Inserted when a Boxed value is duplicated (call-by-value cloning).
+    BoxClone {
+        ptr: VPtr,
+    },
+    /// Decrement the reference count of a boxed heap object.
+    /// When the count reaches 0 the heap object is freed.
+    /// Inserted when a Boxed value goes out of scope.
+    BoxRelease {
+        ptr: VPtr,
+        inner_type: TypeNodeId,
+    },
+    /// Write a value into an already-allocated heap object (destructive update).
+    /// Used for future mutable patterns on boxed values.
+    BoxStore {
+        ptr: VPtr,
+        value: VPtr,
+        inner_type: TypeNodeId,
+    },
+    /// Clone all boxed references within a UserSum (variant) value.
+    /// This is used when passing UserSum values to functions (call-by-value).
+    /// At runtime, walks the value's structure using type information and
+    /// increments reference counts for any Boxed fields.
+    CloneUserSum {
+        value: VPtr,
+        ty: TypeNodeId,
+    },
+    /// Release all boxed references within a UserSum (variant) value.
+    /// This is used when a UserSum value goes out of scope.
+    /// At runtime, walks the value's structure using type information and
+    /// decrements reference counts for any Boxed fields.
+    ReleaseUserSum {
+        value: VPtr,
+        ty: TypeNodeId,
+    },
 
     Return(VPtr, TypeNodeId),
     //value to update state
@@ -199,10 +297,10 @@ impl From<TypeNodeId> for StateType {
             Type::Record(fields) => StateType(
                 fields
                     .iter()
-                    .map(|RecordTypeField { ty, .. }| ty.word_size())
+                    .map(|RecordTypeField { ty, .. }| ty.word_size() as u64)
                     .sum(),
             ),
-            Type::Tuple(elems) => StateType(elems.iter().map(|ty| ty.word_size()).sum()),
+            Type::Tuple(elems) => StateType(elems.iter().map(|ty| ty.word_size() as u64).sum()),
             Type::Array(_elem_ty) => StateType(1),
             _ => todo!(),
         }

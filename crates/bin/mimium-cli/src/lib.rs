@@ -14,7 +14,12 @@ use mimium_audiodriver::{
 };
 use mimium_lang::{
     Config, ExecContext,
-    compiler::{self, bytecodegen::SelfEvalMode, emit_ast},
+    compiler::{
+        self,
+        bytecodegen::SelfEvalMode,
+        emit_ast,
+        parser::{self as cst_parser, parser_errors_to_reportable},
+    },
     log,
     plugin::Plugin,
     runtime::vm,
@@ -81,6 +86,10 @@ pub enum OutputFileFormat {
 #[derive(clap::Args, Debug, Clone, Copy)]
 #[group(required = false, multiple = false)]
 pub struct Mode {
+    /// Print CST (Concrete Syntax Tree / GreenTree) and exit
+    #[arg(long, default_value_t = false)]
+    pub emit_cst: bool,
+
     /// Print AST and exit
     #[arg(long, default_value_t = false)]
     pub emit_ast: bool,
@@ -95,6 +104,7 @@ pub struct Mode {
 }
 
 pub enum RunMode {
+    EmitCst,
     EmitAst,
     EmitMir,
     EmitByteCode,
@@ -116,6 +126,14 @@ impl RunOptions {
     /// Convert parsed command line arguments into [`RunOptions`].
     pub fn from_args(args: &Args) -> Self {
         let config = args.clone().to_execctx_config();
+        if args.mode.emit_cst {
+            return Self {
+                mode: RunMode::EmitCst,
+                with_gui: false,
+                config,
+            };
+        }
+
         if args.mode.emit_ast {
             return Self {
                 mode: RunMode::EmitAst,
@@ -320,6 +338,23 @@ pub fn run_file(
     );
 
     match options.mode {
+        RunMode::EmitCst => {
+            let tokens = cst_parser::tokenize(content);
+            let preparsed = cst_parser::preparse(&tokens);
+            let (green_id, arena, tokens, errors) = cst_parser::parse_cst(tokens, &preparsed);
+
+            // Report errors to stderr if any
+            if !errors.is_empty() {
+                let reportable_errors =
+                    parser_errors_to_reportable(content, fullpath.to_path_buf(), errors);
+                report(content, fullpath.to_path_buf(), &reportable_errors);
+            }
+
+            // Print CST tree to stdout
+            let tree_output = arena.print_tree(green_id, &tokens, content, 0);
+            println!("{tree_output}");
+            Ok(())
+        }
         RunMode::EmitAst => {
             let ast = emit_ast(content, Some(PathBuf::from(fullpath)))?;
             println!("{}", ast.pretty_print());

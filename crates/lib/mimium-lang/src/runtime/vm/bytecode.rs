@@ -1,9 +1,11 @@
-use crate::{types::TypeSize, utils::half_float::HFloat};
+use crate::{interner::TypeNodeId, types::TypeSize, utils::half_float::HFloat};
 
 pub type Reg = u8; // register position
 pub type ConstPos = u16;
 pub type GlobalPos = u8;
 pub type Offset = i16;
+pub type ShotrOffset = i8;
+pub type TypeTableIndex = u8;
 //24bit unsigned integer for shiftsate
 pub type StateOffset = intx::U24;
 /// Instructions for bytecode. Currently, each instructon has the 64 bit size(Tag, up to 3 bytes arguments.)
@@ -32,6 +34,45 @@ pub enum Instruction {
     Closure(Reg, Reg),
     /// register of the closure to be closed. other local closures will be released with this instruction.
     Close(Reg),
+
+    // New heap-based closure instructions (Phase 3)
+    /// Create a closure on the heap. Destination, Function Index, Closure Size
+    /// The closure data is allocated on the heap and a HeapIdx is stored in the destination register.
+    MakeHeapClosure(Reg, Reg, TypeSize),
+    /// Close upvalues of a heap-based closure. Address Register (HeapIdx)
+    CloseHeapClosure(Reg),
+    /// Increment reference count of a heap object and register it for release at scope exit.
+    /// Used for call-by-value cloning of heap-allocated closures.
+    CloneHeap(Reg),
+    /// Call a closure indirectly through heap storage. Function register (HeapIdx), nargs, nret
+    CallIndirect(Reg, u8, TypeSize),
+
+    /// Box a value by allocating it on the heap.
+    /// BoxAlloc(destination_for_HeapIdx, source_value, inner_word_size)
+    /// Allocates a heap object of inner_word_size, copies from source, stores HeapIdx in destination.
+    BoxAlloc(Reg, Reg, TypeSize),
+    /// Unbox a heap-allocated value by loading from heap.
+    /// BoxLoad(destination, source_HeapIdx, inner_word_size)
+    /// Reads inner_word_size words from heap and stores to destination registers.
+    BoxLoad(Reg, Reg, TypeSize),
+    /// Increment the reference count of a boxed heap object.
+    /// BoxClone(heap_ptr_reg)
+    BoxClone(Reg),
+    /// Decrement the reference count of a boxed heap object and free if count reaches 0.
+    /// BoxRelease(heap_ptr_reg)
+    BoxRelease(Reg),
+    /// Write a value into an already-allocated heap object (destructive update).
+    /// BoxStore(heap_ptr_reg, src_reg, inner_word_size)
+    BoxStore(Reg, Reg, TypeSize),
+    /// Clone all boxed references within a UserSum value.
+    /// CloneUserSum(value_reg, value_size, type_table_index)
+    /// The type_table_index is used to look up TypeNodeId from Program.type_table.
+    CloneUserSum(Reg, TypeSize, TypeTableIndex),
+    /// Release all boxed references within a UserSum value.
+    /// ReleaseUserSum(value_reg, value_size, type_table_index)
+    /// The type_table_index is used to look up TypeNodeId from Program.type_table.
+    ReleaseUserSum(Reg, TypeSize, TypeTableIndex),
+
     /// destination,source, size
     GetUpValue(Reg, Reg, TypeSize),
     SetUpValue(Reg, Reg, TypeSize),
@@ -57,6 +98,11 @@ pub enum Instruction {
     Jmp(Offset),
     /// jump to instruction over the offset if the value in the first argument was negative.
     JmpIfNeg(Reg, Offset),
+    /// Jump table for switch/match expressions.
+    /// (scrutinee_reg, table_index)
+    /// Looks up the scrutinee value in the jump table and jumps to the corresponding offset.
+    /// If not found, jumps to the default offset stored in the jump table.
+    JmpTable(Reg, u8),
 
     /// Primitive Operations.
     /// Destination, Src1, Src2
@@ -140,6 +186,48 @@ impl std::fmt::Display for Instruction {
             Instruction::Close(src) => {
                 write!(f, "{:<10} {}", "close", src)
             }
+            // New heap-based instructions (Phase 3)
+            Instruction::MakeHeapClosure(dst, fn_idx, size) => {
+                write!(f, "{:<10} {} {} {}", "mkheapcls", dst, fn_idx, size)
+            }
+            Instruction::CloseHeapClosure(addr) => {
+                write!(f, "{:<10} {}", "clsheapcls", addr)
+            }
+            Instruction::CloneHeap(addr) => {
+                write!(f, "{:<10} {}", "cloneheap", addr)
+            }
+            Instruction::CallIndirect(func, nargs, nret_req) => {
+                write!(f, "{:<10} {} {} {}", "callind", func, nargs, nret_req)
+            }
+            Instruction::BoxAlloc(dst, src, size) => {
+                write!(f, "{:<10} {} {} {}", "boxalloc", dst, src, size)
+            }
+            Instruction::BoxLoad(dst, src, size) => {
+                write!(f, "{:<10} {} {} {}", "boxload", dst, src, size)
+            }
+            Instruction::BoxClone(src) => {
+                write!(f, "{:<10} {}", "boxclone", src)
+            }
+            Instruction::BoxRelease(src) => {
+                write!(f, "{:<10} {}", "boxrelease", src)
+            }
+            Instruction::BoxStore(dst, src, size) => {
+                write!(f, "{:<10} {} {} {}", "boxstore", dst, src, size)
+            }
+            Instruction::CloneUserSum(src, size, type_idx) => {
+                write!(
+                    f,
+                    "{:<10} {} {} type_idx:{}",
+                    "clone_usersum", src, size, type_idx
+                )
+            }
+            Instruction::ReleaseUserSum(src, size, type_idx) => {
+                write!(
+                    f,
+                    "{:<10} {} {} type_idx:{}",
+                    "release_usersum", src, size, type_idx
+                )
+            }
             Instruction::Delay(dst, src, time) => {
                 write!(f, "{:<10} {} {} {}", "delay", dst, src, time)
             }
@@ -160,6 +248,9 @@ impl std::fmt::Display for Instruction {
                 write!(f, "{:<10} {} {} {}", "setglobal", dst, src, size)
             }
             Instruction::JmpIfNeg(dst, cond) => write!(f, "{:<10} {} {}", "jmpifneg", dst, cond),
+            Instruction::JmpTable(scrut, table_idx) => {
+                write!(f, "{:<10} {} {}", "jmptable", scrut, table_idx)
+            }
             Instruction::AbsF(dst, src) => write!(f, "{:<10} {} {}", "absf", dst, src),
             Instruction::NegF(dst, src) => write!(f, "{:<10} {} {}", "negf", dst, src),
             Instruction::SinF(dst, src) => write!(f, "{:<10} {} {}", "sin", dst, src),

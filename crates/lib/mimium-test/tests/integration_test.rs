@@ -1,5 +1,5 @@
 use mimium_audiodriver::driver::{Driver, RuntimeData};
-use mimium_lang::{interner::ToSymbol, utils::error::report};
+use mimium_lang::utils::error::report;
 use mimium_test::*;
 use wasm_bindgen_test::*;
 
@@ -193,6 +193,13 @@ fn ifblock() {
 fn nested_ifblock() {
     let res = run_file_test_mono("nested_if.mmm", 1).unwrap();
     let ans = vec![119.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn match_int() {
+    let res = run_file_test_mono("match_int.mmm", 1).unwrap();
+    let ans = vec![900.0];
     assert_eq!(res, ans);
 }
 
@@ -468,7 +475,7 @@ fn shadowing_assign() {
 fn many_errors() {
     let res = run_error_test("many_errors.mmm", false);
     //todo! check error types
-    assert_eq!(res.len(), 6);
+    assert_eq!(res.len(), 9);
 }
 #[wasm_bindgen_test(unsupported = test)]
 fn hof_typefail() {
@@ -700,4 +707,496 @@ fn twodelay() {
     let res = run_file_test_stereo("twodelay.mmm", 5).unwrap();
     let ans = vec![0.0, 0.0, 4.0, 0.0, 4.0, 6.0, 4.0, 6.0, 4.0, 6.0];
     assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_basic() {
+    // mymath::add(2.0, 3.0) + mymath::mul(4.0, 5.0) = 5.0 + 20.0 = 25.0
+    let res = run_file_test_mono("module_basic.mmm", 3).unwrap();
+    let ans = vec![25.0, 25.0, 25.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_nested() {
+    // outer::exposed() calls inner::secret() which returns 42.0
+    let res = run_file_test_mono("module_nested.mmm", 3).unwrap();
+    let ans = vec![42.0, 42.0, 42.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_visibility_fail() {
+    // Test that private module members cannot be accessed from outside
+    let res = run_error_test("module_visibility_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+    assert!(
+        res[0].get_message().contains("is private"),
+        "Expected 'is private' error message, got: {:?}",
+        res[0].get_message()
+    );
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_use() {
+    // Test that `use mymath::add` allows using `add` without qualification
+    let res = run_file_test_mono("module_use.mmm", 3).unwrap();
+    let ans = vec![15.0, 15.0, 15.0]; // add(10.0, 5.0) = 15.0
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_use_private_fail() {
+    // Test that `use` statement respects visibility - using private function should fail
+    let res = run_error_test("module_use_private_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+    assert!(
+        res[0].get_message().contains("is private"),
+        "Expected 'is private' error message, got: {:?}",
+        res[0].get_message()
+    );
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_external() {
+    // Test external file module: mod foo; syntax (Rust-like)
+    // Loads module_external_math.mmm from same directory
+    let res = run_file_test_mono("module_external.mmm", 3).unwrap();
+    let ans = vec![15.0, 15.0, 15.0]; // add(1,2) + mul(3,4) = 3 + 12 = 15
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_external_use() {
+    // Test external file module with use statement
+    let res = run_file_test_mono("module_external_use.mmm", 3).unwrap();
+    let ans = vec![12.0, 12.0, 12.0]; // add(5, 7) = 12
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_relative_path() {
+    // Test relative path resolution: inner::secret() from within outer module
+    // resolves to outer::inner::secret()
+    let res = run_file_test_mono("module_relative_path.mmm", 3).unwrap();
+    let ans = vec![42.0, 42.0, 42.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_use_multiple() {
+    // Test multiple imports: use math::{double, triple}
+    let res = run_file_test_mono("module_use_multiple.mmm", 3).unwrap();
+    let ans = vec![50.0, 50.0, 50.0]; // double(10) + triple(10) = 20 + 30 = 50
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_use_wildcard() {
+    // Test wildcard import: use math::*
+    let res = run_file_test_mono("module_use_wildcard.mmm", 3).unwrap();
+    let ans = vec![50.0, 50.0, 50.0]; // double(10) + triple(10) = 20 + 30 = 50
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn module_pub_use() {
+    // Test pub use for re-exporting
+    let res = run_file_test_mono("module_pub_use.mmm", 3).unwrap();
+    let ans = vec![42.0, 42.0, 42.0]; // api::helper() returns 42.0
+    assert_eq!(res, ans);
+}
+#[wasm_bindgen_test(unsupported = test)]
+fn module_macro() {
+    // Test pub use for re-exporting
+    let res = run_file_test_mono("module_macro.mmm", 3).unwrap();
+    let ans = vec![2.0, 2.0, 2.0];
+    assert_eq!(res, ans);
+}
+#[wasm_bindgen_test(unsupported = test)]
+fn module_macro_sugar() {
+    // Test pub use for re-exporting
+    let res = run_file_test_mono("module_macro_sugar.mmm", 3).unwrap();
+    let ans = vec![2.0, 2.0, 2.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn sum_type_basic() {
+    // Test union type float | int with constructor pattern matching
+    let res = run_file_test_mono("sum_type_basic.mmm", 1).unwrap();
+    let ans = vec![3.0]; // test_union(5)=1 + test_union(99.0)=2
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn enum_basic() {
+    // Test user-defined enum type: type MyEnum = One | Two | Three
+    let res = run_file_test_mono("enum_basic.mmm", 1).unwrap();
+    let ans = vec![6.0]; // test(One)=1 + test(Two)=2 + test(Three)=3 = 6
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn enum_complex() {
+    let res = run_file_test_mono("enum_complex.mmm", 1).unwrap();
+    let ans = vec![26.0]; // 3*1 + 4*2 + 5*3 = 3 + 8 + 15 = 26
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn enum_multi_scrutinee() {
+    let res = run_file_test_mono("enum_multi_scrutinee.mmm", 1).unwrap();
+    let ans = vec![160.0]; // test_simple(1,1)=10 + test_simple(1,2)=20 + test_simple(2,1)=30 + test_simple(3,3)=100 = 160
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn enum_macro() {
+    let res = run_file_test_mono("enum_macro.mmm", 1).unwrap();
+    let ans = vec![3.0]; // mymacro(One(100.0))=1.0 + mymacro(Two(200.0))=2.0 = 3.0
+    assert_eq!(res, ans);
+}
+#[wasm_bindgen_test(unsupported = test)]
+fn enum_multi_scrutinee2() {
+    let res = run_file_test_mono("enum_multi_scrutinee2.mmm", 1).unwrap();
+    let ans = vec![213.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn enum_simple_tuple() {
+    // Simplified tuple pattern matching test: match (One(1), One(2))
+    let res = run_file_test_mono("enum_simple_tuple.mmm", 1).unwrap();
+    let ans = vec![3.0]; // One(1) + One(2) = 3
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_alias_simple() {
+    // Test simple type alias: type alias Freq = float
+    let res = run_file_test_mono("type_alias_simple.mmm", 1).unwrap();
+    let ans = vec![880.0]; // let x: Freq = 440.0; x * 2.0 = 880.0
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_alias_comprehensive() {
+    // Test multiple type aliases used in functions
+    // oscillator(440.0, 0.5) * 2.0 = (440.0 * 0.5) * 2.0 = 220.0 * 2.0 = 440.0
+    let res = run_file_test_mono("type_alias_comprehensive.mmm", 1).unwrap();
+    let ans = vec![440.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn stateful_match() {
+    // Test basic enum matching without stateful functions first
+    // move_player(Up) = 1.0, move_player(Down) = 2.0
+    // Total: 1.0 + 2.0 = 3.0
+    let res = run_file_test_mono("stateful_match.mmm", 1).unwrap();
+    let ans = vec![3.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn stateful_in_match() {
+    // Test stateful function called within match expression
+    // dir = Up, so counter(1.0) is called
+    // First call: 1.0 + 0 = 1.0 (initial state 0)
+    let res = run_file_test_mono("stateful_in_match.mmm", 1).unwrap();
+    let ans = vec![1.0];
+    assert_eq!(res, ans);
+}
+
+// #[wasm_bindgen_test(unsupported = test)]
+// fn map_record() {
+//     let res = run_file_test_stereo("map_record.mmm", 1).unwrap();
+//     // src = [{freq = 1000.0, time = 0.0}, {freq = 2000.0, time = 2.0}]
+//     // mapped = map(src, |v| {freq = v.freq*2.0, time = v.time+10.0} )
+//     // ansf = mapped[0].freq + mapped[1].freq = 2000 + 4000 = 6000
+//     // anst = mapped[0].time + mapped[1].time = 10.0 + 12.0 = 22.0
+//     let ans = vec![6000.0, 22.0];
+//     assert_eq!(res, ans);
+// }
+#[wasm_bindgen_test(unsupported = test)]
+fn union_type_multi_arg() {
+    // Test union type with multi-arg syntax (treated as tuple)
+    // calculateArea(Rectangle((5.0, 2.5))) = 5.0 * 2.5 = 12.5
+    let res = run_file_test_mono("union_type_multi_arg.mmm", 1).unwrap();
+    let ans = vec![12.5];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn mixed_type_syntax() {
+    // Test mixing type aliases and union types
+    // generateWave(Square, 440.0, 0.5) = 440.0 * 0.5 * 1.5 = 330.0
+    let res = run_file_test_mono("mixed_type_syntax.mmm", 1).unwrap();
+    let ans = vec![330.0];
+    assert_eq!(res, ans);
+}
+
+// ============ Match Exhaustiveness Tests (should fail) ============
+
+#[wasm_bindgen_test(unsupported = test)]
+fn match_exhaustiveness_fail_union() {
+    // Test non-exhaustive match on union type (missing 'string' branch)
+    let errs = run_error_test("match_exhaustiveness_fail_union.mmm", false);
+    assert!(!errs.is_empty(), "Expected exhaustiveness error");
+
+    // Check that the error message mentions non-exhaustive match
+    let err_message = errs[0].get_message();
+    assert!(
+        err_message.contains("not exhaustive"),
+        "Expected 'not exhaustive' in error message, got: {err_message}"
+    );
+
+    // Check that 'string' is mentioned as missing
+    assert!(
+        err_message.contains("string")
+            || errs[0]
+                .get_labels()
+                .iter()
+                .any(|(_, label)| label.contains("string")),
+        "Expected 'string' to be mentioned as missing pattern, got: {err_message}"
+    );
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn match_exhaustiveness_fail_enum() {
+    // Test non-exhaustive match on enum type (missing 'Third' constructor)
+    let errs = run_error_test("match_exhaustiveness_fail_enum.mmm", false);
+    assert!(!errs.is_empty(), "Expected exhaustiveness error");
+
+    // Check that the error message mentions non-exhaustive match
+    let err_message = errs[0].get_message();
+    assert!(
+        err_message.contains("not exhaustive"),
+        "Expected 'not exhaustive' in error message, got: {err_message}",
+    );
+
+    // Check that 'Third' is mentioned as missing
+    assert!(
+        err_message.contains("Third")
+            || errs[0]
+                .get_labels()
+                .iter()
+                .any(|(_, label)| label.contains("Third")),
+        "Expected 'Third' to be mentioned as missing pattern, got: {err_message}",
+    );
+}
+
+// ============ Recursive Type Declaration Tests ============
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_recursive_invalid_direct() {
+    // Test invalid direct recursive type alias: type A = A
+    let errs = run_error_test("type_recursive_invalid_direct.mmm", false);
+    assert!(!errs.is_empty(), "Expected circular type error");
+
+    let err_message = errs[0].get_message();
+    assert!(
+        err_message.contains("ircular") || err_message.contains("ecursive"),
+        "Expected circular/recursive type error, got: {err_message}"
+    );
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_recursive_invalid_mutual() {
+    // Test invalid mutual recursive type aliases: type A = B, type B = A
+    let errs = run_error_test("type_recursive_invalid_mutual.mmm", false);
+    assert!(!errs.is_empty(), "Expected circular type error");
+
+    let err_message = errs[0].get_message();
+    assert!(
+        err_message.contains("ircular") || err_message.contains("ecursive"),
+        "Expected circular/recursive type error, got: {err_message}"
+    );
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_recursive_invalid_list() {
+    // Test recursive type in constructor: type List = Nil | Cons(float, List)
+    // This should still fail because it doesn't use 'rec' keyword
+    let errs = run_error_test("type_recursive_invalid_list.mmm", false);
+    assert!(!errs.is_empty(), "Expected recursive type error");
+
+    let err_message = errs[0].get_message();
+    assert!(
+        err_message.contains("circular") || err_message.contains("ecursive"),
+        "Expected circular/recursive type error, got: {err_message}"
+    );
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_recursive_list() {
+    let (file, src) = load_src("type_recursive_list.mmm");
+    let res = run_source_test(&src, 1, false, Some(file));
+    match res {
+        Ok(res) => assert_eq!(res, vec![6.0]),
+        Err(errs) => {
+            for err in &errs {
+                eprintln!("Error: {}", err.get_message());
+            }
+            panic!("type_recursive_list failed");
+        }
+    }
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_recursive_tree() {
+    let (file, src) = load_src("type_recursive_tree.mmm");
+    let res = run_source_test(&src, 1, false, Some(file));
+    match res {
+        Ok(res) => assert_eq!(res, vec![28.0]),
+        Err(errs) => {
+            for err in &errs {
+                eprintln!("Error: {}", err.get_message());
+            }
+            panic!("type_recursive_tree failed");
+        }
+    }
+}
+#[wasm_bindgen_test(unsupported = test)]
+fn type_recursive_tree_macro() {
+    let (file, src) = load_src("type_recursive_tree_macro.mmm");
+    let res = run_source_test(&src, 1, false, Some(file));
+    match res {
+        Ok(res) => assert_eq!(res, vec![28.0]),
+        Err(errs) => {
+            for err in &errs {
+                eprintln!("Error: {}", err.get_message());
+            }
+            panic!("type_recursive_tree failed");
+        }
+    }
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_recursive_option() {
+    let (file, src) = load_src("type_recursive_option.mmm");
+    let res = run_source_test(&src, 1, false, Some(file));
+    match res {
+        Ok(res) => assert_eq!(res, vec![52.0]),
+        Err(errs) => {
+            for err in &errs {
+                eprintln!("Error: {}", err.get_message());
+            }
+            panic!("type_recursive_option failed");
+        }
+    }
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn box_clone_sharing() {
+    let (file, src) = load_src("box_clone_sharing.mmm");
+    let res = run_source_test(&src, 1, false, Some(file));
+    match res {
+        Ok(res) => assert_eq!(res, vec![9.0]),
+        Err(errs) => {
+            for err in &errs {
+                eprintln!("Error: {}", err.get_message());
+            }
+            panic!("box_clone_sharing failed");
+        }
+    }
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn box_nested_scopes() {
+    let (file, src) = load_src("box_nested_scopes.mmm");
+    let res = run_source_test(&src, 1, false, Some(file));
+    match res {
+        Ok(res) => assert_eq!(res, vec![11.0]),
+        Err(errs) => {
+            for err in &errs {
+                eprintln!("Error: {}", err.get_message());
+            }
+            panic!("box_nested_scopes failed");
+        }
+    }
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn box_multiple_refs() {
+    let (file, src) = load_src("box_multiple_refs.mmm");
+    let res = run_source_test(&src, 1, false, Some(file));
+    match res {
+        Ok(res) => assert_eq!(res, vec![15.0]),
+        Err(errs) => {
+            for err in &errs {
+                eprintln!("Error: {}", err.get_message());
+            }
+            panic!("box_multiple_refs failed");
+        }
+    }
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn box_gc_test() {
+    let (file, src) = load_src("box_gc_test.mmm");
+    let res = run_source_test(&src, 1, false, Some(file));
+    match res {
+        Ok(res) => assert_eq!(res, vec![31.0]),
+        Err(errs) => {
+            for err in &errs {
+                eprintln!("Error: {}", err.get_message());
+            }
+            panic!("box_gc_test failed");
+        }
+    }
+}
+
+// ============ Type Visibility Tests ============
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_visibility_private_alias_fail2() {
+    // Test that private type aliases cannot be accessed from outside
+    let res = run_error_test("type_visibility_private_alias_fail2.mmm", false);
+    assert!(!res.is_empty(), "Expected PrivateTypeAccess error");
+    // Check if any error message contains "private"
+    let has_private_error = res.iter().any(|err| err.get_message().contains("private"));
+    assert!(
+        has_private_error,
+        "Expected 'private' type access error, got: {}",
+        res.iter()
+            .map(|e| e.get_message())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+}
+#[wasm_bindgen_test(unsupported = test)]
+fn type_visibility_private_alias_fail() {
+    // Test that private type aliases cannot be accessed from outside
+    let res = run_error_test("type_visibility_private_alias_fail.mmm", false);
+    assert!(!res.is_empty(), "Expected PrivateTypeAccess error");
+    let err_message = res[0].get_message();
+    assert!(
+        err_message.contains("private"),
+        "Expected 'private' type access error, got: {err_message}"
+    );
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_visibility_private_declaration_fail() {
+    // Test that private type declarations cannot be accessed from outside
+    let res = run_error_test("type_visibility_private_declaration_fail.mmm", false);
+    assert!(!res.is_empty(), "Expected PrivateTypeAccess error");
+    let err_message = res[0].get_message();
+    assert!(
+        err_message.contains("private"),
+        "Expected 'private' type access error, got: {err_message}"
+    );
+}
+#[test]
+fn type_visibility_leak() {
+    // Test that public functions cannot leak private types in their signatures
+    let res = run_error_test("type_visibility_leak_fail.mmm", false);
+    assert!(!res.is_empty(), "Expected PrivateTypeLeak error");
+    let err_message = res[0].get_message();
+    assert!(
+        err_message.contains("private type") && err_message.contains("signature"),
+        "Expected private type leak error, got: {err_message}"
+    );
 }

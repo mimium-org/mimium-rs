@@ -1,0 +1,12 @@
+// Test case: Non-exhaustive match on union type
+// Should fail because 'string' branch is missing
+
+fn test(x: float | string) -> float {
+    match x {
+        float(v) => v
+    }
+}
+
+fn dsp() {
+    test(3.14)
+}

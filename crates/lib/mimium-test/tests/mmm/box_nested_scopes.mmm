@@ -1,0 +1,29 @@
+// Test case: BoxRelease - nested scopes with automatic memory management
+// Boxed values should be automatically released when going out of scope
+type rec List = Nil | Cons(float, List)
+
+fn sum(list: List) -> float {
+    match list {
+        Nil => 0.0,
+        Cons(head, tail) => head + sum(tail)
+    }
+}
+
+fn make_nested_lists() -> float {
+    {
+        let list1 = Cons(1.0, Cons(2.0, Nil))
+        let _ = sum(list1)  // list1 should be released here
+    }
+    {
+        let list2 = Cons(3.0, Cons(4.0, Nil))
+        let _ = sum(list2)  // list2 should be released here
+    }
+    {
+        let list3 = Cons(5.0, Cons(6.0, Nil))
+        sum(list3)  // list3 should be released at end of scope, returns 11.0
+    }
+}
+
+fn dsp() -> float {
+    make_nested_lists()  // 5.0 + 6.0 = 11.0
+}

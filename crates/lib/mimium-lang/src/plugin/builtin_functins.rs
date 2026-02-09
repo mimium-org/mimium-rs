@@ -39,7 +39,7 @@ mod lift_arrayf {
     use crate::code;
     use crate::interner::TypeNodeId;
     use crate::interpreter::Value;
-    use crate::types::TypeSchemeId;
+
     use crate::{
         function, numeric,
         types::{PType, Type},
@@ -131,10 +131,7 @@ mod split_tail {
     use crate::interpreter::Value;
     use crate::plugin::CommonFunction;
     use crate::types::TypeSchemeId;
-    use crate::{
-        function,
-        types::{PType, Type},
-    };
+    use crate::{function, types::Type};
 
     fn machine_function(
         machine: &mut crate::runtime::vm::Machine,
@@ -219,10 +216,7 @@ mod split_head {
     use crate::interpreter::Value;
     use crate::plugin::CommonFunction;
     use crate::types::TypeSchemeId;
-    use crate::{
-        function,
-        types::{PType, Type},
-    };
+    use crate::{function, types::Type};
 
     fn machine_function(
         machine: &mut crate::runtime::vm::Machine,
@@ -463,6 +457,53 @@ mod prepend {
     }
 }
 
+mod map {
+
+    use crate::interner::ToSymbol;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::types::{RecordTypeField, Type, TypeSchemeId};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        // This is a placeholder. The `map` function's logic should be handled
+        // by monomorphization in the MIR generation stage, so this macro
+        // should not be called directly.
+        panic!(
+            "'map' function is not implemented as a macro. It should be handled by the compiler."
+        );
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        let a = Type::TypeScheme(TypeSchemeId(0)).into_id();
+        let b = Type::TypeScheme(TypeSchemeId(1)).into_id();
+
+        let f_ty = Type::Function { arg: a, ret: b }.into_id();
+        let arr_a_ty = Type::Array(a).into_id();
+        let arr_b_ty = Type::Array(b).into_id();
+
+        // map takes two arguments as a record: the array and the function
+        // map: ({arr: [a], f: (a -> b)}) -> [b]
+        let arg_record = Type::Record(vec![
+            RecordTypeField::new("arr".to_symbol(), arr_a_ty, false),
+            RecordTypeField::new("f".to_symbol(), f_ty, false),
+        ])
+        .into_id();
+
+        let map_fn_ty = Type::Function {
+            arg: arg_record,
+            ret: arr_b_ty,
+        }
+        .into_id();
+
+        MacroInfo {
+            name: "map".to_symbol(),
+            ty: map_fn_ty,
+            fun: std::rc::Rc::new(std::cell::RefCell::new(macro_function)),
+        }
+    }
+}
+
 /// Main function to expose the definitions of built-in functions.
 fn generate_builtin_functions() -> impl ExactSizeIterator<Item = CommonFunction> {
     [
@@ -507,6 +548,7 @@ fn generate_default_macros() -> impl ExactSizeIterator<Item = MacroInfo> {
         lift_f::signature(),
         prepend::signature(),
         lift_arrayf::signature(),
+        map::signature(),
     ]
     .into_iter()
 }

@@ -1,0 +1,16 @@
+// Test for integer match expression (Phase 1)
+// Tests multiple cases and wildcard pattern
+
+fn test_match(num) {
+    match num {
+        0 => 100
+        1 => 200
+        _ => 300
+    }
+}
+
+fn dsp() {
+    // test(0)=100, test(1)=200, test(2)=300, test(100)=300
+    // result: 900
+    test_match(0) + test_match(1) + test_match(2) + test_match(100)
+}

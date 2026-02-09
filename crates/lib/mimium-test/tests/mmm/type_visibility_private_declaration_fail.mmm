@@ -1,0 +1,34 @@
+// Test that private type declarations cannot be accessed from outside
+// This test should fail with a PrivateTypeAccess error
+
+mod mymod {
+    // Private type declaration - not accessible from outside the module
+    type PrivateType = Variant1 | Variant2(float)
+    
+    // Public type declaration - accessible from outside
+    pub type PublicType = Option1 | Option2(float)
+    
+    // Private function using private type
+    fn internal_use(v: PrivateType) -> float {
+        match v {
+            Variant1 => 0.0
+            Variant2(x) => x
+        }
+    }
+    
+    // Public function using public type
+    pub fn public_use(v: PublicType) -> float {
+        match v {
+            Option1 => 0.0
+            Option2(x) => x
+        }
+    }
+}
+
+// This should fail: trying to use a private type declaration
+use mymod::PrivateType
+
+fn dsp() {
+    let x: PrivateType = mymod::Variant1
+    0.0
+}

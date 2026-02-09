@@ -7,16 +7,14 @@ pub mod semantic_token;
 use dashmap::DashMap;
 use log::debug;
 use mimium_lang::compiler::mirgen;
+use mimium_lang::compiler::parser;
 use mimium_lang::interner::{ExprNodeId, TypeNodeId};
 use mimium_lang::plugin::Plugin;
 use mimium_lang::utils::error::ReportableError;
 use mimium_lang::{Config, ExecContext};
 use ropey::Rope;
 use semantic_token::{ImCompleteSemanticToken, LEGEND_TYPE, ParseResult, parse};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::notification::Notification;
+use tower_lsp::jsonrpc::{Error, ErrorCode, Result};
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 type SrcUri = String;
@@ -70,6 +68,16 @@ struct Backend {
     // semantic_map: DashMap<SrcUri, Semantic>,
     document_map: DashMap<SrcUri, Rope>,
     semantic_token_map: DashMap<SrcUri, Vec<ImCompleteSemanticToken>>,
+    // Parser state
+    parser_arena_map: DashMap<SrcUri, parser::GreenNodeArena>,
+    parser_root_map: DashMap<SrcUri, parser::GreenNodeId>,
+    parser_tokens_map: DashMap<SrcUri, Vec<parser::Token>>,
+}
+
+fn server_error(message: &str) -> Error {
+    let mut error = Error::new(ErrorCode::ServerError(-1));
+    error.message = message.to_owned().into();
+    error
 }
 
 #[tower_lsp::async_trait]
@@ -121,6 +129,7 @@ impl LanguageServer for Backend {
                     }),
                     file_operations: None,
                 }),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             server_info: None,
@@ -217,6 +226,52 @@ impl LanguageServer for Backend {
     async fn did_close(&self, _: DidCloseTextDocumentParams) {
         debug!("file closed!");
     }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        debug!("formatting");
+        let uri = params.text_document.uri;
+        let rope = match self.document_map.get(uri.as_str()) {
+            Some(rope) => rope,
+            None => {
+                return Err(Error::new(ErrorCode::ServerError(-1)));
+            }
+        };
+
+        let text = rope.to_string();
+        let indent_size = params.options.tab_size as usize;
+        let width = 80usize;
+
+        // Set global config for formatter
+        if let Ok(mut gdata) = mimium_fmt::GLOBAL_DATA.try_lock() {
+            gdata.indent_size = indent_size;
+        }
+
+        // Call formatter directly
+        let formatted = match mimium_fmt::pretty_print(&text, &None, width) {
+            Ok(result) => result,
+            Err(errs) => {
+                let error_messages: Vec<String> = errs.iter().map(|e| e.get_message()).collect();
+                return Err(server_error(&format!(
+                    "formatter error: {}",
+                    error_messages.join(", ")
+                )));
+            }
+        };
+
+        debug!("formatted: {formatted:#?}");
+
+        let last_line = rope.len_lines().saturating_sub(1);
+        let last_char = rope.line(last_line).len_chars();
+        let range = Range::new(
+            Position::new(0, 0),
+            Position::new(last_line as u32, last_char as u32),
+        );
+
+        Ok(Some(vec![TextEdit {
+            range,
+            new_text: formatted,
+        }]))
+    }
 }
 fn diagnostic_from_error(
     error: Box<dyn ReportableError>,
@@ -265,16 +320,40 @@ impl Backend {
     fn compile(&self, src: &str, url: Url) -> Vec<Diagnostic> {
         let rope = ropey::Rope::from_str(src);
 
+        // Run parser for IDE features
+        let parser_tokens = parser::tokenize(src);
+        let parser_preparsed = parser::preparse(&parser_tokens);
+        let (parser_root, parser_arena, parser_tokens, _parser_errors) =
+            parser::parse_cst(parser_tokens, &parser_preparsed);
+
+        // Generate semantic tokens from parser by traversing Green Tree
+        let semantic_tokens =
+            semantic_token::tokens_from_green(parser_root, &parser_arena, &parser_tokens);
+        self.semantic_token_map
+            .insert(url.to_string(), semantic_tokens);
+
+        // Store parser results
+        self.parser_tokens_map
+            .insert(url.to_string(), parser_tokens);
+        self.parser_root_map.insert(url.to_string(), parser_root);
+        self.parser_arena_map.insert(url.to_string(), parser_arena);
+
+        // Run existing parser for type checking
         let ParseResult {
             ast,
             errors,
-            semantic_tokens,
+            semantic_tokens: _, // Ignore semantic tokens from old parser
+            module_info,
         } = parse(src, url.as_str());
-        self.semantic_token_map
-            .insert(url.to_string(), semantic_tokens);
+        // Note: semantic_token_map is already populated above with parser tokens
         let errs = {
             let ast = ast.wrap_to_staged_expr();
-            let (_, _, typeerrs) = mirgen::typecheck(ast, &self.compiler_ctx.builtin_types, None);
+            let (_, _, typeerrs) = mirgen::typecheck_with_module_info(
+                ast,
+                &self.compiler_ctx.builtin_types,
+                None,
+                module_info,
+            );
             errors.into_iter().chain(typeerrs).collect::<Vec<_>>()
         };
 
@@ -306,6 +385,9 @@ pub async fn lib_main() {
         ast_map: DashMap::new(),
         document_map: DashMap::new(),
         semantic_token_map: DashMap::new(),
+        parser_arena_map: DashMap::new(),
+        parser_root_map: DashMap::new(),
+        parser_tokens_map: DashMap::new(),
     })
     .finish();
 

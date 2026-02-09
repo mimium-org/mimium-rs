@@ -1,0 +1,28 @@
+// Test that private type aliases cannot be accessed from outside
+// This test should fail with a PrivateTypeAccess error
+
+mod mymath {
+    // Private type alias - not accessible from outside the module
+    type alias PrivateNum = float
+    
+    // Public type alias - accessible from outside
+    pub type alias PublicNum = float
+    
+    // Private function using private type
+    fn internal_double(x: PrivateNum) -> PrivateNum {
+        x * 2.0
+    }
+    
+    // Public function using public type
+    pub fn public_triple(x: PublicNum) -> PublicNum {
+        x * 3.0
+    }
+}
+
+// This should fail: trying to use a private type alias
+use mymath::PrivateNum
+
+fn dsp() {
+    let x: PrivateNum = 21.0
+    x
+}

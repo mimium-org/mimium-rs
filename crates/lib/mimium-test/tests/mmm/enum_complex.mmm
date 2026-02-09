@@ -1,0 +1,16 @@
+type MyEnum = One(float) 
+            | Two((float,float))
+
+fn test(myenum: MyEnum){
+  match myenum {
+    One(v) => v*1,
+    Two((x,y)) => x*2+y*3
+  }
+}
+
+let x = test(One(3))
+let y = test(Two((4,5)))
+
+fn dsp(){
+    x+y // 3*1 + 4*2 + 5*3 = 3 + 8 + 15 = 26
+}

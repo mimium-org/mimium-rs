@@ -1,0 +1,22 @@
+// Test case: Recursive variant type with 'rec' keyword
+// This should succeed with the new 'type rec' syntax
+type rec List = Nil | Cons(float, List)
+
+fn length(list: List) -> float {
+    match list {
+        Nil => 0.0,
+        Cons(_, tail) => 1.0 + length(tail)
+    }
+}
+
+fn sum(list: List) -> float {
+    match list {
+        Nil => 0.0,
+        Cons(head, tail) => head + sum(tail)
+    }
+}
+
+fn dsp() -> float {
+    let mylist = Cons(1.0, Cons(2.0, Cons(3.0, Nil)))
+    sum(mylist)  // 1.0 + 2.0 + 3.0 = 6.0
+}

@@ -232,6 +232,30 @@ where
             let errs = [err, err2].concat();
             (ConvertResult { expr, found_any }, errs)
         }
+        Expr::Match(scrutinee, arms) => {
+            let (scrutinee_res, mut errs) = conversion(scrutinee);
+            let new_arms: Vec<_> = arms
+                .into_iter()
+                .map(|arm| {
+                    let (body_res, body_errs) = conversion(arm.body);
+                    errs.extend(body_errs);
+                    (
+                        crate::ast::MatchArm {
+                            pattern: arm.pattern,
+                            body: body_res.expr,
+                        },
+                        body_res.found_any,
+                    )
+                })
+                .collect();
+            let found_any = scrutinee_res.found_any | new_arms.iter().any(|(_, found)| *found);
+            let expr = Expr::Match(
+                scrutinee_res.expr,
+                new_arms.into_iter().map(|(arm, _)| arm).collect(),
+            )
+            .into_id(loc);
+            (ConvertResult { expr, found_any }, errs)
+        }
         _ => (
             ConvertResult {
                 expr: e_id,
@@ -510,6 +534,55 @@ pub fn convert_pronoun(expr: ExprNodeId, file_path: PathBuf) -> (ExprNodeId, Vec
     let (res, errs) = convert_self(expr, FeedId::Global, file_path.clone());
     (res.expr, errs)
     // (expr, vec![])
+}
+
+use super::convert_qualified_names;
+use crate::ast::program::ModuleInfo;
+use crate::utils::error::ReportableError;
+
+/// Extended version of convert_pronoun that also resolves qualified names.
+/// This should be used when module information is available.
+///
+/// The pipeline is:
+/// 1. convert_operators: Expand |>, binary ops, RecordUpdate
+/// 2. convert_placeholder: _ -> lambda args
+/// 3. convert_macroexpand: macro!() -> Escape(Apply(...))
+/// 4. convert_self: self -> Feed variables
+/// 5. convert_qualified_names: QualifiedVar -> Var (with mangled names), resolve use aliases and wildcards
+///
+/// The `builtin_names` parameter should contain names from builtin functions and external functions.
+pub fn convert_pronoun_with_module(
+    expr: ExprNodeId,
+    file_path: PathBuf,
+    module_info: &ModuleInfo,
+    builtin_names: &[Symbol],
+) -> (ExprNodeId, Vec<Box<dyn ReportableError>>) {
+    // Run the existing pronoun conversions
+    let expr = convert_operators(expr, file_path.clone());
+    let expr = convert_placeholder(expr, file_path.clone());
+    let expr = convert_macroexpand(expr, file_path.clone());
+    let (res, self_errs) = convert_self(expr, FeedId::Global, file_path.clone());
+
+    // Now resolve qualified names (uses 2-pass approach internally)
+    let (expr, name_errs) = convert_qualified_names::convert_qualified_names(
+        res.expr,
+        module_info,
+        builtin_names,
+        file_path,
+    );
+
+    // Combine errors
+    let mut errors: Vec<Box<dyn ReportableError>> = self_errs
+        .into_iter()
+        .map(|e| Box::new(e) as Box<dyn ReportableError>)
+        .collect();
+    errors.extend(
+        name_errs
+            .into_iter()
+            .map(|e| Box::new(e) as Box<dyn ReportableError>),
+    );
+
+    (expr, errors)
 }
 
 #[cfg(test)]

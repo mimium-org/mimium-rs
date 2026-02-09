@@ -14,12 +14,17 @@ The language implements its own virtual machine (VM) and instruction set to exec
   - `mimium-midi` simple rmidi binding
   - `mimium-symphonia` Sampler implememntation using symphonia decoder
   - `mimium-guitools` GUI application tools for `Slider` and `Probe` macro
-- `crates/bin/mimium-bintools` Wrapping 3 binary crates to distribute in one folder
+- `crates/bin/mimium-bintools` Wrapping 3 binary crates to distribute in one folder. If you need to test those binaries, you need to rebuild this crate.
  - `crates/bin/mimium-cli` A main frontend of mimium compiler.
- - `crates/bin/mimium-fmt` A code formatter(experimental, not compatible with handling code trivia such as comments)
+ - `crates/bin/mimium-fmt` A code formatter.
  - `crates/bin/mimium-language-server` A language server for IDE, compatible with semantic highlighting and error reporting.
 - `examples` basic examples of mimium codes.
 - `lib` core mimium libraries that will be bundled with main binaries.
+
+## Best practices for general works
+
+- If you need to create temporary files for testing, make it in `tmp` directory in the repository, which will be ignored from git. Do not try to write to system's `/tmp` or `/dev/null` which will require additional approval by author.
+- You can check intermediate representations with `--emit-cst` `--emit-ast` `--emit-mir` `--emit-bytecode` options. Also, you can check final output with CSV format by using `--output-format=csv` without blocking with GUI.
 
 ## Best practices of writing Rust
 
@@ -28,10 +33,11 @@ The language implements its own virtual machine (VM) and instruction set to exec
 
 - Use `cargo fmt` before commiting.
 - Fix small warnings by utilizing `cargo clippy`.
-- Write documentation comments `///` as possible for public API and the top of the file.
+- Write documentation comments `///`  for public API and `//!` the top of the file as possible.
 - Write comments in English even if you asked in different languages.
 - Do not use much emoji in the comments.
-- Do not write too much comments when the behavior is apprent from the code.
+- Do not write too much comments when the behavior is apparent from the code.
+- Do not leave the comment for just tracking history of changes. Always leave comment for those whom read the codes first time.
 - You should use `debug_assert!` instead `assert!` for debugging purpose
 
 ## Test Strategy

@@ -1,0 +1,12 @@
+#stage(main)
+fn map(src,f){
+    let (rest,tail) = split_head(src)
+    
+}
+fn dsp(){
+    let src = [{freq = 1000.0, time = 0.0}, {freq = 2000.0, time = 2.0}]
+    let mapped = map(src, |v:{freq:float,time:float}| {freq = v.freq*2.0, time = v.time+10.0} )
+    let ansf = mapped[0].freq+mapped[1].freq
+    let anst = mapped[0].time+mapped[1].time
+    (ansf,anst)
+}
