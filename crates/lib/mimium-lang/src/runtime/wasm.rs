@@ -8,7 +8,7 @@ pub mod engine;
 use crate::runtime::primitives::Word;
 use crate::runtime::vm::heap::{self, HeapStorage};
 use std::collections::HashMap;
-use wasmtime::{Caller, Config, Engine, Linker, Module, OptLevel, Store};
+use wasmtime::{AsContextMut, Caller, Config, Engine, Linker, Module, OptLevel, Store};
 
 /// WASM runtime state
 pub struct WasmRuntime {
@@ -52,19 +52,19 @@ impl WasmRuntime {
     pub fn new() -> Result<Self, String> {
         // Configure Wasmtime with JIT compiler and optimizations
         let mut config = Config::new();
-        
+
         // Enable Cranelift JIT compiler with optimization level Speed
         config.cranelift_opt_level(OptLevel::Speed);
-        
+
         // Enable parallel compilation for faster module loading
         config.parallel_compilation(true);
-        
+
         // Enable WASM features that may improve performance
         config.wasm_simd(true); // SIMD operations
         config.wasm_bulk_memory(true); // Bulk memory operations
-        
-        let engine = Engine::new(&config)
-            .map_err(|e| format!("Failed to create WASM engine: {e}"))?;
+
+        let engine =
+            Engine::new(&config).map_err(|e| format!("Failed to create WASM engine: {e}"))?;
         let mut linker = Linker::new(&engine);
 
         // Register all runtime primitive host functions
@@ -147,6 +147,30 @@ impl WasmRuntime {
             "runtime_get_samplerate" => runtime_get_samplerate_host,
         }
 
+        // Register math functions (from "math" module)
+        linker
+            .func_wrap("math", "sin", |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 {
+                x.sin()
+            })
+            .map_err(|e| format!("Failed to register math::sin: {e}"))?;
+        linker
+            .func_wrap("math", "cos", |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 {
+                x.cos()
+            })
+            .map_err(|e| format!("Failed to register math::cos: {e}"))?;
+        linker
+            .func_wrap("math", "log", |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 {
+                x.ln()
+            })
+            .map_err(|e| format!("Failed to register math::log: {e}"))?;
+        linker
+            .func_wrap(
+                "math",
+                "pow",
+                |_caller: Caller<'_, RuntimeState>, base: f64, exp: f64| -> f64 { base.powf(exp) },
+            )
+            .map_err(|e| format!("Failed to register math::pow: {e}"))?;
+
         Ok(())
     }
 }
@@ -195,6 +219,12 @@ impl WasmModule {
                 _ => 0,
             })
             .collect())
+    }
+
+    /// Get mutable access to the runtime state
+    /// This allows external code to update current_time, sample_rate, etc.
+    pub fn get_runtime_state_mut(&mut self) -> Option<&mut RuntimeState> {
+        Some(self.store.data_mut())
     }
 }
 
@@ -345,21 +375,21 @@ fn box_store_host(caller: Caller<'_, RuntimeState>, obj: i64, src_ptr: i32, size
 
 // UserSum operations
 
-fn usersum_clone_host(_caller: Caller<'_, RuntimeState>, obj: i64, type_id: i32) {
-    // TODO: Implement actual usersum clone
-    log::trace!("usersum_clone_host: obj={obj}, type_id={type_id}");
+fn usersum_clone_host(_caller: Caller<'_, RuntimeState>, dst_ptr: i32, src_ptr: i32, size: i32) {
+    // TODO: Implement actual usersum clone (copy via linear memory)
+    log::trace!("usersum_clone_host: dst_ptr={dst_ptr}, src_ptr={src_ptr}, size={size}");
 }
 
-fn usersum_release_host(_caller: Caller<'_, RuntimeState>, obj: i64, type_id: i32) {
+fn usersum_release_host(_caller: Caller<'_, RuntimeState>, ptr: i32, tag: i32, size: i32) {
     // TODO: Implement actual usersum release
-    log::trace!("usersum_release_host: obj={obj}, type_id={type_id}");
+    log::trace!("usersum_release_host: ptr={ptr}, tag={tag}, size={size}");
 }
 
 // Closure operations
 
 fn closure_make_host(
     _caller: Caller<'_, RuntimeState>,
-    fn_idx: i32,
+    fn_idx: i64,
     captured_ptr: i32,
     captured_size: i32,
 ) -> i64 {
@@ -370,26 +400,23 @@ fn closure_make_host(
     0 // Placeholder
 }
 
-fn closure_close_host(
-    _caller: Caller<'_, RuntimeState>,
-    closure: i64,
-    captured_ptr: i32,
-    captured_size: i32,
-) {
+fn closure_close_host(_caller: Caller<'_, RuntimeState>, closure: i64) {
     // TODO: Implement actual closure closing
-    log::trace!(
-        "closure_close_host: closure={closure}, captured_ptr={captured_ptr}, captured_size={captured_size}"
-    );
+    log::trace!("closure_close_host: closure={closure}");
 }
 
 fn closure_call_host(
     _caller: Caller<'_, RuntimeState>,
     closure: i64,
+    args_ptr: i32,
+    args_size: i32,
     dst_ptr: i32,
-    size_words: i32,
+    dst_size: i32,
 ) {
     // TODO: Implement actual closure call
-    log::trace!("closure_call_host: closure={closure}, dst_ptr={dst_ptr}, size_words={size_words}");
+    log::trace!(
+        "closure_call_host: closure={closure}, args_ptr={args_ptr}, args_size={args_size}, dst_ptr={dst_ptr}, dst_size={dst_size}"
+    );
 }
 
 // State operations
@@ -400,50 +427,73 @@ fn state_push_host(mut caller: Caller<'_, RuntimeState>, offset: i64) {
     state.state_stack.push(offset as Word);
 }
 
-fn state_pop_host(mut caller: Caller<'_, RuntimeState>) {
-    log::trace!("state_pop_host");
+fn state_pop_host(mut caller: Caller<'_, RuntimeState>, offset: i64) {
+    log::trace!("state_pop_host: offset={offset}");
     let state = caller.data_mut();
     state.state_stack.pop().expect("state_pop: stack underflow");
 }
 
-fn state_get_host(caller: Caller<'_, RuntimeState>, state_idx: i32) -> i64 {
-    log::trace!("state_get_host: state_idx={state_idx}");
+fn state_get_host(mut caller: Caller<'_, RuntimeState>, dst_ptr: i32, size_words: i32) {
+    log::trace!("state_get_host: dst_ptr={dst_ptr}, size_words={size_words}");
     // TODO: Implement actual state tree access
-    // For now, return 0 (will need state tree integration)
-    let _ = caller;
-    0
+    // For now, zero-fill the destination memory
+    let size = size_words as usize;
+    let memory = caller.data().memory.expect("Memory not initialized");
+    let zeros = vec![0u8; size * std::mem::size_of::<Word>()];
+    memory
+        .write(&mut caller.as_context_mut(), dst_ptr as usize, &zeros)
+        .expect("Failed to write to WASM memory");
 }
 
-fn state_set_host(caller: Caller<'_, RuntimeState>, state_idx: i32, value: i64) {
-    log::trace!("state_set_host: state_idx={state_idx}, value={value}");
+fn state_set_host(caller: Caller<'_, RuntimeState>, src_ptr: i32, size_words: i32) {
+    log::trace!("state_set_host: src_ptr={src_ptr}, size_words={size_words}");
     // TODO: Implement actual state tree modification
-    let _ = (caller, value);
+    let _ = caller;
 }
 
-fn state_delay_host(caller: Caller<'_, RuntimeState>, input: i64, samples: i32) -> i64 {
-    log::trace!("state_delay_host: input={input}, samples={samples}");
+fn state_delay_host(
+    mut caller: Caller<'_, RuntimeState>,
+    dst_ptr: i32,
+    src_ptr: i32,
+    size_words: i32,
+    max_samples: i64,
+) {
+    log::trace!(
+        "state_delay_host: dst_ptr={dst_ptr}, src_ptr={src_ptr}, size_words={size_words}, max_samples={max_samples}"
+    );
     // TODO: Implement actual delay line
-    // For now, pass through input
-    let _ = (caller, samples);
-    input
+    // For now, copy src to dst (pass through)
+    let size = size_words as usize;
+    let memory = caller.data().memory.expect("Memory not initialized");
+    let mut buffer = vec![0u8; size * std::mem::size_of::<Word>()];
+    memory
+        .read(&caller, src_ptr as usize, &mut buffer)
+        .expect("Failed to read from WASM memory");
+    memory
+        .write(&mut caller.as_context_mut(), dst_ptr as usize, &buffer)
+        .expect("Failed to write to WASM memory");
 }
 
-fn state_mem_host(caller: Caller<'_, RuntimeState>, input: i64, init: i64) -> i64 {
-    log::trace!("state_mem_host: input={input}, init={init}");
+fn state_mem_host(mut caller: Caller<'_, RuntimeState>, dst_ptr: i32, size_words: i32) {
+    log::trace!("state_mem_host: dst_ptr={dst_ptr}, size_words={size_words}");
     // TODO: Implement actual memory (one-sample delay)
-    // For now, return init on first call
-    let _ = (caller, input);
-    init
+    // For now, zero-fill destination
+    let size = size_words as usize;
+    let memory = caller.data().memory.expect("Memory not initialized");
+    let zeros = vec![0u8; size * std::mem::size_of::<Word>()];
+    memory
+        .write(&mut caller.as_context_mut(), dst_ptr as usize, &zeros)
+        .expect("Failed to write to WASM memory");
 }
 
 // Array operations
 
-fn array_alloc_host(mut caller: Caller<'_, RuntimeState>, src_ptr: i32, size: i32) -> i64 {
+fn array_alloc_host(mut caller: Caller<'_, RuntimeState>, src_ptr: i64, size: i32) -> i64 {
     log::trace!("array_alloc_host: src_ptr={src_ptr}, size={size}");
 
     let size_usize = size as usize;
 
-    // Read from linear memory
+    // Read from linear memory (src_ptr is i64 but used as memory offset)
     let mut buffer = vec![0u64; size_usize];
     let memory = caller.data().memory.expect("Memory not initialized");
     let offset = src_ptr as usize;
@@ -465,46 +515,92 @@ fn array_alloc_host(mut caller: Caller<'_, RuntimeState>, src_ptr: i32, size: i3
     array_id as i64
 }
 
-fn array_get_elem_host(caller: Caller<'_, RuntimeState>, array: i64, index: i32) -> i64 {
-    log::trace!("array_get_elem_host: array={array}, index={index}");
+fn array_get_elem_host(
+    mut caller: Caller<'_, RuntimeState>,
+    dst_ptr: i32,
+    array: i64,
+    index: i64,
+    elem_size: i32,
+) {
+    log::trace!(
+        "array_get_elem_host: dst_ptr={dst_ptr}, array={array}, index={index}, elem_size={elem_size}"
+    );
 
-    let state = caller.data();
-    let array_data = state
-        .arrays
-        .get(&(array as Word))
-        .expect("array_get_elem: invalid array ID");
     let idx = index as usize;
+    let elem_words = elem_size as usize;
 
-    if idx >= array_data.len() {
-        panic!("array_get_elem: index out of bounds");
-    }
+    // Get element value from array storage
+    let value = {
+        let state = caller.data();
+        let array_data = state
+            .arrays
+            .get(&(array as Word))
+            .expect("array_get_elem: invalid array ID");
+        if idx >= array_data.len() {
+            panic!("array_get_elem: index out of bounds");
+        }
+        array_data[idx]
+    };
 
-    array_data[idx] as i64
+    // Write element to linear memory at dst_ptr
+    let memory = caller.data().memory.expect("Memory not initialized");
+    let data = vec![value; elem_words];
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            data.as_ptr() as *const u8,
+            elem_words * std::mem::size_of::<Word>(),
+        )
+    };
+    memory
+        .write(&mut caller, dst_ptr as usize, bytes)
+        .expect("Failed to write to WASM memory");
 }
 
-fn array_set_elem_host(mut caller: Caller<'_, RuntimeState>, array: i64, index: i32, value: i64) {
-    log::trace!("array_set_elem_host: array={array}, index={index}, value={value}");
+fn array_set_elem_host(
+    mut caller: Caller<'_, RuntimeState>,
+    array: i64,
+    index: i64,
+    src_ptr: i32,
+    elem_size: i32,
+) {
+    log::trace!(
+        "array_set_elem_host: array={array}, index={index}, src_ptr={src_ptr}, elem_size={elem_size}"
+    );
 
+    let idx = index as usize;
+    let elem_words = elem_size as usize;
+
+    // Read element from linear memory
+    let mut buffer = vec![0u64; elem_words];
+    let memory = caller.data().memory.expect("Memory not initialized");
+    let bytes = unsafe {
+        std::slice::from_raw_parts_mut(
+            buffer.as_mut_ptr() as *mut u8,
+            elem_words * std::mem::size_of::<Word>(),
+        )
+    };
+    memory
+        .read(&caller, src_ptr as usize, bytes)
+        .expect("Failed to read from WASM memory");
+
+    // Write to array storage
     let state = caller.data_mut();
     let array_data = state
         .arrays
         .get_mut(&(array as Word))
         .expect("array_set_elem: invalid array ID");
-    let idx = index as usize;
-
     if idx >= array_data.len() {
         panic!("array_set_elem: index out of bounds");
     }
-
-    array_data[idx] = value as Word;
+    array_data[idx] = buffer[0];
 }
 
 // Runtime globals
 
-fn runtime_get_now_host(caller: Caller<'_, RuntimeState>) -> i64 {
+fn runtime_get_now_host(caller: Caller<'_, RuntimeState>) -> f64 {
     log::trace!("runtime_get_now_host");
     let state = caller.data();
-    state.current_time as i64
+    state.current_time as f64
 }
 
 fn runtime_get_samplerate_host(caller: Caller<'_, RuntimeState>) -> f64 {
@@ -592,9 +688,9 @@ mod tests {
         let wasm_bytes = wat::parse_str(
             r#"
             (module
-                (import "runtime" "array_alloc" (func $array_alloc (param i32 i32) (result i64)))
-                (import "runtime" "array_get_elem" (func $array_get_elem (param i64 i32) (result i64)))
-                (import "runtime" "array_set_elem" (func $array_set_elem (param i64 i32 i64)))
+                (import "runtime" "array_alloc" (func $array_alloc (param i64 i32) (result i64)))
+                (import "runtime" "array_get_elem" (func $array_get_elem (param i32 i64 i64 i32)))
+                (import "runtime" "array_set_elem" (func $array_set_elem (param i64 i64 i32 i32)))
                 (memory (export "memory") 1)
                 
                 (func (export "test_array") (result i64)
@@ -607,18 +703,23 @@ mod tests {
                     i64.const 99
                     i64.store
                     
-                    ;; Allocate array from memory (ptr=0, size=2)
-                    i32.const 0
+                    ;; Allocate array from memory (ptr=0 as i64, size=2)
+                    i64.const 0
                     i32.const 2
                     call $array_alloc
                     local.set $arr
                     
-                    ;; Get first element
+                    ;; Get first element into memory at offset 16
+                    ;; (dst_ptr=16, array, index=0 as i64, elem_size=1)
+                    i32.const 16
                     local.get $arr
-                    i32.const 0
+                    i64.const 0
+                    i32.const 1
                     call $array_get_elem
-                    
-                    ;; Return it (should be 42)
+
+                    ;; Load the result from memory offset 16
+                    i32.const 16
+                    i64.load
                 )
             )
             "#,
