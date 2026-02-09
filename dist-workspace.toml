@@ -21,6 +21,8 @@ windows-archive = ".zip"
 install-path = "~/.mimium"
 # Whether to install an updater program
 install-updater = false
+# do not check release.yml generation
+allow-dirty = ["ci"]
 
 [dist.dependencies.apt]
 libasound2-dev = "*"

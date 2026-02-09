@@ -213,6 +213,7 @@ jobs:
             ${{ env.BUILD_MANIFEST_NAME }}
   # Determines if we should publish/announce
   host:
+    permissions: write-all # manual fix for cargo-dist
     needs:
       - plan
       - build-local-artifacts
