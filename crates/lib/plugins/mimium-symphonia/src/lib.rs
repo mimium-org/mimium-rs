@@ -10,9 +10,9 @@ use mimium_lang::pattern::TypedId;
 use mimium_lang::plugin::{
     SysPluginSignature, SystemPlugin, SystemPluginFnType, SystemPluginMacroType,
 };
-use mimium_lang::runtime::vm::{Machine, ReturnCode};
 use mimium_lang::string_t;
 use mimium_lang::types::{PType, Type};
+use mimium_plugin_macros::mimium_plugin_fn;
 use symphonia::core::audio::{Layout, SampleBuffer, SignalSpec};
 use symphonia::core::codecs::{CODEC_TYPE_NULL, CodecParameters, Decoder, DecoderOptions};
 use symphonia::core::errors::Error as SymphoniaError;
@@ -217,25 +217,17 @@ impl SamplerPlugin {
         )
     }
 
-    pub fn get_sampler(&mut self, vm: &mut Machine) -> ReturnCode {
-        let pos = Machine::get_as::<f64>(vm.get_stack(0));
-        let sample_idx = Machine::get_as::<f64>(vm.get_stack(1)) as usize;
-
-        // Get the sample data from cache
-        let samples = self.sample_cache.values().nth(sample_idx);
-
+    #[mimium_plugin_fn]
+    pub fn get_sampler(&mut self, pos: f64, sample_idx: f64) -> f64 {
+        let idx = sample_idx as usize;
+        let samples = self.sample_cache.values().nth(idx);
         match samples {
-            Some(vec) => {
-                let val = interpolate_vec(vec, pos);
-                vm.set_stack(0, Machine::to_value(val));
-            }
+            Some(vec) => interpolate_vec(vec, pos),
             None => {
-                mimium_lang::log::error!("Invalid sample index: {sample_idx}");
-                vm.set_stack(0, Machine::to_value(0.0));
+                mimium_lang::log::error!("Invalid sample index: {idx}");
+                0.0
             }
         }
-
-        1
     }
 }
 

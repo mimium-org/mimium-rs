@@ -85,5 +85,4 @@ mod tests {
         fn assert_send<T: Send>() {}
         assert_send::<ProgramPayload>();
     }
-
 }

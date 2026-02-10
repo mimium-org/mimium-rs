@@ -10,7 +10,7 @@ use mimium_lang::compiler::IoChannelInfo;
 use mimium_lang::log;
 use mimium_lang::plugin::ExtClsInfo;
 
-use mimium_lang::runtime::{Time,ProgramPayload};
+use mimium_lang::runtime::{ProgramPayload, Time};
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 pub(crate) const DEFAULT_BUFFER_SIZE: usize = 4096;

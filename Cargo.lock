@@ -2348,6 +2348,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mimium-plugin-macros"
+version = "3.2.0"
+dependencies = [
+ "mimium-lang",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "mimium-scheduler"
 version = "3.2.0"
 dependencies = [
@@ -2361,6 +2371,7 @@ version = "3.2.0"
 dependencies = [
  "mimium-audiodriver",
  "mimium-lang",
+ "mimium-plugin-macros",
  "mimium-test",
  "symphonia",
 ]

@@ -14,6 +14,7 @@ build = "build.rs"
 [dependencies]
 
 mimium-lang = { workspace = true }
+mimium-plugin-macros = { workspace = true }
 symphonia = { version = "0.5.4", features = ["all-codecs"] }
 
 [dev-dependencies]
