@@ -5,6 +5,7 @@ use crate::{
 use thiserror::Error;
 
 pub mod ffi;
+pub mod ffi_serde;
 pub mod primitives;
 pub mod vm;
 pub mod vm_ffi;

@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mimium_lang::ast::{Expr, Literal};
-use mimium_lang::function;
 use mimium_lang::interner::{ToSymbol, TypeNodeId};
 use mimium_lang::interpreter::Value;
 use mimium_lang::numeric;
@@ -12,7 +11,8 @@ use mimium_lang::plugin::{
 };
 use mimium_lang::string_t;
 use mimium_lang::types::{PType, Type};
-use mimium_plugin_macros::mimium_plugin_fn;
+use mimium_lang::{function, log};
+use mimium_plugin_macros::{mimium_plugin_fn, mimium_plugin_macro};
 use symphonia::core::audio::{Layout, SampleBuffer, SignalSpec};
 use symphonia::core::codecs::{CODEC_TYPE_NULL, CodecParameters, Decoder, DecoderOptions};
 use symphonia::core::errors::Error as SymphoniaError;
@@ -158,6 +158,7 @@ impl SamplerPlugin {
         )
     }
 
+    #[mimium_plugin_macro]
     pub fn make_sampler_mono(&mut self, v: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(v.len(), 1);
         let rel_path_str = match &v[0].0 {
@@ -168,10 +169,15 @@ impl SamplerPlugin {
         };
 
         // Resolve the path (absolute or relative to CWD)
+        log::debug!("Attempting to canonicalize path: {rel_path_str}");
         let abs_path = match std::fs::canonicalize(&rel_path_str) {
-            Ok(p) => p.to_string_lossy().to_string(),
+            Ok(p) => {
+                let path_str = p.to_string_lossy().to_string();
+                log::debug!("Canonicalized path: {path_str}");
+                path_str
+            }
             Err(e) => {
-                mimium_lang::log::error!("Failed to resolve audio file path '{rel_path_str}': {e}");
+                log::error!("Failed to resolve audio file path '{rel_path_str}': {e}");
                 return Self::error_fallback();
             }
         };
@@ -275,10 +281,10 @@ static PLUGIN_AUTHOR: &str = "mimium-org\0";
 #[unsafe(no_mangle)]
 pub extern "C" fn mimium_plugin_metadata() -> *const PluginMetadata {
     use std::sync::OnceLock;
-    
+
     static METADATA: OnceLock<(CString, PluginMetadata)> = OnceLock::new();
-    
-    let (version_cstr, metadata) = METADATA.get_or_init(|| {
+
+    let (_version_cstr, metadata) = METADATA.get_or_init(|| {
         let version_cstr = CString::new(PLUGIN_VERSION).expect("Version string is valid");
         let metadata = PluginMetadata {
             name: PLUGIN_NAME.as_ptr() as *const c_char,
@@ -292,7 +298,7 @@ pub extern "C" fn mimium_plugin_metadata() -> *const PluginMetadata {
         };
         (version_cstr, metadata)
     });
-    
+
     metadata
 }
 
@@ -317,19 +323,53 @@ pub extern "C" fn mimium_plugin_destroy(instance: *mut PluginInstance) {
 #[cfg(not(target_arch = "wasm32"))]
 use mimium_lang::plugin::loader::PluginFunctionFn;
 
+/// Get a plugin function by name.
+///
+/// # Safety
+///
+/// - `name` must be a valid pointer to a null-terminated C string
+/// - The returned function pointer, if any, must only be called with valid arguments
 #[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
-pub extern "C" fn mimium_plugin_get_function(name: *const c_char) -> Option<PluginFunctionFn> {
+pub unsafe extern "C" fn mimium_plugin_get_function(
+    name: *const c_char,
+) -> Option<PluginFunctionFn> {
     use std::ffi::CStr;
-    
+
     if name.is_null() {
         return None;
     }
-    
+
     let name_str = unsafe { CStr::from_ptr(name) }.to_str().ok()?;
-    
+
     match name_str {
         "__get_sampler" => Some(ffi_get_sampler),
+        _ => None,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+use mimium_lang::plugin::loader::PluginMacroFn;
+
+/// Get a plugin macro function by name.
+///
+/// # Safety
+///
+/// - `name` must be a valid pointer to a null-terminated C string
+/// - The returned function pointer, if any, must only be called with valid arguments
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mimium_plugin_get_macro(name: *const c_char) -> Option<PluginMacroFn> {
+    use std::ffi::CStr;
+
+    if name.is_null() {
+        return None;
+    }
+
+    let name_str = unsafe { CStr::from_ptr(name) }.to_str().ok()?;
+
+    match name_str {
+        "make_sampler_mono" => Some(ffi_make_sampler_mono),
         _ => None,
     }
 }
@@ -340,19 +380,85 @@ unsafe extern "C" fn ffi_get_sampler(
     instance: *mut PluginInstance,
     runtime: *mut std::ffi::c_void,
 ) -> i64 {
-    use mimium_lang::runtime::vm_ffi::runtime_handle_from_machine;
     use mimium_lang::runtime::vm::Machine;
-    
+
     if instance.is_null() || runtime.is_null() {
         return 0;
     }
-    
+
     // SAFETY: runtime is actually a *mut Machine
     let machine = unsafe { &mut *(runtime as *mut Machine) };
-    
+
     // SAFETY: instance is actually a *mut SamplerPlugin
     let plugin = unsafe { &mut *(instance as *mut SamplerPlugin) };
-    
+
     // Call the actual plugin method
     plugin.get_sampler(machine)
+}
+/// FFI bridge for make_sampler_mono macro function.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer to a SamplerPlugin instance
+/// - `args_ptr` and `args_len` must describe a valid byte buffer containing serialized arguments
+/// - `out_ptr` and `out_len` must be valid pointers to write the result
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ffi_make_sampler_mono(
+    instance: *mut std::ffi::c_void,
+    args_ptr: *const u8,
+    args_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    use mimium_lang::runtime::ffi_serde::{deserialize_macro_args, serialize_value};
+
+    mimium_lang::log::debug!("ffi_make_sampler_mono: Entry point");
+
+    if instance.is_null() || args_ptr.is_null() || out_ptr.is_null() || out_len.is_null() {
+        log::error!("ffi_make_sampler_mono: Null pointer detected");
+        return -3; // Null pointer error
+    }
+
+    log::debug!("ffi_make_sampler_mono: Starting unsafe block");
+    unsafe {
+        // Cast instance to the correct type
+        log::debug!("ffi_make_sampler_mono: Casting instance");
+        let plugin = &mut *(instance as *mut SamplerPlugin);
+
+        // Deserialize arguments
+        log::debug!("ffi_make_sampler_mono: Deserializing args, len={args_len}");
+        let args_bytes = std::slice::from_raw_parts(args_ptr, args_len);
+        let args = match deserialize_macro_args(args_bytes) {
+            Ok(a) => {
+                log::debug!("ffi_make_sampler_mono: Deserialized {} args", a.len());
+                a
+            }
+            Err(e) => {
+                log::error!("Failed to deserialize macro arguments for make_sampler_mono: {e}");
+                return -1; // Deserialization error
+            }
+        };
+
+        // Call the macro function
+        log::debug!("ffi_make_sampler_mono: Calling plugin.make_sampler_mono");
+        let result = plugin.make_sampler_mono(&args);
+        log::debug!("ffi_make_sampler_mono: Macro returned successfully");
+
+        // Serialize result
+        let result_bytes = match serialize_value(&result) {
+            Ok(b) => b,
+            Err(e) => {
+                log::error!("Failed to serialize macro result for make_sampler_mono: {e}");
+                return -2; // Serialization error
+            }
+        };
+
+        // Allocate and return result buffer
+        let boxed = result_bytes.into_boxed_slice();
+        *out_len = boxed.len();
+        *out_ptr = Box::into_raw(boxed) as *mut u8;
+
+        0 // Success
+    }
 }

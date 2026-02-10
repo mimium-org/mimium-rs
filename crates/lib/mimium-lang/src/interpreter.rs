@@ -1,3 +1,5 @@
+mod serde_impl;
+
 use std::cell::RefCell;
 /// A tree walk interpreter of mimium, primarily used for macro expansion.
 /// This macro system is based on the multi-stage programming paradigm, like MetaML, MetaOCaml, Scala3, where expressions can be evaluated at multiple stages.

@@ -4,12 +4,15 @@ pub mod mirgen;
 pub mod parser;
 pub mod typing;
 pub mod wasmgen;
+
+use serde::{Deserialize, Serialize};
+
 use crate::plugin::{ExtFunTypeInfo, MacroFunction};
 use thiserror::Error;
 
 /// Stage information for multi-stage programming.
 /// Moved from plugin.rs to be shared across compiler modules.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EvalStage {
     /// Persistent stage - accessible from all stages (like builtins)
     Persistent,

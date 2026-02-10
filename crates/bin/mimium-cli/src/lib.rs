@@ -29,7 +29,6 @@ use mimium_lang::{
         miniprint::MiniPrint,
     },
 };
-use mimium_symphonia::SamplerPlugin;
 use notify::{Event, RecursiveMode, Watcher};
 
 #[derive(clap::Parser, Debug, Clone)]
@@ -261,7 +260,28 @@ impl RunOptions {
 pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config) -> ExecContext {
     let plugins: Vec<Box<dyn Plugin>> = vec![];
     let mut ctx = ExecContext::new(plugins.into_iter(), path, config);
-    ctx.add_system_plugin(SamplerPlugin::default());
+    
+    // Load dynamic plugins (e.g., mimium-symphonia)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        ctx.init_plugin_loader();
+        
+        // Try to load plugins from the same directory as the executable
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                let symphonia_path = exe_dir.join("mimium_symphonia");
+                if let Err(e) = ctx.load_dynamic_plugin(&symphonia_path) {
+                    log::debug!("Failed to load mimium-symphonia from executable directory: {:?}", e);
+                }
+            }
+        }
+        
+        // Also try to load from standard plugin directory
+        if let Err(e) = ctx.load_builtin_dynamic_plugins() {
+            log::debug!("No builtin dynamic plugins found: {:?}", e);
+        }
+    }
+    
     ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
     if let Some(midi_plug) = mimium_midi::MidiPlugin::try_new() {
         ctx.add_system_plugin(midi_plug);

@@ -47,6 +47,8 @@ pub struct ExecContext {
     vm: Option<runtime::vm::Machine>,
     plugins: Vec<Box<dyn Plugin>>,
     sys_plugins: Vec<DynSystemPlugin>,
+    #[cfg(not(target_arch = "wasm32"))]
+    plugin_loader: Option<plugin::loader::PluginLoader>,
     path: Option<PathBuf>,
     config: Config,
 }
@@ -69,6 +71,8 @@ impl ExecContext {
             vm: None,
             plugins,
             sys_plugins,
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_loader: None,
             path,
             config,
         }
@@ -93,6 +97,53 @@ impl ExecContext {
 
         self.sys_plugins.push(plugin_dyn)
     }
+
+    /// Initialize the dynamic plugin loader.
+    ///
+    /// This must be called before loading any dynamic plugins.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn init_plugin_loader(&mut self) {
+        if self.plugin_loader.is_none() {
+            self.plugin_loader = Some(plugin::loader::PluginLoader::new());
+        }
+    }
+
+    /// Load a dynamic plugin from the specified path.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the plugin library (without extension).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the plugin cannot be loaded or is invalid.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load_dynamic_plugin<P: AsRef<std::path::Path>>(
+        &mut self,
+        path: P,
+    ) -> Result<(), plugin::loader::PluginLoaderError> {
+        self.init_plugin_loader();
+        if let Some(loader) = &mut self.plugin_loader {
+            loader.load_plugin(path)?;
+        }
+        Ok(())
+    }
+
+    /// Load all plugins from the standard plugin directory.
+    ///
+    /// This is a convenience method that loads all compatible plugins
+    /// from the default plugin directory.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load_builtin_dynamic_plugins(
+        &mut self,
+    ) -> Result<(), plugin::loader::PluginLoaderError> {
+        self.init_plugin_loader();
+        if let Some(loader) = &mut self.plugin_loader {
+            loader.load_builtin_plugins()?;
+        }
+        Ok(())
+    }
+
     pub fn get_compiler(&self) -> Option<&compiler::Context> {
         self.compiler.as_ref()
     }
@@ -121,22 +172,39 @@ impl ExecContext {
             .collect()
     }
     fn get_macro_types(&self) -> Vec<Box<dyn MacroFunction>> {
-        plugin::get_macro_functions(&self.plugins)
-            .chain(self.sys_plugins.iter().flat_map(|p| {
-                p.macroinfos
-                    .iter()
-                    .map(|i| Box::new(i.clone()) as Box<dyn MacroFunction>)
-            }))
-            .collect()
-    }
-    pub fn prepare_compiler(&mut self) {
-        let macroinfos = plugin::get_macro_functions(&self.plugins).chain(
+        let static_macros = plugin::get_macro_functions(&self.plugins).chain(
             self.sys_plugins.iter().flat_map(|p| {
                 p.macroinfos
                     .iter()
                     .map(|i| Box::new(i.clone()) as Box<dyn MacroFunction>)
             }),
         );
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let dynamic_macros = self
+                .plugin_loader
+                .as_ref()
+                .map(|loader| {
+                    loader
+                        .get_macro_functions()
+                        .into_iter()
+                        .map(|(_, _, macro_fn)| macro_fn)
+                })
+                .into_iter()
+                .flatten();
+
+            static_macros.chain(dynamic_macros).collect()
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            static_macros.collect()
+        }
+    }
+    pub fn prepare_compiler(&mut self) {
+        let macroinfos = self.get_macro_types();
+
         self.compiler = Some(compiler::Context::new(
             self.get_extfun_types(),
             macroinfos,

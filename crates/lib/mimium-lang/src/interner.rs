@@ -12,6 +12,7 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
+use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use string_interner::{StringInterner, backend::StringBackend};
 
@@ -107,7 +108,8 @@ where
     }
 }
 
-#[derive(Default, Copy, Clone, PartialEq, Hash, Eq, PartialOrd, Ord)]
+#[derive(Default, Copy, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Symbol(pub usize); //Symbol Trait is implemented on usize
 
 pub trait ToSymbol {
@@ -177,16 +179,18 @@ impl std::fmt::Debug for Symbol {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum NodeId {
     ExprArena(ExprKey),
     TypeArena(TypeKey),
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct ExprNodeId(pub ExprKey);
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct TypeNodeId(pub TypeKey);
 
 // traits required for Key trait

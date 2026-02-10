@@ -94,6 +94,25 @@ pub type PluginFunctionFn = unsafe extern "C" fn(
     runtime: *mut c_void, // RuntimeHandle as opaque pointer
 ) -> i64; // ReturnCode
 
+/// Type signature for plugin macro functions.
+///
+/// Macro functions are compile-time transformations that take serialized
+/// arguments and return a serialized result. The signature is:
+///
+/// - `instance`: Mutable pointer to the plugin instance
+/// - `args_ptr`: Pointer to serialized arguments (bincode-encoded `Vec<(Value, TypeNodeId)>`)
+/// - `args_len`: Length of the serialized arguments buffer
+/// - `out_ptr`: Output pointer for the serialized result buffer
+/// - `out_len`: Output length of the serialized result buffer
+/// - Returns: Status code (0 = success, negative = error)
+pub type PluginMacroFn = unsafe extern "C" fn(
+    instance: *mut c_void,
+    args_ptr: *const u8,
+    args_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32;
+
 // -------------------------------------------------------------------------
 // Plugin function signatures
 // -------------------------------------------------------------------------
@@ -112,6 +131,11 @@ type PluginDestroyFn = unsafe extern "C" fn(instance: *mut PluginInstance);
 /// Returns a function pointer for the named plugin function, or null if not found.
 type PluginGetFunctionFn = unsafe extern "C" fn(name: *const c_char) -> Option<PluginFunctionFn>;
 
+/// Type of the `mimium_plugin_get_macro` export.
+///
+/// Returns a function pointer for the named macro function, or null if not found.
+type PluginGetMacroFn = unsafe extern "C" fn(name: *const c_char) -> Option<PluginMacroFn>;
+
 // -------------------------------------------------------------------------
 // Loaded plugin handle
 // -------------------------------------------------------------------------
@@ -129,6 +153,8 @@ pub struct LoadedPlugin {
     destroy_fn: PluginDestroyFn,
     /// Function lookup function pointer (optional).
     get_function_fn: Option<PluginGetFunctionFn>,
+    /// Macro function lookup function pointer (optional).
+    get_macro_fn: Option<PluginGetMacroFn>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -162,6 +188,16 @@ impl LoadedPlugin {
         unsafe { get_fn(name_cstr.as_ptr()) }
     }
 
+    /// Get a plugin macro function by name.
+    ///
+    /// Returns `None` if the macro is not found or if the plugin doesn't
+    /// support macro function lookup.
+    pub fn get_macro(&self, name: &str) -> Option<PluginMacroFn> {
+        let get_fn = self.get_macro_fn?;
+        let name_cstr = std::ffi::CString::new(name).ok()?;
+        unsafe { get_fn(name_cstr.as_ptr()) }
+    }
+
     /// Get the plugin instance pointer (for advanced use).
     ///
     /// # Safety
@@ -181,6 +217,144 @@ impl Drop for LoadedPlugin {
         }
     }
 }
+
+// -------------------------------------------------------------------------
+// Dynamic plugin macro wrapper
+// -------------------------------------------------------------------------
+
+/// Wrapper for dynamically loaded plugin macro functions.
+///
+/// This implements the `MacroFunction` trait by calling the FFI bridge
+/// and serializing/deserializing arguments and results.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct DynPluginMacroInfo {
+    name: crate::interner::Symbol,
+    ty: crate::interner::TypeNodeId,
+    /// Plugin instance pointer
+    instance: *mut PluginInstance,
+    /// Macro function pointer
+    macro_fn: PluginMacroFn,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl DynPluginMacroInfo {
+    /// Create a new dynamic plugin macro wrapper.
+    ///
+    /// # Safety
+    ///
+    /// - `instance` must be a valid pointer to the plugin instance
+    /// - `macro_fn` must be a valid function pointer for the macro
+    /// - Both must remain valid for the lifetime of this struct
+    pub unsafe fn new(
+        name: crate::interner::Symbol,
+        ty: crate::interner::TypeNodeId,
+        instance: *mut PluginInstance,
+        macro_fn: PluginMacroFn,
+    ) -> Self {
+        Self {
+            name,
+            ty,
+            instance,
+            macro_fn,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::plugin::MacroFunction for DynPluginMacroInfo {
+    fn get_name(&self) -> crate::interner::Symbol {
+        self.name
+    }
+
+    fn get_type(&self) -> crate::interner::TypeNodeId {
+        self.ty
+    }
+
+    fn get_fn(&self) -> crate::plugin::MacroFunType {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let instance = self.instance;
+        let macro_fn = self.macro_fn;
+
+        Rc::new(RefCell::new(
+            move |args: &[(crate::interpreter::Value, crate::interner::TypeNodeId)]| {
+                use crate::runtime::ffi_serde::{deserialize_value, serialize_macro_args};
+
+                // Serialize arguments
+                let args_bytes = match serialize_macro_args(args) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        crate::log::error!("Failed to serialize macro arguments: {e}");
+                        let err_expr = crate::ast::Expr::Error
+                            .into_id(crate::utils::metadata::Location::internal());
+                        return crate::interpreter::Value::ErrorV(err_expr);
+                    }
+                };
+
+                // Prepare output buffers
+                let mut out_ptr: *mut u8 = std::ptr::null_mut();
+                let mut out_len: usize = 0;
+
+                // Call FFI function
+                let result_code = unsafe {
+                    macro_fn(
+                        instance as *mut c_void,
+                        args_bytes.as_ptr(),
+                        args_bytes.len(),
+                        &mut out_ptr,
+                        &mut out_len,
+                    )
+                };
+
+                if result_code != 0 {
+                    crate::log::error!(
+                        "Dynamic plugin macro function returned error code: {result_code}"
+                    );
+                    let err_expr = crate::ast::Expr::Error
+                        .into_id(crate::utils::metadata::Location::internal());
+                    return crate::interpreter::Value::ErrorV(err_expr);
+                }
+
+                if out_ptr.is_null() || out_len == 0 {
+                    crate::log::error!("Dynamic plugin macro function returned null/empty result");
+                    let err_expr = crate::ast::Expr::Error
+                        .into_id(crate::utils::metadata::Location::internal());
+                    return crate::interpreter::Value::ErrorV(err_expr);
+                }
+
+                // Deserialize result
+                let out_bytes = unsafe { std::slice::from_raw_parts(out_ptr, out_len) };
+                let result = match deserialize_value(out_bytes) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        crate::log::error!("Failed to deserialize macro result: {e}");
+                        let err_expr = crate::ast::Expr::Error
+                            .into_id(crate::utils::metadata::Location::internal());
+                        crate::interpreter::Value::ErrorV(err_expr)
+                    }
+                };
+
+                // Clean up allocated output buffer
+                unsafe {
+                    let _ = Box::from_raw(std::slice::from_raw_parts_mut(out_ptr, out_len));
+                }
+
+                result
+            },
+        ))
+    }
+}
+
+// SAFETY: DynPluginMacroInfo doesn't implement Send/Sync by default due to raw pointers,
+// but in our use case:
+// - The plugin instance is guaranteed to be valid for the macro's lifetime
+// - Macro functions are only called from the compiler thread, never concurrently
+// - The LoadedPlugin that owns the instance is kept alive by PluginLoader
+#[cfg(not(target_arch = "wasm32"))]
+unsafe impl Send for DynPluginMacroInfo {}
+#[cfg(not(target_arch = "wasm32"))]
+unsafe impl Sync for DynPluginMacroInfo {}
 
 // -------------------------------------------------------------------------
 // Plugin loader
@@ -247,9 +421,12 @@ impl PluginLoader {
         };
 
         // Try to load the optional get_function symbol
-        let get_function_fn: Option<Symbol<PluginGetFunctionFn>> = unsafe {
-            library.get(b"mimium_plugin_get_function\0").ok()
-        };
+        let get_function_fn: Option<Symbol<PluginGetFunctionFn>> =
+            unsafe { library.get(b"mimium_plugin_get_function\0").ok() };
+
+        // Try to load the optional get_macro symbol
+        let get_macro_fn: Option<Symbol<PluginGetMacroFn>> =
+            unsafe { library.get(b"mimium_plugin_get_macro\0").ok() };
 
         // Get metadata
         let metadata_ptr = unsafe { metadata_fn() };
@@ -267,6 +444,7 @@ impl PluginLoader {
         // Copy the destroy function pointer before moving library
         let destroy_fn_ptr = *destroy_fn;
         let get_function_fn_ptr = get_function_fn.as_ref().map(|f| **f);
+        let get_macro_fn_ptr = get_macro_fn.as_ref().map(|f| **f);
 
         // Store the loaded plugin
         let plugin = LoadedPlugin {
@@ -275,6 +453,7 @@ impl PluginLoader {
             instance,
             destroy_fn: destroy_fn_ptr,
             get_function_fn: get_function_fn_ptr,
+            get_macro_fn: get_macro_fn_ptr,
         };
 
         crate::log::info!("Loaded plugin: {} v{}", plugin.name(), plugin.version());
@@ -295,8 +474,8 @@ impl PluginLoader {
         for entry in std::fs::read_dir(&plugin_dir)
             .map_err(|e| PluginLoaderError::DirectoryReadFailed(plugin_dir.clone(), e))?
         {
-            let entry = entry
-                .map_err(|e| PluginLoaderError::DirectoryReadFailed(plugin_dir.clone(), e))?;
+            let entry =
+                entry.map_err(|e| PluginLoaderError::DirectoryReadFailed(plugin_dir.clone(), e))?;
             let path = entry.path();
 
             if is_library_file(&path) {
@@ -317,6 +496,89 @@ impl PluginLoader {
     /// Get a list of all loaded plugins.
     pub fn loaded_plugins(&self) -> &[LoadedPlugin] {
         &self.plugins
+    }
+
+    /// Get all macro functions from loaded plugins with their type information.
+    ///
+    /// Returns a vector of tuples containing:
+    /// - Macro name as Symbol
+    /// - Type information as TypeNodeId
+    /// - DynPluginMacroInfo wrapper
+    ///
+    /// This is used to register dynamic plugin macros with the compiler.
+    pub fn get_macro_functions(
+        &self,
+    ) -> Vec<(
+        crate::interner::Symbol,
+        crate::interner::TypeNodeId,
+        Box<dyn crate::plugin::MacroFunction>,
+    )> {
+        use crate::interner::ToSymbol;
+
+        let mut result = Vec::new();
+
+        for plugin in &self.plugins {
+            // Check if the plugin supports macros
+            if !plugin.metadata.capabilities.has_macros {
+                continue;
+            }
+
+            // Get the macro lookup function if available
+            let get_macro_fn = match plugin.get_macro_fn {
+                Some(f) => f,
+                None => continue,
+            };
+
+            // Try to get well-known macro function names
+            // TODO: In the future, plugins should expose a list of available macros
+            // Map internal names to public macro names (with proper capitalization)
+            let macro_mappings = vec![
+                ("make_sampler_mono", "Sampler_mono"), // internal_name, public_name
+            ];
+
+            for (internal_name, public_name) in macro_mappings {
+                let name_cstr = match std::ffi::CString::new(internal_name) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+
+                // Try to get the macro function
+                let macro_fn = unsafe { get_macro_fn(name_cstr.as_ptr()) };
+                if let Some(macro_fn) = macro_fn {
+                    // TODO: Get type information from plugin metadata
+                    // For now, we'll use a placeholder type
+                    // The actual type should be: String -> Code((Float) -> Float)
+                    use crate::function;
+                    use crate::numeric;
+                    use crate::string_t;
+                    use crate::types::Type;
+
+                    let ty = function!(
+                        vec![string_t!()],
+                        Type::Code(function!(vec![numeric!()], numeric!())).into_id()
+                    );
+
+                    // Use the public name for the symbol
+                    let wrapper = unsafe {
+                        DynPluginMacroInfo::new(
+                            public_name.to_symbol(),
+                            ty,
+                            plugin.instance,
+                            macro_fn,
+                        )
+                    };
+
+                    crate::log::info!("Registered dynamic macro: {public_name}");
+                    result.push((
+                        public_name.to_symbol(),
+                        ty,
+                        Box::new(wrapper) as Box<dyn crate::plugin::MacroFunction>,
+                    ));
+                }
+            }
+        }
+
+        result
     }
 }
 
@@ -393,7 +655,11 @@ fn get_plugin_directory() -> Result<PathBuf, PluginLoaderError> {
     #[cfg(target_os = "linux")]
     {
         if let Ok(home) = std::env::var("HOME") {
-            return Ok(PathBuf::from(home).join(".local").join("share").join("mimium").join("plugins"));
+            return Ok(PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("mimium")
+                .join("plugins"));
         }
     }
 

@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::interner::{ExprNodeId, Symbol, TypeNodeId};
 //todo! need to replace with interned string.
 use crate::types::Type;
@@ -5,7 +7,7 @@ use crate::utils::metadata::{Location, Span};
 use crate::utils::miniprint::MiniPrint;
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Pattern {
     Single(Symbol),
     Placeholder, // Represents '_' pattern that ignores the value
@@ -46,7 +48,7 @@ impl std::fmt::Display for Pattern {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TypedId {
     pub id: Symbol,
     // TypeNodeId is always issued even if the expression doesn't have the type
@@ -104,7 +106,7 @@ impl MiniPrint for TypedId {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TypedPattern {
     pub pat: Pattern,
     pub ty: TypeNodeId,

@@ -6,6 +6,8 @@
 //!
 //! # Overview
 //!
+//! ## Runtime Functions (`mimium_plugin_fn`)
+//!
 //! Plugin authors write methods using normal Rust types (e.g. `f64` arguments
 //! and return values). The [`mimium_plugin_fn`] macro transforms each annotated
 //! method into a pair:
@@ -18,10 +20,16 @@
 //! and performs all argument extraction / return-value writing through it,
 //! ensuring that the actual plugin logic is decoupled from the VM implementation.
 //!
+//! ## Macro Functions (`mimium_plugin_macro`)
+//!
+//! For compile-time code generation, the [`mimium_plugin_macro`] attribute transforms
+//! methods with the signature `(&mut self, &[(Value, TypeNodeId)]) -> Value` into
+//! FFI-compatible wrappers that handle serialization/deserialization automatically.
+//!
 //! # Example
 //!
 //! ```rust,ignore
-//! use mimium_plugin_macros::mimium_plugin_fn;
+//! use mimium_plugin_macros::{mimium_plugin_fn, mimium_plugin_macro};
 //!
 //! struct MyPlugin { value: f64 }
 //!
@@ -29,6 +37,12 @@
 //!     #[mimium_plugin_fn]
 //!     pub fn add_value(&mut self, x: f64) -> f64 {
 //!         self.value + x
+//!     }
+//!
+//!     #[mimium_plugin_macro]
+//!     pub fn my_macro(&mut self, args: &[(Value, TypeNodeId)]) -> Value {
+//!         // Generate code based on arguments
+//!         Value::Code(...)
 //!     }
 //! }
 //! ```
@@ -322,5 +336,130 @@ fn classify_type(ty: &Type) -> syn::Result<ReturnKind> {
             "mimium_plugin_fn: unsupported return type. \
              Currently supported: f64, (f64, ...), ()",
         )),
+    }
+}
+// ===========================================================================
+// Macro Function Support (`mimium_plugin_macro`)
+// ===========================================================================
+
+/// Transforms a compile-time macro method into a validated form.
+///
+/// The annotated method should have the signature:
+/// ```rust,ignore
+/// fn name(&mut self, args: &[(Value, TypeNodeId)]) -> Value
+/// ```
+///
+/// This macro validates the signature and preserves the method as-is.
+/// To expose the macro via FFI, manually create a bridge function like:
+///
+/// ```rust,ignore
+/// #[unsafe(no_mangle)]
+/// pub extern "C" fn ffi_my_macro(
+///     instance: *mut std::ffi::c_void,
+///     args_ptr: *const u8,
+///     args_len: usize,
+///     out_ptr: *mut *mut u8,
+///     out_len: *mut usize,
+/// ) -> i32 {
+///     unsafe {
+///         let plugin = &mut *(instance as *mut MyPlugin);
+///         let args_bytes = std::slice::from_raw_parts(args_ptr, args_len);
+///         let args = mimium_lang::runtime::ffi_serde::deserialize_macro_args(args_bytes)
+///             .unwrap_or_else(|_| return -1);
+///         let result = plugin.my_macro(&args);
+///         let result_bytes = mimium_lang::runtime::ffi_serde::serialize_value(&result)
+///             .unwrap_or_else(|_| return -2);
+///         let boxed = result_bytes.into_boxed_slice();
+///         *out_len = boxed.len();
+///         *out_ptr = Box::into_raw(boxed) as *mut u8;
+///         0
+///     }
+/// }
+/// ```
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use mimium_plugin_macros::mimium_plugin_macro;
+/// use mimium_lang::interpreter::Value;
+/// use mimium_lang::interner::TypeNodeId;
+///
+/// struct SamplerPlugin;
+///
+/// impl SamplerPlugin {
+///     #[mimium_plugin_macro]
+///     pub fn make_sampler(&mut self, args: &[(Value, TypeNodeId)]) -> Value {
+///         // Extract first argument as string
+///         let path = match &args[0].0 {
+///             Value::String(s) => s.to_string(),
+///             _ => unreachable!(),
+///         };
+///         // Load sample and return generated code
+///         Value::Code(...)
+///     }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn mimium_plugin_macro(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as ItemFn);
+    match validate_macro_fn(&input) {
+        Ok(_) => {
+            // Return the original function as-is, converted back to TokenStream
+            quote! { #input }.into()
+        }
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// Validates the signature of a macro function.
+fn validate_macro_fn(input: &ItemFn) -> syn::Result<()> {
+    // Check that function takes &mut self as first parameter
+    let _receiver = require_self_receiver(input)?;
+
+    if !input.sig.generics.params.is_empty() {
+        return Err(Error::new_spanned(
+            &input.sig.generics,
+            "mimium_plugin_macro does not support generic parameters",
+        ));
+    }
+
+    // Validate signature: should have one parameter of type &[(Value, TypeNodeId)]
+    if input.sig.inputs.len() != 2 {
+        return Err(Error::new_spanned(
+            &input.sig.inputs,
+            "mimium_plugin_macro: expected signature (&mut self, &[(Value, TypeNodeId)]) -> Value",
+        ));
+    }
+
+    // Validate return type: should be Value
+    match &input.sig.output {
+        ReturnType::Type(_, ty) => {
+            if !is_value_type(ty) {
+                return Err(Error::new_spanned(
+                    ty,
+                    "mimium_plugin_macro: return type must be `Value`",
+                ));
+            }
+        }
+        ReturnType::Default => {
+            return Err(Error::new_spanned(
+                &input.sig,
+                "mimium_plugin_macro: must return `Value`",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Check if a type is `Value` (from mimium_lang::interpreter).
+fn is_value_type(ty: &Type) -> bool {
+    match ty {
+        Type::Path(tp) => tp
+            .path
+            .segments
+            .last()
+            .is_some_and(|seg| seg.ident == "Value"),
+        _ => false,
     }
 }

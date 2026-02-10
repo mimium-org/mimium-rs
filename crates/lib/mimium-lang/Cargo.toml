@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 chumsky = { version = "0.11", features = ["lexical-numbers", "pratt"] }
 ariadne = "0.5"
 string-interner = "0.17.0"
-slotmap = "1.0.7"
+slotmap = { version = "1.0.7", features = ["serde"] }
 log = { workspace = true }
 colog = { workspace = true }
 half = "2.4.1"
@@ -23,6 +23,8 @@ itertools.workspace = true
 wasm-bindgen.workspace = true
 state-tree = { workspace = true }
 thiserror = { workspace = true }
+serde = { version = "1.0", features = ["derive", "rc"] }
+bincode = "1.3"
 
 # WASM backend dependencies
 wasm-encoder = "0.221"

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use super::resolve_include::resolve_include;
 use super::statement::Statement;
 use crate::ast::Expr;
@@ -14,7 +16,7 @@ use crate::utils::metadata::{Location, Span};
 use super::StageKind;
 
 /// Visibility modifier for module members
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub enum Visibility {
     #[default]
     Private,
@@ -22,7 +24,7 @@ pub enum Visibility {
 }
 
 /// Qualified path for module references (e.g., modA::modB::func)
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct QualifiedPath {
     pub segments: Vec<Symbol>,
 }
