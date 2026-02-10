@@ -2,7 +2,7 @@
 //!
 //! This crate provides attribute macros that simplify the definition of plugin
 //! functions by automatically generating the boilerplate required to bridge
-//! between idiomatic Rust and mimium's VM stack-based calling convention.
+//! between idiomatic Rust and mimium's runtime FFI.
 //!
 //! # Overview
 //!
@@ -14,8 +14,9 @@
 //! 2. A public wrapper with the `(&mut Self, &mut Machine) -> ReturnCode`
 //!    signature expected by [`SystemPluginFnType`](mimium_lang::plugin::SystemPluginFnType).
 //!
-//! The wrapper automatically extracts arguments from the VM stack, calls the
-//! helper, and writes return values back to the stack.
+//! Internally the wrapper creates a [`RuntimeHandle`](mimium_lang::runtime::ffi::RuntimeHandle)
+//! and performs all argument extraction / return-value writing through it,
+//! ensuring that the actual plugin logic is decoupled from the VM implementation.
 //!
 //! # Example
 //!
@@ -48,12 +49,12 @@ use syn::{Error, FnArg, Ident, ItemFn, Pat, ReturnType, Type, TypeTuple, parse_m
 ///
 /// # Supported types
 ///
-/// | Position      | Type              | Conversion                                 |
-/// |---------------|-------------------|--------------------------------------------|
-/// | Argument      | `f64`             | `Machine::get_as::<f64>(m.get_stack(N))`   |
-/// | Return        | `f64`             | `m.set_stack(0, Machine::to_value(v))`     |
-/// | Return        | `(f64, f64, ...)` | One `set_stack` call per element            |
-/// | Return        | `()`              | No stack write, return code 0              |
+/// | Position      | Type              | Conversion                                  |
+/// |---------------|-------------------|---------------------------------------------|
+/// | Argument      | `f64`             | `RuntimeHandle::get_arg_f64(N)`             |
+/// | Return        | `f64`             | `RuntimeHandle::set_return_f64(0, v)`       |
+/// | Return        | `(f64, f64, ...)` | One `set_return_f64` call per element       |
+/// | Return        | `()`              | No stack write, return code 0               |
 ///
 /// # Example
 ///
@@ -136,15 +137,13 @@ fn generate_plugin_fn(input: &ItemFn) -> syn::Result<proc_macro2::TokenStream> {
     let all_impl_params = &input.sig.inputs;
     let original_output = &input.sig.output;
 
-    // Argument extraction from VM stack.
+    // Argument extraction through RuntimeHandle.
     let arg_extractions = params.iter().map(|p| {
         let name = &p.name;
         let ty = &p.ty;
-        let idx = p.index as i64;
+        let idx = p.index as u32;
         quote! {
-            let #name: #ty = ::mimium_lang::runtime::vm::Machine::get_as::<f64>(
-                __machine.get_stack(#idx),
-            );
+            let #name: #ty = __handle.get_arg_f64(#idx);
         }
     });
 
@@ -165,10 +164,7 @@ fn generate_plugin_fn(input: &ItemFn) -> syn::Result<proc_macro2::TokenStream> {
             (
                 quote! {
                     let __result = self.#impl_name(#(#args),*);
-                    __machine.set_stack(
-                        0i64,
-                        ::mimium_lang::runtime::vm::Machine::to_value(__result),
-                    );
+                    __handle.set_return_f64(0, __result);
                 },
                 quote! { 1i64 },
             )
@@ -177,12 +173,9 @@ fn generate_plugin_fn(input: &ItemFn) -> syn::Result<proc_macro2::TokenStream> {
             let args = call_args.collect::<Vec<_>>();
             let writes = (0..*n).map(|i| {
                 let idx = syn::Index::from(i);
-                let stack_pos = i as i64;
+                let stack_pos = i as u32;
                 quote! {
-                    __machine.set_stack(
-                        #stack_pos,
-                        ::mimium_lang::runtime::vm::Machine::to_value(__result.#idx),
-                    );
+                    __handle.set_return_f64(#stack_pos, __result.#idx);
                 }
             });
             let n_i64 = *n as i64;
@@ -209,6 +202,11 @@ fn generate_plugin_fn(input: &ItemFn) -> syn::Result<proc_macro2::TokenStream> {
             &mut self,
             __machine: &mut ::mimium_lang::runtime::vm::Machine,
         ) -> ::mimium_lang::runtime::vm::ReturnCode {
+            // SAFETY: __machine is valid for the duration of this call and
+            // no other mutable alias exists.
+            let mut __handle = unsafe {
+                ::mimium_lang::runtime::vm_ffi::runtime_handle_from_machine(__machine)
+            };
             #(#arg_extractions)*
             #result_handling
             #return_code

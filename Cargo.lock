@@ -2301,6 +2301,7 @@ dependencies = [
  "homedir",
  "intx",
  "itertools 0.13.0",
+ "libloading",
  "log",
  "mimalloc",
  "slotmap",
@@ -2343,6 +2344,7 @@ dependencies = [
  "atomic_float",
  "midir",
  "mimium-lang",
+ "mimium-plugin-macros",
  "mimium-test",
  "wmidi",
 ]

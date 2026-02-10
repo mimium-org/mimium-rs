@@ -253,3 +253,106 @@ impl SystemPlugin for SamplerPlugin {
         vec![sampler_macro, get_sampler]
     }
 }
+
+// -------------------------------------------------------------------------
+// Dynamic Plugin ABI
+// -------------------------------------------------------------------------
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::ffi::{CString, c_char};
+
+#[cfg(not(target_arch = "wasm32"))]
+use mimium_lang::plugin::loader::{PluginCapabilities, PluginInstance, PluginMetadata};
+
+#[cfg(not(target_arch = "wasm32"))]
+static PLUGIN_NAME: &str = "mimium-symphonia\0";
+#[cfg(not(target_arch = "wasm32"))]
+static PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
+#[cfg(not(target_arch = "wasm32"))]
+static PLUGIN_AUTHOR: &str = "mimium-org\0";
+
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn mimium_plugin_metadata() -> *const PluginMetadata {
+    use std::sync::OnceLock;
+    
+    static METADATA: OnceLock<(CString, PluginMetadata)> = OnceLock::new();
+    
+    let (version_cstr, metadata) = METADATA.get_or_init(|| {
+        let version_cstr = CString::new(PLUGIN_VERSION).expect("Version string is valid");
+        let metadata = PluginMetadata {
+            name: PLUGIN_NAME.as_ptr() as *const c_char,
+            version: version_cstr.as_ptr(),
+            author: PLUGIN_AUTHOR.as_ptr() as *const c_char,
+            capabilities: PluginCapabilities {
+                has_audio_worker: false,
+                has_macros: true,
+                has_runtime_functions: true,
+            },
+        };
+        (version_cstr, metadata)
+    });
+    
+    metadata
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn mimium_plugin_create() -> *mut PluginInstance {
+    let plugin = Box::new(SamplerPlugin::default());
+    Box::into_raw(plugin) as *mut PluginInstance
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn mimium_plugin_destroy(instance: *mut PluginInstance) {
+    if !instance.is_null() {
+        // SAFETY: instance was created by mimium_plugin_create
+        unsafe {
+            let _ = Box::from_raw(instance as *mut SamplerPlugin);
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+use mimium_lang::plugin::loader::PluginFunctionFn;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn mimium_plugin_get_function(name: *const c_char) -> Option<PluginFunctionFn> {
+    use std::ffi::CStr;
+    
+    if name.is_null() {
+        return None;
+    }
+    
+    let name_str = unsafe { CStr::from_ptr(name) }.to_str().ok()?;
+    
+    match name_str {
+        "__get_sampler" => Some(ffi_get_sampler),
+        _ => None,
+    }
+}
+
+/// FFI wrapper for get_sampler that bridges to the RuntimeHandle-based API
+#[cfg(not(target_arch = "wasm32"))]
+unsafe extern "C" fn ffi_get_sampler(
+    instance: *mut PluginInstance,
+    runtime: *mut std::ffi::c_void,
+) -> i64 {
+    use mimium_lang::runtime::vm_ffi::runtime_handle_from_machine;
+    use mimium_lang::runtime::vm::Machine;
+    
+    if instance.is_null() || runtime.is_null() {
+        return 0;
+    }
+    
+    // SAFETY: runtime is actually a *mut Machine
+    let machine = unsafe { &mut *(runtime as *mut Machine) };
+    
+    // SAFETY: instance is actually a *mut SamplerPlugin
+    let plugin = unsafe { &mut *(instance as *mut SamplerPlugin) };
+    
+    // Call the actual plugin method
+    plugin.get_sampler(machine)
+}

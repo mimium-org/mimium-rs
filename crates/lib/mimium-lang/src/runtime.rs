@@ -4,8 +4,10 @@ use crate::{
 };
 use thiserror::Error;
 
+pub mod ffi;
 pub mod primitives;
 pub mod vm;
+pub mod vm_ffi;
 pub mod wasm;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Time(pub u64);

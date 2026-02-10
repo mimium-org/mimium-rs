@@ -17,6 +17,7 @@ use mimium_lang::{
     types::{PType, RecordTypeField, Type},
     unit,
 };
+use mimium_plugin_macros::mimium_plugin_fn;
 use std::{
     cell::OnceCell,
     sync::{Arc, atomic::Ordering},
@@ -153,26 +154,21 @@ impl MidiPlugin {
         )
     }
 
-    /// Runtime function to get MIDI note values by UID
+    /// Runtime function to get MIDI note values by UID.
     /// Arguments: uid:float (index into midi_note_cells)
-    /// Returns: record {pitch:float, velocity:float}
-    pub fn get_midi_note(&mut self, vm: &mut vm::Machine) -> vm::ReturnCode {
-        let uid = vm::Machine::get_as::<f64>(vm.get_stack(0)) as usize;
-
+    /// Returns: (pitch, velocity) tuple
+    #[mimium_plugin_fn]
+    pub fn get_midi_note(&mut self, uid: f64) -> (f64, f64) {
+        let uid = uid as usize;
         match self.midi_note_cells.get(uid) {
             Some(cell) => {
                 let pitch = cell.pitch.load(Ordering::Relaxed);
                 let velocity = cell.velocity.load(Ordering::Relaxed);
-                // Return as a tuple for now (records are represented as tuples in the VM)
-                vm.set_stack(0, vm::Machine::to_value(pitch));
-                vm.set_stack(1, vm::Machine::to_value(velocity));
-                2
+                (pitch, velocity)
             }
             None => {
                 log::error!("Invalid MIDI note UID: {uid}");
-                vm.set_stack(0, vm::Machine::to_value(0.0));
-                vm.set_stack(1, vm::Machine::to_value(0.0));
-                2
+                (0.0, 0.0)
             }
         }
     }
