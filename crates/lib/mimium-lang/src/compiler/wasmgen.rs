@@ -22,6 +22,13 @@ use wasm_encoder::{
     ValType,
 };
 
+/// Plugin function import indices
+#[derive(Debug, Clone, Default)]
+struct PluginFunctionIndices {
+    /// Map: function name -> WASM import index
+    functions: HashMap<Symbol, u32>,
+}
+
 /// Runtime primitive function indices for calling imports
 #[derive(Debug, Clone, Default)]
 struct RuntimeFunctionIndices {
@@ -117,6 +124,8 @@ pub struct WasmGenerator {
 
     /// Runtime primitive function indices
     rt: RuntimeFunctionIndices,
+    /// Plugin function import indices
+    plugin_fns: PluginFunctionIndices,
 }
 
 impl WasmGenerator {
@@ -147,11 +156,13 @@ impl WasmGenerator {
             next_global_offset: 256, // Reserve 256..512 for globals
             // Runtime primitive indices will be set by setup_runtime_imports
             rt: RuntimeFunctionIndices::default(),
+            plugin_fns: PluginFunctionIndices::default(),
         };
 
         // Setup runtime primitive imports and memory/table
         generator.setup_runtime_imports();
         generator.setup_math_imports();
+        generator.setup_plugin_imports();
         generator.setup_memory_and_table();
 
         // Save number of imported functions for use in function index calculations
@@ -326,6 +337,68 @@ impl WasmGenerator {
             .ty()
             .function(vec![ValType::F64, ValType::F64], vec![ValType::F64]);
         self.rt.math_pow = self.add_import_from("math", "pow", type_idx_f64_f64_f64);
+    }
+
+    /// Setup plugin function imports from dynamically loaded plugins
+    #[cfg(not(target_arch = "wasm32"))]
+    fn setup_plugin_imports(&mut self) {
+        use crate::plugin::loader::PluginLoader;
+
+        // Load plugins and get type information
+        let mut loader = PluginLoader::new();
+        if let Err(e) = loader.load_builtin_plugins() {
+            eprintln!("[W] Failed to load plugins for WASM imports: {e}");
+            return;
+        }
+
+        let type_infos = loader.get_type_infos();
+        eprintln!(
+            "[D] Setting up {} plugin function imports for WASM",
+            type_infos.len()
+        );
+
+        for type_info in type_infos {
+            let name = type_info.name;
+            let type_id = type_info.ty;
+
+            // Convert TypeNodeId to WASM function type
+            let fn_ty = type_id.to_type();
+            if let Type::Function { arg, ret } = fn_ty {
+                // Create WASM function type
+                // For now, assuming single parameter (arg) and single return (ret)
+                let param_types: Vec<ValType> = vec![Self::type_to_valtype(&arg.to_type())];
+                let return_types: Vec<ValType> = vec![Self::type_to_valtype(&ret.to_type())];
+
+                let type_idx = self.type_section.len();
+                self.type_section
+                    .ty()
+                    .function(param_types.clone(), return_types.clone());
+
+                // Add import from "plugin" module
+                let fn_idx = self.add_import_from("plugin", name.as_str(), type_idx);
+                self.plugin_fns.functions.insert(name, fn_idx);
+
+                eprintln!(
+                    "[D] Registered plugin function import: {} -> idx {} (params: {:?}, returns: {:?})",
+                    name.as_str(),
+                    fn_idx,
+                    param_types,
+                    return_types
+                );
+            } else {
+                eprintln!(
+                    "[W] Plugin function {} has non-function type: {:?}",
+                    name.as_str(),
+                    fn_ty
+                );
+            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn setup_plugin_imports(&mut self) {
+        // WASM環境（ブラウザ）ではプラグインは使わない
+        // mimium-web は VM 全体を WASM 化するため、別の仕組み
     }
 
     /// Setup memory and table sections
@@ -1582,7 +1655,10 @@ impl WasmGenerator {
         match name.as_str() {
             "_mimium_getsamplerate" => Some(self.rt.runtime_get_samplerate),
             "_mimium_getnow" => Some(self.rt.runtime_get_now),
-            _ => None,
+            _ => {
+                // Check plugin functions
+                self.plugin_fns.functions.get(name).copied()
+            }
         }
     }
 

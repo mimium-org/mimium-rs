@@ -8,6 +8,7 @@ pub mod engine;
 use crate::runtime::primitives::Word;
 use crate::runtime::vm::heap::{self, HeapStorage};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use wasmtime::{AsContextMut, Caller, Config, Engine, Linker, Module, OptLevel, Store};
 
 /// WASM runtime state
@@ -16,6 +17,9 @@ pub struct WasmRuntime {
     engine: Engine,
     /// Linker for connecting host functions
     linker: Linker<RuntimeState>,
+    /// Plugin loader (for calling plugin functions from host functions)
+    #[cfg(not(target_arch = "wasm32"))]
+    plugin_loader: Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>,
 }
 
 /// Per-instance runtime state passed to host functions
@@ -32,6 +36,9 @@ pub struct RuntimeState {
     pub(crate) current_time: u64,
     /// Sample rate (for runtime_get_samplerate)
     pub(crate) sample_rate: f64,
+    /// Plugin loader (for calling plugin functions)
+    #[cfg(not(target_arch = "wasm32"))]
+    plugins: Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>,
 }
 
 impl Default for RuntimeState {
@@ -43,6 +50,8 @@ impl Default for RuntimeState {
             state_stack: Vec::new(),
             current_time: 0,
             sample_rate: 44100.0,
+            #[cfg(not(target_arch = "wasm32"))]
+            plugins: None,
         }
     }
 }
@@ -70,7 +79,16 @@ impl WasmRuntime {
         // Register all runtime primitive host functions
         Self::register_runtime_primitives(&mut linker)?;
 
-        Ok(Self { engine, linker })
+        // Register plugin functions as host functions
+        #[cfg(not(target_arch = "wasm32"))]
+        let plugin_loader = Self::register_plugin_functions(&mut linker)?;
+
+        Ok(Self {
+            engine,
+            linker,
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_loader,
+        })
     }
 
     /// Load and instantiate a WASM module
@@ -78,7 +96,15 @@ impl WasmRuntime {
         let module = Module::from_binary(&self.engine, wasm_bytes)
             .map_err(|e| format!("Failed to load WASM module: {e:#}"))?;
 
-        let mut store = Store::new(&self.engine, RuntimeState::default());
+        let mut runtime_state = RuntimeState::default();
+        
+        // Set plugin loader reference in runtime state
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            runtime_state.plugins = self.plugin_loader.clone();
+        }
+
+        let mut store = Store::new(&self.engine, runtime_state);
 
         let instance = self
             .linker
@@ -178,6 +204,82 @@ impl WasmRuntime {
             .map_err(|e| format!("Failed to register math::pow: {e}"))?;
 
         Ok(())
+    }
+
+    /// Register plugin functions as host functions
+    #[cfg(not(target_arch = "wasm32"))]
+    fn register_plugin_functions(
+        linker: &mut Linker<RuntimeState>,
+    ) -> Result<Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>, String> {
+        use crate::plugin::loader::PluginLoader;
+
+        let mut loader = PluginLoader::new();
+        loader
+            .load_builtin_plugins()
+            .map_err(|e| format!("Failed to load plugins: {}", e))?;
+
+        // Get type infos to know function signatures
+        let type_infos = loader.get_type_infos();
+        eprintln!(
+            "[D] Registering {} plugin functions as WASM host functions",
+            type_infos.len()
+        );
+
+        // Wrap loader in Arc<Mutex<>> for sharing with host functions
+        let loader = Arc::new(Mutex::new(loader));
+        let loader_clone = loader.clone();
+
+        for type_info in type_infos {
+            let name = type_info.name;
+
+            // For now, hardcode sampler_mono as example
+            // TODO: Generate trampolines automatically based on type info
+            if name.as_str() == "sampler_mono" {
+                eprintln!("[D] Registering plugin host function: sampler_mono");
+
+                linker
+                    .func_wrap(
+                        "plugin",
+                        "sampler_mono",
+                        move |mut caller: Caller<RuntimeState>, path_ptr: i32, path_len: i32| -> f64 {
+                            // Read string from linear memory
+                            let memory = caller.data().memory.expect("Memory not set");
+                            let mem_data = memory.data(&caller);
+                            
+                            let start = path_ptr as usize;
+                            let end = start + path_len as usize;
+                            
+                            if end > mem_data.len() {
+                                eprintln!("[E] Invalid memory access: ptr={}, len={}, mem_size={}",
+                                         path_ptr, path_len, mem_data.len());
+                                return 0.0;
+                            }
+                            
+                            let path_bytes = &mem_data[start..end];
+                            let path_str = match std::str::from_utf8(path_bytes) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("[E] Invalid UTF-8 in path string: {}", e);
+                                    return 0.0;
+                                }
+                            };
+
+                            eprintln!("[D] Plugin call: sampler_mono(\"{}\")", path_str);
+
+                            // Call plugin function via stored loader
+                            // Note: This is a simplified implementation
+                            // Real implementation would need to properly handle the plugin API
+                            
+                            // For now, return a dummy value
+                            // TODO: Actually call the plugin function
+                            0.0
+                        },
+                    )
+                    .map_err(|e| format!("Failed to register sampler_mono: {}", e))?;
+            }
+        }
+
+        Ok(Some(loader_clone))
     }
 }
 

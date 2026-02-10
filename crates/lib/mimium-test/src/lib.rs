@@ -15,6 +15,22 @@ use mimium_lang::{
     },
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+use mimium_lang::runtime::wasm::{WasmModule, WasmRuntime};
+
+/// Check if WASM backend should be used based on MIMIUM_BACKEND environment variable
+#[cfg(not(target_arch = "wasm32"))]
+fn should_use_wasm_backend() -> bool {
+    std::env::var("MIMIUM_BACKEND")
+        .map(|v| v.to_lowercase() == "wasm")
+        .unwrap_or(false)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn should_use_wasm_backend() -> bool {
+    false
+}
+
 pub fn run_bytecode_test(
     machine: &mut vm::Machine,
     n: usize,
@@ -91,6 +107,12 @@ pub fn run_source_test(
     stereo: bool,
     path: Option<PathBuf>,
 ) -> Result<Vec<f64>, Vec<Box<dyn ReportableError>>> {
+    // Check if WASM backend should be used
+    #[cfg(not(target_arch = "wasm32"))]
+    if should_use_wasm_backend() {
+        return run_wasm_test(src, times, stereo, path);
+    }
+
     let mut ctx = ExecContext::new([].into_iter(), path, Config::default());
 
     ctx.prepare_machine(src)?;
@@ -124,6 +146,12 @@ pub fn run_file_with_scheduler(path: &'static str, times: u64) -> Option<Vec<f64
     run_file_with_plugins(path, times, [].into_iter(), true)
 }
 pub fn run_file_test(path: &'static str, times: u64, stereo: bool) -> Option<Vec<f64>> {
+    // Check if WASM backend should be used
+    #[cfg(not(target_arch = "wasm32"))]
+    if should_use_wasm_backend() {
+        return run_file_test_wasm(path, times, stereo);
+    }
+
     let (file, src) = load_src(path);
     let res = run_source_test(&src, times, stereo, Some(file));
     match res {
@@ -217,5 +245,84 @@ pub fn test_state_sizes<T: IntoIterator<Item = (&'static str, u64)>>(path: &'sta
             }
             None => panic!("no such function: {fn_name}"),
         };
+    }
+}
+
+/// Run a WASM backend test with the given source code
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_wasm_test(
+    src: &str,
+    times: u64,
+    stereo: bool,
+    path: Option<PathBuf>,
+) -> Result<Vec<f64>, Vec<Box<dyn ReportableError>>> {
+    use mimium_lang::compiler::wasmgen::WasmGenerator;
+    use std::sync::Arc;
+
+    // Compile to MIR
+    let mut ctx = ExecContext::new([].into_iter(), path, Config::default());
+    ctx.prepare_compiler();
+    let mir = ctx.get_compiler().unwrap().emit_mir(src)?;
+
+    // Generate WASM
+    let mut wasmgen = WasmGenerator::new(Arc::new(mir));
+    let wasm_bytes = wasmgen
+        .generate()
+        .map_err(|e| vec![Box::new(runtime::RuntimeError(
+            runtime::ErrorKind::Unknown,
+            Location::default(),
+        )) as Box<dyn ReportableError>])?;
+
+    eprintln!("[D] Generated WASM module: {} bytes", wasm_bytes.len());
+
+    // Load and execute with WasmRuntime
+    let mut wasm_runtime = WasmRuntime::new()
+        .map_err(|_e| vec![Box::new(runtime::RuntimeError(
+            runtime::ErrorKind::Unknown,
+            Location::default(),
+        )) as Box<dyn ReportableError>])?;
+
+    let mut wasm_module = wasm_runtime
+        .load_module(&wasm_bytes)
+        .map_err(|_e| vec![Box::new(runtime::RuntimeError(
+            runtime::ErrorKind::Unknown,
+            Location::default(),
+        )) as Box<dyn ReportableError>])?;
+
+    // Execute main to initialize
+    let _init_result = wasm_module.call_function("main", &[]);
+
+    // Execute dsp multiple times
+    let n = if stereo { 2 } else { 1 };
+    let mut results = Vec::with_capacity(times as usize * n);
+
+    for _ in 0..times {
+        let result = wasm_module
+            .call_function("dsp", &[])
+            .map_err(|_e| vec![Box::new(runtime::RuntimeError(
+                runtime::ErrorKind::Unknown,
+                Location::default(),
+            )) as Box<dyn ReportableError>])?;
+
+        // Extract f64 values from result
+        if let Some(val) = result.first() {
+            results.push(f64::from_bits(*val));
+        }
+    }
+
+    Ok(results)
+}
+
+/// Run a file test using WASM backend
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_file_test_wasm(path: &'static str, times: u64, stereo: bool) -> Option<Vec<f64>> {
+    let (file, src) = load_src(path);
+    let res = run_wasm_test(&src, times, stereo, Some(file));
+    match res {
+        Ok(res) => Some(res),
+        Err(errs) => {
+            report(&src, path.into(), &errs);
+            None
+        }
     }
 }
