@@ -16,7 +16,7 @@ crate-type = ["cdylib", "rlib"]
 mimium-lang = { workspace = true }
 mimium-plugin-macros = { workspace = true }
 symphonia = { version = "0.5.4", features = ["all-codecs"] }
-
+bincode = { workspace = true }
 [dev-dependencies]
 mimium-test = { workspace = true }
 mimium-audiodriver = { workspace = true }

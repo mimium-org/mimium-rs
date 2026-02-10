@@ -2381,6 +2381,7 @@ dependencies = [
 name = "mimium-symphonia"
 version = "3.2.0"
 dependencies = [
+ "bincode",
  "mimium-audiodriver",
  "mimium-lang",
  "mimium-plugin-macros",

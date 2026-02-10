@@ -136,6 +136,37 @@ type PluginGetFunctionFn = unsafe extern "C" fn(name: *const c_char) -> Option<P
 /// Returns a function pointer for the named macro function, or null if not found.
 type PluginGetMacroFn = unsafe extern "C" fn(name: *const c_char) -> Option<PluginMacroFn>;
 
+/// FFI-safe representation of type information.
+///
+/// Used to pass type information from plugins to the host.
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct FfiTypeInfo {
+    /// Function/macro name (null-terminated UTF-8).
+    pub name: *const c_char,
+    /// Serialized type (bincode-encoded TypeNodeId).
+    pub type_data: *const u8,
+    /// Length of serialized type data.
+    pub type_len: usize,
+    /// Stage where this function is available (0=Macro, 1=Machine, 2=Persistent).
+    pub stage: u8,
+}
+
+// SAFETY: FfiTypeInfo contains only pointers to data that outlives the plugin,
+// so it is safe to share across threads.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe impl Sync for FfiTypeInfo {}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe impl Send for FfiTypeInfo {}
+
+/// Type of the `mimium_plugin_get_type_infos` export.
+///
+/// Returns an array of type information structures.
+/// `out_len` is set to the number of elements in the returned array.
+type PluginGetTypeInfosFn =
+    unsafe extern "C" fn(out_len: *mut usize) -> *const FfiTypeInfo;
+
 // -------------------------------------------------------------------------
 // Loaded plugin handle
 // -------------------------------------------------------------------------
@@ -155,6 +186,8 @@ pub struct LoadedPlugin {
     get_function_fn: Option<PluginGetFunctionFn>,
     /// Macro function lookup function pointer (optional).
     get_macro_fn: Option<PluginGetMacroFn>,
+    /// Type information lookup function pointer (optional).
+    get_type_infos_fn: Option<PluginGetTypeInfosFn>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -197,6 +230,61 @@ impl LoadedPlugin {
         let name_cstr = std::ffi::CString::new(name).ok()?;
         unsafe { get_fn(name_cstr.as_ptr()) }
     }
+
+    /// Get type information from the plugin.
+    ///
+    /// Returns a vector of type information if the plugin supports it.
+    pub fn get_type_infos(&self) -> Option<Vec<crate::plugin::ExtFunTypeInfo>> {
+        use crate::interner::{ToSymbol, TypeNodeId};
+        use crate::plugin::{EvalStage, ExtFunTypeInfo};
+
+        let get_fn = self.get_type_infos_fn?;
+        let mut len: usize = 0;
+        let array_ptr = unsafe { get_fn(&mut len as *mut usize) };
+
+        if array_ptr.is_null() || len == 0 {
+            crate::log::debug!("Plugin {} has no type info or returned null", self.name());
+            return None;
+        }
+
+        crate::log::debug!("Plugin {} provided {} type info entries", self.name(), len);
+        let mut result = Vec::with_capacity(len);
+        for i in 0..len {
+            let info = unsafe { &*array_ptr.add(i) };
+
+            // Convert C string to Rust string
+            let name_str = unsafe { CStr::from_ptr(info.name) }
+                .to_string_lossy()
+                .into_owned();
+            let name = name_str.to_symbol();
+
+            // Deserialize type data
+            let type_slice = unsafe { std::slice::from_raw_parts(info.type_data, info.type_len) };
+            let ty: TypeNodeId = match bincode::deserialize(type_slice) {
+                Ok(t) => t,
+                Err(e) => {
+                    crate::log::warn!("Failed to deserialize type for {name_str}: {e:?}");
+                    continue;
+                }
+            };
+
+            // Convert stage number to EvalStage
+            let stage = match info.stage {
+                0 => EvalStage::Stage(0),     // Macro stage (compile-time)
+                1 => EvalStage::Stage(1),     // Machine stage (runtime)
+                2 => EvalStage::Persistent,   // Persistent stage
+                _ => {
+                    crate::log::warn!("Unknown stage {} for {}", info.stage, name_str);
+                    continue;
+                }
+            };
+
+            result.push(ExtFunTypeInfo::new(name, ty, stage));
+        }
+
+        Some(result)
+    }
+
 
     /// Get the plugin instance pointer (for advanced use).
     ///
@@ -381,22 +469,13 @@ impl PluginLoader {
 
     /// Load a plugin from the specified path.
     ///
-    /// # Arguments
-    ///
-    /// * `path` - Path to the plugin library (without extension).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The library cannot be loaded
-    /// - Required symbols are missing
-    /// - Plugin metadata is invalid
+    /// The path should point to a shared library without extension
+    /// (e.g., "path/to/plugin" will load "path/to/plugin.dll" on Windows).
     pub fn load_plugin<P: AsRef<Path>>(&mut self, path: P) -> Result<(), PluginLoaderError> {
-        let path = path.as_ref();
+        let base_path = path.as_ref();
+        let lib_path = get_library_path(base_path)?;
 
-        // Determine the platform-specific library extension
-        let lib_path = get_library_path(path)?;
-
+        // Load library
         // SAFETY: Loading arbitrary code is inherently unsafe.
         let library = unsafe { Library::new(&lib_path) }
             .map_err(|e| PluginLoaderError::LoadFailed(lib_path.clone(), e.to_string()))?;
@@ -428,6 +507,10 @@ impl PluginLoader {
         let get_macro_fn: Option<Symbol<PluginGetMacroFn>> =
             unsafe { library.get(b"mimium_plugin_get_macro\0").ok() };
 
+        // Try to load the optional get_type_infos symbol
+        let get_type_infos_fn: Option<Symbol<PluginGetTypeInfosFn>> =
+            unsafe { library.get(b"mimium_plugin_get_type_infos\0").ok() };
+
         // Get metadata
         let metadata_ptr = unsafe { metadata_fn() };
         if metadata_ptr.is_null() {
@@ -445,6 +528,7 @@ impl PluginLoader {
         let destroy_fn_ptr = *destroy_fn;
         let get_function_fn_ptr = get_function_fn.as_ref().map(|f| **f);
         let get_macro_fn_ptr = get_macro_fn.as_ref().map(|f| **f);
+        let get_type_infos_fn_ptr = get_type_infos_fn.as_ref().map(|f| **f);
 
         // Store the loaded plugin
         let plugin = LoadedPlugin {
@@ -454,6 +538,7 @@ impl PluginLoader {
             destroy_fn: destroy_fn_ptr,
             get_function_fn: get_function_fn_ptr,
             get_macro_fn: get_macro_fn_ptr,
+            get_type_infos_fn: get_type_infos_fn_ptr,
         };
 
         crate::log::info!("Loaded plugin: {} v{}", plugin.name(), plugin.version());
@@ -496,6 +581,15 @@ impl PluginLoader {
     /// Get a list of all loaded plugins.
     pub fn loaded_plugins(&self) -> &[LoadedPlugin] {
         &self.plugins
+    }
+
+    /// Get type information from all loaded plugins.
+    pub fn get_type_infos(&self) -> Vec<crate::plugin::ExtFunTypeInfo> {
+        self.plugins
+            .iter()
+            .filter_map(|plugin| plugin.get_type_infos())
+            .flatten()
+            .collect()
     }
 
     /// Get all macro functions from loaded plugins with their type information.

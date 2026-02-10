@@ -64,6 +64,21 @@ impl SysPluginSignature {
             stage: EvalStage::Stage(0),
         }
     }
+
+    /// Get the public name of this signature.
+    pub fn get_name(&self) -> &'static str {
+        self.name
+    }
+
+    /// Get the type of this signature.
+    pub fn get_type(&self) -> TypeNodeId {
+        self.ty
+    }
+
+    /// Get the stage at which this function/macro is available.
+    pub fn get_stage(&self) -> EvalStage {
+        self.stage
+    }
 }
 
 /// Trait implemented by runtime plugins.

@@ -163,13 +163,28 @@ impl ExecContext {
         self.vm.as_mut()
     }
     fn get_extfun_types(&self) -> Vec<ExtFunTypeInfo> {
-        plugin::get_extfun_types(&self.plugins)
-            .chain(
-                self.sys_plugins
-                    .iter()
-                    .flat_map(|p| p.clsinfos.clone().into_iter().map(ExtFunTypeInfo::from)),
-            )
-            .collect()
+        let static_types = plugin::get_extfun_types(&self.plugins).chain(
+            self.sys_plugins
+                .iter()
+                .flat_map(|p| p.clsinfos.clone().into_iter().map(ExtFunTypeInfo::from)),
+        );
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let dynamic_types = self
+                .plugin_loader
+                .as_ref()
+                .map(|loader| loader.get_type_infos().into_iter())
+                .into_iter()
+                .flatten();
+
+            static_types.chain(dynamic_types).collect()
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            static_types.collect()
+        }
     }
     fn get_macro_types(&self) -> Vec<Box<dyn MacroFunction>> {
         let static_macros = plugin::get_macro_functions(&self.plugins).chain(
