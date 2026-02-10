@@ -22,7 +22,7 @@ use mimium_lang::{
     },
     log,
     plugin::Plugin,
-    runtime::vm,
+    runtime::ProgramPayload,
     utils::{
         error::{ReportableError, report},
         fileloader,
@@ -280,7 +280,7 @@ pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config
 struct FileRunner {
     pub tx_compiler: mpsc::Sender<CompileRequest>,
     pub rx_compiler: mpsc::Receiver<Result<Response, Errors>>,
-    pub tx_prog: Option<mpsc::Sender<Box<dyn std::any::Any + Send>>>,
+    pub tx_prog: Option<mpsc::Sender<ProgramPayload>>,
     pub fullpath: PathBuf,
 }
 
@@ -292,7 +292,7 @@ impl FileRunner {
     pub fn new(
         compiler: compiler::Context,
         path: PathBuf,
-        prog_tx: Option<mpsc::Sender<Box<dyn std::any::Any + Send>>>,
+        prog_tx: Option<mpsc::Sender<ProgramPayload>>,
     ) -> Self {
         let client = async_compiler::start_async_compiler_service(compiler);
         Self {
@@ -328,7 +328,7 @@ impl FileRunner {
                     Ok(Response::ByteCode(prog)) => {
                         log::info!("compiled successfully.");
                         if let Some(tx) = &self.tx_prog {
-                            let _ = tx.send(Box::new(prog));
+                            let _ = tx.send(mimium_lang::runtime::ProgramPayload::VmProgram(prog));
                         }
                     }
                     Err(errs) => {
@@ -483,7 +483,6 @@ pub fn run_file(
             let mir = ctx.get_compiler().unwrap().emit_mir(content)?;
 
             let io_channels = mir.get_dsp_iochannels();
-            log::info!("DSP I/O channels: {:?}", io_channels);
 
             // Generate WASM module
             let mut generator = WasmGenerator::new(Arc::new(mir));
@@ -512,10 +511,6 @@ pub fn run_file(
             })?;
 
             // Create WasmDspRuntime and wrap in RuntimeData
-            println!(
-                "[DEBUG] Creating WasmDspRuntime with io_channels: {:?}",
-                io_channels
-            );
             let mut wasm_runtime = WasmDspRuntime::new(wasm_engine, io_channels);
             wasm_runtime.set_sample_rate(48000.0);
             let _ = wasm_runtime.run_main();

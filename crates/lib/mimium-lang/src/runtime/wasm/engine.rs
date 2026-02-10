@@ -5,7 +5,7 @@
 use super::{WasmModule, WasmRuntime};
 use crate::compiler::IoChannelInfo;
 use crate::runtime::primitives::Word;
-use crate::runtime::{DspRuntime, ReturnCode, Time};
+use crate::runtime::{DspRuntime, ProgramPayload, ReturnCode, Time};
 
 /// High-level WASM execution engine
 pub struct WasmEngine {
@@ -125,11 +125,6 @@ impl DspRuntime for WasmDspRuntime {
 
         // Convert input samples to Words (bit-cast f64 → u64).
         let args: Vec<Word> = self.input_cache.iter().map(|v| v.to_bits()).collect();
-        log::trace!(
-            "run_dsp: input_cache.len={}, args.len={}",
-            self.input_cache.len(),
-            args.len()
-        );
 
         match self.engine.execute_dsp(&args) {
             Ok(result) => {
@@ -159,8 +154,8 @@ impl DspRuntime for WasmDspRuntime {
         self.io_channels
     }
 
-    fn try_hot_swap(&mut self, new_program: Box<dyn std::any::Any + Send>) -> bool {
-        if let Ok(wasm_bytes) = new_program.downcast::<Vec<u8>>() {
+    fn try_hot_swap(&mut self, new_program: ProgramPayload) -> bool {
+        if let ProgramPayload::WasmModule(wasm_bytes) = new_program {
             match self.engine.load_module(&wasm_bytes) {
                 Ok(()) => {
                     // Re-run main after hot-swap.

@@ -13,6 +13,17 @@ pub struct Time(pub u64);
 /// Return code from DSP execution (alias for vm::ReturnCode).
 pub type ReturnCode = i64;
 
+/// Type-safe representation of programs that can be hot-swapped into a runtime.
+///
+/// This replaces the previous `Box<dyn Any + Send>` approach with an explicit
+/// enum, providing compile-time type safety and eliminating runtime downcasts.
+pub enum ProgramPayload {
+    /// Native bytecode VM program.
+    VmProgram(vm::Program),
+    /// WASM module bytes.
+    WasmModule(Vec<u8>),
+}
+
 /// Abstraction over per-sample DSP execution backends.
 ///
 /// This trait decouples audio drivers from a concrete runtime implementation,
@@ -35,10 +46,9 @@ pub trait DspRuntime {
 
     /// Attempt to hot-swap the running program.
     ///
-    /// The concrete type inside `new_program` depends on the runtime: `vm::Program`
-    /// for the native VM, `Vec<u8>` (WASM bytes) for the WASM backend, etc.
-    /// Returns `true` on success.
-    fn try_hot_swap(&mut self, new_program: Box<dyn std::any::Any + Send>) -> bool {
+    /// Takes a type-safe `ProgramPayload` which can be either a native VM
+    /// program or WASM module bytes. Returns `true` on success.
+    fn try_hot_swap(&mut self, new_program: ProgramPayload) -> bool {
         let _ = new_program;
         false
     }
@@ -63,4 +73,17 @@ impl ReportableError for RuntimeError {
     fn get_labels(&self) -> Vec<(crate::utils::metadata::Location, String)> {
         vec![(self.1.clone(), self.0.to_string())]
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Compile-time assertion that `ProgramPayload` implements `Send`.
+    #[test]
+    fn ensure_payload_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<ProgramPayload>();
+    }
+
 }

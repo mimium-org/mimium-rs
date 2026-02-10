@@ -17,8 +17,8 @@ use mimium_lang::{
     compiler::IoChannelInfo,
     plugin::{DynSystemPlugin, ExtClsInfo, InstantPlugin, SystemPluginAudioWorker},
     runtime::{
-        DspRuntime, Time,
-        vm::{self, FuncProto, Program, ReturnCode},
+        DspRuntime, ProgramPayload, Time,
+        vm::{self, FuncProto, ReturnCode},
     },
     utils::{error::SimpleError, metadata::Location},
 };
@@ -133,13 +133,13 @@ impl DspRuntime for VmDspRuntime {
         self.vm.prog.iochannels
     }
 
-    fn try_hot_swap(&mut self, new_program: Box<dyn std::any::Any + Send>) -> bool {
-        if let Ok(prog) = new_program.downcast::<vm::Program>() {
+    fn try_hot_swap(&mut self, new_program: ProgramPayload) -> bool {
+        if let ProgramPayload::VmProgram(prog) = new_program {
             self.dsp_i = prog.get_fun_index("dsp").unwrap_or(0);
             if let Some(IoChannelInfo { input, .. }) = prog.iochannels {
                 self.vm.set_stack_range(0, &vec![0u64; input as usize]);
             }
-            self.vm = self.vm.new_resume(*prog);
+            self.vm = self.vm.new_resume(prog);
 
             let ochannels = self.vm.prog.iochannels.map_or(0, |io| io.output as usize);
             self.output_cache.resize(ochannels, 0.0);
@@ -173,8 +173,8 @@ pub trait Driver {
     ) -> Option<IoChannelInfo>;
     fn play(&mut self) -> bool;
     fn pause(&mut self) -> bool;
-    fn renew_program(&mut self, _new_program: Box<dyn std::any::Any + Send>) {}
-    fn get_program_channel(&self) -> Option<mpsc::Sender<Box<dyn std::any::Any + Send>>> {
+    fn renew_program(&mut self, _new_program: ProgramPayload) {}
+    fn get_program_channel(&self) -> Option<mpsc::Sender<ProgramPayload>> {
         None
     }
     fn get_samplerate(&self) -> u32;
@@ -231,7 +231,7 @@ impl RuntimeData {
     }
 
     /// Attempt to hot-swap the running program.
-    pub fn resume_with_program(&mut self, new_program: Box<dyn std::any::Any + Send>) -> bool {
+    pub fn resume_with_program(&mut self, new_program: ProgramPayload) -> bool {
         self.runtime.try_hot_swap(new_program)
     }
 

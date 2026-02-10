@@ -10,7 +10,7 @@ use mimium_lang::compiler::IoChannelInfo;
 use mimium_lang::log;
 use mimium_lang::plugin::ExtClsInfo;
 
-use mimium_lang::runtime::Time;
+use mimium_lang::runtime::{Time,ProgramPayload};
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 pub(crate) const DEFAULT_BUFFER_SIZE: usize = 4096;
@@ -24,7 +24,7 @@ pub struct NativeDriver {
     ostream: Option<cpal::Stream>,
     count: Arc<AtomicU64>,
     buffer_size: usize,
-    swap_prod: Option<mpsc::Sender<Box<dyn std::any::Any + Send>>>,
+    swap_prod: Option<mpsc::Sender<ProgramPayload>>,
 }
 impl NativeDriver {
     pub fn new(buffer_size: usize) -> Self {
@@ -59,7 +59,7 @@ struct NativeAudioData {
     buffer: HeapCons<f64>,
     localbuffer: Vec<f64>,
     count: Arc<AtomicU64>,
-    pub swap_channel: mpsc::Receiver<Box<dyn std::any::Any + Send>>,
+    pub swap_channel: mpsc::Receiver<ProgramPayload>,
 }
 unsafe impl Send for NativeAudioData {}
 
@@ -69,7 +69,7 @@ impl NativeAudioData {
         runtime_data: RuntimeData,
         count: Arc<AtomicU64>,
         h_ochannels: usize,
-        swap_cons: mpsc::Receiver<Box<dyn std::any::Any + Send>>,
+        swap_cons: mpsc::Receiver<ProgramPayload>,
     ) -> Self {
         let vmdata = runtime_data;
         let iochannels = vmdata.io_channels().unwrap_or(IoChannelInfo {
@@ -382,12 +382,12 @@ impl Driver for NativeDriver {
         false
     }
 
-    fn renew_program(&mut self, new_program: Box<dyn std::any::Any + Send>) {
+    fn renew_program(&mut self, new_program: ProgramPayload) {
         self.swap_prod
             .as_mut()
             .and_then(|sp| sp.send(new_program).ok());
     }
-    fn get_program_channel(&self) -> Option<mpsc::Sender<Box<dyn std::any::Any + Send>>> {
+    fn get_program_channel(&self) -> Option<mpsc::Sender<ProgramPayload>> {
         self.swap_prod.clone()
     }
     fn is_playing(&self) -> bool {
