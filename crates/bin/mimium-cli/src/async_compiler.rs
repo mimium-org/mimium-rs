@@ -100,6 +100,7 @@ mod test {
             option: crate::RunOptions {
                 mode: RunMode::EmitAst,
                 with_gui: false,
+                use_wasm: false,
                 config: Config::default(),
             },
         };

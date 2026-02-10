@@ -10,7 +10,7 @@ use mimium_lang::compiler::IoChannelInfo;
 use mimium_lang::log;
 use mimium_lang::plugin::ExtClsInfo;
 
-use mimium_lang::runtime::{Time, vm};
+use mimium_lang::runtime::Time;
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 pub(crate) const DEFAULT_BUFFER_SIZE: usize = 4096;
@@ -24,7 +24,7 @@ pub struct NativeDriver {
     ostream: Option<cpal::Stream>,
     count: Arc<AtomicU64>,
     buffer_size: usize,
-    swap_prod: Option<mpsc::Sender<vm::Program>>,
+    swap_prod: Option<mpsc::Sender<Box<dyn std::any::Any + Send>>>,
 }
 impl NativeDriver {
     pub fn new(buffer_size: usize) -> Self {
@@ -59,7 +59,7 @@ struct NativeAudioData {
     buffer: HeapCons<f64>,
     localbuffer: Vec<f64>,
     count: Arc<AtomicU64>,
-    pub swap_channel: mpsc::Receiver<vm::Program>,
+    pub swap_channel: mpsc::Receiver<Box<dyn std::any::Any + Send>>,
 }
 unsafe impl Send for NativeAudioData {}
 
@@ -69,11 +69,10 @@ impl NativeAudioData {
         runtime_data: RuntimeData,
         count: Arc<AtomicU64>,
         h_ochannels: usize,
-        swap_cons: mpsc::Receiver<vm::Program>,
+        swap_cons: mpsc::Receiver<Box<dyn std::any::Any + Send>>,
     ) -> Self {
-        //todo: split as trait interface method
         let vmdata = runtime_data;
-        let iochannels = vmdata.vm.prog.iochannels.unwrap_or(IoChannelInfo {
+        let iochannels = vmdata.io_channels().unwrap_or(IoChannelInfo {
             input: 0,
             output: 0,
         });
@@ -81,7 +80,6 @@ impl NativeAudioData {
         Self {
             vmdata,
             iochannels,
-
             buffer,
             localbuffer,
             count,
@@ -90,10 +88,8 @@ impl NativeAudioData {
     }
     pub fn process(&mut self, dst: &mut [f32], h_ochannels: usize) {
         if let Ok(swap) = self.swap_channel.try_recv() {
-            self.vmdata.dsp_i = swap.get_fun_index("dsp").unwrap_or(self.vmdata.dsp_i);
-            self.vmdata.vm = self.vmdata.vm.new_resume(swap);
+            self.vmdata.resume_with_program(swap);
         }
-        // let len = dst.len().min(self.localbuffer.len());
         let len = dst.len();
 
         let local = &mut self.localbuffer.as_mut_slice()[..len];
@@ -102,15 +98,11 @@ impl NativeAudioData {
             .chunks_mut(h_ochannels)
             .zip(local.chunks(self.iochannels.output as usize))
         {
-            self.vmdata
-                .vm
-                .set_stack_range(0, unsafe { std::mem::transmute::<&[f64], &[u64]>(s) });
+            self.vmdata.set_input(s);
             let _rc = self
                 .vmdata
                 .run_dsp(Time(self.count.load(Ordering::Relaxed)));
-            let res = vm::Machine::get_as_array::<f64>(
-                self.vmdata.vm.get_top_n(self.iochannels.output as _),
-            );
+            let res = self.vmdata.get_output(self.iochannels.output as usize);
             self.count.fetch_add(1, Ordering::Relaxed);
             o.fill(0.0);
             match (h_ochannels, self.iochannels.output as usize) {
@@ -256,7 +248,7 @@ impl Driver for NativeDriver {
     ) -> Option<IoChannelInfo> {
         let host = cpal::default_host();
 
-        let iochannels = runtime_data.vm.prog.iochannels;
+        let iochannels = runtime_data.io_channels();
         let ichannels = iochannels.map_or(0, |io| io.input) as usize;
         let ochannels = iochannels.map_or(0, |io| io.output) as usize;
 
@@ -390,12 +382,12 @@ impl Driver for NativeDriver {
         false
     }
 
-    fn renew_vm(&mut self, new_prog: vm::Program) {
+    fn renew_program(&mut self, new_program: Box<dyn std::any::Any + Send>) {
         self.swap_prod
             .as_mut()
-            .and_then(|sp| sp.send(new_prog).ok());
+            .and_then(|sp| sp.send(new_program).ok());
     }
-    fn get_vm_channel(&self) -> Option<mpsc::Sender<vm::Program>> {
+    fn get_program_channel(&self) -> Option<mpsc::Sender<Box<dyn std::any::Any + Send>>> {
         self.swap_prod.clone()
     }
     fn is_playing(&self) -> bool {

@@ -3,11 +3,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use mimium_lang::{
-    compiler::IoChannelInfo,
-    plugin::ExtClsInfo,
-    runtime::{Time, vm},
-};
+use mimium_lang::{compiler::IoChannelInfo, plugin::ExtClsInfo, runtime::Time};
 
 use crate::driver::{Driver, RuntimeData, SampleRate};
 
@@ -67,7 +63,7 @@ impl Driver for LocalBufferDriver {
         runtime_data: RuntimeData,
         sample_rate: Option<crate::driver::SampleRate>,
     ) -> Option<IoChannelInfo> {
-        if let Some(iochannels) = runtime_data.vm.prog.iochannels {
+        if let Some(iochannels) = runtime_data.io_channels() {
             self.localbuffer = Vec::with_capacity(iochannels.output as usize * self.times);
             self.samplerate = sample_rate.unwrap_or(SampleRate::from(48000));
             self.vmdata = Some(runtime_data);
@@ -79,16 +75,13 @@ impl Driver for LocalBufferDriver {
 
     fn play(&mut self) -> bool {
         let vmdata = self.vmdata.as_mut().expect("Not initialized yet?");
-        let iochannels = vmdata.vm.prog.iochannels;
+        let iochannels = vmdata.io_channels();
         let (_ichannels, ochannels) = iochannels.map_or((0, 0), |io| (io.input, io.output));
-        // let _ = vmdata.run_main();
         self.localbuffer.clear();
         for _ in 0..self.times {
             let now = self.count.load(Ordering::Relaxed);
             let _ = vmdata.run_dsp(Time(now));
-            let res = vm::Machine::get_as_array::<<LocalBufferDriver as Driver>::Sample>(
-                vmdata.vm.get_top_n(ochannels as _),
-            );
+            let res = vmdata.get_output(ochannels as usize);
             self.localbuffer.extend_from_slice(res);
             //update current time.
             self.count.store(now + 1, Ordering::Relaxed);

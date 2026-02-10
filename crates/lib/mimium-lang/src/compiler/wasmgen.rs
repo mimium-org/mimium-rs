@@ -582,7 +582,9 @@ impl WasmGenerator {
                         .unwrap_or(ValType::F64);
                     let local_idx = match reg_type {
                         ValType::I64 => self.current_num_args + *reg_idx as u32,
-                        ValType::F64 => self.current_num_args + self.current_num_i64_locals + *reg_idx as u32,
+                        ValType::F64 => {
+                            self.current_num_args + self.current_num_i64_locals + *reg_idx as u32
+                        }
                         _ => self.current_num_args + self.current_num_i64_locals + *reg_idx as u32,
                     };
                     func.instruction(&W::LocalSet(local_idx));
@@ -732,7 +734,9 @@ impl WasmGenerator {
                         .unwrap_or(ValType::F64);
                     let local_idx = match reg_type {
                         ValType::I64 => self.current_num_args + *reg_idx as u32,
-                        ValType::F64 => self.current_num_args + self.current_num_i64_locals + *reg_idx as u32,
+                        ValType::F64 => {
+                            self.current_num_args + self.current_num_i64_locals + *reg_idx as u32
+                        }
                         _ => self.current_num_args + self.current_num_i64_locals + *reg_idx as u32,
                     };
                     func.instruction(&W::LocalSet(local_idx));
@@ -1336,10 +1340,7 @@ impl WasmGenerator {
                             func.instruction(&W::Call(import_idx));
                         } else {
                             // Unknown external function - push placeholder
-                            eprintln!(
-                                "Warning: Unknown external function: {}",
-                                name.as_str()
-                            );
+                            eprintln!("Warning: Unknown external function: {}", name.as_str());
                             match Self::type_to_valtype(&ret_ty.to_type()) {
                                 ValType::F64 => func.instruction(&W::F64Const(0.0)),
                                 ValType::I64 => func.instruction(&W::I64Const(0)),
@@ -1501,7 +1502,9 @@ impl WasmGenerator {
                     .unwrap_or(ValType::F64);
                 let local_idx = match reg_type {
                     ValType::I64 => self.current_num_args + *reg_idx as u32,
-                    ValType::F64 => self.current_num_args + self.current_num_i64_locals + *reg_idx as u32,
+                    ValType::F64 => {
+                        self.current_num_args + self.current_num_i64_locals + *reg_idx as u32
+                    }
                     _ => self.current_num_args + self.current_num_i64_locals + *reg_idx as u32,
                 };
                 func.instruction(&W::LocalGet(local_idx));

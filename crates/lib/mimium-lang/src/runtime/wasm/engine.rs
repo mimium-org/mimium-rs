@@ -3,7 +3,9 @@
 // This module provides higher-level execution utilities for the WASM runtime.
 
 use super::{WasmModule, WasmRuntime};
+use crate::compiler::IoChannelInfo;
 use crate::runtime::primitives::Word;
+use crate::runtime::{DspRuntime, ReturnCode, Time};
 
 /// High-level WASM execution engine
 pub struct WasmEngine {
@@ -47,11 +49,139 @@ impl WasmEngine {
 
         module.call_function(name, args)
     }
+
+    /// Get mutable access to the current module (if loaded).
+    pub fn current_module_mut(&mut self) -> Option<&mut super::WasmModule> {
+        self.current_module.as_mut()
+    }
 }
 
 impl Default for WasmEngine {
     fn default() -> Self {
         Self::new().expect("Failed to create WASM engine")
+    }
+}
+
+/// [`DspRuntime`] implementation backed by a compiled WASM module.
+///
+/// This wraps a [`WasmEngine`] and exposes the same per-sample DSP interface
+/// that the native VM runtime provides, so that audio drivers (cpal, CSV, etc.)
+/// can work with either backend transparently.
+pub struct WasmDspRuntime {
+    engine: WasmEngine,
+    io_channels: Option<IoChannelInfo>,
+    /// Cached output buffer filled after each `run_dsp` call.
+    output_cache: Vec<f64>,
+    /// Input buffer passed to the DSP function on the next tick.
+    input_cache: Vec<f64>,
+    sample_rate: f64,
+}
+
+impl WasmDspRuntime {
+    /// Create a new WASM DSP runtime from a loaded engine and I/O info.
+    ///
+    /// `engine` must already have a WASM module loaded via
+    /// [`WasmEngine::load_module`].
+    pub fn new(engine: WasmEngine, io_channels: Option<IoChannelInfo>) -> Self {
+        let ochannels = io_channels.map_or(0, |io| io.output as usize);
+        let ichannels = io_channels.map_or(0, |io| io.input as usize);
+        Self {
+            engine,
+            io_channels,
+            output_cache: vec![0.0; ochannels],
+            input_cache: vec![0.0; ichannels],
+            sample_rate: 48000.0,
+        }
+    }
+
+    /// Set the sample rate used by the runtime.
+    pub fn set_sample_rate(&mut self, sr: f64) {
+        self.sample_rate = sr;
+        if let Some(module) = self.engine.current_module_mut() {
+            if let Some(state) = module.get_runtime_state_mut() {
+                state.sample_rate = sr;
+            }
+        }
+    }
+
+    /// Run the `mimium_main` (or global init) function if exported.
+    pub fn run_main(&mut self) -> Result<(), String> {
+        match self.engine.execute_function("mimium_main", &[]) {
+            Ok(_) => Ok(()),
+            Err(e) if e.contains("not found") => Ok(()), // no main — that's fine
+            Err(e) => Err(e),
+        }
+    }
+}
+
+impl DspRuntime for WasmDspRuntime {
+    fn run_dsp(&mut self, time: Time) -> ReturnCode {
+        // Update current_time in the WASM runtime state.
+        if let Some(module) = self.engine.current_module_mut() {
+            if let Some(state) = module.get_runtime_state_mut() {
+                state.current_time = time.0;
+            }
+        }
+
+        // Convert input samples to Words (bit-cast f64 → u64).
+        let args: Vec<Word> = self.input_cache.iter().map(|v| v.to_bits()).collect();
+        log::trace!(
+            "run_dsp: input_cache.len={}, args.len={}",
+            self.input_cache.len(),
+            args.len()
+        );
+
+        match self.engine.execute_dsp(&args) {
+            Ok(result) => {
+                // Convert Words back to f64 and cache.
+                self.output_cache.clear();
+                self.output_cache
+                    .extend(result.iter().map(|&w| f64::from_bits(w)));
+                0 // success
+            }
+            Err(e) => {
+                log::error!("WASM DSP execution error: {e}");
+                -1
+            }
+        }
+    }
+
+    fn get_output(&self, n_channels: usize) -> &[f64] {
+        &self.output_cache[..n_channels.min(self.output_cache.len())]
+    }
+
+    fn set_input(&mut self, input: &[f64]) {
+        let copy_len = input.len().min(self.input_cache.len());
+        self.input_cache[..copy_len].copy_from_slice(&input[..copy_len]);
+    }
+
+    fn io_channels(&self) -> Option<IoChannelInfo> {
+        self.io_channels
+    }
+
+    fn try_hot_swap(&mut self, new_program: Box<dyn std::any::Any + Send>) -> bool {
+        if let Ok(wasm_bytes) = new_program.downcast::<Vec<u8>>() {
+            match self.engine.load_module(&wasm_bytes) {
+                Ok(()) => {
+                    // Re-run main after hot-swap.
+                    let _ = self.run_main();
+                    true
+                }
+                Err(e) => {
+                    log::error!("WASM hot-swap failed: {e}");
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 

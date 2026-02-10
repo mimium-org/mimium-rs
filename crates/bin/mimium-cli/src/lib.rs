@@ -1,12 +1,11 @@
 mod async_compiler;
-mod wasm_driver;
 
 use std::{
     path::{Path, PathBuf},
     sync::mpsc,
 };
 
-use crate::{async_compiler::{CompileRequest, Errors, Response}, wasm_driver::WasmDriver};
+use crate::async_compiler::{CompileRequest, Errors, Response};
 use clap::{Parser, ValueEnum};
 use mimium_audiodriver::{
     backends::{csv::csv_driver, local_buffer::LocalBufferDriver},
@@ -130,6 +129,8 @@ pub enum RunMode {
 pub struct RunOptions {
     mode: RunMode,
     with_gui: bool,
+    /// Use the WASM backend instead of the native VM.
+    use_wasm: bool,
     config: Config,
 }
 
@@ -141,6 +142,7 @@ impl RunOptions {
             return Self {
                 mode: RunMode::EmitCst,
                 with_gui: false,
+                use_wasm: false,
                 config,
             };
         }
@@ -149,6 +151,7 @@ impl RunOptions {
             return Self {
                 mode: RunMode::EmitAst,
                 with_gui: true,
+                use_wasm: false,
                 config,
             };
         }
@@ -157,6 +160,7 @@ impl RunOptions {
             return Self {
                 mode: RunMode::EmitMir,
                 with_gui: true,
+                use_wasm: false,
                 config,
             };
         }
@@ -165,6 +169,7 @@ impl RunOptions {
             return Self {
                 mode: RunMode::EmitByteCode,
                 with_gui: true,
+                use_wasm: false,
                 config,
             };
         }
@@ -173,6 +178,7 @@ impl RunOptions {
             return Self {
                 mode: RunMode::EmitWasm,
                 with_gui: false,
+                use_wasm: false,
                 config,
             };
         }
@@ -184,7 +190,9 @@ impl RunOptions {
                     times: args.times,
                     output: path.cloned(),
                 },
-                (None, Some(output)) if output.extension().and_then(|x| x.to_str()) == Some("csv") => {
+                (None, Some(output))
+                    if output.extension().and_then(|x| x.to_str()) == Some("csv") =>
+                {
                     RunMode::WriteCsv {
                         times: args.times,
                         output: Some(output.clone()),
@@ -192,15 +200,16 @@ impl RunOptions {
                 }
                 _ => RunMode::WasmAudio,
             };
-            
+
             let with_gui = match &mode {
                 RunMode::WasmAudio => !args.no_gui,
                 _ => false,
             };
-            
+
             return Self {
                 mode,
                 with_gui,
+                use_wasm: true,
                 config,
             };
         }
@@ -233,6 +242,7 @@ impl RunOptions {
         Self {
             mode,
             with_gui,
+            use_wasm: false,
             config,
         }
     }
@@ -270,7 +280,7 @@ pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config
 struct FileRunner {
     pub tx_compiler: mpsc::Sender<CompileRequest>,
     pub rx_compiler: mpsc::Receiver<Result<Response, Errors>>,
-    pub tx_prog: Option<mpsc::Sender<vm::Program>>,
+    pub tx_prog: Option<mpsc::Sender<Box<dyn std::any::Any + Send>>>,
     pub fullpath: PathBuf,
 }
 
@@ -282,7 +292,7 @@ impl FileRunner {
     pub fn new(
         compiler: compiler::Context,
         path: PathBuf,
-        prog_tx: Option<mpsc::Sender<vm::Program>>,
+        prog_tx: Option<mpsc::Sender<Box<dyn std::any::Any + Send>>>,
     ) -> Self {
         let client = async_compiler::start_async_compiler_service(compiler);
         Self {
@@ -307,6 +317,7 @@ impl FileRunner {
                     option: RunOptions {
                         mode: RunMode::EmitByteCode,
                         with_gui: true,
+                        use_wasm: false,
                         config: Config::default(),
                     },
                 });
@@ -317,7 +328,7 @@ impl FileRunner {
                     Ok(Response::ByteCode(prog)) => {
                         log::info!("compiled successfully.");
                         if let Some(tx) = &self.tx_prog {
-                            let _ = tx.send(prog);
+                            let _ = tx.send(Box::new(prog));
                         }
                     }
                     Err(errs) => {
@@ -464,12 +475,15 @@ pub fn run_file(
         }
         RunMode::WasmAudio => {
             use mimium_lang::compiler::wasmgen::WasmGenerator;
-            use mimium_lang::runtime::wasm::engine::WasmEngine;
+            use mimium_lang::runtime::wasm::engine::{WasmDspRuntime, WasmEngine};
             use mimium_lang::utils::metadata::Location;
             use std::sync::Arc;
 
             ctx.prepare_compiler();
             let mir = ctx.get_compiler().unwrap().emit_mir(content)?;
+
+            let io_channels = mir.get_dsp_iochannels();
+            log::info!("DSP I/O channels: {:?}", io_channels);
 
             // Generate WASM module
             let mut generator = WasmGenerator::new(Arc::new(mir));
@@ -480,8 +494,7 @@ pub fn run_file(
                 }) as Box<dyn ReportableError>]
             })?;
 
-            println!("Generated WASM module ({} bytes)", wasm_bytes.len());
-            println!("Using Cranelift JIT compiler with OptLevel::Speed");
+            log::info!("Generated WASM module ({} bytes)", wasm_bytes.len());
 
             // Create WASM engine and load module
             let mut wasm_engine = WasmEngine::new().map_err(|e| {
@@ -498,73 +511,79 @@ pub fn run_file(
                 }) as Box<dyn ReportableError>]
             })?;
 
-            println!("WASM module loaded successfully, starting audio processing...");
-
-            // Create WasmDriver and set the WASM engine
-            let mut wasm_driver = WasmDriver::new();
-            wasm_driver.set_wasm_engine(wasm_engine);
-
-            // Create a minimal dummy RuntimeData for WASM driver
-            // WASM driver doesn't actually use the VM, but Driver::init requires RuntimeData
-            use mimium_lang::runtime::vm;
-            let dummy_program = vm::Program::default();
-            let dummy_machine = vm::Machine::new(
-                dummy_program,
-                std::iter::empty(),  // No external functions
-                std::iter::empty(),  // No external closures
+            // Create WasmDspRuntime and wrap in RuntimeData
+            println!(
+                "[DEBUG] Creating WasmDspRuntime with io_channels: {:?}",
+                io_channels
             );
-            let dummy_runtime_data = RuntimeData {
-                vm: dummy_machine,
-                sys_plugin_workers: Vec::new(),
-                dsp_i: 0,
-            };
-            
-            wasm_driver.init(dummy_runtime_data, Some(SampleRate::from(48000)));
-            wasm_driver.play();
+            let mut wasm_runtime = WasmDspRuntime::new(wasm_engine, io_channels);
+            wasm_runtime.set_sample_rate(48000.0);
+            let _ = wasm_runtime.run_main();
 
-            println!("Processing audio with WASM backend...");
+            let runtimedata = RuntimeData::new_from_runtime(Box::new(wasm_runtime));
 
-            // Generate samples for 5 seconds at 48kHz
-            let sample_rate = 48000;
-            let duration_seconds = 5;
-            let total_samples = sample_rate * duration_seconds;
+            // Use the standard audio driver infrastructure
+            let mut driver = options.get_driver();
 
-            for _ in 0..total_samples {
-                match wasm_driver.process_sample() {
-                    Ok(_sample) => {
-                        // Sample processed successfully
-                    }
-                    Err(e) => {
-                        eprintln!("Error processing sample: {}", e);
-                        return Err(vec![Box::new(mimium_lang::utils::error::SimpleError {
-                            message: format!("WASM execution error: {e}"),
-                            span: Location::default(),
-                        }) as Box<dyn ReportableError>]);
+            let mainloop = ctx.try_get_main_loop().unwrap_or(Box::new(move || {
+                if options.with_gui {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(1000));
                     }
                 }
-            }
+            }));
 
-            // Write output to CSV if requested
-            let output_buffer = wasm_driver.get_output_buffer();
-            println!("Generated {} samples", output_buffer.len());
+            driver.init(runtimedata, Some(SampleRate::from(48000)));
+            driver.play();
 
-            // Write to CSV file
-            let output_path = fullpath.with_extension("csv");
-            let mut csv_output = String::new();
-            csv_output.push_str("sample,value\n");
-            for (i, &sample) in output_buffer.iter().enumerate() {
-                csv_output.push_str(&format!("{},{}\n", i, sample));
-            }
-            std::fs::write(&output_path, csv_output).map_err(|e| {
+            mainloop();
+            Ok(())
+        }
+        _ if options.use_wasm => {
+            // WASM backend with standard audio driver (WriteCsv or NativeAudio).
+            use mimium_lang::compiler::wasmgen::WasmGenerator;
+            use mimium_lang::runtime::wasm::engine::{WasmDspRuntime, WasmEngine};
+            use mimium_lang::utils::metadata::Location;
+            use std::sync::Arc;
+
+            let mut driver = options.get_driver();
+
+            ctx.prepare_compiler();
+            let mir = ctx.get_compiler().unwrap().emit_mir(content)?;
+            let io_channels = mir.get_dsp_iochannels();
+
+            let mut generator = WasmGenerator::new(Arc::new(mir));
+            let wasm_bytes = generator.generate().map_err(|e| {
                 vec![Box::new(mimium_lang::utils::error::SimpleError {
-                    message: format!("Failed to write CSV: {e}"),
+                    message: e,
                     span: Location::default(),
                 }) as Box<dyn ReportableError>]
             })?;
 
-            println!("Output written to: {}", output_path.display());
-            println!("WASM audio processing complete!");
+            log::info!("Generated WASM module ({} bytes)", wasm_bytes.len());
 
+            let mut wasm_engine = WasmEngine::new().map_err(|e| {
+                vec![Box::new(mimium_lang::utils::error::SimpleError {
+                    message: format!("Failed to create WASM engine: {e}"),
+                    span: Location::default(),
+                }) as Box<dyn ReportableError>]
+            })?;
+
+            wasm_engine.load_module(&wasm_bytes).map_err(|e| {
+                vec![Box::new(mimium_lang::utils::error::SimpleError {
+                    message: format!("Failed to load WASM module: {e}"),
+                    span: Location::default(),
+                }) as Box<dyn ReportableError>]
+            })?;
+
+            let mut wasm_runtime = WasmDspRuntime::new(wasm_engine, io_channels);
+            wasm_runtime.set_sample_rate(48000.0);
+            let _ = wasm_runtime.run_main();
+
+            let runtimedata = RuntimeData::new_from_runtime(Box::new(wasm_runtime));
+
+            driver.init(runtimedata, Some(SampleRate::from(48000)));
+            driver.play();
             Ok(())
         }
         _ => {
@@ -593,8 +612,11 @@ pub fn run_file(
 
             let compiler = ctx.take_compiler().unwrap();
 
-            let frunner =
-                FileRunner::new(compiler, fullpath.to_path_buf(), driver.get_vm_channel());
+            let frunner = FileRunner::new(
+                compiler,
+                fullpath.to_path_buf(),
+                driver.get_program_channel(),
+            );
             if options.with_gui {
                 std::thread::spawn(move || frunner.cli_loop());
             }

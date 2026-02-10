@@ -66,14 +66,35 @@ fn scheduler_gc_test() {
     let (_, src) = load_src("scheduler_counter_indirect.mmm");
     let mut driver1 = prep_gc_test_machine(2, &src);
     driver1.play();
-    let first = driver1.vmdata.unwrap().vm.closures.len();
+    let first = driver1
+        .vmdata
+        .unwrap()
+        .downcast_runtime_ref::<mimium_audiodriver::driver::VmDspRuntime>()
+        .unwrap()
+        .vm
+        .closures
+        .len();
 
     let mut driver2 = prep_gc_test_machine(3, &src);
     driver2.play();
-    let second = driver2.vmdata.unwrap().vm.closures.len();
+    let second = driver2
+        .vmdata
+        .unwrap()
+        .downcast_runtime_ref::<mimium_audiodriver::driver::VmDspRuntime>()
+        .unwrap()
+        .vm
+        .closures
+        .len();
 
     let mut driver3 = prep_gc_test_machine(4, &src);
     driver3.play();
-    let third = driver3.vmdata.unwrap().vm.closures.len();
+    let third = driver3
+        .vmdata
+        .unwrap()
+        .downcast_runtime_ref::<mimium_audiodriver::driver::VmDspRuntime>()
+        .unwrap()
+        .vm
+        .closures
+        .len();
     assert!(first == second && second == third)
 }

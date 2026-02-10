@@ -109,13 +109,13 @@ impl Driver for WasmDriver {
         true
     }
 
-    fn renew_vm(&mut self, _newvm: vm::Program) {
+    fn renew_program(&mut self, _new_program: Box<dyn std::any::Any + Send>) {
         // WASM driver doesn't use the native VM
         // This method is a no-op for WASM
     }
 
-    fn get_vm_channel(&self) -> Option<mpsc::Sender<vm::Program>> {
-        self.vm_channel.clone()
+    fn get_program_channel(&self) -> Option<mpsc::Sender<Box<dyn std::any::Any + Send>>> {
+        None
     }
 
     fn get_samplerate(&self) -> u32 {
