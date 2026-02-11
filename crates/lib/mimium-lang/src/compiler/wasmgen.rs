@@ -3544,6 +3544,30 @@ mod tests {
     use super::*;
     use crate::ExecContext;
 
+    /// Helper: Create a path to write WASM output file in tmp directory
+    fn get_wasm_output_path(filename: &str) -> std::path::PathBuf {
+        let mut wasm_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        wasm_path.pop(); // Remove mimium-lang
+        wasm_path.pop(); // Remove lib
+        wasm_path.pop(); // Remove crates
+        wasm_path.push("tmp");
+        std::fs::create_dir_all(&wasm_path).ok(); // Ensure tmp directory exists
+        wasm_path.push(filename);
+        wasm_path
+    }
+
+    /// Helper: Compile source code to MIR
+    fn compile_to_mir(src: &str) -> Arc<Mir> {
+        let mut ctx = ExecContext::new(std::iter::empty(), None, crate::Config::default());
+        ctx.prepare_compiler();
+        let mir = ctx
+            .get_compiler()
+            .unwrap()
+            .emit_mir(src)
+            .expect("MIR generation failed");
+        Arc::new(mir)
+    }
+
     #[test]
     fn test_wasmgen_create() {
         let mir = Arc::new(Mir::default());
@@ -3583,26 +3607,12 @@ mod tests {
     fn test_wasmgen_simple_return() {
         let src = "fn dsp() -> float { 0.5 }";
 
-        let mut ctx = ExecContext::new(std::iter::empty(), None, crate::Config::default());
-        ctx.prepare_compiler();
-        let mir = ctx
-            .get_compiler()
-            .unwrap()
-            .emit_mir(src)
-            .expect("MIR generate failed");
-
-        let mut generator = WasmGenerator::new(Arc::new(mir));
+        let mir = compile_to_mir(src);
+        let mut generator = WasmGenerator::new(mir);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
         // Write to tmp directory for inspection
-        use std::path::PathBuf;
-        let mut wasm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        wasm_path.pop(); // Remove mimium-lang
-        wasm_path.pop(); // Remove lib
-        wasm_path.pop(); // Remove crates
-        wasm_path.push("tmp");
-        wasm_path.push("test_simple_return_from_test.wasm");
-
+        let wasm_path = get_wasm_output_path("test_simple_return_from_test.wasm");
         std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
 
         eprintln!(
@@ -3628,26 +3638,12 @@ fn helper(x: float) -> float { x * 2.0 }
 fn dsp() -> float { helper(21.0) }
 "#;
 
-        let mut ctx = ExecContext::new(std::iter::empty(), None, crate::Config::default());
-        ctx.prepare_compiler();
-        let mir = ctx
-            .get_compiler()
-            .unwrap()
-            .emit_mir(src)
-            .expect("MIR generate failed");
-
-        let mut generator = WasmGenerator::new(Arc::new(mir));
+        let mir = compile_to_mir(src);
+        let mut generator = WasmGenerator::new(mir);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
         // Write to tmp directory for inspection
-        use std::path::PathBuf;
-        let mut wasm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        wasm_path.pop(); // Remove mimium-lang
-        wasm_path.pop(); // Remove lib
-        wasm_path.pop(); // Remove crates
-        wasm_path.push("tmp");
-        wasm_path.push("test_function_call_from_test.wasm");
-
+        let wasm_path = get_wasm_output_path("test_function_call_from_test.wasm");
         std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
 
         eprintln!(
@@ -3674,26 +3670,12 @@ fn dsp() -> float {
 }
 "#;
 
-        let mut ctx = ExecContext::new(std::iter::empty(), None, crate::Config::default());
-        ctx.prepare_compiler();
-        let mir = ctx
-            .get_compiler()
-            .unwrap()
-            .emit_mir(src)
-            .expect("MIR generate failed");
-
-        let mut generator = WasmGenerator::new(Arc::new(mir));
+        let mir = compile_to_mir(src);
+        let mut generator = WasmGenerator::new(mir);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
         // Write to tmp directory (3 levels up from crates/lib/mimium-lang)
-        use std::path::PathBuf;
-        let mut wasm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        wasm_path.pop(); // Remove mimium-lang
-        wasm_path.pop(); // Remove lib
-        wasm_path.pop(); // Remove crates
-        wasm_path.push("tmp");
-        wasm_path.push("test_integration.wasm");
-
+        let wasm_path = get_wasm_output_path("test_integration.wasm");
         std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
 
         eprintln!(
@@ -3705,25 +3687,12 @@ fn dsp() -> float {
 
     /// Helper: Compile source to WASM and validate with wasmtime
     fn compile_and_validate(src: &str, test_name: &str) -> Vec<u8> {
-        let mut ctx = ExecContext::new(std::iter::empty(), None, crate::Config::default());
-        ctx.prepare_compiler();
-        let mir = ctx
-            .get_compiler()
-            .unwrap()
-            .emit_mir(src)
-            .expect("MIR generation failed");
-
-        let mut generator = WasmGenerator::new(Arc::new(mir));
+        let mir = compile_to_mir(src);
+        let mut generator = WasmGenerator::new(mir);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
         // Write to tmp for inspection
-        use std::path::PathBuf;
-        let mut wasm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        wasm_path.pop();
-        wasm_path.pop();
-        wasm_path.pop();
-        wasm_path.push("tmp");
-        wasm_path.push(format!("{test_name}.wasm"));
+        let wasm_path = get_wasm_output_path(&format!("{test_name}.wasm"));
         std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
 
         let engine = wasmtime::Engine::default();
