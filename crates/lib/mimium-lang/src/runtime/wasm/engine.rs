@@ -20,6 +20,22 @@ impl WasmEngine {
     ///
     /// `ext_fns` provides external function type info from all plugin sources
     /// so that the runtime can register host trampolines for plugin functions.
+    /// `sys_plugin` is an optional SystemPlugin implementing WasmPluginCallable
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new(
+        ext_fns: &[crate::plugin::ExtFunTypeInfo],
+        sys_plugin: Option<std::sync::Arc<std::sync::Mutex<dyn crate::runtime::wasm::WasmPluginCallable>>>,
+    ) -> Result<Self, String> {
+        let runtime = WasmRuntime::new(ext_fns, sys_plugin)?;
+        Ok(Self {
+            runtime,
+            current_module: None,
+            dsp_func: None,
+        })
+    }
+
+    /// Create a new WASM execution engine for wasm32 target.
+    #[cfg(target_arch = "wasm32")]
     pub fn new(ext_fns: &[crate::plugin::ExtFunTypeInfo]) -> Result<Self, String> {
         let runtime = WasmRuntime::new(ext_fns)?;
         Ok(Self {
@@ -81,7 +97,7 @@ impl WasmEngine {
 
 impl Default for WasmEngine {
     fn default() -> Self {
-        Self::new(&[]).expect("Failed to create WASM engine")
+        Self::new(&[], None).expect("Failed to create WASM engine")
     }
 }
 

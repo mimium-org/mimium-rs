@@ -126,6 +126,12 @@ type PluginCreateFn = unsafe extern "C" fn() -> *mut PluginInstance;
 /// Type of the `mimium_plugin_destroy` export.
 type PluginDestroyFn = unsafe extern "C" fn(instance: *mut PluginInstance);
 
+/// Type of the `mimium_plugin_set_interner` export.
+///
+/// Shares the host's session globals with the plugin so that interned IDs
+/// (TypeNodeId, ExprNodeId, Symbol) are valid across the DLL boundary.
+type PluginSetInternerFn = unsafe extern "C" fn(globals_ptr: *const std::ffi::c_void);
+
 /// Type of the `mimium_plugin_get_function` export.
 ///
 /// Returns a function pointer for the named plugin function, or null if not found.
@@ -443,6 +449,69 @@ unsafe impl Send for DynPluginMacroInfo {}
 unsafe impl Sync for DynPluginMacroInfo {}
 
 // -------------------------------------------------------------------------
+// Dynamic plugin runtime function wrapper
+// -------------------------------------------------------------------------
+
+/// Wrapper for dynamically loaded plugin runtime functions.
+///
+/// This implements the `MachineFunction` trait by calling the FFI bridge.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct DynPluginFunctionInfo {
+    name: crate::interner::Symbol,
+    instance: *mut PluginInstance,
+    function_fn: PluginFunctionFn,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl DynPluginFunctionInfo {
+    /// Create a new dynamic plugin function wrapper.
+    ///
+    /// # Safety
+    ///
+    /// - `instance` must be a valid pointer to the plugin instance
+    /// - `function_fn` must be a valid function pointer
+    /// - Both must remain valid for the lifetime of this struct
+    pub unsafe fn new(
+        name: crate::interner::Symbol,
+        instance: *mut PluginInstance,
+        function_fn: PluginFunctionFn,
+    ) -> Self {
+        Self {
+            name,
+            instance,
+            function_fn,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::plugin::MachineFunction for DynPluginFunctionInfo {
+    fn get_name(&self) -> crate::interner::Symbol {
+        self.name
+    }
+
+    fn get_fn(&self) -> crate::plugin::ExtClsType {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let instance = self.instance;
+        let function_fn = self.function_fn;
+
+        Rc::new(RefCell::new(move |machine: &mut crate::runtime::vm::Machine| {
+            let ret = unsafe {
+                function_fn(instance, machine as *mut crate::runtime::vm::Machine as *mut c_void)
+            };
+            ret as crate::runtime::vm::ReturnCode
+        }))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe impl Send for DynPluginFunctionInfo {}
+#[cfg(not(target_arch = "wasm32"))]
+unsafe impl Sync for DynPluginFunctionInfo {}
+
+// -------------------------------------------------------------------------
 // Plugin loader
 // -------------------------------------------------------------------------
 
@@ -515,6 +584,22 @@ impl PluginLoader {
             return Err(PluginLoaderError::InvalidMetadata);
         }
         let metadata = unsafe { (*metadata_ptr).clone() };
+
+        // Share the host's interner with the plugin.
+        // This must happen before create_fn or any other call that may touch
+        // the interner (type construction, symbol interning, etc.).
+        let set_interner_fn: Option<Symbol<PluginSetInternerFn>> =
+            unsafe { library.get(b"mimium_plugin_set_interner\0").ok() };
+        if let Some(set_interner) = &set_interner_fn {
+            let host_globals = crate::interner::get_session_globals_ptr();
+            unsafe { set_interner(host_globals) };
+            crate::log::info!("Shared host interner with plugin");
+        } else {
+            crate::log::warn!(
+                "Plugin does not export mimium_plugin_set_interner; \
+                 interned IDs may be invalid across the DLL boundary"
+            );
+        }
 
         // Create instance
         let instance = unsafe { create_fn() };
@@ -592,12 +677,9 @@ impl PluginLoader {
 
     /// Get all macro functions from loaded plugins with their type information.
     ///
-    /// Returns a vector of tuples containing:
-    /// - Macro name as Symbol
-    /// - Type information as TypeNodeId
-    /// - DynPluginMacroInfo wrapper
-    ///
-    /// This is used to register dynamic plugin macros with the compiler.
+    /// Discovers macros automatically by iterating type info entries with
+    /// stage 0 (macro/compile-time) and looking up the corresponding FFI
+    /// function from `mimium_plugin_get_macro`.
     pub fn get_macro_functions(
         &self,
     ) -> Vec<(
@@ -610,62 +692,116 @@ impl PluginLoader {
         let mut result = Vec::new();
 
         for plugin in &self.plugins {
-            // Check if the plugin supports macros
             if !plugin.metadata.capabilities.has_macros {
                 continue;
             }
 
-            // Get the macro lookup function if available
             let get_macro_fn = match plugin.get_macro_fn {
                 Some(f) => f,
                 None => continue,
             };
 
-            // Try to get well-known macro function names
-            // TODO: In the future, plugins should expose a list of available macros
-            // Map internal names to public macro names (with proper capitalization)
-            let macro_mappings = vec![
-                ("make_sampler_mono", "Sampler_mono"), // internal_name, public_name
-            ];
+            // Discover macros from type info (stage 0 = macro/compile-time)
+            let type_infos = match plugin.get_type_infos() {
+                Some(infos) => infos,
+                None => {
+                    crate::log::debug!(
+                        "Plugin {} has no type info, skipping macro discovery",
+                        plugin.name()
+                    );
+                    continue;
+                }
+            };
 
-            for (internal_name, public_name) in macro_mappings {
-                let name_cstr = match std::ffi::CString::new(internal_name) {
+            let macro_infos: Vec<_> = type_infos
+                .into_iter()
+                .filter(|info| matches!(info.stage, crate::plugin::EvalStage::Stage(0)))
+                .collect();
+
+            for info in macro_infos {
+                let name_str = info.name.as_str();
+                let name_cstr = match std::ffi::CString::new(name_str) {
                     Ok(s) => s,
                     Err(_) => continue,
                 };
 
-                // Try to get the macro function
                 let macro_fn = unsafe { get_macro_fn(name_cstr.as_ptr()) };
                 if let Some(macro_fn) = macro_fn {
-                    // TODO: Get type information from plugin metadata
-                    // For now, we'll use a placeholder type
-                    // The actual type should be: String -> Code((Float) -> Float)
-                    use crate::function;
-                    use crate::numeric;
-                    use crate::string_t;
-                    use crate::types::Type;
-
-                    let ty = function!(
-                        vec![string_t!()],
-                        Type::Code(function!(vec![numeric!()], numeric!())).into_id()
-                    );
-
-                    // Use the public name for the symbol
+                    let ty = info.ty;
                     let wrapper = unsafe {
                         DynPluginMacroInfo::new(
-                            public_name.to_symbol(),
+                            name_str.to_symbol(),
                             ty,
                             plugin.instance,
                             macro_fn,
                         )
                     };
 
-                    crate::log::info!("Registered dynamic macro: {public_name}");
+                    crate::log::info!("Registered dynamic macro: {name_str}");
                     result.push((
-                        public_name.to_symbol(),
+                        name_str.to_symbol(),
                         ty,
                         Box::new(wrapper) as Box<dyn crate::plugin::MacroFunction>,
                     ));
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Get all runtime functions from loaded plugins.
+    ///
+    /// Discovers runtime functions by iterating type info entries with
+    /// stage 1 (machine/runtime) and looking up the corresponding FFI
+    /// function from `mimium_plugin_get_function`.
+    pub fn get_runtime_functions(&self) -> Vec<Box<dyn crate::plugin::MachineFunction>> {
+        use crate::interner::ToSymbol;
+
+        let mut result = Vec::new();
+
+        for plugin in &self.plugins {
+            if !plugin.metadata.capabilities.has_runtime_functions {
+                continue;
+            }
+
+            let get_function_fn = match plugin.get_function_fn {
+                Some(f) => f,
+                None => continue,
+            };
+
+            // Discover runtime functions from type info (stage 1)
+            let type_infos = match plugin.get_type_infos() {
+                Some(infos) => infos,
+                None => continue,
+            };
+
+            let runtime_infos: Vec<_> = type_infos
+                .into_iter()
+                .filter(|info| matches!(info.stage, crate::plugin::EvalStage::Stage(1)))
+                .collect();
+
+            for info in runtime_infos {
+                let name_str = info.name.as_str();
+                let name_cstr = match std::ffi::CString::new(name_str) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+
+                let func = unsafe { get_function_fn(name_cstr.as_ptr()) };
+                if let Some(func) = func {
+                    let wrapper = unsafe {
+                        DynPluginFunctionInfo::new(
+                            name_str.to_symbol(),
+                            plugin.instance,
+                            func,
+                        )
+                    };
+
+                    crate::log::info!("Registered dynamic runtime function: {name_str}");
+                    result.push(
+                        Box::new(wrapper) as Box<dyn crate::plugin::MachineFunction>,
+                    );
                 }
             }
         }

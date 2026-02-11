@@ -141,7 +141,7 @@ pub struct SamplerPlugin {
 }
 
 impl SamplerPlugin {
-    const GET_SAMPLER: &'static str = "__get_sampler";
+    pub const GET_SAMPLER: &'static str = "__get_sampler";
 
     /// Returns a fallback lambda that ignores input and always returns 0.0 (silence)
     fn error_fallback() -> Value {
@@ -363,6 +363,18 @@ pub unsafe extern "C" fn mimium_plugin_get_function(
     }
 }
 
+/// Share the host process's interner with this plugin.
+///
+/// # Safety
+///
+/// `globals_ptr` must point to a valid `Mutex<SessionGlobals>` that
+/// outlives the plugin.
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mimium_plugin_set_interner(globals_ptr: *const std::ffi::c_void) {
+    unsafe { mimium_lang::interner::set_external_session_globals(globals_ptr) };
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 use mimium_lang::plugin::loader::PluginMacroFn;
 
@@ -384,7 +396,7 @@ pub unsafe extern "C" fn mimium_plugin_get_macro(name: *const c_char) -> Option<
     let name_str = unsafe { CStr::from_ptr(name) }.to_str().ok()?;
 
     match name_str {
-        "make_sampler_mono" => Some(ffi_make_sampler_mono),
+        "Sampler_mono" | "make_sampler_mono" => Some(ffi_make_sampler_mono),
         _ => None,
     }
 }
@@ -484,7 +496,7 @@ pub unsafe extern "C" fn ffi_make_sampler_mono(
 #[cfg(not(target_arch = "wasm32"))]
 mod ffi_exports {
     use super::*;
-    
+
     /// Static storage for type information strings (must outlive the plugin).
     static mut TYPE_INFO_STORAGE: Option<Vec<(std::ffi::CString, Vec<u8>)>> = None;
 
@@ -510,33 +522,37 @@ mod ffi_exports {
                 let mut storage = Vec::new();
                 let mut infos = Vec::new();
 
-                // Get the signature (type information) for Sampler_mono macro
+                // Helper closure to add a type info entry
+                let add_info = |name_str: &str,
+                                ty: mimium_lang::interner::TypeNodeId,
+                                stage: u8,
+                                storage: &mut Vec<(std::ffi::CString, Vec<u8>)>,
+                                infos: &mut Vec<FfiTypeInfo>| {
+                    let name_cstr = std::ffi::CString::new(name_str).ok()?;
+                    let type_bytes = bincode::serialize(&ty).ok()?;
+                    let name_ptr = name_cstr.as_ptr();
+                    let type_ptr = type_bytes.as_ptr();
+                    let type_len = type_bytes.len();
+                    storage.push((name_cstr, type_bytes));
+                    infos.push(FfiTypeInfo {
+                        name: name_ptr,
+                        type_data: type_ptr,
+                        type_len,
+                        stage,
+                    });
+                    Some(())
+                };
+
+                // Sampler_mono! macro (stage 0)
                 let sig = SamplerPlugin::sampler_mono_signature();
+                add_info(sig.get_name(), sig.get_type(), 0, &mut storage, &mut infos);
 
-                // Serialize the name
-                let name_cstr = match std::ffi::CString::new(sig.get_name()) {
-                    Ok(s) => s,
-                    Err(_) => return std::ptr::null(),
-                };
-
-                // Serialize the type
-                let type_bytes = match bincode::serialize(&sig.get_type()) {
-                    Ok(b) => b,
-                    Err(_) => return std::ptr::null(),
-                };
-
-                let name_ptr = name_cstr.as_ptr();
-                let type_ptr = type_bytes.as_ptr();
-                let type_len = type_bytes.len();
-
-                storage.push((name_cstr, type_bytes));
-
-                infos.push(FfiTypeInfo {
-                    name: name_ptr,
-                    type_data: type_ptr,
-                    type_len,
-                    stage: 0, // Stage(0) = Macro/CompileTime
-                });
+                // __get_sampler runtime function (stage 1)
+                {
+                    use mimium_lang::{function, numeric};
+                    let ty = function!(vec![numeric!(), numeric!()], numeric!());
+                    add_info(SamplerPlugin::GET_SAMPLER, ty, 1, &mut storage, &mut infos);
+                }
 
                 TYPE_INFO_STORAGE = Some(storage);
                 FFI_TYPE_INFOS = Some(infos);

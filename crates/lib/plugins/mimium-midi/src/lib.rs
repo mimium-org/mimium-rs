@@ -57,7 +57,7 @@ pub struct MidiPlugin {
 }
 
 impl MidiPlugin {
-    const GET_MIDI_NOTE: &'static str = "__get_midi_note";
+    pub const GET_MIDI_NOTE: &'static str = "__get_midi_note";
 
     pub fn try_new() -> Option<Self> {
         let input_res = MidiInput::new("mimium midi plugin");
@@ -394,6 +394,18 @@ pub unsafe extern "C" fn mimium_plugin_get_function(
     }
 }
 
+/// Share the host process's interner with this plugin.
+///
+/// # Safety
+///
+/// `globals_ptr` must point to a valid `Mutex<SessionGlobals>` that
+/// outlives the plugin.
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mimium_plugin_set_interner(globals_ptr: *const std::ffi::c_void) {
+    mimium_lang::interner::set_external_session_globals(globals_ptr);
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 use mimium_lang::plugin::loader::PluginMacroFn;
 
@@ -415,7 +427,7 @@ pub unsafe extern "C" fn mimium_plugin_get_macro(name: *const c_char) -> Option<
     let name_str = unsafe { CStr::from_ptr(name) }.to_str().ok()?;
 
     match name_str {
-        "midi_note_mono_macro" => Some(ffi_midi_note_mono_macro),
+        "midi_note_mono" | "midi_note_mono_macro" => Some(ffi_midi_note_mono_macro),
         _ => None,
     }
 }
@@ -543,28 +555,45 @@ mod ffi_exports {
                 let mut storage = Vec::new();
                 let mut infos = Vec::new();
 
-                // midi_note_mono! macro type info
+                let mut add_info = |name_str: &str, ty: mimium_lang::interner::TypeNodeId, stage: u8, storage: &mut Vec<(std::ffi::CString, Vec<u8>)>, infos: &mut Vec<FfiTypeInfo>| {
+                    let name_cstr = std::ffi::CString::new(name_str).ok()?;
+                    let type_bytes = bincode::serialize(&ty).ok()?;
+                    let name_ptr = name_cstr.as_ptr();
+                    let type_ptr = type_bytes.as_ptr();
+                    let type_len = type_bytes.len();
+                    storage.push((name_cstr, type_bytes));
+                    infos.push(FfiTypeInfo {
+                        name: name_ptr,
+                        type_data: type_ptr,
+                        type_len,
+                        stage,
+                    });
+                    Some(())
+                };
+
+                // midi_note_mono! macro (stage 0)
                 let sig = MidiPlugin::midi_note_mono_signature();
-                let name_cstr = match std::ffi::CString::new(sig.get_name()) {
-                    Ok(s) => s,
-                    Err(_) => return std::ptr::null(),
-                };
-                let type_bytes = match bincode::serialize(&sig.get_type()) {
-                    Ok(b) => b,
-                    Err(_) => return std::ptr::null(),
-                };
+                add_info(sig.get_name(), sig.get_type(), 0, &mut storage, &mut infos);
 
-                let name_ptr = name_cstr.as_ptr();
-                let type_ptr = type_bytes.as_ptr();
-                let type_len = type_bytes.len();
+                // set_midi_port runtime function (stage 1)
+                {
+                    use mimium_lang::{function, string_t, unit};
+                    let ty = function!(vec![string_t!()], unit!());
+                    add_info("set_midi_port", ty, 1, &mut storage, &mut infos);
+                }
 
-                storage.push((name_cstr, type_bytes));
-                infos.push(FfiTypeInfo {
-                    name: name_ptr,
-                    type_data: type_ptr,
-                    type_len,
-                    stage: 0, // Stage(0) = Macro/CompileTime
-                });
+                // __get_midi_note runtime function (stage 1)
+                {
+                    use mimium_lang::{function, numeric};
+                    use mimium_lang::types::{Type, RecordTypeField};
+                    use mimium_lang::interner::ToSymbol;
+                    let record_ty = Type::Record(vec![
+                        RecordTypeField::new("pitch".to_symbol(), numeric!(), false),
+                        RecordTypeField::new("velocity".to_symbol(), numeric!(), false),
+                    ]).into_id();
+                    let ty = function!(vec![numeric!()], record_ty);
+                    add_info(MidiPlugin::GET_MIDI_NOTE, ty, 1, &mut storage, &mut infos);
+                }
 
                 TYPE_INFO_STORAGE = Some(storage);
                 FFI_TYPE_INFOS = Some(infos);

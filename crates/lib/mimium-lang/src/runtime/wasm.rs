@@ -13,6 +13,17 @@ use wasmtime::{
     AsContextMut, Caller, Config, Engine, FuncType, Linker, Module, OptLevel, Store, Val, ValType,
 };
 
+/// Trait for calling plugin methods from WASM trampolines.
+///
+/// SystemPlugins that want to be called from WASM backend should implement
+/// this trait to provide dynamic dispatch for method calls.
+pub trait WasmPluginCallable: Send {
+    /// Call a plugin method with arguments.
+    ///
+    /// Returns the method result, or None if the method is not found or fails.
+    fn call_method(&mut self, method: &str, args: &[f64]) -> Option<f64>;
+}
+
 /// WASM runtime state
 pub struct WasmRuntime {
     /// Wasmtime engine
@@ -22,6 +33,9 @@ pub struct WasmRuntime {
     /// Plugin loader (for calling plugin functions from host functions)
     #[cfg(not(target_arch = "wasm32"))]
     plugin_loader: Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>,
+    /// System plugin for WASM trampolines (e.g., GuiToolPlugin)
+    #[cfg(not(target_arch = "wasm32"))]
+    sys_plugin: Option<Arc<Mutex<dyn WasmPluginCallable>>>,
 }
 
 /// State storage for a single execution context (global or per-closure).
@@ -67,6 +81,9 @@ pub struct RuntimeState {
     /// Plugin loader (for calling plugin functions)
     #[cfg(not(target_arch = "wasm32"))]
     plugins: Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>,
+    /// System plugin for WASM trampolines
+    #[cfg(not(target_arch = "wasm32"))]
+    sys_plugin: Option<Arc<Mutex<dyn WasmPluginCallable>>>,
 }
 
 impl RuntimeState {
@@ -98,6 +115,8 @@ impl Default for RuntimeState {
             sample_rate: 44100.0,
             #[cfg(not(target_arch = "wasm32"))]
             plugins: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            sys_plugin: None,
         }
     }
 }
@@ -108,6 +127,45 @@ impl WasmRuntime {
     /// `ext_fns` provides the complete set of external function type info
     /// so that plugin host trampolines can be registered for all plugins
     /// (system and dynamic).
+    /// `sys_plugin` can be any SystemPlugin implementing WasmPluginCallable
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new(
+        ext_fns: &[crate::plugin::ExtFunTypeInfo],
+        sys_plugin: Option<Arc<Mutex<dyn WasmPluginCallable>>>,
+    ) -> Result<Self, String> {
+        // Configure Wasmtime with JIT compiler and optimizations
+        let mut config = Config::new();
+
+        // Enable Cranelift JIT compiler with optimization level Speed
+        config.cranelift_opt_level(OptLevel::Speed);
+
+        // Enable parallel compilation for faster module loading
+        config.parallel_compilation(true);
+
+        // Enable WASM features that may improve performance
+        config.wasm_simd(true); // SIMD operations
+        config.wasm_bulk_memory(true); // Bulk memory operations
+
+        let engine =
+            Engine::new(&config).map_err(|e| format!("Failed to create WASM engine: {e}"))?;
+        let mut linker = Linker::new(&engine);
+
+        // Register all runtime primitive host functions
+        Self::register_runtime_primitives(&mut linker)?;
+
+        // Register plugin functions as host trampolines
+        let plugin_loader = Self::register_plugin_functions(&mut linker, ext_fns, sys_plugin.clone())?;
+
+        Ok(Self {
+            engine,
+            linker,
+            plugin_loader,
+            sys_plugin,
+        })
+    }
+
+    /// Create a new WASM runtime for wasm32 target (without plugins)
+    #[cfg(target_arch = "wasm32")]
     pub fn new(ext_fns: &[crate::plugin::ExtFunTypeInfo]) -> Result<Self, String> {
         // Configure Wasmtime with JIT compiler and optimizations
         let mut config = Config::new();
@@ -129,15 +187,12 @@ impl WasmRuntime {
         // Register all runtime primitive host functions
         Self::register_runtime_primitives(&mut linker)?;
 
-        // Register plugin functions as host functions
-        #[cfg(not(target_arch = "wasm32"))]
-        let plugin_loader = Self::register_plugin_functions(&mut linker, ext_fns)?;
+        // Register plugin functions as host trampolines (no sys_plugin on wasm32)
+        let _plugin_loader = Self::register_plugin_functions(&mut linker, ext_fns, None)?;
 
         Ok(Self {
             engine,
             linker,
-            #[cfg(not(target_arch = "wasm32"))]
-            plugin_loader,
         })
     }
 
@@ -152,6 +207,7 @@ impl WasmRuntime {
         #[cfg(not(target_arch = "wasm32"))]
         {
             runtime_state.plugins = self.plugin_loader.clone();
+            runtime_state.sys_plugin = self.sys_plugin.clone();
         }
 
         let mut store = Store::new(&self.engine, runtime_state);
@@ -293,25 +349,20 @@ impl WasmRuntime {
     /// function whose return type matches its first parameter type (the
     /// typical "intercept / passthrough" pattern used by Probe), and return
     /// a zero otherwise.
+    ///
+    /// **Note:** This function only registers trampolines based on the provided
+    /// `ext_fns`. Dynamic plugin loading is handled by the caller (`ExecContext`)
+    /// to avoid duplicate registration.
     #[cfg(not(target_arch = "wasm32"))]
     fn register_plugin_functions(
         linker: &mut Linker<RuntimeState>,
         ext_fns: &[crate::plugin::ExtFunTypeInfo],
+        sys_plugin: Option<Arc<Mutex<dyn WasmPluginCallable>>>,
     ) -> Result<Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>, String> {
-        use crate::plugin::loader::PluginLoader;
         use crate::types::Type;
 
-        // Optionally try to load dynamic plugins (for actual FFI dispatch later)
-        let mut loader = PluginLoader::new();
-        let loader = if loader.load_builtin_plugins().is_ok()
-            && !loader.get_type_infos().is_empty()
-        {
-            Some(Arc::new(Mutex::new(loader)))
-        } else {
-            None
-        };
-
         // Register trampolines for every runtime-stage external function.
+        // Plugin loader must be provided by the caller to avoid duplicate loading.
         for type_info in ext_fns {
             let name = type_info.name;
             let fn_ty = type_info.ty.to_type();
@@ -353,6 +404,7 @@ impl WasmRuntime {
             );
 
             let return_vt = return_valtype.clone();
+            let sys_plugin_for_closure = sys_plugin.clone();
 
             // Determine if this function is a "passthrough" shape.
             //
@@ -378,6 +430,28 @@ impl WasmRuntime {
                     move |_caller, params, results| {
                         log::trace!("Plugin trampoline called: {plugin_name}({params:?})");
 
+                        // Try to call via sys_plugin (for GuiToolPlugin methods)
+                        if let Some(ref plugin_arc) = sys_plugin_for_closure {
+                            if let Ok(mut plugin) = plugin_arc.lock() {
+                                // Convert params to f64 slice
+                                let args: Vec<f64> = params
+                                    .iter()
+                                    .filter_map(|v| match v {
+                                        wasmtime::Val::F64(f) => Some(f64::from_bits(*f)),
+                                        wasmtime::Val::I64(i) => Some(*i as f64),
+                                        wasmtime::Val::I32(i) => Some(*i as f64),
+                                        _ => None,
+                                    })
+                                    .collect();
+
+                                if let Some(result) = plugin.call_method(&plugin_name, &args) {
+                                    results[0] = wasmtime::Val::F64(result.to_bits());
+                                    return Ok(());
+                                }
+                            }
+                        }
+
+                        // Fallback: generic trampoline behavior
                         if is_passthrough && !params.is_empty() {
                             // Passthrough: return the first argument unchanged.
                             // Covers __probe_intercept, identity-wrapper patterns, etc.
@@ -394,13 +468,14 @@ impl WasmRuntime {
                 .map_err(|e| format!("Failed to register plugin '{}': {e}", name.as_str()))?;
         }
 
-        Ok(loader)
+        // Return None since plugin loader is managed by ExecContext
+        Ok(None)
     }
 }
 
 impl Default for WasmRuntime {
     fn default() -> Self {
-        Self::new(&[]).expect("Failed to create WASM runtime")
+        Self::new(&[], None).expect("Failed to create WASM runtime")
     }
 }
 

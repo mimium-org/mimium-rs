@@ -262,7 +262,7 @@ impl RunOptions {
 }
 
 /// Construct an [`ExecContext`] with the default set of plugins.
-pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config) -> ExecContext {
+pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config) -> (ExecContext, Option<std::sync::Arc<std::sync::Mutex<mimium_guitools::GuiToolPlugin>>>) {
     let plugins: Vec<Box<dyn Plugin>> = vec![];
     let mut ctx = ExecContext::new(plugins.into_iter(), path, config);
 
@@ -271,36 +271,59 @@ pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config
     {
         ctx.init_plugin_loader();
 
+        let mut loaded_from_exe_dir = false;
+
         // Try to load plugins from the same directory as the executable
         if let Ok(exe_path) = std::env::current_exe() {
             if let Some(exe_dir) = exe_path.parent() {
+                let mut any_loaded = false;
+
                 let symphonia_path = exe_dir.join("mimium_symphonia");
-                if let Err(e) = ctx.load_dynamic_plugin(&symphonia_path) {
-                    log::debug!("Failed to load mimium-symphonia from executable directory: {e:?}");
+                if ctx.load_dynamic_plugin(&symphonia_path).is_ok() {
+                    any_loaded = true;
                 }
 
                 let midi_path = exe_dir.join("mimium_midi");
-                if let Err(e) = ctx.load_dynamic_plugin(&midi_path) {
-                    log::debug!("Failed to load mimium-midi from executable directory: {e:?}");
+                if ctx.load_dynamic_plugin(&midi_path).is_ok() {
+                    any_loaded = true;
                 }
+
+                // Always load guitools dynamically for runtime functions
+                // (even when with_gui=true, as we also register it as SystemPlugin)
+                let guitools_path = exe_dir.join("mimium_guitools");
+                if ctx.load_dynamic_plugin(&guitools_path).is_ok() {
+                    any_loaded = true;
+                }
+
+                loaded_from_exe_dir = any_loaded;
             }
         }
 
-        // Also try to load from standard plugin directory
-        if let Err(e) = ctx.load_builtin_dynamic_plugins() {
-            log::debug!("No builtin dynamic plugins found: {e:?}");
+        // Only try standard plugin directory if we didn't load from exe directory
+        if !loaded_from_exe_dir {
+            if let Err(e) = ctx.load_builtin_dynamic_plugins() {
+                log::debug!("No builtin dynamic plugins found: {e:?}");
+            }
         }
     }
 
     ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
 
-    // Always register GuiToolPlugin so that Slider!/Probe! macros are
-    // available in every compilation mode.  The actual GUI window is only
-    // shown when with_gui is true (handled elsewhere).
-    #[cfg(not(target_arch = "wasm32"))]
-    ctx.add_system_plugin(mimium_guitools::GuiToolPlugin::default());
+    // Add guitools as a system plugin when GUI is needed (for main loop support)
+    // Create a shared Arc-wrapped plugin - Arc::clone() shares the same data
+    let guitool_plugin_for_wasm = if with_gui {
+        // Create Arc first, then clone the Arc (not the inner value)
+        let shared_plugin_arc = std::sync::Arc::new(std::sync::Mutex::new(mimium_guitools::GuiToolPlugin::default()));
+        let plugin_for_wasm = shared_plugin_arc.clone(); // Arc clone, shares same Mutex<GuiToolPlugin>
+        // Extract the inner GuiToolPlugin for SystemPlugin by cloning
+        let plugin_for_system = shared_plugin_arc.lock().unwrap().clone();
+        ctx.add_system_plugin(plugin_for_system);
+        Some(plugin_for_wasm)
+    } else {
+        None
+    };
 
-    ctx
+    (ctx, guitool_plugin_for_wasm)
 }
 
 struct FileRunner {
@@ -416,7 +439,7 @@ pub fn run_file(
 ) -> Result<(), Vec<Box<dyn ReportableError>>> {
     log::debug!("Filename: {}", fullpath.display());
 
-    let mut ctx = get_default_context(
+    let (mut ctx, guitool_plugin_for_wasm) = get_default_context(
         Some(PathBuf::from(fullpath)),
         options.with_gui,
         options.config,
@@ -525,8 +548,11 @@ pub fn run_file(
 
             log::info!("Generated WASM module ({} bytes)", wasm_bytes.len());
 
-            // Create WASM engine and load module
-            let mut wasm_engine = WasmEngine::new(&ext_fns).map_err(|e| {
+            // Create WASM engine with sys_plugin for GUI tools
+            let sys_plugin = guitool_plugin_for_wasm.as_ref().map(|p| {
+                p.clone() as std::sync::Arc<std::sync::Mutex<dyn mimium_lang::runtime::wasm::WasmPluginCallable>>
+            });
+            let mut wasm_engine = WasmEngine::new(&ext_fns, sys_plugin).map_err(|e| {
                 vec![Box::new(mimium_lang::utils::error::SimpleError {
                     message: format!("Failed to create WASM engine: {e}"),
                     span: Location::default(),
@@ -589,7 +615,11 @@ pub fn run_file(
 
             log::info!("Generated WASM module ({} bytes)", wasm_bytes.len());
 
-            let mut wasm_engine = WasmEngine::new(&ext_fns).map_err(|e| {
+            // Create WASM engine with sys_plugin for GUI tools
+            let sys_plugin = guitool_plugin_for_wasm.as_ref().map(|p| {
+                p.clone() as std::sync::Arc<std::sync::Mutex<dyn mimium_lang::runtime::wasm::WasmPluginCallable>>
+            });
+            let mut wasm_engine = WasmEngine::new(&ext_fns, sys_plugin).map_err(|e| {
                 vec![Box::new(mimium_lang::utils::error::SimpleError {
                     message: format!("Failed to create WASM engine: {e}"),
                     span: Location::default(),
@@ -609,8 +639,19 @@ pub fn run_file(
 
             let runtimedata = RuntimeData::new_from_runtime(Box::new(wasm_runtime));
 
+            // Get main loop from system plugins (e.g., GUI)
+            let mainloop = ctx.try_get_main_loop().unwrap_or(Box::new(move || {
+                if options.with_gui {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(1000));
+                    }
+                }
+            }));
+
             driver.init(runtimedata, Some(SampleRate::from(48000)));
             driver.play();
+
+            mainloop();
             Ok(())
         }
         _ => {

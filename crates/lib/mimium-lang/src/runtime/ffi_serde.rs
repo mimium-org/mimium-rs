@@ -7,7 +7,7 @@
 //! FfiValue is an FFI-safe representation of Value that uses actual Strings
 //! instead of Symbol IDs.
 
-use crate::interner::{ToSymbol, TypeNodeId};
+use crate::interner::{ExprNodeId, ToSymbol, TypeNodeId};
 use crate::interpreter::Value;
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 ///
 /// This type is used for communication with dynamic plugins, which don't share
 /// the same symbol interner as the host process.
+///
+/// When the host's interner is shared with the plugin via
+/// [`set_external_session_globals`](crate::interner::set_external_session_globals),
+/// `ExprNodeId` values inside `Code` are valid on both sides.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FfiValue {
     ErrorV, // Can't serialize ExprNodeId across FFI, so just mark as error
@@ -24,7 +28,9 @@ pub enum FfiValue {
     Array(Vec<FfiValue>),
     Tuple(Vec<FfiValue>),
     Record(Vec<(String, FfiValue)>), // String key instead of Symbol
-    Code,                            // Can't serialize ExprNodeId, just a marker
+    /// Code value carrying the interned expression.
+    /// Valid across DLL boundaries when the interner is shared.
+    Code(ExprNodeId),
     TaggedUnion(u64, Box<FfiValue>),
     // Note: Closures, Fixpoints, ExternalFn, Store, and ConstructorFn
     // cannot be safely serialized across FFI boundaries
@@ -46,7 +52,7 @@ impl FfiValue {
                     .map(|(k, v)| (k.to_symbol(), v.to_value()))
                     .collect(),
             ),
-            FfiValue::Code => Value::Unit, // Best effort - can't reconstruct ExprNodeId
+            FfiValue::Code(expr_id) => Value::Code(expr_id),
             FfiValue::TaggedUnion(tag, val) => Value::TaggedUnion(tag, Box::new(val.to_value())),
         }
     }
@@ -81,7 +87,7 @@ impl Value {
                     .collect();
                 Ok(FfiValue::Record(ffi_fields?))
             }
-            Value::Code(_) => Ok(FfiValue::Code),
+            Value::Code(expr_id) => Ok(FfiValue::Code(*expr_id)),
             Value::TaggedUnion(tag, val) => {
                 Ok(FfiValue::TaggedUnion(*tag, Box::new(val.to_ffi_value()?)))
             }
@@ -197,9 +203,12 @@ mod tests {
         let val = Value::Code(expr);
         let bytes = serialize_value(&val).unwrap();
         let decoded = deserialize_value(&bytes).unwrap();
-        // Code values cannot be reconstructed across FFI boundaries,
-        // so they deserialize as Unit
-        assert!(matches!(decoded, Value::Unit));
+        // With shared interner, Code values roundtrip correctly
+        if let Value::Code(decoded_expr) = decoded {
+            assert_eq!(decoded_expr.to_expr(), Expr::Literal(Literal::Int(42)));
+        } else {
+            panic!("Expected Code value");
+        }
     }
 
     #[test]

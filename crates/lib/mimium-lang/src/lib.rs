@@ -242,13 +242,28 @@ impl ExecContext {
 
     /// Build a VM from the given bytecode [`Program`].
     pub fn prepare_machine_with_bytecode(&mut self, prog: Program) {
-        let cls =
+        let static_cls =
             plugin::get_ext_closures(&self.plugins).chain(self.sys_plugins.iter().flat_map(|p| {
                 p.clsinfos
                     .clone()
                     .into_iter()
                     .map(|c| Box::new(c) as Box<dyn MachineFunction>)
             }));
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let cls: Box<dyn Iterator<Item = Box<dyn MachineFunction>>> = {
+            let dynamic_cls = self
+                .plugin_loader
+                .as_ref()
+                .map(|loader| loader.get_runtime_functions().into_iter())
+                .into_iter()
+                .flatten();
+            Box::new(static_cls.chain(dynamic_cls))
+        };
+
+        #[cfg(target_arch = "wasm32")]
+        let cls: Box<dyn Iterator<Item = Box<dyn MachineFunction>>> = Box::new(static_cls);
+
         let vm = vm::Machine::new(prog, [].into_iter(), cls);
         self.vm = Some(vm);
     }

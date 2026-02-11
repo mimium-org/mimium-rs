@@ -2260,6 +2260,7 @@ dependencies = [
  "clap",
  "colog",
  "mimium-audiodriver",
+ "mimium-guitools",
  "mimium-lang",
  "mimium-scheduler",
  "notify",
@@ -2294,6 +2295,7 @@ dependencies = [
  "egui",
  "egui_plot",
  "mimium-lang",
+ "mimium-plugin-macros",
  "ringbuf",
 ]
 
