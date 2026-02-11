@@ -60,12 +60,7 @@ pub static VM_RUNTIME_VTABLE: RuntimeVTable = RuntimeVTable {
 /// The caller must ensure that `machine` outlives the returned handle and that
 /// no other mutable alias exists while the handle is in use.
 pub unsafe fn runtime_handle_from_machine(machine: &mut Machine) -> RuntimeHandle {
-    unsafe {
-        RuntimeHandle::new(
-            machine as *mut Machine as *mut c_void,
-            &VM_RUNTIME_VTABLE,
-        )
-    }
+    unsafe { RuntimeHandle::new(machine as *mut Machine as *mut c_void, &VM_RUNTIME_VTABLE) }
 }
 
 #[cfg(test)]

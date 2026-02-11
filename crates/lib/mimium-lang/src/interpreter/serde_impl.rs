@@ -62,7 +62,8 @@ impl Serialize for Value {
                 sv.end()
             }
             Value::ConstructorFn(tag, sym, ty) => {
-                let mut sv = serializer.serialize_struct_variant("Value", 10, "ConstructorFn", 3)?;
+                let mut sv =
+                    serializer.serialize_struct_variant("Value", 10, "ConstructorFn", 3)?;
                 sv.serialize_field("0", tag)?;
                 sv.serialize_field("1", sym)?;
                 sv.serialize_field("2", ty)?;
@@ -174,8 +175,17 @@ impl<'de> Deserialize<'de> for Value {
         deserializer.deserialize_enum(
             "Value",
             &[
-                "ErrorV", "Unit", "Number", "String", "Array", "Record", "Tuple", "Fixpoint", "Code",
-                "TaggedUnion", "ConstructorFn",
+                "ErrorV",
+                "Unit",
+                "Number",
+                "String",
+                "Array",
+                "Record",
+                "Tuple",
+                "Fixpoint",
+                "Code",
+                "TaggedUnion",
+                "ConstructorFn",
             ],
             ValueVisitor,
         )

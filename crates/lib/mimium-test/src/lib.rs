@@ -266,28 +266,30 @@ pub fn run_wasm_test(
 
     // Generate WASM
     let mut wasmgen = WasmGenerator::new(Arc::new(mir));
-    let wasm_bytes = wasmgen
-        .generate()
-        .map_err(|e| vec![Box::new(runtime::RuntimeError(
+    let wasm_bytes = wasmgen.generate().map_err(|e| {
+        eprintln!("[WASM] Code generation error: {e}");
+        vec![Box::new(runtime::RuntimeError(
             runtime::ErrorKind::Unknown,
             Location::default(),
-        )) as Box<dyn ReportableError>])?;
-
-    eprintln!("[D] Generated WASM module: {} bytes", wasm_bytes.len());
+        )) as Box<dyn ReportableError>]
+    })?;
 
     // Load and execute with WasmRuntime
-    let mut wasm_runtime = WasmRuntime::new()
-        .map_err(|_e| vec![Box::new(runtime::RuntimeError(
+    let mut wasm_runtime = WasmRuntime::new().map_err(|e| {
+        eprintln!("[WASM] Runtime creation error: {e}");
+        vec![Box::new(runtime::RuntimeError(
             runtime::ErrorKind::Unknown,
             Location::default(),
-        )) as Box<dyn ReportableError>])?;
+        )) as Box<dyn ReportableError>]
+    })?;
 
-    let mut wasm_module = wasm_runtime
-        .load_module(&wasm_bytes)
-        .map_err(|_e| vec![Box::new(runtime::RuntimeError(
+    let mut wasm_module = wasm_runtime.load_module(&wasm_bytes).map_err(|e| {
+        eprintln!("[WASM] Module load error: {e}");
+        vec![Box::new(runtime::RuntimeError(
             runtime::ErrorKind::Unknown,
             Location::default(),
-        )) as Box<dyn ReportableError>])?;
+        )) as Box<dyn ReportableError>]
+    })?;
 
     // Execute main to initialize
     let _init_result = wasm_module.call_function("main", &[]);
@@ -297,16 +299,26 @@ pub fn run_wasm_test(
     let mut results = Vec::with_capacity(times as usize * n);
 
     for _ in 0..times {
-        let result = wasm_module
-            .call_function("dsp", &[])
-            .map_err(|_e| vec![Box::new(runtime::RuntimeError(
+        let result = wasm_module.call_function("dsp", &[]).map_err(|e| {
+            eprintln!("[WASM] dsp() call error: {e}");
+            vec![Box::new(runtime::RuntimeError(
                 runtime::ErrorKind::Unknown,
                 Location::default(),
-            )) as Box<dyn ReportableError>])?;
+            )) as Box<dyn ReportableError>]
+        })?;
 
         // Extract f64 values from result
         if let Some(val) = result.first() {
-            results.push(f64::from_bits(*val));
+            if stereo {
+                // dsp() returns a pointer to a (f64, f64) tuple in linear memory
+                let ptr = *val as usize;
+                let left = wasm_module.read_memory_f64(ptr).unwrap_or(0.0);
+                let right = wasm_module.read_memory_f64(ptr + 8).unwrap_or(0.0);
+                results.push(left);
+                results.push(right);
+            } else {
+                results.push(f64::from_bits(*val));
+            }
         }
     }
 

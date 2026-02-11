@@ -164,8 +164,7 @@ unsafe impl Send for FfiTypeInfo {}
 ///
 /// Returns an array of type information structures.
 /// `out_len` is set to the number of elements in the returned array.
-type PluginGetTypeInfosFn =
-    unsafe extern "C" fn(out_len: *mut usize) -> *const FfiTypeInfo;
+type PluginGetTypeInfosFn = unsafe extern "C" fn(out_len: *mut usize) -> *const FfiTypeInfo;
 
 // -------------------------------------------------------------------------
 // Loaded plugin handle
@@ -270,9 +269,9 @@ impl LoadedPlugin {
 
             // Convert stage number to EvalStage
             let stage = match info.stage {
-                0 => EvalStage::Stage(0),     // Macro stage (compile-time)
-                1 => EvalStage::Stage(1),     // Machine stage (runtime)
-                2 => EvalStage::Persistent,   // Persistent stage
+                0 => EvalStage::Stage(0),   // Macro stage (compile-time)
+                1 => EvalStage::Stage(1),   // Machine stage (runtime)
+                2 => EvalStage::Persistent, // Persistent stage
                 _ => {
                     crate::log::warn!("Unknown stage {} for {}", info.stage, name_str);
                     continue;
@@ -284,7 +283,6 @@ impl LoadedPlugin {
 
         Some(result)
     }
-
 
     /// Get the plugin instance pointer (for advanced use).
     ///
