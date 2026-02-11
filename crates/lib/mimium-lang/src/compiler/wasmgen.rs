@@ -782,8 +782,10 @@ impl WasmGenerator {
             locals.push((1, ValType::I32));
             self.alloc_base_local = self.closure_save_local + 1;
 
-            // Detect entry-point functions that need alloc pointer save/restore
-            let is_entry = func.label.as_str() == "dsp" || func.label.as_str() == "_mimium_global";
+            // Detect entry-point functions that need alloc pointer save/restore.
+            // Only `dsp` resets the allocator each call — `_mimium_global` runs
+            // once and its allocations (closures stored in globals) must persist.
+            let is_entry = func.label.as_str() == "dsp";
             self.is_entry_function = is_entry;
 
             // Extra i32 local for saving alloc pointer at entry function start
