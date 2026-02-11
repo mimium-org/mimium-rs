@@ -808,13 +808,15 @@ impl StageInterpreter {
                 Expr::Tuple(elements.into_iter().map(|e| self.rebuild(ctx, e)).collect())
                     .into_id(e.to_location())
             }
-            Expr::Proj(e, idx) => Expr::Proj(self.rebuild(ctx, e), idx).into_id(e.to_location()),
-            Expr::ArrayAccess(e, i) => {
-                Expr::ArrayAccess(self.rebuild(ctx, e), self.rebuild(ctx, i))
+            Expr::Proj(inner, idx) => {
+                Expr::Proj(self.rebuild(ctx, inner), idx).into_id(e.to_location())
+            }
+            Expr::ArrayAccess(base, i) => {
+                Expr::ArrayAccess(self.rebuild(ctx, base), self.rebuild(ctx, i))
                     .into_id(e.to_location())
             }
-            Expr::FieldAccess(e, name) => {
-                Expr::FieldAccess(self.rebuild(ctx, e), name).into_id(e.to_location())
+            Expr::FieldAccess(inner, name) => {
+                Expr::FieldAccess(self.rebuild(ctx, inner), name).into_id(e.to_location())
             }
             Expr::Block(b) => {
                 Expr::Block(b.map(|eid| self.rebuild(ctx, eid))).into_id(e.to_location())
