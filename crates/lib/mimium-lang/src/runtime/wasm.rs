@@ -22,6 +22,25 @@ pub struct WasmRuntime {
     plugin_loader: Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>,
 }
 
+/// State storage for a single execution context (global or per-closure).
+/// Mirrors the native VM's `StateStorage` struct.
+#[derive(Debug, Clone, Default)]
+struct StateStorage {
+    /// Current read/write cursor in the data array
+    pos: usize,
+    /// Flat array of state words (delay buffers, mem values, etc.)
+    data: Vec<u64>,
+}
+
+impl StateStorage {
+    fn with_size(size: usize) -> Self {
+        Self {
+            pos: 0,
+            data: vec![0u64; size],
+        }
+    }
+}
+
 /// Per-instance runtime state passed to host functions
 pub struct RuntimeState {
     /// Linear memory pointer (set after instantiation)
@@ -30,8 +49,15 @@ pub struct RuntimeState {
     heap: HeapStorage,
     /// Array storage (array ID -> array data)
     arrays: HashMap<Word, Vec<Word>>,
-    /// State storage stack for @ operator
-    state_stack: Vec<Word>,
+    /// Global state storage (used at the top-level/global context)
+    global_state: StateStorage,
+    /// Per-closure state storages, keyed by closure address in linear memory.
+    /// Each closure gets its own StateStorage, allocated lazily on first call.
+    closure_states: HashMap<i64, StateStorage>,
+    /// Stack of closure addresses for tracking the active state context.
+    /// When empty, global_state is active. When non-empty, the top entry's
+    /// closure state is active. Mirrors the native VM's `states_stack`.
+    state_stack: Vec<i64>,
     /// Current time (for runtime_get_now)
     pub(crate) current_time: u64,
     /// Sample rate (for runtime_get_samplerate)
@@ -41,12 +67,30 @@ pub struct RuntimeState {
     plugins: Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>,
 }
 
+impl RuntimeState {
+    /// Get the currently active state storage.
+    /// Returns the global state if no closure is on the state stack,
+    /// otherwise returns the state of the closure at the top of the stack.
+    /// This mirrors the native VM's `get_current_state()` method.
+    fn get_current_state(&mut self) -> &mut StateStorage {
+        if let Some(&closure_addr) = self.state_stack.last() {
+            self.closure_states
+                .get_mut(&closure_addr)
+                .expect("closure_state_push must be called before accessing closure state")
+        } else {
+            &mut self.global_state
+        }
+    }
+}
+
 impl Default for RuntimeState {
     fn default() -> Self {
         Self {
             memory: None,
             heap: HeapStorage::default(),
             arrays: HashMap::new(),
+            global_state: StateStorage::default(),
+            closure_states: HashMap::new(),
             state_stack: Vec::new(),
             current_time: 0,
             sample_rate: 44100.0,
@@ -97,7 +141,7 @@ impl WasmRuntime {
             .map_err(|e| format!("Failed to load WASM module: {e:#}"))?;
 
         let mut runtime_state = RuntimeState::default();
-        
+
         // Set plugin loader reference in runtime state
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -157,6 +201,9 @@ impl WasmRuntime {
             "closure_make" => closure_make_host,
             "closure_close" => closure_close_host,
             "closure_call" => closure_call_host,
+            // Closure state stack operations (per-closure state isolation)
+            "closure_state_push" => closure_state_push_host,
+            "closure_state_pop" => closure_state_pop_host,
             // State operations
             "state_push" => state_push_host,
             "state_pop" => state_pop_host,
@@ -203,6 +250,25 @@ impl WasmRuntime {
             )
             .map_err(|e| format!("Failed to register math::pow: {e}"))?;
 
+        // Register builtin functions (from "builtin" module)
+        macro_rules! register_builtin {
+            ($($name:expr => $func:expr),* $(,)?) => {
+                $(
+                    linker
+                        .func_wrap("builtin", $name, $func)
+                        .map_err(|e| format!("Failed to register builtin::{}: {}", $name, e))?;
+                )*
+            };
+        }
+
+        register_builtin! {
+            "probeln" => builtin_probeln_host,
+            "probe" => builtin_probe_host,
+            "length_array" => builtin_length_array_host,
+            "split_head" => builtin_split_head_host,
+            "split_tail" => builtin_split_tail_host,
+        }
+
         Ok(())
     }
 
@@ -220,10 +286,6 @@ impl WasmRuntime {
 
         // Get type infos to know function signatures
         let type_infos = loader.get_type_infos();
-        eprintln!(
-            "[D] Registering {} plugin functions as WASM host functions",
-            type_infos.len()
-        );
 
         // Wrap loader in Arc<Mutex<>> for sharing with host functions
         let loader = Arc::new(Mutex::new(loader));
@@ -241,20 +303,27 @@ impl WasmRuntime {
                     .func_wrap(
                         "plugin",
                         "sampler_mono",
-                        move |mut caller: Caller<RuntimeState>, path_ptr: i32, path_len: i32| -> f64 {
+                        move |mut caller: Caller<RuntimeState>,
+                              path_ptr: i32,
+                              path_len: i32|
+                              -> f64 {
                             // Read string from linear memory
                             let memory = caller.data().memory.expect("Memory not set");
                             let mem_data = memory.data(&caller);
-                            
+
                             let start = path_ptr as usize;
                             let end = start + path_len as usize;
-                            
+
                             if end > mem_data.len() {
-                                eprintln!("[E] Invalid memory access: ptr={}, len={}, mem_size={}",
-                                         path_ptr, path_len, mem_data.len());
+                                eprintln!(
+                                    "[E] Invalid memory access: ptr={}, len={}, mem_size={}",
+                                    path_ptr,
+                                    path_len,
+                                    mem_data.len()
+                                );
                                 return 0.0;
                             }
-                            
+
                             let path_bytes = &mem_data[start..end];
                             let path_str = match std::str::from_utf8(path_bytes) {
                                 Ok(s) => s,
@@ -264,12 +333,12 @@ impl WasmRuntime {
                                 }
                             };
 
-                            eprintln!("[D] Plugin call: sampler_mono(\"{}\")", path_str);
+                            log::debug!("Plugin call: sampler_mono(\"{}\")", path_str);
 
                             // Call plugin function via stored loader
                             // Note: This is a simplified implementation
                             // Real implementation would need to properly handle the plugin API
-                            
+
                             // For now, return a dummy value
                             // TODO: Actually call the plugin function
                             0.0
@@ -327,6 +396,25 @@ impl WasmModule {
                 _ => 0,
             })
             .collect())
+    }
+
+    /// Read an f64 value from linear memory at the given byte offset
+    pub fn read_memory_f64(&mut self, offset: usize) -> Result<f64, String> {
+        let memory = self
+            .instance
+            .get_memory(&mut self.store, "memory")
+            .ok_or("No memory export")?;
+        let data = memory.data(&self.store);
+        if offset + 8 > data.len() {
+            return Err(format!(
+                "Memory read out of bounds: offset={offset}, memory size={}",
+                data.len()
+            ));
+        }
+        let bytes: [u8; 8] = data[offset..offset + 8]
+            .try_into()
+            .map_err(|e| format!("Failed to read memory: {e}"))?;
+        Ok(f64::from_le_bytes(bytes))
     }
 
     /// Get mutable access to the runtime state
@@ -527,38 +615,89 @@ fn closure_call_host(
     );
 }
 
+// Closure state stack operations
+// These mirror the native VM's states_stack.push/pop pattern.
+// When a closure is called, its state storage is activated;
+// when the call returns, the previous state context is restored.
+
+/// Push a closure's state onto the state stack, making it the active state context.
+/// Called before a closure call (CallCls/CallIndirect).
+/// `closure_addr` is the closure's address in WASM linear memory (used as a unique key).
+/// `state_size` is the number of words needed for this closure's state storage
+/// (computed from state_skeleton.total_size() at compile time).
+fn closure_state_push_host(
+    mut caller: Caller<'_, RuntimeState>,
+    closure_addr: i64,
+    state_size: i64,
+) {
+    log::trace!("closure_state_push_host: closure_addr={closure_addr}, state_size={state_size}");
+    let state = caller.data_mut();
+    // Push closure address onto the state stack
+    state.state_stack.push(closure_addr);
+    // Lazily allocate state storage for this closure if it doesn't exist yet
+    state
+        .closure_states
+        .entry(closure_addr)
+        .or_insert_with(|| StateStorage::with_size(state_size as usize));
+}
+
+/// Pop the closure state stack, restoring the previous state context.
+/// Called after a closure call returns.
+fn closure_state_pop_host(mut caller: Caller<'_, RuntimeState>) {
+    log::trace!("closure_state_pop_host");
+    let state = caller.data_mut();
+    // Reset pos of the outgoing closure's state for next call
+    if let Some(&closure_addr) = state.state_stack.last() {
+        if let Some(cls_state) = state.closure_states.get_mut(&closure_addr) {
+            cls_state.pos = 0;
+        }
+    }
+    state.state_stack.pop();
+}
+
 // State operations
 
+/// Push the state position cursor forward by `offset` words.
+/// Mirrors the native VM's `PushStatePos` instruction.
 fn state_push_host(mut caller: Caller<'_, RuntimeState>, offset: i64) {
     log::trace!("state_push_host: offset={offset}");
     let state = caller.data_mut();
-    state.state_stack.push(offset as Word);
+    let current = state.get_current_state();
+    current.pos += offset as usize;
 }
 
+/// Pop the state position cursor back by `offset` words.
+/// Mirrors the native VM's `PopStatePos` instruction.
 fn state_pop_host(mut caller: Caller<'_, RuntimeState>, offset: i64) {
     log::trace!("state_pop_host: offset={offset}");
     let state = caller.data_mut();
-    state.state_stack.pop().expect("state_pop: stack underflow");
+    let current = state.get_current_state();
+    current.pos -= offset as usize;
 }
 
+/// Read state data from the current state storage and write to WASM linear memory.
+/// Mirrors the native VM's `GetState` instruction.
 fn state_get_host(mut caller: Caller<'_, RuntimeState>, dst_ptr: i32, size_words: i32) {
     log::trace!("state_get_host: dst_ptr={dst_ptr}, size_words={size_words}");
 
     let size = size_words as usize;
-    let state = caller.data_mut();
 
-    // Get the current state from the stack
-    // If stack is empty or too small, initialize with zeros
-    let start_idx = state.state_stack.len().saturating_sub(size);
-    let state_values: Vec<Word> = if state.state_stack.len() >= size {
-        state.state_stack[start_idx..].to_vec()
-    } else {
-        // Initialize with zeros if not enough state values
-        vec![0u64; size]
+    // Read from the active state storage at its current position
+    let state_values: Vec<u64> = {
+        let state = caller.data_mut();
+        let current = state.get_current_state();
+        let pos = current.pos;
+        let needed = pos + size;
+        if needed <= current.data.len() {
+            current.data[pos..pos + size].to_vec()
+        } else {
+            // State not yet initialized at this position, return zeros
+            vec![0u64; size]
+        }
     };
 
     // Write to WASM linear memory
-    let memory = state.memory.expect("Memory not initialized");
+    let memory = caller.data().memory.expect("Memory not initialized");
     let bytes: Vec<u8> = state_values.iter().flat_map(|w| w.to_le_bytes()).collect();
 
     memory
@@ -566,82 +705,98 @@ fn state_get_host(mut caller: Caller<'_, RuntimeState>, dst_ptr: i32, size_words
         .expect("Failed to write state to WASM memory");
 }
 
+/// Write values from WASM linear memory to the current state storage.
+/// Mirrors the native VM's `SetState` instruction.
 fn state_set_host(mut caller: Caller<'_, RuntimeState>, src_ptr: i32, size_words: i32) {
     log::trace!("state_set_host: src_ptr={src_ptr}, size_words={size_words}");
 
     let size = size_words as usize;
-    let state = caller.data();
-    let memory = state.memory.expect("Memory not initialized");
 
     // Read from WASM linear memory
-    let mut bytes = vec![0u8; size * std::mem::size_of::<Word>()];
-    memory
-        .read(&caller, src_ptr as usize, &mut bytes)
-        .expect("Failed to read from WASM memory");
+    let state_values: Vec<u64> = {
+        let memory = caller.data().memory.expect("Memory not initialized");
+        let mut bytes = vec![0u8; size * std::mem::size_of::<Word>()];
+        memory
+            .read(&caller, src_ptr as usize, &mut bytes)
+            .expect("Failed to read from WASM memory");
+        bytes
+            .chunks(std::mem::size_of::<Word>())
+            .map(|chunk| {
+                let mut word_bytes = [0u8; 8];
+                word_bytes.copy_from_slice(chunk);
+                u64::from_le_bytes(word_bytes)
+            })
+            .collect()
+    };
 
-    // Convert bytes to Words
-    let state_values: Vec<Word> = bytes
-        .chunks(std::mem::size_of::<Word>())
-        .map(|chunk| {
-            let mut word_bytes = [0u8; 8];
-            word_bytes.copy_from_slice(chunk);
-            Word::from_le_bytes(word_bytes)
-        })
-        .collect();
-
-    // Update the state stack
+    // Write to the active state storage at its current position
     let state = caller.data_mut();
-    let start_idx = state.state_stack.len().saturating_sub(size);
+    let current = state.get_current_state();
+    let pos = current.pos;
+    let needed = pos + size;
 
-    // If state_stack is too small, extend it
-    while state.state_stack.len() < size {
-        state.state_stack.push(0);
+    // Grow data if needed
+    if needed > current.data.len() {
+        current.data.resize(needed, 0);
     }
 
-    // Update existing values or push new ones
-    for (i, &value) in state_values.iter().enumerate() {
-        let idx = start_idx + i;
-        if idx < state.state_stack.len() {
-            state.state_stack[idx] = value;
-        } else {
-            state.state_stack.push(value);
-        }
-    }
+    current.data[pos..pos + size].copy_from_slice(&state_values);
 }
 
+/// Ring buffer delay: reads delayed value from state, writes new input.
+/// State layout at current pos: [read_idx, write_idx, data[0..max_len]]
 fn state_delay_host(
     mut caller: Caller<'_, RuntimeState>,
-    dst_ptr: i32,
-    src_ptr: i32,
-    size_words: i32,
-    max_samples: i64,
-) {
-    log::trace!(
-        "state_delay_host: dst_ptr={dst_ptr}, src_ptr={src_ptr}, size_words={size_words}, max_samples={max_samples}"
-    );
-    // TODO: Implement actual delay line
-    // For now, copy src to dst (pass through)
-    let size = size_words as usize;
-    let memory = caller.data().memory.expect("Memory not initialized");
-    let mut buffer = vec![0u8; size * std::mem::size_of::<Word>()];
-    memory
-        .read(&caller, src_ptr as usize, &mut buffer)
-        .expect("Failed to read from WASM memory");
-    memory
-        .write(&mut caller.as_context_mut(), dst_ptr as usize, &buffer)
-        .expect("Failed to write to WASM memory");
+    input: f64,
+    time: f64,
+    max_len: i64,
+) -> f64 {
+    let state = caller.data_mut();
+    let current = state.get_current_state();
+    let pos = current.pos;
+    let buf_size = max_len as usize;
+    let total_needed = pos + 2 + buf_size;
+
+    // Ensure data is large enough
+    if total_needed > current.data.len() {
+        current.data.resize(total_needed, 0);
+    }
+
+    let read_idx = current.data[pos];
+    let time_samples = time as u64;
+    let write_idx = (read_idx + time_samples) % buf_size as u64;
+
+    // Read delayed value from ring buffer
+    let res_bits = current.data[pos + 2 + read_idx as usize];
+    let res = f64::from_bits(res_bits);
+
+    // Write input to ring buffer
+    current.data[pos + 2 + write_idx as usize] = input.to_bits();
+
+    // Advance read index
+    current.data[pos] = (read_idx + 1) % buf_size as u64;
+    current.data[pos + 1] = write_idx;
+
+    res
 }
 
-fn state_mem_host(mut caller: Caller<'_, RuntimeState>, dst_ptr: i32, size_words: i32) {
-    log::trace!("state_mem_host: dst_ptr={dst_ptr}, size_words={size_words}");
-    // TODO: Implement actual memory (one-sample delay)
-    // For now, zero-fill destination
-    let size = size_words as usize;
-    let memory = caller.data().memory.expect("Memory not initialized");
-    let zeros = vec![0u8; size * std::mem::size_of::<Word>()];
-    memory
-        .write(&mut caller.as_context_mut(), dst_ptr as usize, &zeros)
-        .expect("Failed to write to WASM memory");
+/// One-sample delay (mem): returns previous value, stores new input.
+/// State layout at current pos: [value] (1 word)
+fn state_mem_host(mut caller: Caller<'_, RuntimeState>, input: f64) -> f64 {
+    let state = caller.data_mut();
+    let current = state.get_current_state();
+    let pos = current.pos;
+    let needed = pos + 1;
+
+    if needed > current.data.len() {
+        current.data.resize(needed, 0);
+    }
+
+    let old_bits = current.data[pos];
+    let old_value = f64::from_bits(old_bits);
+    current.data[pos] = input.to_bits();
+
+    old_value
 }
 
 // Array operations
@@ -687,22 +842,28 @@ fn array_get_elem_host(
     let idx = index as usize;
     let elem_words = elem_size as usize;
 
-    // Get element value from array storage
-    let value = {
+    // Get element data from array storage (multi-word aware)
+    let data = {
         let state = caller.data();
         let array_data = state
             .arrays
             .get(&(array as Word))
             .expect("array_get_elem: invalid array ID");
-        if idx >= array_data.len() {
-            panic!("array_get_elem: index out of bounds");
+        let base = idx * elem_words;
+        if base + elem_words > array_data.len() {
+            panic!(
+                "array_get_elem: index {} out of bounds (base={}, elem_words={}, len={})",
+                idx,
+                base,
+                elem_words,
+                array_data.len()
+            );
         }
-        array_data[idx]
+        array_data[base..base + elem_words].to_vec()
     };
 
-    // Write element to linear memory at dst_ptr
+    // Write element data to linear memory at dst_ptr
     let memory = caller.data().memory.expect("Memory not initialized");
-    let data = vec![value; elem_words];
     let bytes = unsafe {
         std::slice::from_raw_parts(
             data.as_ptr() as *const u8,
@@ -741,16 +902,17 @@ fn array_set_elem_host(
         .read(&caller, src_ptr as usize, bytes)
         .expect("Failed to read from WASM memory");
 
-    // Write to array storage
+    // Write to array storage (multi-word aware)
     let state = caller.data_mut();
     let array_data = state
         .arrays
         .get_mut(&(array as Word))
         .expect("array_set_elem: invalid array ID");
-    if idx >= array_data.len() {
+    let base = idx * elem_words;
+    if base + elem_words > array_data.len() {
         panic!("array_set_elem: index out of bounds");
     }
-    array_data[idx] = buffer[0];
+    array_data[base..base + elem_words].copy_from_slice(&buffer);
 }
 
 // Runtime globals
@@ -765,6 +927,99 @@ fn runtime_get_samplerate_host(caller: Caller<'_, RuntimeState>) -> f64 {
     log::trace!("runtime_get_samplerate_host");
     let state = caller.data();
     state.sample_rate
+}
+
+// Builtin function host implementations
+
+fn builtin_probeln_host(_caller: Caller<'_, RuntimeState>, x: f64) -> f64 {
+    println!("{x}");
+    x
+}
+
+fn builtin_probe_host(_caller: Caller<'_, RuntimeState>, x: f64) -> f64 {
+    print!("{x}");
+    x
+}
+
+fn builtin_length_array_host(caller: Caller<'_, RuntimeState>, array: i64) -> f64 {
+    log::trace!("builtin_length_array_host: array={array}");
+    let state = caller.data();
+    let array_data = state
+        .arrays
+        .get(&(array as Word))
+        .expect("length_array: invalid array ID");
+    array_data.len() as f64
+}
+
+fn builtin_split_head_host(mut caller: Caller<'_, RuntimeState>, array: i64, dst_ptr: i32) {
+    log::trace!("builtin_split_head_host: array={array}, dst_ptr={dst_ptr}");
+
+    let (head, rest_data) = {
+        let state = caller.data();
+        let array_data = state
+            .arrays
+            .get(&(array as Word))
+            .expect("split_head: invalid array ID");
+        assert!(!array_data.is_empty(), "Cannot split_head on empty array");
+        let head = f64::from_bits(array_data[0]);
+        let rest_data: Vec<u64> = array_data[1..].to_vec();
+        (head, rest_data)
+    };
+
+    // Allocate new array for rest
+    let rest_id = {
+        let state = caller.data_mut();
+        let rest_id = (state.arrays.len() + 1) as Word;
+        state.arrays.insert(rest_id, rest_data);
+        rest_id
+    };
+
+    // Write result tuple (head: f64, rest: i64) to linear memory at dst_ptr
+    let memory = caller.data().memory.expect("Memory not initialized");
+    let head_bytes = head.to_le_bytes();
+    memory
+        .write(&mut caller, dst_ptr as usize, &head_bytes)
+        .expect("split_head: failed to write head");
+    let rest_bytes = (rest_id as i64).to_le_bytes();
+    memory
+        .write(&mut caller, (dst_ptr + 8) as usize, &rest_bytes)
+        .expect("split_head: failed to write rest");
+}
+
+fn builtin_split_tail_host(mut caller: Caller<'_, RuntimeState>, array: i64, dst_ptr: i32) {
+    log::trace!("builtin_split_tail_host: array={array}, dst_ptr={dst_ptr}");
+
+    let (tail, rest_data) = {
+        let state = caller.data();
+        let array_data = state
+            .arrays
+            .get(&(array as Word))
+            .expect("split_tail: invalid array ID");
+        assert!(!array_data.is_empty(), "Cannot split_tail on empty array");
+        let len = array_data.len();
+        let tail = f64::from_bits(array_data[len - 1]);
+        let rest_data: Vec<u64> = array_data[..len - 1].to_vec();
+        (tail, rest_data)
+    };
+
+    // Allocate new array for rest
+    let rest_id = {
+        let state = caller.data_mut();
+        let rest_id = (state.arrays.len() + 1) as Word;
+        state.arrays.insert(rest_id, rest_data);
+        rest_id
+    };
+
+    // Write result tuple (rest: i64, tail: f64) to linear memory at dst_ptr
+    let memory = caller.data().memory.expect("Memory not initialized");
+    let rest_bytes = (rest_id as i64).to_le_bytes();
+    memory
+        .write(&mut caller, dst_ptr as usize, &rest_bytes)
+        .expect("split_tail: failed to write rest");
+    let tail_bytes = tail.to_le_bytes();
+    memory
+        .write(&mut caller, (dst_ptr + 8) as usize, &tail_bytes)
+        .expect("split_tail: failed to write tail");
 }
 
 #[cfg(test)]
