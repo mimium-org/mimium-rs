@@ -7,9 +7,8 @@ repository.workspace = true
 description = "midi input plugin for mimium using midir."
 build = "build.rs"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-# [lib]
-
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 atomic_float = { workspace = true }
@@ -18,6 +17,7 @@ midir = "0.10.0"
 mimium-lang = { workspace = true }
 mimium-plugin-macros = { workspace = true }
 wmidi = "4.0.10"
+bincode = { workspace = true }
 
 [dev-dependencies]
 mimium-test = { workspace = true }

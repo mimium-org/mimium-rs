@@ -276,26 +276,23 @@ pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config
             if let Some(exe_dir) = exe_path.parent() {
                 let symphonia_path = exe_dir.join("mimium_symphonia");
                 if let Err(e) = ctx.load_dynamic_plugin(&symphonia_path) {
-                    log::debug!(
-                        "Failed to load mimium-symphonia from executable directory: {:?}",
-                        e
-                    );
+                    log::debug!("Failed to load mimium-symphonia from executable directory: {e:?}");
+                }
+
+                let midi_path = exe_dir.join("mimium_midi");
+                if let Err(e) = ctx.load_dynamic_plugin(&midi_path) {
+                    log::debug!("Failed to load mimium-midi from executable directory: {e:?}");
                 }
             }
         }
 
         // Also try to load from standard plugin directory
         if let Err(e) = ctx.load_builtin_dynamic_plugins() {
-            log::debug!("No builtin dynamic plugins found: {:?}", e);
+            log::debug!("No builtin dynamic plugins found: {e:?}");
         }
     }
 
     ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
-    if let Some(midi_plug) = mimium_midi::MidiPlugin::try_new() {
-        ctx.add_system_plugin(midi_plug);
-    } else {
-        log::warn!("Midi is not supported on this platform.")
-    }
 
     // Always register GuiToolPlugin so that Slider!/Probe! macros are
     // available in every compilation mode.  The actual GUI window is only

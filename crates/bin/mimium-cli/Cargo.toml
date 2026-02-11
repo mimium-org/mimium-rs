@@ -19,7 +19,6 @@ clap = { version = "4.5.7", features = ["derive"] }
 
 mimium-lang = { workspace = true }
 mimium-audiodriver = { workspace = true }
-mimium-midi = { workspace = true }
 mimium-scheduler = { workspace = true }
 mimium-guitools = { workspace = true }
 colog = { workspace = true }

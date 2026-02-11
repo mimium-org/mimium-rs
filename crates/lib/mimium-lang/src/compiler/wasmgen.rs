@@ -805,7 +805,7 @@ impl WasmGenerator {
             self.alloc_base_local = self.closure_save_local + 1;
 
             // Detect entry-point functions that need alloc pointer save/restore.
-            // Only `dsp` resets the allocator each call  E`_mimium_global` runs
+            // Only `dsp` resets the allocator each call — `_mimium_global` runs
             // once and its allocations (closures stored in globals) must persist.
             let is_entry = func.label.as_str() == "dsp";
             self.is_entry_function = is_entry;
@@ -2498,7 +2498,7 @@ impl WasmGenerator {
                                     _ => func.instruction(&W::I64Load(memarg)),
                                 };
                             } else {
-                                // Loading the entire tuple  Ereturn the pointer as-is
+                                // Loading the entire tuple — return the pointer as-is
                                 self.emit_value_load(ptr, func);
                             }
                         } else {
@@ -2652,7 +2652,7 @@ impl WasmGenerator {
                             );
                             // Don't load arguments for unknown functions
                         }
-                        // Push temp address as I64  Ethis is the tuple pointer result
+                        // Push temp address as I64 — this is the tuple pointer result
                         func.instruction(&W::I64Const(temp_addr as i64));
                     } else {
                         // Single-word return ExtFunction: standard call

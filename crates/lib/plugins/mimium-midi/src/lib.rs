@@ -273,3 +273,306 @@ impl SystemPlugin for MidiPlugin {
         vec![setport, midi_note_macro, get_midi_note]
     }
 }
+
+// -------------------------------------------------------------------------
+// Signature helpers for FFI type info export
+// -------------------------------------------------------------------------
+
+impl MidiPlugin {
+    /// Returns the signature for the `midi_note_mono!` macro.
+    ///
+    /// Used when exporting type information to the dynamic plugin loader.
+    pub fn midi_note_mono_signature() -> SysPluginSignature {
+        let midi_note_macro_f: SystemPluginMacroType<Self> = Self::midi_note_mono_macro;
+        let record_ty = Type::Record(vec![
+            RecordTypeField::new("pitch".to_symbol(), numeric!(), false),
+            RecordTypeField::new("velocity".to_symbol(), numeric!(), false),
+        ])
+        .into_id();
+        SysPluginSignature::new_macro(
+            "midi_note_mono",
+            midi_note_macro_f,
+            function!(
+                vec![numeric!(), numeric!(), numeric!()],
+                Type::Code(record_ty).into_id()
+            ),
+        )
+    }
+}
+
+// -------------------------------------------------------------------------
+// Dynamic Plugin ABI
+// -------------------------------------------------------------------------
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::ffi::{CString, c_char};
+
+#[cfg(not(target_arch = "wasm32"))]
+use mimium_lang::plugin::loader::{PluginCapabilities, PluginInstance, PluginMetadata};
+
+#[cfg(not(target_arch = "wasm32"))]
+static PLUGIN_NAME: &str = "mimium-midi\0";
+#[cfg(not(target_arch = "wasm32"))]
+static PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
+#[cfg(not(target_arch = "wasm32"))]
+static PLUGIN_AUTHOR: &str = "mimium-org\0";
+
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn mimium_plugin_metadata() -> *const PluginMetadata {
+    use std::sync::OnceLock;
+
+    static METADATA: OnceLock<(CString, PluginMetadata)> = OnceLock::new();
+
+    let (_version_cstr, metadata) = METADATA.get_or_init(|| {
+        let version_cstr = CString::new(PLUGIN_VERSION).expect("Version string is valid");
+        let metadata = PluginMetadata {
+            name: PLUGIN_NAME.as_ptr() as *const c_char,
+            version: version_cstr.as_ptr(),
+            author: PLUGIN_AUTHOR.as_ptr() as *const c_char,
+            capabilities: PluginCapabilities {
+                has_audio_worker: false,
+                has_macros: true,
+                has_runtime_functions: true,
+            },
+        };
+        (version_cstr, metadata)
+    });
+
+    metadata
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn mimium_plugin_create() -> *mut PluginInstance {
+    match MidiPlugin::try_new() {
+        Some(plugin) => Box::into_raw(Box::new(plugin)) as *mut PluginInstance,
+        None => {
+            log::warn!("Midi is not supported on this platform.");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn mimium_plugin_destroy(instance: *mut PluginInstance) {
+    if !instance.is_null() {
+        // SAFETY: instance was created by mimium_plugin_create
+        unsafe {
+            let _ = Box::from_raw(instance as *mut MidiPlugin);
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+use mimium_lang::plugin::loader::PluginFunctionFn;
+
+/// Get a plugin function by name.
+///
+/// # Safety
+///
+/// - `name` must be a valid pointer to a null-terminated C string
+/// - The returned function pointer, if any, must only be called with valid arguments
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mimium_plugin_get_function(
+    name: *const c_char,
+) -> Option<PluginFunctionFn> {
+    use std::ffi::CStr;
+
+    if name.is_null() {
+        return None;
+    }
+
+    let name_str = unsafe { CStr::from_ptr(name) }.to_str().ok()?;
+
+    match name_str {
+        "set_midi_port" => Some(ffi_set_midi_port),
+        "__get_midi_note" => Some(ffi_get_midi_note),
+        _ => None,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+use mimium_lang::plugin::loader::PluginMacroFn;
+
+/// Get a plugin macro function by name.
+///
+/// # Safety
+///
+/// - `name` must be a valid pointer to a null-terminated C string
+/// - The returned function pointer, if any, must only be called with valid arguments
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mimium_plugin_get_macro(name: *const c_char) -> Option<PluginMacroFn> {
+    use std::ffi::CStr;
+
+    if name.is_null() {
+        return None;
+    }
+
+    let name_str = unsafe { CStr::from_ptr(name) }.to_str().ok()?;
+
+    match name_str {
+        "midi_note_mono_macro" => Some(ffi_midi_note_mono_macro),
+        _ => None,
+    }
+}
+
+/// FFI wrapper for `set_midi_port`.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe extern "C" fn ffi_set_midi_port(
+    instance: *mut PluginInstance,
+    runtime: *mut std::ffi::c_void,
+) -> i64 {
+    use mimium_lang::runtime::vm::Machine;
+
+    if instance.is_null() || runtime.is_null() {
+        return 0;
+    }
+
+    let machine = unsafe { &mut *(runtime as *mut Machine) };
+    let plugin = unsafe { &mut *(instance as *mut MidiPlugin) };
+
+    plugin.set_midi_port(machine) as i64
+}
+
+/// FFI wrapper for `__get_midi_note`.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe extern "C" fn ffi_get_midi_note(
+    instance: *mut PluginInstance,
+    runtime: *mut std::ffi::c_void,
+) -> i64 {
+    use mimium_lang::runtime::vm::Machine;
+
+    if instance.is_null() || runtime.is_null() {
+        return 0;
+    }
+
+    let machine = unsafe { &mut *(runtime as *mut Machine) };
+    let plugin = unsafe { &mut *(instance as *mut MidiPlugin) };
+
+    plugin.get_midi_note(machine)
+}
+
+/// FFI bridge for `midi_note_mono!` macro function.
+///
+/// # Safety
+///
+/// - `instance` must be a valid pointer to a MidiPlugin instance
+/// - `args_ptr` and `args_len` must describe a valid byte buffer containing serialized arguments
+/// - `out_ptr` and `out_len` must be valid pointers to write the result
+#[cfg(not(target_arch = "wasm32"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ffi_midi_note_mono_macro(
+    instance: *mut std::ffi::c_void,
+    args_ptr: *const u8,
+    args_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    use mimium_lang::runtime::ffi_serde::{deserialize_macro_args, serialize_value};
+
+    if instance.is_null() || args_ptr.is_null() || out_ptr.is_null() || out_len.is_null() {
+        log::error!("ffi_midi_note_mono_macro: Null pointer detected");
+        return -3;
+    }
+
+    unsafe {
+        let plugin = &mut *(instance as *mut MidiPlugin);
+
+        let args_bytes = std::slice::from_raw_parts(args_ptr, args_len);
+        let args = match deserialize_macro_args(args_bytes) {
+            Ok(a) => a,
+            Err(e) => {
+                log::error!(
+                    "Failed to deserialize macro arguments for midi_note_mono: {e}"
+                );
+                return -1;
+            }
+        };
+
+        let result = plugin.midi_note_mono_macro(&args);
+
+        let result_bytes = match serialize_value(&result) {
+            Ok(b) => b,
+            Err(e) => {
+                log::error!("Failed to serialize macro result for midi_note_mono: {e}");
+                return -2;
+            }
+        };
+
+        let boxed = result_bytes.into_boxed_slice();
+        *out_len = boxed.len();
+        *out_ptr = Box::into_raw(boxed) as *mut u8;
+
+        0
+    }
+}
+
+// -------------------------------------------------------------------------
+// Type information export
+// -------------------------------------------------------------------------
+
+#[cfg(not(target_arch = "wasm32"))]
+mod ffi_exports {
+    use super::*;
+
+    /// Static storage for type information strings (must outlive the plugin).
+    static mut TYPE_INFO_STORAGE: Option<Vec<(std::ffi::CString, Vec<u8>)>> = None;
+
+    /// Static storage for FfiTypeInfo array (must outlive the plugin).
+    static mut FFI_TYPE_INFOS: Option<Vec<mimium_lang::plugin::loader::FfiTypeInfo>> = None;
+
+    /// Export type information for the plugin.
+    ///
+    /// Returns an array of FfiTypeInfo structures that describe the types of
+    /// all macros and functions provided by the plugin.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn mimium_plugin_get_type_infos(
+        out_len: *mut usize,
+    ) -> *const mimium_lang::plugin::loader::FfiTypeInfo {
+        use mimium_lang::plugin::loader::FfiTypeInfo;
+        if out_len.is_null() {
+            return std::ptr::null();
+        }
+
+        unsafe {
+            if (*std::ptr::addr_of!(TYPE_INFO_STORAGE)).is_none() {
+                let mut storage = Vec::new();
+                let mut infos = Vec::new();
+
+                // midi_note_mono! macro type info
+                let sig = MidiPlugin::midi_note_mono_signature();
+                let name_cstr = match std::ffi::CString::new(sig.get_name()) {
+                    Ok(s) => s,
+                    Err(_) => return std::ptr::null(),
+                };
+                let type_bytes = match bincode::serialize(&sig.get_type()) {
+                    Ok(b) => b,
+                    Err(_) => return std::ptr::null(),
+                };
+
+                let name_ptr = name_cstr.as_ptr();
+                let type_ptr = type_bytes.as_ptr();
+                let type_len = type_bytes.len();
+
+                storage.push((name_cstr, type_bytes));
+                infos.push(FfiTypeInfo {
+                    name: name_ptr,
+                    type_data: type_ptr,
+                    type_len,
+                    stage: 0, // Stage(0) = Macro/CompileTime
+                });
+
+                TYPE_INFO_STORAGE = Some(storage);
+                FFI_TYPE_INFOS = Some(infos);
+            }
+
+            let infos = (*std::ptr::addr_of!(FFI_TYPE_INFOS)).as_ref().unwrap();
+            *out_len = infos.len();
+            infos.as_ptr()
+        }
+    }
+}

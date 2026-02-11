@@ -354,11 +354,21 @@ impl WasmRuntime {
 
             let return_vt = return_valtype.clone();
 
-            // Determine if this function is a "passthrough" shape:
-            // first param type == return type  (e.g. __probe_intercept).
-            let is_passthrough = param_valtypes
-                .first()
-                .is_some_and(|first| valtype_eq(first, &return_valtype));
+            // Determine if this function is a "passthrough" shape.
+            //
+            // We consider a function passthrough if:
+            // 1. It has at least 2 parameters (first is value, second is ID/config)
+            // 2. First param type == return type
+            // 3. The function name suggests it's an intercept/passthrough pattern
+            //
+            // Examples:
+            // - __probe_intercept(value: f64, id: f64) -> f64  [passthrough]
+            // - __get_slider(id: f64) -> f64                   [NOT passthrough]
+            let is_passthrough = param_valtypes.len() >= 2
+                && param_valtypes
+                    .first()
+                    .is_some_and(|first| valtype_eq(first, &return_valtype))
+                && plugin_name.contains("intercept");
 
             linker
                 .func_new(

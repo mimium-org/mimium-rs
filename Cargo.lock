@@ -2260,9 +2260,7 @@ dependencies = [
  "clap",
  "colog",
  "mimium-audiodriver",
- "mimium-guitools",
  "mimium-lang",
- "mimium-midi",
  "mimium-scheduler",
  "notify",
  "ringbuf",
@@ -2291,6 +2289,7 @@ name = "mimium-guitools"
 version = "3.2.0"
 dependencies = [
  "atomic_float",
+ "bincode",
  "eframe",
  "egui",
  "egui_plot",
@@ -2352,6 +2351,7 @@ name = "mimium-midi"
 version = "3.2.0"
 dependencies = [
  "atomic_float",
+ "bincode",
  "midir",
  "mimium-lang",
  "mimium-plugin-macros",
