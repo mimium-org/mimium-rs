@@ -168,6 +168,7 @@ impl WasmRuntime {
             module,
             store,
             instance,
+            function_cache: std::collections::HashMap::new(),
         })
     }
 
@@ -357,16 +358,32 @@ pub struct WasmModule {
     module: Module,
     store: Store<RuntimeState>,
     instance: wasmtime::Instance,
+    /// Cache of frequently called functions (e.g., dsp)
+    function_cache: std::collections::HashMap<String, wasmtime::Func>,
 }
 
 impl WasmModule {
-    /// Call a function exported by the WASM module
-    pub fn call_function(&mut self, name: &str, args: &[Word]) -> Result<Vec<Word>, String> {
+    /// Get or cache a function by name
+    pub fn get_or_cache_function(&mut self, name: &str) -> Result<wasmtime::Func, String> {
+        if let Some(func) = self.function_cache.get(name) {
+            return Ok(*func);
+        }
+
         let func = self
             .instance
             .get_func(&mut self.store, name)
             .ok_or_else(|| format!("Function '{name}' not found in WASM module"))?;
 
+        self.function_cache.insert(name.to_string(), func);
+        Ok(func)
+    }
+
+    /// Call a function directly using a cached Func handle (faster)
+    pub fn call_func_direct(
+        &mut self,
+        func: &wasmtime::Func,
+        args: &[Word],
+    ) -> Result<Vec<Word>, String> {
         // Convert args to wasmtime values
         let wasm_args: Vec<wasmtime::Val> =
             args.iter().map(|&w| wasmtime::Val::I64(w as i64)).collect();
@@ -376,19 +393,25 @@ impl WasmModule {
 
         // Call function
         func.call(&mut self.store, &wasm_args, &mut results)
-            .map_err(|e| format!("Failed to call function '{name}': {e}"))?;
+            .map_err(|e| format!("Failed to call function: {e}"))?;
 
         // Convert results back to Words
         Ok(results
             .into_iter()
             .map(|v| match v {
                 wasmtime::Val::I64(i) => i as u64,
-                wasmtime::Val::F64(f) => f, // Already in bits representation
+                wasmtime::Val::F64(f) => f,
                 wasmtime::Val::I32(i) => i as u64,
-                wasmtime::Val::F32(f) => f as u64, // Already in bits representation
+                wasmtime::Val::F32(f) => f as u64,
                 _ => 0,
             })
             .collect())
+    }
+
+    /// Call a function exported by the WASM module
+    pub fn call_function(&mut self, name: &str, args: &[Word]) -> Result<Vec<Word>, String> {
+        let func = self.get_or_cache_function(name)?;
+        self.call_func_direct(&func, args)
     }
 
     /// Read an f64 value from linear memory at the given byte offset

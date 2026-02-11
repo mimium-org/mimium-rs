@@ -11,6 +11,8 @@ use crate::runtime::{DspRuntime, ProgramPayload, ReturnCode, Time};
 pub struct WasmEngine {
     runtime: WasmRuntime,
     current_module: Option<WasmModule>,
+    /// Cached dsp function for fast per-sample execution
+    dsp_func: Option<wasmtime::Func>,
 }
 
 impl WasmEngine {
@@ -20,12 +22,17 @@ impl WasmEngine {
         Ok(Self {
             runtime,
             current_module: None,
+            dsp_func: None,
         })
     }
 
     /// Load a WASM module for execution
     pub fn load_module(&mut self, wasm_bytes: &[u8]) -> Result<(), String> {
-        let module = self.runtime.load_module(wasm_bytes)?;
+        let mut module = self.runtime.load_module(wasm_bytes)?;
+
+        // Cache the dsp function for fast per-sample execution
+        self.dsp_func = module.get_or_cache_function("dsp").ok();
+
         self.current_module = Some(module);
         Ok(())
     }
@@ -37,7 +44,12 @@ impl WasmEngine {
             .as_mut()
             .ok_or("No WASM module loaded")?;
 
-        module.call_function("dsp", inputs)
+        // Use cached dsp function if available, otherwise fall back to lookup
+        if let Some(func) = &self.dsp_func {
+            module.call_func_direct(func, inputs)
+        } else {
+            module.call_function("dsp", inputs)
+        }
     }
 
     /// Execute a named function
