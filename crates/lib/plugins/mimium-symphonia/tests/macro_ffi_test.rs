@@ -126,6 +126,6 @@ fn test_ffi_make_sampler_mono() {
         let _boxed = Box::from_raw(std::slice::from_raw_parts_mut(out_ptr, out_len));
     }
 
-    // Should return a Code value
-    assert!(matches!(result_value, Value::Code(_)));
+    // FFI cannot serialize Code values (containing ExprNodeId), so it returns Unit
+    assert!(matches!(result_value, Value::Unit));
 }

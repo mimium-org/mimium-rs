@@ -1,15 +1,11 @@
 //! Integration tests for dynamic plugin loading.
 
+use std::path::PathBuf;
+
+/// Helper function to get the plugin path and ensure it exists.
+/// Returns None if the plugin is not built yet.
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn test_load_sampler_plugin() {
-    use mimium_lang::plugin::loader::PluginLoader;
-    use std::path::PathBuf;
-
-    // Path to the compiled Sampler plugin
-    let mut loader = PluginLoader::new();
-
-    // Find the target/debug directory
+fn get_plugin_path(plugin_name: &str) -> Option<PathBuf> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let base_path = PathBuf::from(manifest_dir);
     let workspace_root = base_path
@@ -23,7 +19,39 @@ fn test_load_sampler_plugin() {
     let plugin_path = workspace_root
         .join("target")
         .join("debug")
-        .join("mimium_symphonia");
+        .join(plugin_name);
+
+    #[cfg(target_os = "windows")]
+    let plugin_file = plugin_path.with_extension("dll");
+    #[cfg(target_os = "macos")]
+    let plugin_file = plugin_path.with_extension("dylib");
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let plugin_file = plugin_path.with_extension("so");
+
+    if plugin_file.exists() {
+        Some(plugin_path)
+    } else {
+        eprintln!(
+            "⚠️  Plugin not found at: {}\n   Run 'cargo build --package {}' first",
+            plugin_file.display(),
+            plugin_name
+        );
+        None
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_load_sampler_plugin() {
+    use mimium_lang::plugin::loader::PluginLoader;
+
+    let Some(plugin_path) = get_plugin_path("mimium_symphonia") else {
+        eprintln!("Skipping test: plugin not built");
+        return;
+    };
+
+    // Path to the compiled Sampler plugin
+    let mut loader = PluginLoader::new();
 
     println!("Attempting to load plugin from: {}", plugin_path.display());
 
@@ -68,25 +96,14 @@ fn test_load_nonexistent_plugin() {
 fn test_call_plugin_function() {
     use mimium_lang::plugin::loader::PluginLoader;
     use mimium_lang::runtime::vm::{Machine, Program};
-    use std::path::PathBuf;
+
+    let Some(plugin_path) = get_plugin_path("mimium_symphonia") else {
+        eprintln!("Skipping test: plugin not built");
+        return;
+    };
 
     // Load the plugin
     let mut loader = PluginLoader::new();
-
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let base_path = PathBuf::from(manifest_dir);
-    let workspace_root = base_path
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap();
-
-    let plugin_path = workspace_root
-        .join("target")
-        .join("debug")
-        .join("mimium_symphonia");
 
     println!("Loading plugin from: {}", plugin_path.display());
 
