@@ -463,3 +463,584 @@ fn is_value_type(ty: &Type) -> bool {
         _ => false,
     }
 }
+
+// ===========================================================================
+// Dynamic Plugin ABI Generation (`mimium_export_plugin!`)
+// ===========================================================================
+
+/// Generate all FFI export functions for a dynamic plugin.
+///
+/// This macro eliminates the ~200 lines of boilerplate that every plugin must
+/// write to expose itself via the dynamic plugin ABI.  It generates:
+///
+/// - `mimium_plugin_metadata()` — static metadata export
+/// - `mimium_plugin_create()` — plugin constructor
+/// - `mimium_plugin_set_interner()` — interner sharing
+/// - `mimium_plugin_destroy()` — destructor
+/// - `mimium_plugin_get_function()` — runtime function dispatcher
+/// - `mimium_plugin_get_macro()` — macro function dispatcher
+/// - `mimium_plugin_get_type_infos()` — type info export
+/// - One `ffi_*` wrapper per runtime function
+/// - One `ffi_*` wrapper per macro function
+///
+/// # Syntax
+///
+/// ```rust,ignore
+/// mimium_export_plugin! {
+///     plugin_type: MyPlugin,
+///     plugin_name: "my-plugin",
+///     plugin_author: "my-org",
+///     // Optional: set to "try_new" for fallible constructors.
+///     // Default is "default".
+///     // constructor: "default",
+///     capabilities: {
+///         has_audio_worker: false,
+///         has_macros: true,
+///         has_runtime_functions: true,
+///     },
+///     // Runtime functions mapped from FFI name to method name.
+///     runtime_functions: [
+///         ("__get_slider", get_slider),
+///         ("__probe_intercept", probe_intercept),
+///     ],
+///     // Macro functions mapped from FFI name to method name.
+///     macro_functions: [
+///         ("Slider", make_slider),
+///         ("Probe", make_probe_macro),
+///     ],
+///     // Type info entries: (name, type_expr, stage).
+///     type_infos: [
+///         { name: "Slider", ty: MyPlugin::slider_signature(), stage: 0 },
+///         { name: "Probe", ty: MyPlugin::probe_signature(), stage: 0 },
+///         { name: "__get_slider", ty_expr: function!(vec![numeric!()], numeric!()), stage: 1 },
+///     ],
+/// }
+/// ```
+#[proc_macro]
+pub fn mimium_export_plugin(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input as PluginExportInput);
+    match generate_plugin_exports(&parsed) {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Parsing structures for mimium_export_plugin!
+// ---------------------------------------------------------------------------
+
+struct PluginExportInput {
+    plugin_type: syn::Path,
+    plugin_name: syn::LitStr,
+    plugin_author: syn::LitStr,
+    constructor: ConstructorKind,
+    capabilities: Capabilities,
+    runtime_functions: Vec<FunctionMapping>,
+    macro_functions: Vec<FunctionMapping>,
+    type_infos: Vec<TypeInfoEntry>,
+}
+
+#[derive(Clone)]
+enum ConstructorKind {
+    Default,
+    TryNew,
+}
+
+struct Capabilities {
+    has_audio_worker: syn::LitBool,
+    has_macros: syn::LitBool,
+    has_runtime_functions: syn::LitBool,
+}
+
+struct FunctionMapping {
+    ffi_name: syn::LitStr,
+    method_name: syn::Ident,
+}
+
+enum TypeInfoEntry {
+    /// Uses a SysPluginSignature method (name, method call expr, stage)
+    Signature {
+        name_str: syn::LitStr,
+        sig_expr: syn::Expr,
+        stage: syn::LitInt,
+    },
+    /// Uses a direct type expression (name, ty_expr, stage)
+    TypeExpr {
+        name_str: syn::LitStr,
+        ty_expr: syn::Expr,
+        stage: syn::LitInt,
+    },
+}
+
+// Custom parser for the plugin export macro input
+impl syn::parse::Parse for PluginExportInput {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mut plugin_type: Option<syn::Path> = None;
+        let mut plugin_name: Option<syn::LitStr> = None;
+        let mut plugin_author: Option<syn::LitStr> = None;
+        let mut constructor = ConstructorKind::Default;
+        let mut capabilities: Option<Capabilities> = None;
+        let mut runtime_functions = Vec::new();
+        let mut macro_functions = Vec::new();
+        let mut type_infos = Vec::new();
+
+        while !input.is_empty() {
+            let key: Ident = input.parse()?;
+            input.parse::<syn::Token![:]>()?;
+
+            match key.to_string().as_str() {
+                "plugin_type" => {
+                    plugin_type = Some(input.parse()?);
+                }
+                "plugin_name" => {
+                    plugin_name = Some(input.parse()?);
+                }
+                "plugin_author" => {
+                    plugin_author = Some(input.parse()?);
+                }
+                "constructor" => {
+                    let lit: syn::LitStr = input.parse()?;
+                    constructor = match lit.value().as_str() {
+                        "default" => ConstructorKind::Default,
+                        "try_new" => ConstructorKind::TryNew,
+                        _ => {
+                            return Err(Error::new_spanned(
+                                lit,
+                                "constructor must be \"default\" or \"try_new\"",
+                            ));
+                        }
+                    };
+                }
+                "capabilities" => {
+                    let content;
+                    syn::braced!(content in input);
+                    capabilities = Some(parse_capabilities(&content)?);
+                }
+                "runtime_functions" => {
+                    let content;
+                    syn::bracketed!(content in input);
+                    runtime_functions = parse_function_mappings(&content)?;
+                }
+                "macro_functions" => {
+                    let content;
+                    syn::bracketed!(content in input);
+                    macro_functions = parse_function_mappings(&content)?;
+                }
+                "type_infos" => {
+                    let content;
+                    syn::bracketed!(content in input);
+                    type_infos = parse_type_infos(&content)?;
+                }
+                other => {
+                    return Err(Error::new(key.span(), format!("unknown field: {other}")));
+                }
+            }
+
+            // consume optional trailing comma
+            let _ = input.parse::<syn::Token![,]>();
+        }
+
+        Ok(PluginExportInput {
+            plugin_type: plugin_type
+                .ok_or_else(|| Error::new(proc_macro2::Span::call_site(), "missing plugin_type"))?,
+            plugin_name: plugin_name
+                .ok_or_else(|| Error::new(proc_macro2::Span::call_site(), "missing plugin_name"))?,
+            plugin_author: plugin_author.ok_or_else(|| {
+                Error::new(proc_macro2::Span::call_site(), "missing plugin_author")
+            })?,
+            constructor,
+            capabilities: capabilities.ok_or_else(|| {
+                Error::new(proc_macro2::Span::call_site(), "missing capabilities")
+            })?,
+            runtime_functions,
+            macro_functions,
+            type_infos,
+        })
+    }
+}
+
+fn parse_capabilities(input: syn::parse::ParseStream) -> syn::Result<Capabilities> {
+    let mut has_audio_worker = None;
+    let mut has_macros = None;
+    let mut has_runtime_functions = None;
+
+    while !input.is_empty() {
+        let key: Ident = input.parse()?;
+        input.parse::<syn::Token![:]>()?;
+        let val: syn::LitBool = input.parse()?;
+        let _ = input.parse::<syn::Token![,]>();
+
+        match key.to_string().as_str() {
+            "has_audio_worker" => has_audio_worker = Some(val),
+            "has_macros" => has_macros = Some(val),
+            "has_runtime_functions" => has_runtime_functions = Some(val),
+            _ => return Err(Error::new_spanned(key, "unknown capability")),
+        }
+    }
+
+    Ok(Capabilities {
+        has_audio_worker: has_audio_worker
+            .unwrap_or(syn::LitBool::new(false, proc_macro2::Span::call_site())),
+        has_macros: has_macros.unwrap_or(syn::LitBool::new(false, proc_macro2::Span::call_site())),
+        has_runtime_functions: has_runtime_functions
+            .unwrap_or(syn::LitBool::new(false, proc_macro2::Span::call_site())),
+    })
+}
+
+fn parse_function_mappings(input: syn::parse::ParseStream) -> syn::Result<Vec<FunctionMapping>> {
+    let mut result = Vec::new();
+    while !input.is_empty() {
+        let content;
+        syn::parenthesized!(content in input);
+        let ffi_name: syn::LitStr = content.parse()?;
+        content.parse::<syn::Token![,]>()?;
+        let method_name: Ident = content.parse()?;
+        result.push(FunctionMapping {
+            ffi_name,
+            method_name,
+        });
+        let _ = input.parse::<syn::Token![,]>();
+    }
+    Ok(result)
+}
+
+fn parse_type_infos(input: syn::parse::ParseStream) -> syn::Result<Vec<TypeInfoEntry>> {
+    let mut result = Vec::new();
+    while !input.is_empty() {
+        let content;
+        syn::braced!(content in input);
+
+        // Parse fields inside braces
+        let mut name_str: Option<syn::LitStr> = None;
+        let mut sig_expr: Option<syn::Expr> = None;
+        let mut ty_expr: Option<syn::Expr> = None;
+        let mut stage: Option<syn::LitInt> = None;
+
+        while !content.is_empty() {
+            let key: Ident = content.parse()?;
+            content.parse::<syn::Token![:]>()?;
+
+            match key.to_string().as_str() {
+                "name" => {
+                    name_str = Some(content.parse()?);
+                }
+                "sig" => {
+                    sig_expr = Some(content.parse()?);
+                }
+                "ty_expr" => {
+                    ty_expr = Some(content.parse()?);
+                }
+                "stage" => {
+                    stage = Some(content.parse()?);
+                }
+                _ => return Err(Error::new_spanned(key, "unknown type_info field")),
+            }
+            let _ = content.parse::<syn::Token![,]>();
+        }
+
+        let name_str = name_str
+            .ok_or_else(|| Error::new(proc_macro2::Span::call_site(), "type_info: missing name"))?;
+        let stage = stage.ok_or_else(|| {
+            Error::new(proc_macro2::Span::call_site(), "type_info: missing stage")
+        })?;
+
+        if let Some(sig_expr) = sig_expr {
+            result.push(TypeInfoEntry::Signature {
+                name_str,
+                sig_expr,
+                stage,
+            });
+        } else if let Some(ty_expr) = ty_expr {
+            result.push(TypeInfoEntry::TypeExpr {
+                name_str,
+                ty_expr,
+                stage,
+            });
+        } else {
+            return Err(Error::new(
+                proc_macro2::Span::call_site(),
+                "type_info: must have `sig` or `ty_expr`",
+            ));
+        }
+
+        let _ = input.parse::<syn::Token![,]>();
+    }
+    Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// Code generation
+// ---------------------------------------------------------------------------
+
+fn generate_plugin_exports(input: &PluginExportInput) -> syn::Result<proc_macro2::TokenStream> {
+    let plugin_ty = &input.plugin_type;
+    let plugin_name_lit = &input.plugin_name;
+    let plugin_author_lit = &input.plugin_author;
+    let has_audio_worker = &input.capabilities.has_audio_worker;
+    let has_macros = &input.capabilities.has_macros;
+    let has_runtime_fns = &input.capabilities.has_runtime_functions;
+
+    // -- mimium_plugin_create
+    let create_body = match &input.constructor {
+        ConstructorKind::Default => quote! {
+            let plugin = Box::new(<#plugin_ty>::default());
+            Box::into_raw(plugin) as *mut ::mimium_lang::plugin::loader::PluginInstance
+        },
+        ConstructorKind::TryNew => quote! {
+            match <#plugin_ty>::try_new() {
+                Some(plugin) => Box::into_raw(Box::new(plugin)) as *mut ::mimium_lang::plugin::loader::PluginInstance,
+                None => std::ptr::null_mut(),
+            }
+        },
+    };
+
+    // -- ffi runtime function wrappers
+    let ffi_runtime_wrappers = input.runtime_functions.iter().map(|f| {
+        let ffi_fn_name = format_ident!("__ffi_{}", f.method_name);
+        let method = &f.method_name;
+        quote! {
+            unsafe extern "C" fn #ffi_fn_name(
+                instance: *mut ::mimium_lang::plugin::loader::PluginInstance,
+                runtime: *mut ::std::ffi::c_void,
+            ) -> i64 {
+                if instance.is_null() || runtime.is_null() {
+                    return 0;
+                }
+                let machine = unsafe { &mut *(runtime as *mut ::mimium_lang::runtime::vm::Machine) };
+                let plugin = unsafe { &mut *(instance as *mut #plugin_ty) };
+                plugin.#method(machine)
+            }
+        }
+    });
+
+    // -- mimium_plugin_get_function match arms
+    let get_function_arms = input.runtime_functions.iter().map(|f| {
+        let ffi_name_str = &f.ffi_name;
+        let ffi_fn_name = format_ident!("__ffi_{}", f.method_name);
+        quote! {
+            #ffi_name_str => Some(#ffi_fn_name),
+        }
+    });
+
+    // -- ffi macro bridges
+    let ffi_macro_wrappers = input.macro_functions.iter().map(|f| {
+        let ffi_fn_name = format_ident!("__ffi_macro_{}", f.method_name);
+        let method = &f.method_name;
+        quote! {
+            unsafe extern "C" fn #ffi_fn_name(
+                instance: *mut ::std::ffi::c_void,
+                args_ptr: *const u8,
+                args_len: usize,
+                out_ptr: *mut *mut u8,
+                out_len: *mut usize,
+            ) -> i32 {
+                if instance.is_null() || args_ptr.is_null() || out_ptr.is_null() || out_len.is_null() {
+                    return -3;
+                }
+                unsafe {
+                    let plugin = &mut *(instance as *mut #plugin_ty);
+                    let args_bytes = ::std::slice::from_raw_parts(args_ptr, args_len);
+                    let args = match ::mimium_lang::runtime::ffi_serde::deserialize_macro_args(args_bytes) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            ::mimium_lang::log::error!("Failed to deserialize macro args: {e}");
+                            return -1;
+                        }
+                    };
+                    let result = plugin.#method(&args);
+                    let result_bytes = match ::mimium_lang::runtime::ffi_serde::serialize_value(&result) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            ::mimium_lang::log::error!("Failed to serialize macro result: {e}");
+                            return -2;
+                        }
+                    };
+                    let boxed = result_bytes.into_boxed_slice();
+                    *out_len = boxed.len();
+                    *out_ptr = Box::into_raw(boxed) as *mut u8;
+                    0
+                }
+            }
+        }
+    });
+
+    // -- mimium_plugin_get_macro match arms
+    let get_macro_arms = input.macro_functions.iter().map(|f| {
+        let ffi_name_str = &f.ffi_name;
+        let ffi_fn_name = format_ident!("__ffi_macro_{}", f.method_name);
+        // Also match the method name as an alias
+        let method_str = f.method_name.to_string();
+        quote! {
+            #ffi_name_str | #method_str => Some(#ffi_fn_name),
+        }
+    });
+
+    // -- type info entries
+    let type_info_entries = input.type_infos.iter().map(|entry| match entry {
+        TypeInfoEntry::Signature {
+            name_str: _,
+            sig_expr,
+            stage,
+        } => {
+            quote! {
+                {
+                    let sig = #sig_expr;
+                    add_info(sig.get_name(), sig.get_type(), #stage, &mut storage, &mut infos);
+                }
+            }
+        }
+        TypeInfoEntry::TypeExpr {
+            name_str,
+            ty_expr,
+            stage,
+        } => {
+            quote! {
+                {
+                    let ty = #ty_expr;
+                    add_info(#name_str, ty, #stage, &mut storage, &mut infos);
+                }
+            }
+        }
+    });
+
+    // Build the full plugin name string with null terminator
+    let plugin_name_with_nul = format!("{}\0", plugin_name_lit.value());
+    let plugin_author_with_nul = format!("{}\0", plugin_author_lit.value());
+
+    Ok(quote! {
+        #[cfg(not(target_arch = "wasm32"))]
+        const _: () = {
+            use ::std::ffi::{CString, c_char};
+            use ::mimium_lang::plugin::loader::{
+                PluginCapabilities, PluginInstance, PluginMetadata,
+                PluginFunctionFn, PluginMacroFn, FfiTypeInfo,
+            };
+
+            static PLUGIN_NAME: &str = #plugin_name_with_nul;
+            static PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
+            static PLUGIN_AUTHOR: &str = #plugin_author_with_nul;
+
+            #[unsafe(no_mangle)]
+            pub extern "C" fn mimium_plugin_metadata() -> *const PluginMetadata {
+                use ::std::sync::OnceLock;
+                static METADATA: OnceLock<(CString, PluginMetadata)> = OnceLock::new();
+                let (_version_cstr, metadata) = METADATA.get_or_init(|| {
+                    let version_cstr = CString::new(PLUGIN_VERSION).expect("Version string is valid");
+                    let metadata = PluginMetadata {
+                        name: PLUGIN_NAME.as_ptr() as *const c_char,
+                        version: version_cstr.as_ptr(),
+                        author: PLUGIN_AUTHOR.as_ptr() as *const c_char,
+                        capabilities: PluginCapabilities {
+                            has_audio_worker: #has_audio_worker,
+                            has_macros: #has_macros,
+                            has_runtime_functions: #has_runtime_fns,
+                        },
+                    };
+                    (version_cstr, metadata)
+                });
+                metadata
+            }
+
+            #[unsafe(no_mangle)]
+            pub extern "C" fn mimium_plugin_create() -> *mut PluginInstance {
+                #create_body
+            }
+
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn mimium_plugin_set_interner(
+                globals_ptr: *const ::std::ffi::c_void,
+            ) {
+                unsafe { ::mimium_lang::interner::set_external_session_globals(globals_ptr) };
+            }
+
+            #[unsafe(no_mangle)]
+            pub extern "C" fn mimium_plugin_destroy(instance: *mut PluginInstance) {
+                if !instance.is_null() {
+                    unsafe {
+                        let _ = Box::from_raw(instance as *mut #plugin_ty);
+                    }
+                }
+            }
+
+            // -- Runtime function FFI wrappers
+            #(#ffi_runtime_wrappers)*
+
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn mimium_plugin_get_function(
+                name: *const c_char,
+            ) -> Option<PluginFunctionFn> {
+                use ::std::ffi::CStr;
+                if name.is_null() { return None; }
+                let name_str = unsafe { CStr::from_ptr(name) }.to_str().ok()?;
+                match name_str {
+                    #(#get_function_arms)*
+                    _ => None,
+                }
+            }
+
+            // -- Macro function FFI bridges
+            #(#ffi_macro_wrappers)*
+
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn mimium_plugin_get_macro(
+                name: *const c_char,
+            ) -> Option<PluginMacroFn> {
+                use ::std::ffi::CStr;
+                if name.is_null() { return None; }
+                let name_str = unsafe { CStr::from_ptr(name) }.to_str().ok()?;
+                match name_str {
+                    #(#get_macro_arms)*
+                    _ => None,
+                }
+            }
+
+            // -- Type info export
+            static mut TYPE_INFO_STORAGE: Option<Vec<(CString, Vec<u8>)>> = None;
+            static mut FFI_TYPE_INFOS: Option<Vec<FfiTypeInfo>> = None;
+
+            #[unsafe(no_mangle)]
+            pub extern "C" fn mimium_plugin_get_type_infos(
+                out_len: *mut usize,
+            ) -> *const FfiTypeInfo {
+                if out_len.is_null() {
+                    return ::std::ptr::null();
+                }
+                unsafe {
+                    if (*::std::ptr::addr_of!(TYPE_INFO_STORAGE)).is_none() {
+                        let mut storage: Vec<(CString, Vec<u8>)> = Vec::new();
+                        let mut infos: Vec<FfiTypeInfo> = Vec::new();
+
+                        let add_info = |name_str: &str,
+                                        ty: ::mimium_lang::interner::TypeNodeId,
+                                        stage: u8,
+                                        storage: &mut Vec<(CString, Vec<u8>)>,
+                                        infos: &mut Vec<FfiTypeInfo>| -> Option<()> {
+                            let name_cstr = CString::new(name_str).ok()?;
+                            let type_bytes = ::bincode::serialize(&ty).ok()?;
+                            let name_ptr = name_cstr.as_ptr();
+                            let type_ptr = type_bytes.as_ptr();
+                            let type_len = type_bytes.len();
+                            storage.push((name_cstr, type_bytes));
+                            infos.push(FfiTypeInfo {
+                                name: name_ptr,
+                                type_data: type_ptr,
+                                type_len,
+                                stage,
+                            });
+                            Some(())
+                        };
+
+                        #(#type_info_entries)*
+
+                        TYPE_INFO_STORAGE = Some(storage);
+                        FFI_TYPE_INFOS = Some(infos);
+                    }
+
+                    let infos = (*::std::ptr::addr_of!(FFI_TYPE_INFOS)).as_ref().unwrap();
+                    *out_len = infos.len();
+                    infos.as_ptr()
+                }
+            }
+        };
+    })
+}

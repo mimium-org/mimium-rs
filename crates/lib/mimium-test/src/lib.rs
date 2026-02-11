@@ -276,7 +276,7 @@ pub fn run_wasm_test(
     })?;
 
     // Load and execute with WasmRuntime
-    let mut wasm_runtime = WasmRuntime::new(&ext_fns).map_err(|e| {
+    let mut wasm_runtime = WasmRuntime::new(&ext_fns, None).map_err(|e| {
         eprintln!("[WASM] Runtime creation error: {e}");
         vec![Box::new(runtime::RuntimeError(
             runtime::ErrorKind::Unknown,

@@ -1216,7 +1216,10 @@ fn wasm_counter() {
     // This catches issues with state persistence across dsp() calls
     let res = run_file_test_wasm("counter.mmm", 10, false).unwrap();
     let ans = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
-    assert_eq!(res, ans, "WASM backend: stateful function should accumulate");
+    assert_eq!(
+        res, ans,
+        "WASM backend: stateful function should accumulate"
+    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1240,10 +1243,19 @@ fn wasm_lowpass() {
     // - Include file resolution (filter.mmm includes math.mmm)
     // - Duplicate function deduplication (math.mmm included multiple times)
     let res = run_file_test_wasm("wasm_lowpass.mmm", 5, false).unwrap();
-    assert_eq!(res.len(), 5, "WASM backend: lowpass should produce 5 samples");
+    assert_eq!(
+        res.len(),
+        5,
+        "WASM backend: lowpass should produce 5 samples"
+    );
     // All values should be finite (not NaN or Inf)
     for (i, v) in res.iter().enumerate() {
-        assert!(v.is_finite(), "WASM backend: lowpass sample {} is not finite: {}", i, v);
+        assert!(
+            v.is_finite(),
+            "WASM backend: lowpass sample {} is not finite: {}",
+            i,
+            v
+        );
     }
 }
 
@@ -1283,7 +1295,11 @@ fn wasm_stereo_output() {
     let res = run_file_test_wasm("stereo_output.mmm", 3, true).unwrap();
     // Stereo results are flattened: [L1, R1, L2, R2, L3, R3]
     let ans = vec![0.5, -0.5, 0.5, -0.5, 0.5, -0.5];
-    assert_eq!(res.len(), ans.len(), "WASM backend: stereo output length mismatch");
+    assert_eq!(
+        res.len(),
+        ans.len(),
+        "WASM backend: stereo output length mismatch"
+    );
     for (i, (actual, expected)) in res.iter().zip(ans.iter()).enumerate() {
         assert!(
             (actual - expected).abs() < 1e-10,

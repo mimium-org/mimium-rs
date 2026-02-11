@@ -24,7 +24,9 @@ impl WasmEngine {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new(
         ext_fns: &[crate::plugin::ExtFunTypeInfo],
-        sys_plugin: Option<std::sync::Arc<std::sync::Mutex<dyn crate::runtime::wasm::WasmPluginCallable>>>,
+        sys_plugin: Option<
+            std::sync::Arc<std::sync::Mutex<dyn crate::runtime::wasm::WasmPluginCallable>>,
+        >,
     ) -> Result<Self, String> {
         let runtime = WasmRuntime::new(ext_fns, sys_plugin)?;
         Ok(Self {
@@ -184,10 +186,7 @@ impl DspRuntime for WasmDspRuntime {
                     if let Some(&ptr_word) = result.first() {
                         let ptr = ptr_word as usize;
                         for ch in 0..out_channels {
-                            let val = self
-                                .engine
-                                .read_memory_f64(ptr + ch * 8)
-                                .unwrap_or(0.0);
+                            let val = self.engine.read_memory_f64(ptr + ch * 8).unwrap_or(0.0);
                             self.output_cache.push(val);
                         }
                     }
@@ -250,13 +249,13 @@ mod tests {
 
     #[test]
     fn test_wasm_engine_create() {
-        let engine = WasmEngine::new(&[]);
+        let engine = WasmEngine::new(&[], None);
         assert!(engine.is_ok(), "Should create WASM engine");
     }
 
     #[test]
     fn test_wasm_engine_load_and_call() {
-        let mut engine = WasmEngine::new(&[]).unwrap();
+        let mut engine = WasmEngine::new(&[], None).unwrap();
 
         // Simple WASM module with an add function
         let wasm_bytes = wat::parse_str(

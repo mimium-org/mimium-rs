@@ -91,6 +91,19 @@ impl ExecContext {
     ) -> impl ExactSizeIterator<Item = &mut DynSystemPlugin> {
         self.sys_plugins.iter_mut()
     }
+
+    /// Collect audio handles from all system plugins.
+    ///
+    /// This calls `freeze_audio_handle()` on each plugin and returns all
+    /// non-None handles. Should be called after compilation (macros expanded)
+    /// but before the runtime is moved to the audio thread.
+    pub fn freeze_audio_handles(&mut self) -> Vec<Box<dyn std::any::Any + Send>> {
+        self.sys_plugins
+            .iter_mut()
+            .filter_map(|p| p.freeze_audio_handle())
+            .collect()
+    }
+
     //todo: make it to builder pattern
     pub fn add_system_plugin<T: SystemPlugin + 'static>(&mut self, plug: T) {
         let plugin_dyn = DynSystemPlugin::from(plug);

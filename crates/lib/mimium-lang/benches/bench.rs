@@ -207,7 +207,7 @@ fn dsp(){{
         fn bench_multiosc15_wasm(b: &mut Bencher) {
             bench_runtime_wasm(b, &make_multiosc_src(15), 1);
         }
-                #[bench]
+        #[bench]
         #[cfg(not(target_arch = "wasm32"))]
         fn bench_multiosc20_wasm(b: &mut Bencher) {
             bench_runtime_wasm(b, &make_multiosc_src(20), 1);

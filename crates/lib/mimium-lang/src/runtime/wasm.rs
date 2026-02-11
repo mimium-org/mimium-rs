@@ -154,7 +154,8 @@ impl WasmRuntime {
         Self::register_runtime_primitives(&mut linker)?;
 
         // Register plugin functions as host trampolines
-        let plugin_loader = Self::register_plugin_functions(&mut linker, ext_fns, sys_plugin.clone())?;
+        let plugin_loader =
+            Self::register_plugin_functions(&mut linker, ext_fns, sys_plugin.clone())?;
 
         Ok(Self {
             engine,
@@ -190,10 +191,7 @@ impl WasmRuntime {
         // Register plugin functions as host trampolines (no sys_plugin on wasm32)
         let _plugin_loader = Self::register_plugin_functions(&mut linker, ext_fns, None)?;
 
-        Ok(Self {
-            engine,
-            linker,
-        })
+        Ok(Self { engine, linker })
     }
 
     /// Load and instantiate a WASM module
@@ -1301,13 +1299,13 @@ mod tests {
 
     #[test]
     fn test_wasm_runtime_create() {
-        let runtime = WasmRuntime::new(&[]);
+        let runtime = WasmRuntime::new(&[], None);
         assert!(runtime.is_ok(), "Should create WASM runtime");
     }
 
     #[test]
     fn test_wasm_runtime_load_empty_module() {
-        let mut runtime = WasmRuntime::new(&[]).unwrap();
+        let mut runtime = WasmRuntime::new(&[], None).unwrap();
 
         // Minimal valid WASM module with memory export
         let wasm_bytes = wat::parse_str(
@@ -1325,7 +1323,7 @@ mod tests {
 
     #[test]
     fn test_heap_operations() {
-        let mut runtime = WasmRuntime::new(&[]).unwrap();
+        let mut runtime = WasmRuntime::new(&[], None).unwrap();
 
         // WASM module that tests heap operations
         let wasm_bytes = wat::parse_str(
@@ -1368,7 +1366,7 @@ mod tests {
 
     #[test]
     fn test_array_operations() {
-        let mut runtime = WasmRuntime::new(&[]).unwrap();
+        let mut runtime = WasmRuntime::new(&[], None).unwrap();
 
         // WASM module that tests array operations
         let wasm_bytes = wat::parse_str(
@@ -1444,7 +1442,7 @@ mod tests {
         eprintln!("Loading WASM from: {wasm_path:?}");
         let wasm_bytes = std::fs::read(&wasm_path).expect("Failed to read generated WASM file");
 
-        let mut runtime = WasmRuntime::new(&[]).unwrap();
+        let mut runtime = WasmRuntime::new(&[], None).unwrap();
         let result = runtime.load_module(&wasm_bytes);
 
         assert!(

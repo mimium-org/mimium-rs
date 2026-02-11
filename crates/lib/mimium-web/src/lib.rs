@@ -5,7 +5,7 @@ use mimium_audiodriver::backends::local_buffer::LocalBufferDriver;
 use mimium_audiodriver::driver::{Driver, RuntimeData};
 use mimium_lang::ExecContext;
 use mimium_lang::log;
-use mimium_lang::runtime::{vm, ProgramPayload};
+use mimium_lang::runtime::{ProgramPayload, vm};
 use mimium_lang::utils::error::report;
 use wasm_bindgen::prelude::*;
 #[wasm_bindgen]

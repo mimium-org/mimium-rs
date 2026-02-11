@@ -262,7 +262,7 @@ impl RunOptions {
 }
 
 /// Construct an [`ExecContext`] with the default set of plugins.
-pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config) -> (ExecContext, Option<std::sync::Arc<std::sync::Mutex<mimium_guitools::GuiToolPlugin>>>) {
+pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config) -> ExecContext {
     let plugins: Vec<Box<dyn Plugin>> = vec![];
     let mut ctx = ExecContext::new(plugins.into_iter(), path, config);
 
@@ -288,11 +288,15 @@ pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config
                     any_loaded = true;
                 }
 
-                // Always load guitools dynamically for runtime functions
-                // (even when with_gui=true, as we also register it as SystemPlugin)
-                let guitools_path = exe_dir.join("mimium_guitools");
-                if ctx.load_dynamic_plugin(&guitools_path).is_ok() {
-                    any_loaded = true;
+                // Load guitools dynamically only when NOT using SystemPlugin.
+                // When with_gui=true the SystemPlugin provides both macros and
+                // runtime functions on the same instance, so loading the dynamic
+                // plugin would create duplicates with a separate instance.
+                if !with_gui {
+                    let guitools_path = exe_dir.join("mimium_guitools");
+                    if ctx.load_dynamic_plugin(&guitools_path).is_ok() {
+                        any_loaded = true;
+                    }
                 }
 
                 loaded_from_exe_dir = any_loaded;
@@ -309,21 +313,12 @@ pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config
 
     ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
 
-    // Add guitools as a system plugin when GUI is needed (for main loop support)
-    // Create a shared Arc-wrapped plugin - Arc::clone() shares the same data
-    let guitool_plugin_for_wasm = if with_gui {
-        // Create Arc first, then clone the Arc (not the inner value)
-        let shared_plugin_arc = std::sync::Arc::new(std::sync::Mutex::new(mimium_guitools::GuiToolPlugin::default()));
-        let plugin_for_wasm = shared_plugin_arc.clone(); // Arc clone, shares same Mutex<GuiToolPlugin>
-        // Extract the inner GuiToolPlugin for SystemPlugin by cloning
-        let plugin_for_system = shared_plugin_arc.lock().unwrap().clone();
-        ctx.add_system_plugin(plugin_for_system);
-        Some(plugin_for_wasm)
-    } else {
-        None
-    };
+    // Add guitools as a system plugin when GUI is needed
+    if with_gui {
+        ctx.add_system_plugin(mimium_guitools::GuiToolPlugin::default());
+    }
 
-    (ctx, guitool_plugin_for_wasm)
+    ctx
 }
 
 struct FileRunner {
@@ -439,7 +434,7 @@ pub fn run_file(
 ) -> Result<(), Vec<Box<dyn ReportableError>>> {
     log::debug!("Filename: {}", fullpath.display());
 
-    let (mut ctx, guitool_plugin_for_wasm) = get_default_context(
+    let mut ctx = get_default_context(
         Some(PathBuf::from(fullpath)),
         options.with_gui,
         options.config,
@@ -548,10 +543,23 @@ pub fn run_file(
 
             log::info!("Generated WASM module ({} bytes)", wasm_bytes.len());
 
-            // Create WASM engine with sys_plugin for GUI tools
-            let sys_plugin = guitool_plugin_for_wasm.as_ref().map(|p| {
-                p.clone() as std::sync::Arc<std::sync::Mutex<dyn mimium_lang::runtime::wasm::WasmPluginCallable>>
+            // Freeze audio handles from system plugins (after macro expansion)
+            let audio_handles = ctx.freeze_audio_handles();
+            let sys_plugin: Option<
+                Arc<std::sync::Mutex<dyn mimium_lang::runtime::wasm::WasmPluginCallable>>,
+            > = audio_handles.into_iter().find_map(|h| {
+                h.downcast::<mimium_guitools::GuiAudioHandle>()
+                    .ok()
+                    .map(|handle| {
+                        Arc::new(std::sync::Mutex::new(*handle))
+                            as Arc<
+                                std::sync::Mutex<
+                                    dyn mimium_lang::runtime::wasm::WasmPluginCallable,
+                                >,
+                            >
+                    })
             });
+
             let mut wasm_engine = WasmEngine::new(&ext_fns, sys_plugin).map_err(|e| {
                 vec![Box::new(mimium_lang::utils::error::SimpleError {
                     message: format!("Failed to create WASM engine: {e}"),
@@ -615,10 +623,23 @@ pub fn run_file(
 
             log::info!("Generated WASM module ({} bytes)", wasm_bytes.len());
 
-            // Create WASM engine with sys_plugin for GUI tools
-            let sys_plugin = guitool_plugin_for_wasm.as_ref().map(|p| {
-                p.clone() as std::sync::Arc<std::sync::Mutex<dyn mimium_lang::runtime::wasm::WasmPluginCallable>>
+            // Freeze audio handles from system plugins (after macro expansion)
+            let audio_handles = ctx.freeze_audio_handles();
+            let sys_plugin: Option<
+                Arc<std::sync::Mutex<dyn mimium_lang::runtime::wasm::WasmPluginCallable>>,
+            > = audio_handles.into_iter().find_map(|h| {
+                h.downcast::<mimium_guitools::GuiAudioHandle>()
+                    .ok()
+                    .map(|handle| {
+                        Arc::new(std::sync::Mutex::new(*handle))
+                            as Arc<
+                                std::sync::Mutex<
+                                    dyn mimium_lang::runtime::wasm::WasmPluginCallable,
+                                >,
+                            >
+                    })
             });
+
             let mut wasm_engine = WasmEngine::new(&ext_fns, sys_plugin).map_err(|e| {
                 vec![Box::new(mimium_lang::utils::error::SimpleError {
                     message: format!("Failed to create WASM engine: {e}"),

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use mimium_lang::interner::Symbol;
 
+use crate::semantic_token::{ImCompleteSemanticToken, LEGEND_TYPE, ParseResult, parse};
 use dashmap::DashMap;
 use log::debug;
 use mimium_lang::compiler::mirgen;
@@ -11,7 +12,6 @@ use mimium_lang::plugin::Plugin;
 use mimium_lang::utils::error::ReportableError;
 use mimium_lang::{Config, ExecContext};
 use ropey::Rope;
-use crate::semantic_token::{ImCompleteSemanticToken, LEGEND_TYPE, ParseResult, parse};
 use tower_lsp::jsonrpc::{Error, ErrorCode, Result};
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};

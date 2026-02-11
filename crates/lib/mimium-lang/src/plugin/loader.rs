@@ -497,12 +497,17 @@ impl crate::plugin::MachineFunction for DynPluginFunctionInfo {
         let instance = self.instance;
         let function_fn = self.function_fn;
 
-        Rc::new(RefCell::new(move |machine: &mut crate::runtime::vm::Machine| {
-            let ret = unsafe {
-                function_fn(instance, machine as *mut crate::runtime::vm::Machine as *mut c_void)
-            };
-            ret as crate::runtime::vm::ReturnCode
-        }))
+        Rc::new(RefCell::new(
+            move |machine: &mut crate::runtime::vm::Machine| {
+                let ret = unsafe {
+                    function_fn(
+                        instance,
+                        machine as *mut crate::runtime::vm::Machine as *mut c_void,
+                    )
+                };
+                ret as crate::runtime::vm::ReturnCode
+            },
+        ))
     }
 }
 
@@ -729,12 +734,7 @@ impl PluginLoader {
                 if let Some(macro_fn) = macro_fn {
                     let ty = info.ty;
                     let wrapper = unsafe {
-                        DynPluginMacroInfo::new(
-                            name_str.to_symbol(),
-                            ty,
-                            plugin.instance,
-                            macro_fn,
-                        )
+                        DynPluginMacroInfo::new(name_str.to_symbol(), ty, plugin.instance, macro_fn)
                     };
 
                     crate::log::info!("Registered dynamic macro: {name_str}");
@@ -791,17 +791,11 @@ impl PluginLoader {
                 let func = unsafe { get_function_fn(name_cstr.as_ptr()) };
                 if let Some(func) = func {
                     let wrapper = unsafe {
-                        DynPluginFunctionInfo::new(
-                            name_str.to_symbol(),
-                            plugin.instance,
-                            func,
-                        )
+                        DynPluginFunctionInfo::new(name_str.to_symbol(), plugin.instance, func)
                     };
 
                     crate::log::info!("Registered dynamic runtime function: {name_str}");
-                    result.push(
-                        Box::new(wrapper) as Box<dyn crate::plugin::MachineFunction>,
-                    );
+                    result.push(Box::new(wrapper) as Box<dyn crate::plugin::MachineFunction>);
                 }
             }
         }

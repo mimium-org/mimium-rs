@@ -389,7 +389,8 @@ impl WasmGenerator {
         self.type_section
             .ty()
             .function(vec![ValType::I64, ValType::I64, ValType::I64], vec![]);
-        self.rt.closure_state_push_with_caller = self.add_import("closure_state_push_with_caller", type_idx);
+        self.rt.closure_state_push_with_caller =
+            self.add_import("closure_state_push_with_caller", type_idx);
         type_idx += 1;
 
         // Type 9: () -> ()  for closure_state_pop
@@ -690,10 +691,17 @@ impl WasmGenerator {
             // Only register the first occurrence of each function name (avoid duplicate mappings from multiple includes)
             if !self.fn_name_to_idx.contains_key(&func.label) {
                 self.fn_name_to_idx.insert(func.label, self.current_fn_idx);
-                log::debug!("Registered function {} at index {}", func.label.as_str(), self.current_fn_idx);
+                log::debug!(
+                    "Registered function {} at index {}",
+                    func.label.as_str(),
+                    self.current_fn_idx
+                );
             } else {
-                log::debug!("Skipping duplicate mapping for function {} (already mapped to index {})", 
-                    func.label.as_str(), self.fn_name_to_idx[&func.label]);
+                log::debug!(
+                    "Skipping duplicate mapping for function {} (already mapped to index {})",
+                    func.label.as_str(),
+                    self.fn_name_to_idx[&func.label]
+                );
             }
             self.current_fn_idx += 1;
         }
@@ -2700,7 +2708,9 @@ impl WasmGenerator {
                                 } else {
                                     0
                                 };
-                                log::debug!("Calling function (via register) idx={fn_idx}, state_size={state_size}");
+                                log::debug!(
+                                    "Calling function (via register) idx={fn_idx}, state_size={state_size}"
+                                );
                                 (wasm_idx, state_size)
                             } else {
                                 eprintln!(
@@ -2719,9 +2729,11 @@ impl WasmGenerator {
                         // has its own persistent state storage
                         self.call_site_counter += 1;
                         let call_site_id = self.call_site_counter;
-                        
-                        log::debug!("Pushing state for call_site_id={call_site_id}, state_size={state_size}");
-                        
+
+                        log::debug!(
+                            "Pushing state for call_site_id={call_site_id}, state_size={state_size}"
+                        );
+
                         // Load current closure address from global memory (CLOSURE_SELF_PTR_ADDR = 0)
                         func.instruction(&W::I32Const(0));
                         func.instruction(&W::I64Load(MemArg {

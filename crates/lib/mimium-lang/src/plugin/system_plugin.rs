@@ -100,6 +100,15 @@ pub trait SystemPlugin {
     fn try_get_main_loop(&mut self) -> Option<Box<dyn FnOnce()>> {
         None
     }
+    /// Produce a lock-free audio handle after setup completes.
+    ///
+    /// Called after macro expansion is finished and before the runtime is
+    /// moved to the audio thread.  The returned `Box<dyn Any + Send>` is
+    /// passed to the audio backend and can be downcast to the concrete
+    /// handle type inside trampoline closures.
+    fn freeze_audio_handle(&mut self) -> Option<Box<dyn Any + Send>> {
+        None
+    }
 }
 
 pub trait SystemPluginAudioWorker {
@@ -120,6 +129,14 @@ pub struct DynSystemPlugin {
 impl DynSystemPlugin {
     pub fn take_audioworker(&mut self) -> Option<Box<dyn SystemPluginAudioWorker>> {
         self.audioworker.take()
+    }
+    /// Delegate to the inner plugin's `freeze_audio_handle()`.
+    ///
+    /// # Safety
+    /// Must only be called from the main thread before the audio thread starts.
+    pub fn freeze_audio_handle(&mut self) -> Option<Box<dyn Any + Send>> {
+        let p = unsafe { self.inner.get().as_mut().unwrap() };
+        p.freeze_audio_handle()
     }
 }
 /// Convert a plugin into the VM-facing representation.
