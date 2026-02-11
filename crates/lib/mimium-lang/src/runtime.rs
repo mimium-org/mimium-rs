@@ -9,6 +9,8 @@ pub mod ffi_serde;
 pub mod primitives;
 pub mod vm;
 pub mod vm_ffi;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub mod wasm;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Time(pub u64);
@@ -24,6 +26,7 @@ pub enum ProgramPayload {
     /// Native bytecode VM program.
     VmProgram(vm::Program),
     /// WASM module bytes.
+    #[cfg(not(target_arch = "wasm32"))]
     WasmModule(Vec<u8>),
 }
 

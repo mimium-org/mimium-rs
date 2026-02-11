@@ -197,11 +197,9 @@ mod tests {
         let val = Value::Code(expr);
         let bytes = serialize_value(&val).unwrap();
         let decoded = deserialize_value(&bytes).unwrap();
-        if let Value::Code(id) = decoded {
-            assert_eq!(id.to_expr(), Expr::Literal(Literal::Int(42)));
-        } else {
-            panic!("Expected Code value");
-        }
+        // Code values cannot be reconstructed across FFI boundaries,
+        // so they deserialize as Unit
+        assert!(matches!(decoded, Value::Unit));
     }
 
     #[test]

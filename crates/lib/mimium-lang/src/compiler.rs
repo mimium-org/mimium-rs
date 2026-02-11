@@ -3,6 +3,8 @@ pub(crate) mod intrinsics;
 pub mod mirgen;
 pub mod parser;
 pub mod typing;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub mod wasmgen;
 
 use serde::{Deserialize, Serialize};

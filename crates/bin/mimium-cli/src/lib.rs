@@ -115,8 +115,10 @@ pub enum RunMode {
     EmitAst,
     EmitMir,
     EmitByteCode,
+    #[cfg(not(target_arch = "wasm32"))]
     EmitWasm,
     NativeAudio,
+    #[cfg(not(target_arch = "wasm32"))]
     WasmAudio,
     WriteCsv {
         times: usize,
@@ -173,6 +175,7 @@ impl RunOptions {
             };
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         if args.mode.emit_wasm {
             return Self {
                 mode: RunMode::EmitWasm,
@@ -182,6 +185,7 @@ impl RunOptions {
             };
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         if args.mode.wasm {
             // For WASM backend, respect output format
             let mode = match (&args.output_format, args.output.as_ref()) {
@@ -249,6 +253,7 @@ impl RunOptions {
     fn get_driver(&self) -> Box<dyn Driver<Sample = f64>> {
         match &self.mode {
             RunMode::NativeAudio => load_default_runtime(),
+            #[cfg(not(target_arch = "wasm32"))]
             RunMode::WasmAudio => load_default_runtime(),
             RunMode::WriteCsv { times, output } => csv_driver(*times, output),
             _ => unreachable!(),
@@ -459,6 +464,7 @@ pub fn run_file(
             println!("{}", ctx.get_vm().unwrap().prog);
             Ok(())
         }
+        #[cfg(not(target_arch = "wasm32"))]
         RunMode::EmitWasm => {
             use mimium_lang::utils::metadata::Location;
             use std::sync::Arc;
@@ -496,6 +502,7 @@ pub fn run_file(
 
             Ok(())
         }
+        #[cfg(not(target_arch = "wasm32"))]
         RunMode::WasmAudio => {
             use mimium_lang::compiler::wasmgen::WasmGenerator;
             use mimium_lang::runtime::wasm::engine::{WasmDspRuntime, WasmEngine};
@@ -557,6 +564,7 @@ pub fn run_file(
             mainloop();
             Ok(())
         }
+        #[cfg(not(target_arch = "wasm32"))]
         _ if options.use_wasm => {
             // WASM backend with standard audio driver (WriteCsv or NativeAudio).
             use mimium_lang::compiler::wasmgen::WasmGenerator;

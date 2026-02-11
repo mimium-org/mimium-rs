@@ -8,7 +8,7 @@ description = "mimium(minimal-musical-medium) an infrastructural programming lan
 readme.workspace = true
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [dependencies]
 chumsky = { version = "0.11", features = ["lexical-numbers", "pratt"] }
@@ -25,11 +25,12 @@ state-tree = { workspace = true }
 thiserror = { workspace = true }
 serde = { version = "1.0", features = ["derive", "rc"] }
 bincode = {workspace = true}
-# WASM backend dependencies
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# WASM backend dependencies (only for native targets)
 wasm-encoder = "0.221"
 wasmtime = "27.0"
 wat = "1.221"
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 homedir = { version = "0.3.4" }
 mimalloc = { version = "0.1.43" }
 libloading = "0.8"

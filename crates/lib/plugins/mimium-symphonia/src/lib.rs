@@ -480,66 +480,71 @@ pub unsafe extern "C" fn ffi_make_sampler_mono(
 // -------------------------------------------------------------------------
 // Type information export
 // -------------------------------------------------------------------------
+// Dynamic plugin loading is not supported on wasm32
+#[cfg(not(target_arch = "wasm32"))]
+mod ffi_exports {
+    use super::*;
+    
+    /// Static storage for type information strings (must outlive the plugin).
+    static mut TYPE_INFO_STORAGE: Option<Vec<(std::ffi::CString, Vec<u8>)>> = None;
 
-/// Static storage for type information strings (must outlive the plugin).
-static mut TYPE_INFO_STORAGE: Option<Vec<(std::ffi::CString, Vec<u8>)>> = None;
+    /// Static storage for FfiTypeInfo array (must outlive the plugin).
+    static mut FFI_TYPE_INFOS: Option<Vec<mimium_lang::plugin::loader::FfiTypeInfo>> = None;
 
-/// Static storage for FfiTypeInfo array (must outlive the plugin).
-static mut FFI_TYPE_INFOS: Option<Vec<mimium_lang::plugin::loader::FfiTypeInfo>> = None;
-
-/// Export type information for the plugin.
-///
-/// This function returns an array of FfiTypeInfo structures that describe
-/// the types of all macros and functions provided by the plugin.
-#[unsafe(no_mangle)]
-pub extern "C" fn mimium_plugin_get_type_infos(
-    out_len: *mut usize,
-) -> *const mimium_lang::plugin::loader::FfiTypeInfo {
-    use mimium_lang::plugin::loader::FfiTypeInfo;
-    if out_len.is_null() {
-        return std::ptr::null();
-    }
-
-    // Initialize storage if not already done
-    unsafe {
-        if (*std::ptr::addr_of!(TYPE_INFO_STORAGE)).is_none() {
-            let mut storage = Vec::new();
-            let mut infos = Vec::new();
-
-            // Get the signature (type information) for Sampler_mono macro
-            let sig = SamplerPlugin::sampler_mono_signature();
-
-            // Serialize the name
-            let name_cstr = match std::ffi::CString::new(sig.get_name()) {
-                Ok(s) => s,
-                Err(_) => return std::ptr::null(),
-            };
-
-            // Serialize the type
-            let type_bytes = match bincode::serialize(&sig.get_type()) {
-                Ok(b) => b,
-                Err(_) => return std::ptr::null(),
-            };
-
-            let name_ptr = name_cstr.as_ptr();
-            let type_ptr = type_bytes.as_ptr();
-            let type_len = type_bytes.len();
-
-            storage.push((name_cstr, type_bytes));
-
-            infos.push(FfiTypeInfo {
-                name: name_ptr,
-                type_data: type_ptr,
-                type_len,
-                stage: 0, // Stage(0) = Macro/CompileTime
-            });
-
-            TYPE_INFO_STORAGE = Some(storage);
-            FFI_TYPE_INFOS = Some(infos);
+    /// Export type information for the plugin.
+    ///
+    /// This function returns an array of FfiTypeInfo structures that describe
+    /// the types of all macros and functions provided by the plugin.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn mimium_plugin_get_type_infos(
+        out_len: *mut usize,
+    ) -> *const mimium_lang::plugin::loader::FfiTypeInfo {
+        use mimium_lang::plugin::loader::FfiTypeInfo;
+        if out_len.is_null() {
+            return std::ptr::null();
         }
 
-        let infos = (*std::ptr::addr_of!(FFI_TYPE_INFOS)).as_ref().unwrap();
-        *out_len = infos.len();
-        infos.as_ptr()
+        // Initialize storage if not already done
+        unsafe {
+            if (*std::ptr::addr_of!(TYPE_INFO_STORAGE)).is_none() {
+                let mut storage = Vec::new();
+                let mut infos = Vec::new();
+
+                // Get the signature (type information) for Sampler_mono macro
+                let sig = SamplerPlugin::sampler_mono_signature();
+
+                // Serialize the name
+                let name_cstr = match std::ffi::CString::new(sig.get_name()) {
+                    Ok(s) => s,
+                    Err(_) => return std::ptr::null(),
+                };
+
+                // Serialize the type
+                let type_bytes = match bincode::serialize(&sig.get_type()) {
+                    Ok(b) => b,
+                    Err(_) => return std::ptr::null(),
+                };
+
+                let name_ptr = name_cstr.as_ptr();
+                let type_ptr = type_bytes.as_ptr();
+                let type_len = type_bytes.len();
+
+                storage.push((name_cstr, type_bytes));
+
+                infos.push(FfiTypeInfo {
+                    name: name_ptr,
+                    type_data: type_ptr,
+                    type_len,
+                    stage: 0, // Stage(0) = Macro/CompileTime
+                });
+
+                TYPE_INFO_STORAGE = Some(storage);
+                FFI_TYPE_INFOS = Some(infos);
+            }
+
+            let infos = (*std::ptr::addr_of!(FFI_TYPE_INFOS)).as_ref().unwrap();
+            *out_len = infos.len();
+            infos.as_ptr()
+        }
     }
 }

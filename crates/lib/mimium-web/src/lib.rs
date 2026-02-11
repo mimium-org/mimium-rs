@@ -5,7 +5,7 @@ use mimium_audiodriver::backends::local_buffer::LocalBufferDriver;
 use mimium_audiodriver::driver::{Driver, RuntimeData};
 use mimium_lang::ExecContext;
 use mimium_lang::log;
-use mimium_lang::runtime::vm;
+use mimium_lang::runtime::{vm, ProgramPayload};
 use mimium_lang::utils::error::report;
 use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
@@ -88,7 +88,7 @@ impl Context {
         self.processor = Some(Box::new(move |_input, output: Output| -> u64 {
             if let Ok(prog) = receiver.try_recv() {
                 if let Some(vmdata) = driver.vmdata.as_mut() {
-                    vmdata.resume_with_program(Box::new(prog));
+                    vmdata.resume_with_program(ProgramPayload::VmProgram(prog));
                 }
             }
             driver.play();

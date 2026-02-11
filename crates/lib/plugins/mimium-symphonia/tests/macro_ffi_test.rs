@@ -18,6 +18,7 @@ fn test_basic_serialization() {
     assert!(!bytes.is_empty() || args.is_empty());
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn test_make_sampler_mono_direct() {
     // Direct call (statically linked)
@@ -48,6 +49,7 @@ fn test_make_sampler_mono_direct() {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn test_make_sampler_mono_serialization() {
     // Test that serialization/deserialization works
@@ -77,6 +79,7 @@ fn test_make_sampler_mono_serialization() {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn test_ffi_make_sampler_mono() {
     // Test the FFI function directly
