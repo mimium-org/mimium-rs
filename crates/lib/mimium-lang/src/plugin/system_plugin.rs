@@ -15,12 +15,7 @@ use crate::{
         vm::{Machine, ReturnCode},
     },
 };
-use std::{
-    any::Any,
-    cell::{RefCell, UnsafeCell},
-    rc::Rc,
-    sync::Arc,
-};
+use std::{any::Any, cell::RefCell, rc::Rc};
 pub type SystemPluginFnType<T> = fn(&mut T, &mut Machine) -> ReturnCode;
 pub type SystemPluginMacroType<T> = fn(&mut T, &[(Value, TypeNodeId)]) -> Value;
 
@@ -87,6 +82,9 @@ impl SysPluginSignature {
 /// override these to perform setup in [`on_init`], teardown in [`after_main`],
 /// or per-sample processing in [`on_sample`].
 pub trait SystemPlugin {
+    /// Downcast helper for safe access through `RefCell<dyn SystemPlugin>`.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+
     fn generate_audioworker(&mut self) -> Option<Box<dyn SystemPluginAudioWorker>> {
         None
     }
@@ -120,7 +118,7 @@ pub trait SystemPluginAudioWorker {
 
 /// A dynamically dispatched plugin wrapped in reference-counted storage.
 pub struct DynSystemPlugin {
-    pub inner: Arc<UnsafeCell<dyn SystemPlugin>>,
+    inner: Rc<RefCell<dyn SystemPlugin>>,
     audioworker: Option<Box<dyn SystemPluginAudioWorker>>,
     pub clsinfos: Vec<ExtClsInfo>,
     pub macroinfos: Vec<MacroInfo>,
@@ -132,11 +130,17 @@ impl DynSystemPlugin {
     }
     /// Delegate to the inner plugin's `freeze_audio_handle()`.
     ///
-    /// # Safety
     /// Must only be called from the main thread before the audio thread starts.
     pub fn freeze_audio_handle(&mut self) -> Option<Box<dyn Any + Send>> {
-        let p = unsafe { self.inner.get().as_mut().unwrap() };
-        p.freeze_audio_handle()
+        self.inner.borrow_mut().freeze_audio_handle()
+    }
+
+    /// Get a mutable reference to the inner plugin.
+    ///
+    /// Panics at runtime if the plugin is already borrowed (e.g. by a
+    /// closure captured from `gen_interfaces()`).
+    pub fn borrow_inner_mut(&self) -> std::cell::RefMut<'_, dyn SystemPlugin> {
+        self.inner.borrow_mut()
     }
 }
 /// Convert a plugin into the VM-facing representation.
@@ -152,7 +156,7 @@ where
         let mut audioworker = plugin.generate_audioworker();
 
         let ifs = plugin.gen_interfaces();
-        let inner = Arc::new(UnsafeCell::new(plugin));
+        let inner: Rc<RefCell<dyn SystemPlugin>> = Rc::new(RefCell::new(plugin));
         let macroinfos = ifs
             .iter()
             .filter(|&SysPluginSignature { stage, .. }| matches!(stage, EvalStage::Stage(0)))
@@ -166,12 +170,14 @@ where
                     name.to_symbol(),
                     *ty,
                     Rc::new(RefCell::new(move |args: &[(Value, TypeNodeId)]| -> Value {
-                        // breaking double borrow rule at here!!!
-                        // Also here I do dirty downcasting because here the type of plugin is ensured as T.
-                        unsafe {
-                            let p = inner.get().as_mut().unwrap();
-                            fun(p, args)
-                        }
+                        // SAFETY: downcast is valid because T was the concrete type
+                        // used when constructing this DynSystemPlugin.
+                        let mut plugin_ref = inner.borrow_mut();
+                        let p: &mut T = plugin_ref
+                            .as_any_mut()
+                            .downcast_mut::<T>()
+                            .expect("plugin type mismatch");
+                        fun(p, args)
                     })),
                 )
             })
@@ -193,12 +199,12 @@ where
                     .downcast::<SystemPluginFnType<T>>()
                     .expect("invalid conversion applied in the system plugin resolution.");
                 let fun = Rc::new(RefCell::new(move |machine: &mut Machine| -> ReturnCode {
-                    // breaking double borrow rule at here!!!
-                    // Also here I do dirty downcasting because here the type of plugin is ensured as T.
-                    unsafe {
-                        let p = inner.get().as_mut().unwrap();
-                        fun(p, machine)
-                    }
+                    let mut plugin_ref = inner.borrow_mut();
+                    let p: &mut T = plugin_ref
+                        .as_any_mut()
+                        .downcast_mut::<T>()
+                        .expect("plugin type mismatch");
+                    fun(p, machine)
                 }));
                 ExtClsInfo::new(name.to_symbol(), ty, fun)
             })

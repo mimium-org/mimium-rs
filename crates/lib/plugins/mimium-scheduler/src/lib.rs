@@ -14,6 +14,10 @@ mod scheduler;
 pub use scheduler::SimpleScheduler;
 
 impl SystemPlugin for SimpleScheduler {
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn on_init(&mut self, _machine: &mut Machine) -> ReturnCode {
         0
     }

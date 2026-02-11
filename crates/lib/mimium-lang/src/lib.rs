@@ -288,14 +288,12 @@ impl ExecContext {
     pub fn run_main(&mut self) -> ReturnCode {
         if let Some(vm) = self.vm.as_mut() {
             self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
-                //todo: encapsulate unsafety within SystemPlugin functionality
-                let p = unsafe { plug.inner.get().as_mut().unwrap_unchecked() };
+                let mut p = plug.borrow_inner_mut();
                 let _ = p.on_init(vm);
             });
             let res = vm.execute_main();
             self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
-                //todo: encapsulate unsafety within SystemPlugin functionality
-                let p = unsafe { plug.inner.get().as_mut().unwrap_unchecked() };
+                let mut p = plug.borrow_inner_mut();
                 let _ = p.after_main(vm);
             });
             res
@@ -305,7 +303,7 @@ impl ExecContext {
     }
     pub fn try_get_main_loop(&mut self) -> Option<Box<dyn FnOnce()>> {
         let mut mainloops = self.sys_plugins.iter_mut().filter_map(|p| {
-            let p = unsafe { p.inner.get().as_mut().unwrap_unchecked() };
+            let mut p = p.borrow_inner_mut();
             p.try_get_main_loop()
         });
         let res = mainloops.next();

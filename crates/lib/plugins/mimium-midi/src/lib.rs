@@ -183,6 +183,10 @@ impl Drop for MidiPlugin {
 }
 
 impl SystemPlugin for MidiPlugin {
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn after_main(&mut self, _machine: &mut vm::Machine) -> vm::ReturnCode {
         if self.connection.is_some() {
             return 0;

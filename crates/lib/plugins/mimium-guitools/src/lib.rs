@@ -252,6 +252,10 @@ impl mimium_lang::runtime::wasm::WasmPluginCallable for GuiAudioHandle {
 }
 
 impl SystemPlugin for GuiToolPlugin {
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn try_get_main_loop(&mut self) -> Option<Box<dyn FnOnce()>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -314,7 +318,7 @@ impl SystemPlugin for GuiToolPlugin {
 
         // Runtime functions (Stage 1) — accessed on the audio thread.
         // When registered here, they share the same plugin instance as the
-        // macros above (via DynSystemPlugin's UnsafeCell), ensuring the
+        // macros above (via DynSystemPlugin's RefCell), ensuring the
         // slider/probe data populated by macros is visible to these functions.
         let get_sliderf: SystemPluginFnType<Self> = Self::get_slider;
         let get_slider = SysPluginSignature::new(

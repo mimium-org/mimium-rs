@@ -253,6 +253,10 @@ impl SamplerPlugin {
 }
 
 impl SystemPlugin for SamplerPlugin {
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     fn gen_interfaces(&self) -> Vec<SysPluginSignature> {
         let sampler_macrof: SystemPluginMacroType<Self> = Self::make_sampler_mono;
         let sampler_macro = SysPluginSignature::new_macro(
