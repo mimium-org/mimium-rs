@@ -1780,14 +1780,11 @@ impl InferContext {
                 // Check for private type leak in public function declarations
                 // Use the original type before resolution to catch TypeAlias references
                 if let Pattern::Single(name) = &tpat.pat {
-                    eprintln!(
-                        "[DEBUG] Checking private type leak for Let binding: {}",
+                    log::trace!(
+                        "Checking private type leak for Let binding: {}",
                         name.as_str()
                     );
-                    eprintln!(
-                        "[DEBUG] Original type before resolution: {:?}",
-                        tpat.ty.to_type()
-                    );
+                    log::trace!("Original type before resolution: {:?}", tpat.ty.to_type());
                     self.check_private_type_leak(*name, tpat.ty, loc_p.clone());
                 }
 
