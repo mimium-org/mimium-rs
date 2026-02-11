@@ -722,6 +722,7 @@ fn closure_state_push_host(
 ) {
     log::trace!("closure_state_push_host: closure_addr={closure_addr}, state_size={state_size}");
     let state = caller.data_mut();
+    
     // Push closure address onto the state stack
     state.state_stack.push(closure_addr);
     // Lazily allocate state storage for this closure if it doesn't exist yet

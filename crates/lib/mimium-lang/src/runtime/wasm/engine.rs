@@ -66,6 +66,14 @@ impl WasmEngine {
     pub fn current_module_mut(&mut self) -> Option<&mut super::WasmModule> {
         self.current_module.as_mut()
     }
+
+    /// Read an f64 value from the WASM module's linear memory at the given byte offset.
+    pub fn read_memory_f64(&mut self, offset: usize) -> Result<f64, String> {
+        self.current_module
+            .as_mut()
+            .ok_or_else(|| "No WASM module loaded".to_string())
+            .and_then(|m| m.read_memory_f64(offset))
+    }
 }
 
 impl Default for WasmEngine {
@@ -118,9 +126,17 @@ impl WasmDspRuntime {
 
     /// Run the `mimium_main` (or global init) function if exported.
     pub fn run_main(&mut self) -> Result<(), String> {
-        match self.engine.execute_function("mimium_main", &[]) {
+        // Try "main" first (global initializer), then fall back to "mimium_main"
+        match self.engine.execute_function("main", &[]) {
             Ok(_) => Ok(()),
-            Err(e) if e.contains("not found") => Ok(()), // no main — that's fine
+            Err(e) if e.contains("not found") => {
+                // Try old name for compatibility
+                match self.engine.execute_function("mimium_main", &[]) {
+                    Ok(_) => Ok(()),
+                    Err(e) if e.contains("not found") => Ok(()), // no main — that's fine
+                    Err(e) => Err(e),
+                }
+            }
             Err(e) => Err(e),
         }
     }
@@ -138,12 +154,29 @@ impl DspRuntime for WasmDspRuntime {
         // Convert input samples to Words (bit-cast f64 → u64).
         let args: Vec<Word> = self.input_cache.iter().map(|v| v.to_bits()).collect();
 
+        let out_channels = self.io_channels.map_or(1, |io| io.output as usize);
+
         match self.engine.execute_dsp(&args) {
             Ok(result) => {
-                // Convert Words back to f64 and cache.
                 self.output_cache.clear();
-                self.output_cache
-                    .extend(result.iter().map(|&w| f64::from_bits(w)));
+                if out_channels > 1 {
+                    // Multi-channel (stereo, etc.): dsp() returns an i64 pointer
+                    // to a tuple in linear memory. Dereference each element.
+                    if let Some(&ptr_word) = result.first() {
+                        let ptr = ptr_word as usize;
+                        for ch in 0..out_channels {
+                            let val = self
+                                .engine
+                                .read_memory_f64(ptr + ch * 8)
+                                .unwrap_or(0.0);
+                            self.output_cache.push(val);
+                        }
+                    }
+                } else {
+                    // Mono: dsp() returns a single f64 directly.
+                    self.output_cache
+                        .extend(result.iter().map(|&w| f64::from_bits(w)));
+                }
                 0 // success
             }
             Err(e) => {

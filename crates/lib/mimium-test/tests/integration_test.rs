@@ -1201,3 +1201,96 @@ fn type_visibility_leak() {
         "Expected private type leak error, got: {err_message}"
     );
 }
+
+// ============================================================================
+// WASM Backend Tests
+// ============================================================================
+// These tests specifically verify the WASM backend implementation.
+// They are crucial for catching backend-specific issues like state management
+// and global variable initialization that may not be caught by VM tests alone.
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_counter() {
+    // Test basic stateful function (self) in WASM backend
+    // This catches issues with state persistence across dsp() calls
+    let res = run_file_test_wasm("counter.mmm", 10, false).unwrap();
+    let ans = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+    assert_eq!(res, ans, "WASM backend: stateful function should accumulate");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_tuple_pass() {
+    // Test tuple argument flattening at call sites in WASM backend.
+    // A function receiving a tuple should have its params flattened,
+    // and the call site must expand the tuple pointer to individual values.
+    let res = run_file_test_wasm("tuple_pass.mmm", 3, false).unwrap();
+    // add_tuple(make_tuple(1.0)) = 1.0 + 2.0 + 3.0 = 6.0
+    let ans = vec![6.0, 6.0, 6.0];
+    assert_eq!(res, ans, "WASM backend: tuple arg flattening at call site");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_lowpass() {
+    // Test lowpass filter (biquad) in WASM backend. This exercises:
+    // - Tuple argument flattening (biquad receives a 5-tuple of coefficients)
+    // - Stateful function (`self` in _biquad_inner and phasor)
+    // - Include file resolution (filter.mmm includes math.mmm)
+    // - Duplicate function deduplication (math.mmm included multiple times)
+    let res = run_file_test_wasm("wasm_lowpass.mmm", 5, false).unwrap();
+    assert_eq!(res.len(), 5, "WASM backend: lowpass should produce 5 samples");
+    // All values should be finite (not NaN or Inf)
+    for (i, v) in res.iter().enumerate() {
+        assert!(v.is_finite(), "WASM backend: lowpass sample {} is not finite: {}", i, v);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_global_state() {
+    // Test global variable initialization and stateful function with globals
+    // This catches issues where global initializer (_mimium_global) is not called
+    let res = run_file_test_wasm("global_state.mmm", 5, false).unwrap();
+    // Expected values: PI * (n+1) where n is iteration count
+    let ans = vec![
+        3.14159265359,
+        6.28318530718,
+        9.42477796077,
+        12.56637061436,
+        15.70796326795,
+    ];
+    // Use approximate comparison for floating-point values
+    assert_eq!(res.len(), ans.len(), "WASM backend: output length mismatch");
+    for (i, (actual, expected)) in res.iter().zip(ans.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "WASM backend: value mismatch at index {}: {} vs {}",
+            i,
+            actual,
+            expected
+        );
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_stereo_output() {
+    // Test stereo (tuple) output from dsp() in WASM backend.
+    // dsp() returns (0.5, -0.5); the runtime must dereference the tuple
+    // pointer from linear memory to extract L and R channels.
+    let res = run_file_test_wasm("stereo_output.mmm", 3, true).unwrap();
+    // Stereo results are flattened: [L1, R1, L2, R2, L3, R3]
+    let ans = vec![0.5, -0.5, 0.5, -0.5, 0.5, -0.5];
+    assert_eq!(res.len(), ans.len(), "WASM backend: stereo output length mismatch");
+    for (i, (actual, expected)) in res.iter().zip(ans.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-10,
+            "WASM backend: stereo sample {} mismatch: {} vs {}",
+            i,
+            actual,
+            expected
+        );
+    }
+}

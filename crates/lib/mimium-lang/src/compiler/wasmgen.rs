@@ -10,7 +10,7 @@
 // - Closures and higher-order functions -> WASM function references and tables
 // - Memory layout: linear memory for stack and runtime primitive data
 
-use crate::interner::Symbol;
+use crate::interner::{Symbol, TypeNodeId};
 use crate::mir::{self, Mir, VPtr};
 use crate::runtime::primitives::WordSize;
 use crate::types::{PType, Type};
@@ -193,8 +193,15 @@ pub struct WasmGenerator {
     alloc_base_local: u32,
     /// WASM global index for the runtime bump allocator pointer
     alloc_ptr_global: u32,
+    /// Local variable index for saving alloc pointer at entry-function start (i32)
+    alloc_ptr_save_local: u32,
+    /// Whether the current function being generated is an entry point (dsp or _mimium_global).
+    /// Entry functions save/restore the alloc pointer to prevent unbounded memory growth.
+    is_entry_function: bool,
     /// Maps function signatures (params, results) to type section indices for call_indirect
     call_type_cache: HashMap<(Vec<wasm_encoder::ValType>, Vec<wasm_encoder::ValType>), u32>,
+    /// Call site counter for generating unique state addresses for each call site
+    call_site_counter: i64,
 }
 
 /// Context for emitting control flow blocks
@@ -263,7 +270,10 @@ impl WasmGenerator {
             closure_save_local: 0,
             alloc_base_local: 0,
             alloc_ptr_global: 0,
+            alloc_ptr_save_local: 0,
+            is_entry_function: false,
             call_type_cache: HashMap::new(),
+            call_site_counter: 0,
         };
 
         // Setup runtime primitive imports and memory/table
@@ -655,7 +665,14 @@ impl WasmGenerator {
 
             // Track function name to index mapping
             // Note: current_fn_idx already accounts for imported functions
-            self.fn_name_to_idx.insert(func.label, self.current_fn_idx);
+            // Only register the first occurrence of each function name (avoid duplicate mappings from multiple includes)
+            if !self.fn_name_to_idx.contains_key(&func.label) {
+                self.fn_name_to_idx.insert(func.label, self.current_fn_idx);
+                log::debug!("Registered function {} at index {}", func.label.as_str(), self.current_fn_idx);
+            } else {
+                log::debug!("Skipping duplicate mapping for function {} (already mapped to index {})", 
+                    func.label.as_str(), self.fn_name_to_idx[&func.label]);
+            }
             self.current_fn_idx += 1;
         }
 
@@ -765,8 +782,23 @@ impl WasmGenerator {
             locals.push((1, ValType::I32));
             self.alloc_base_local = self.closure_save_local + 1;
 
+            // Detect entry-point functions that need alloc pointer save/restore
+            let is_entry = func.label.as_str() == "dsp" || func.label.as_str() == "_mimium_global";
+            self.is_entry_function = is_entry;
+
+            // Extra i32 local for saving alloc pointer at entry function start
+            locals.push((1, ValType::I32));
+            self.alloc_ptr_save_local = self.alloc_base_local + 1;
+
             // Create a new WASM function
             let mut wasm_func = Function::new(locals);
+
+            // Entry functions save the alloc pointer at start and restore before return,
+            // preventing unbounded memory growth from per-sample Alloc instructions.
+            if is_entry {
+                wasm_func.instruction(&W::GlobalGet(self.alloc_ptr_global));
+                wasm_func.instruction(&W::LocalSet(self.alloc_ptr_save_local));
+            }
 
             // Translate basic blocks with structured control flow awareness
             self.emit_function_body(func, &mut wasm_func);
@@ -1657,6 +1689,8 @@ impl WasmGenerator {
         // Track the dsp function index if it exists
         let mut dsp_idx = None;
         let mut global_init_idx = None;
+        // Track already exported function indices to avoid duplicates
+        let mut exported_indices = std::collections::HashSet::new();
 
         // Export all public functions
         for func in &functions {
@@ -1674,10 +1708,13 @@ impl WasmGenerator {
                 global_init_idx = Some(fn_idx);
             }
 
-            // Use the function name from the symbol interner
-            let fn_name = format!("fn_{fn_idx}");
-            self.export_section
-                .export(&fn_name, wasm_encoder::ExportKind::Func, fn_idx);
+            // Only export if not already exported
+            if exported_indices.insert(fn_idx) {
+                // Use the function name from the symbol interner
+                let fn_name = format!("fn_{fn_idx}");
+                self.export_section
+                    .export(&fn_name, wasm_encoder::ExportKind::Func, fn_idx);
+            }
         }
 
         // Export the dsp function with its canonical name if it exists
@@ -2270,6 +2307,12 @@ impl WasmGenerator {
                     func.instruction(&W::Call(self.rt.state_set));
                 }
 
+                // Entry functions restore the alloc pointer before returning.
+                if self.is_entry_function {
+                    func.instruction(&W::LocalGet(self.alloc_ptr_save_local));
+                    func.instruction(&W::GlobalSet(self.alloc_ptr_global));
+                }
+
                 // Push the return value onto the stack (ReturnFeed acts as Return)
                 self.emit_value_load(value, func);
             }
@@ -2610,25 +2653,61 @@ impl WasmGenerator {
                     }
                 } else {
                     // Non-ext function call: load args and call by index
-                    for (arg, ty) in args {
-                        let expected = Self::type_to_valtype(&ty.to_type());
-                        self.emit_value_load_typed(arg, expected, func);
-                    }
-                    let wasm_fn_idx = match fn_ptr.as_ref() {
-                        mir::Value::Function(fn_idx) => *fn_idx as u32 + self.num_imports,
+                    // Check if the called function has state and needs state management
+                    let (wasm_fn_idx, state_size) = match fn_ptr.as_ref() {
+                        mir::Value::Function(fn_idx) => {
+                            let wasm_idx = *fn_idx as u32 + self.num_imports;
+                            let state_size = if *fn_idx < self.mir.functions.len() {
+                                self.mir.functions[*fn_idx].state_skeleton.total_size()
+                            } else {
+                                0
+                            };
+                            log::debug!("Calling function idx={fn_idx}, state_size={state_size}");
+                            (wasm_idx, state_size)
+                        }
                         mir::Value::Register(reg_idx) => {
                             if let Some(const_val) = self.register_constants.get(reg_idx) {
-                                *const_val as u32 + self.num_imports
+                                let fn_idx = *const_val as usize;
+                                let wasm_idx = *const_val as u32 + self.num_imports;
+                                let state_size = if fn_idx < self.mir.functions.len() {
+                                    self.mir.functions[fn_idx].state_skeleton.total_size()
+                                } else {
+                                    0
+                                };
+                                log::debug!("Calling function (via register) idx={fn_idx}, state_size={state_size}");
+                                (wasm_idx, state_size)
                             } else {
                                 eprintln!(
                                     "Warning: Indirect call through register without constant value"
                                 );
-                                self.current_fn_idx
+                                (self.current_fn_idx, 0)
                             }
                         }
-                        _ => self.current_fn_idx,
+                        _ => (self.current_fn_idx, 0),
                     };
+
+                    // If the function has state, push state context before calling
+                    if state_size > 0 {
+                        // Generate a unique call site ID for this specific call location
+                        // This ensures that each call site has its own persistent state storage
+                        self.call_site_counter += 1;
+                        let call_site_id = self.call_site_counter;
+                        
+                        log::debug!("Pushing state for call_site_id={call_site_id}, state_size={state_size}");
+                        func.instruction(&W::I64Const(call_site_id));
+                        func.instruction(&W::I64Const(state_size as i64));
+                        func.instruction(&W::Call(self.rt.closure_state_push));
+                    }
+
+                    // Load arguments with tuple flattening and make the call
+                    self.emit_call_args_flattened(args, func);
                     func.instruction(&W::Call(wasm_fn_idx));
+
+                    // If the function has state, pop state context after returning
+                    if state_size > 0 {
+                        log::debug!("Popping state");
+                        func.instruction(&W::Call(self.rt.closure_state_pop));
+                    }
                 }
             }
 
@@ -2681,11 +2760,8 @@ impl WasmGenerator {
                         self.emit_value_load(closure_ptr, func);
                         func.instruction(&W::I64Store(memarg));
 
-                        // Push arguments
-                        for (arg, ty) in args {
-                            let expected = Self::type_to_valtype(&ty.to_type());
-                            self.emit_value_load_typed(arg, expected, func);
-                        }
+                        // Push arguments with tuple flattening
+                        self.emit_call_args_flattened(args, func);
 
                         // Load function table index from closure[0]
                         self.emit_value_load(closure_ptr, func);
@@ -2727,6 +2803,12 @@ impl WasmGenerator {
             I::Return(value, ty) => {
                 // In WASM, functions implicitly return the value on the stack when they reach 'end'
                 let is_unit = matches!(ty.to_type(), Type::Primitive(PType::Unit));
+
+                // Entry functions restore the alloc pointer before returning.
+                if self.is_entry_function {
+                    func.instruction(&W::LocalGet(self.alloc_ptr_save_local));
+                    func.instruction(&W::GlobalSet(self.alloc_ptr_global));
+                }
 
                 if !is_unit {
                     let expected = Self::type_to_valtype(&ty.to_type());
@@ -2988,11 +3070,8 @@ impl WasmGenerator {
                         self.emit_value_load(fn_ptr, func);
                         func.instruction(&W::I64Store(memarg));
 
-                        // Push arguments
-                        for (arg, ty) in args {
-                            let expected = Self::type_to_valtype(&ty.to_type());
-                            self.emit_value_load_typed(arg, expected, func);
-                        }
+                        // Push arguments with tuple flattening
+                        self.emit_call_args_flattened(args, func);
 
                         // Load function table index from closure[0]
                         self.emit_value_load(fn_ptr, func);
@@ -3288,25 +3367,63 @@ impl WasmGenerator {
 
     /// Emit WASM instructions to load a value with type coercion.
     /// If the value's actual type (I64 pointer from GetElement) differs from the expected
-    /// type (F64 value), a memory dereference or reinterpretation is inserted automatically.
+    /// type (F64 value), a memory dereference is inserted automatically.
     fn emit_value_load_typed(&mut self, value: &VPtr, expected: ValType, func: &mut Function) {
         use wasm_encoder::Instruction as W;
 
         let actual = self.infer_value_type(value);
         self.emit_value_load(value, func);
         if actual == ValType::I64 && expected == ValType::F64 {
-            // Value is a pointer (e.g., from GetElement); dereference to get f64
-            func.instruction(&W::I32WrapI64);
+            // I64 values used where F64 is expected are pointers to memory
+            // (e.g. GetElement results). Dereference to load the float value.
             let memarg = MemArg {
                 offset: 0,
                 align: 3,
                 memory_index: 0,
             };
+            func.instruction(&W::I32WrapI64);
             func.instruction(&W::F64Load(memarg));
         } else if actual == ValType::F64 && expected == ValType::I64 {
             // Value is f64 but an i64 is expected; reinterpret bits
             // (preserves float bit pattern for storage in i64 word slots)
             func.instruction(&W::I64ReinterpretF64);
+        }
+    }
+
+    /// Emit call arguments with proper tuple/record flattening.
+    /// When a MIR argument has a multi-word type (tuple/record), its runtime
+    /// value is a pointer to linear memory. This method dereferences the pointer
+    /// and pushes each element onto the WASM operand stack individually,
+    /// matching the flattened function signature produced by `process_mir_functions`.
+    fn emit_call_args_flattened(&mut self, args: &[(VPtr, TypeNodeId)], func: &mut Function) {
+        use wasm_encoder::Instruction as W;
+
+        for (arg, ty) in args {
+            let resolved = ty.to_type();
+            let flat_types = Self::flatten_type_to_valtypes(&resolved);
+
+            if flat_types.len() <= 1 {
+                // Single-word arg: load with standard type coercion
+                let expected = flat_types.first().copied().unwrap_or(ValType::I64);
+                self.emit_value_load_typed(arg, expected, func);
+            } else {
+                // Multi-word arg (tuple/record): the runtime value is an i64
+                // pointer to the data in linear memory. Dereference each
+                // element individually to match the flattened WASM signature.
+                for (i, vtype) in flat_types.iter().enumerate() {
+                    self.emit_value_load(arg, func);
+                    func.instruction(&W::I32WrapI64);
+                    let load_memarg = MemArg {
+                        offset: (i * 8) as u64,
+                        align: 3,
+                        memory_index: 0,
+                    };
+                    match vtype {
+                        ValType::F64 => func.instruction(&W::F64Load(load_memarg)),
+                        _ => func.instruction(&W::I64Load(load_memarg)),
+                    };
+                }
+            }
         }
     }
 
