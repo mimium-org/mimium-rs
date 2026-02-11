@@ -104,6 +104,31 @@ impl ExecContext {
             .collect()
     }
 
+    /// Collect WASM plugin function handlers from all system plugins.
+    ///
+    /// Each plugin's `freeze_for_wasm()` returns an optional map of function
+    /// names to closures.  This method merges all maps into one.  Should be
+    /// called after compilation but before WASM module instantiation.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn freeze_wasm_plugin_fns(&mut self) -> Option<runtime::wasm::WasmPluginFnMap> {
+        let merged: runtime::wasm::WasmPluginFnMap = self
+            .sys_plugins
+            .iter_mut()
+            .filter_map(|p| p.freeze_for_wasm())
+            .fold(
+                runtime::wasm::WasmPluginFnMap::new(),
+                |mut acc, map| {
+                    acc.extend(map);
+                    acc
+                },
+            );
+        if merged.is_empty() {
+            None
+        } else {
+            Some(merged)
+        }
+    }
+
     //todo: make it to builder pattern
     pub fn add_system_plugin<T: SystemPlugin + 'static>(&mut self, plug: T) {
         let plugin_dyn = DynSystemPlugin::from(plug);

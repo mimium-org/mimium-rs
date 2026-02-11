@@ -13,16 +13,15 @@ use wasmtime::{
     AsContextMut, Caller, Config, Engine, FuncType, Linker, Module, OptLevel, Store, Val, ValType,
 };
 
-/// Trait for calling plugin methods from WASM trampolines.
+/// A single plugin function callable from WASM trampolines.
+pub type WasmPluginFn = std::sync::Arc<dyn Fn(&[f64]) -> Option<f64> + Send + Sync>;
+
+/// A map of plugin function names to their implementations.
 ///
-/// SystemPlugins that want to be called from WASM backend should implement
-/// this trait to provide dynamic dispatch for method calls.
-pub trait WasmPluginCallable: Send {
-    /// Call a plugin method with arguments.
-    ///
-    /// Returns the method result, or None if the method is not found or fails.
-    fn call_method(&mut self, method: &str, args: &[f64]) -> Option<f64>;
-}
+/// Plugin authors create this map from their audio handle (e.g. via
+/// `GuiAudioHandle::into_wasm_plugin_fn_map`). Each entry maps a function
+/// name to a closure that handles the call.
+pub type WasmPluginFnMap = HashMap<String, WasmPluginFn>;
 
 /// WASM runtime state
 pub struct WasmRuntime {
@@ -33,9 +32,6 @@ pub struct WasmRuntime {
     /// Plugin loader (for calling plugin functions from host functions)
     #[cfg(not(target_arch = "wasm32"))]
     plugin_loader: Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>,
-    /// System plugin for WASM trampolines (e.g., GuiToolPlugin)
-    #[cfg(not(target_arch = "wasm32"))]
-    sys_plugin: Option<Arc<Mutex<dyn WasmPluginCallable>>>,
 }
 
 /// State storage for a single execution context (global or per-closure).
@@ -81,9 +77,6 @@ pub struct RuntimeState {
     /// Plugin loader (for calling plugin functions)
     #[cfg(not(target_arch = "wasm32"))]
     plugins: Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>,
-    /// System plugin for WASM trampolines
-    #[cfg(not(target_arch = "wasm32"))]
-    sys_plugin: Option<Arc<Mutex<dyn WasmPluginCallable>>>,
 }
 
 impl RuntimeState {
@@ -115,8 +108,6 @@ impl Default for RuntimeState {
             sample_rate: 44100.0,
             #[cfg(not(target_arch = "wasm32"))]
             plugins: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            sys_plugin: None,
         }
     }
 }
@@ -127,11 +118,12 @@ impl WasmRuntime {
     /// `ext_fns` provides the complete set of external function type info
     /// so that plugin host trampolines can be registered for all plugins
     /// (system and dynamic).
-    /// `sys_plugin` can be any SystemPlugin implementing WasmPluginCallable
+    /// `plugin_fns` is an optional map of plugin function name to handler
+    /// closures (see `WasmPluginFnMap`).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new(
         ext_fns: &[crate::plugin::ExtFunTypeInfo],
-        sys_plugin: Option<Arc<Mutex<dyn WasmPluginCallable>>>,
+        plugin_fns: Option<WasmPluginFnMap>,
     ) -> Result<Self, String> {
         // Configure Wasmtime with JIT compiler and optimizations
         let mut config = Config::new();
@@ -154,14 +146,12 @@ impl WasmRuntime {
         Self::register_runtime_primitives(&mut linker)?;
 
         // Register plugin functions as host trampolines
-        let plugin_loader =
-            Self::register_plugin_functions(&mut linker, ext_fns, sys_plugin.clone())?;
+        let plugin_loader = Self::register_plugin_functions(&mut linker, ext_fns, plugin_fns)?;
 
         Ok(Self {
             engine,
             linker,
             plugin_loader,
-            sys_plugin,
         })
     }
 
@@ -188,7 +178,7 @@ impl WasmRuntime {
         // Register all runtime primitive host functions
         Self::register_runtime_primitives(&mut linker)?;
 
-        // Register plugin functions as host trampolines (no sys_plugin on wasm32)
+        // Register plugin functions as host trampolines (no plugin_fns on wasm32)
         let _plugin_loader = Self::register_plugin_functions(&mut linker, ext_fns, None)?;
 
         Ok(Self { engine, linker })
@@ -205,7 +195,6 @@ impl WasmRuntime {
         #[cfg(not(target_arch = "wasm32"))]
         {
             runtime_state.plugins = self.plugin_loader.clone();
-            runtime_state.sys_plugin = self.sys_plugin.clone();
         }
 
         let mut store = Store::new(&self.engine, runtime_state);
@@ -355,12 +344,11 @@ impl WasmRuntime {
     fn register_plugin_functions(
         linker: &mut Linker<RuntimeState>,
         ext_fns: &[crate::plugin::ExtFunTypeInfo],
-        sys_plugin: Option<Arc<Mutex<dyn WasmPluginCallable>>>,
+        plugin_fns: Option<WasmPluginFnMap>,
     ) -> Result<Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>, String> {
         use crate::types::Type;
 
         // Register trampolines for every runtime-stage external function.
-        // Plugin loader must be provided by the caller to avoid duplicate loading.
         for type_info in ext_fns {
             let name = type_info.name;
             let fn_ty = type_info.ty.to_type();
@@ -402,18 +390,14 @@ impl WasmRuntime {
             );
 
             let return_vt = return_valtype.clone();
-            let sys_plugin_for_closure = sys_plugin.clone();
 
-            // Determine if this function is a "passthrough" shape.
-            //
-            // We consider a function passthrough if:
-            // 1. It has at least 2 parameters (first is value, second is ID/config)
-            // 2. First param type == return type
-            // 3. The function name suggests it's an intercept/passthrough pattern
-            //
-            // Examples:
-            // - __probe_intercept(value: f64, id: f64) -> f64  [passthrough]
-            // - __get_slider(id: f64) -> f64                   [NOT passthrough]
+            // Look up a specific handler closure for this function, if any.
+            let handler: Option<WasmPluginFn> = plugin_fns
+                .as_ref()
+                .and_then(|map| map.get(name.as_str()).cloned());
+
+            // Determine if this function is a "passthrough" shape (first param
+            // type == return type, name contains "intercept").
             let is_passthrough = param_valtypes.len() >= 2
                 && param_valtypes
                     .first()
@@ -428,34 +412,28 @@ impl WasmRuntime {
                     move |_caller, params, results| {
                         log::trace!("Plugin trampoline called: {plugin_name}({params:?})");
 
-                        // Try to call via sys_plugin (for GuiToolPlugin methods)
-                        if let Some(ref plugin_arc) = sys_plugin_for_closure {
-                            if let Ok(mut plugin) = plugin_arc.lock() {
-                                // Convert params to f64 slice
-                                let args: Vec<f64> = params
-                                    .iter()
-                                    .filter_map(|v| match v {
-                                        wasmtime::Val::F64(f) => Some(f64::from_bits(*f)),
-                                        wasmtime::Val::I64(i) => Some(*i as f64),
-                                        wasmtime::Val::I32(i) => Some(*i as f64),
-                                        _ => None,
-                                    })
-                                    .collect();
+                        // Try the per-function handler registered by the plugin
+                        if let Some(ref func) = handler {
+                            let args: Vec<f64> = params
+                                .iter()
+                                .filter_map(|v| match v {
+                                    wasmtime::Val::F64(f) => Some(f64::from_bits(*f)),
+                                    wasmtime::Val::I64(i) => Some(*i as f64),
+                                    wasmtime::Val::I32(i) => Some(*i as f64),
+                                    _ => None,
+                                })
+                                .collect();
 
-                                if let Some(result) = plugin.call_method(&plugin_name, &args) {
-                                    results[0] = wasmtime::Val::F64(result.to_bits());
-                                    return Ok(());
-                                }
+                            if let Some(result) = func(&args) {
+                                results[0] = wasmtime::Val::F64(result.to_bits());
+                                return Ok(());
                             }
                         }
 
                         // Fallback: generic trampoline behavior
                         if is_passthrough && !params.is_empty() {
-                            // Passthrough: return the first argument unchanged.
-                            // Covers __probe_intercept, identity-wrapper patterns, etc.
                             results[0] = params[0];
                         } else {
-                            // No passthrough  Ereturn type-appropriate zero.
                             for result in results.iter_mut() {
                                 *result = default_val_for_valtype(return_vt.clone());
                             }

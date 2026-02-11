@@ -20,15 +20,13 @@ impl WasmEngine {
     ///
     /// `ext_fns` provides external function type info from all plugin sources
     /// so that the runtime can register host trampolines for plugin functions.
-    /// `sys_plugin` is an optional SystemPlugin implementing WasmPluginCallable
+    /// `plugin_fns` is an optional map of plugin function name to handler closures.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new(
         ext_fns: &[crate::plugin::ExtFunTypeInfo],
-        sys_plugin: Option<
-            std::sync::Arc<std::sync::Mutex<dyn crate::runtime::wasm::WasmPluginCallable>>,
-        >,
+        plugin_fns: Option<crate::runtime::wasm::WasmPluginFnMap>,
     ) -> Result<Self, String> {
-        let runtime = WasmRuntime::new(ext_fns, sys_plugin)?;
+        let runtime = WasmRuntime::new(ext_fns, plugin_fns)?;
         Ok(Self {
             runtime,
             current_module: None,

@@ -543,24 +543,10 @@ pub fn run_file(
 
             log::info!("Generated WASM module ({} bytes)", wasm_bytes.len());
 
-            // Freeze audio handles from system plugins (after macro expansion)
-            let audio_handles = ctx.freeze_audio_handles();
-            let sys_plugin: Option<
-                Arc<std::sync::Mutex<dyn mimium_lang::runtime::wasm::WasmPluginCallable>>,
-            > = audio_handles.into_iter().find_map(|h| {
-                h.downcast::<mimium_guitools::GuiAudioHandle>()
-                    .ok()
-                    .map(|handle| {
-                        Arc::new(std::sync::Mutex::new(*handle))
-                            as Arc<
-                                std::sync::Mutex<
-                                    dyn mimium_lang::runtime::wasm::WasmPluginCallable,
-                                >,
-                            >
-                    })
-            });
+            // Collect WASM plugin functions from all system plugins
+            let plugin_fns = ctx.freeze_wasm_plugin_fns();
 
-            let mut wasm_engine = WasmEngine::new(&ext_fns, sys_plugin).map_err(|e| {
+            let mut wasm_engine = WasmEngine::new(&ext_fns, plugin_fns).map_err(|e| {
                 vec![Box::new(mimium_lang::utils::error::SimpleError {
                     message: format!("Failed to create WASM engine: {e}"),
                     span: Location::default(),
@@ -623,24 +609,10 @@ pub fn run_file(
 
             log::info!("Generated WASM module ({} bytes)", wasm_bytes.len());
 
-            // Freeze audio handles from system plugins (after macro expansion)
-            let audio_handles = ctx.freeze_audio_handles();
-            let sys_plugin: Option<
-                Arc<std::sync::Mutex<dyn mimium_lang::runtime::wasm::WasmPluginCallable>>,
-            > = audio_handles.into_iter().find_map(|h| {
-                h.downcast::<mimium_guitools::GuiAudioHandle>()
-                    .ok()
-                    .map(|handle| {
-                        Arc::new(std::sync::Mutex::new(*handle))
-                            as Arc<
-                                std::sync::Mutex<
-                                    dyn mimium_lang::runtime::wasm::WasmPluginCallable,
-                                >,
-                            >
-                    })
-            });
+            // Collect WASM plugin functions from all system plugins
+            let plugin_fns = ctx.freeze_wasm_plugin_fns();
 
-            let mut wasm_engine = WasmEngine::new(&ext_fns, sys_plugin).map_err(|e| {
+            let mut wasm_engine = WasmEngine::new(&ext_fns, plugin_fns).map_err(|e| {
                 vec![Box::new(mimium_lang::utils::error::SimpleError {
                     message: format!("Failed to create WASM engine: {e}"),
                     span: Location::default(),

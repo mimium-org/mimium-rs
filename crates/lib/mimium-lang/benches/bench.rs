@@ -46,7 +46,7 @@ mod tests {
         let mut generator = WasmGenerator::new(Arc::new(mir), &ext_fns);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
-        let mut engine = WasmEngine::new(&ext_fns).expect("Failed to create WASM engine");
+        let mut engine = WasmEngine::new(&ext_fns, None).expect("Failed to create WASM engine");
         engine
             .load_module(&wasm_bytes)
             .expect("Failed to load WASM module");

@@ -107,6 +107,23 @@ pub trait SystemPlugin {
     fn freeze_audio_handle(&mut self) -> Option<Box<dyn Any + Send>> {
         None
     }
+
+    /// Produce a per-function closure map for the WASM backend.
+    ///
+    /// Called after macro expansion and before WASM module instantiation.
+    /// Each entry maps a plugin function name (e.g. `"__get_slider"`) to a
+    /// closure that implements the function. The closures must be `Send +
+    /// Sync` since they are captured by wasmtime host trampolines.
+    ///
+    /// Plugins that do not need custom WASM handlers can leave this as
+    /// `None` — the runtime will provide a default pass-through / zero
+    /// trampoline.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn freeze_for_wasm(
+        &mut self,
+    ) -> Option<crate::runtime::wasm::WasmPluginFnMap> {
+        None
+    }
 }
 
 pub trait SystemPluginAudioWorker {
@@ -133,6 +150,12 @@ impl DynSystemPlugin {
     /// Must only be called from the main thread before the audio thread starts.
     pub fn freeze_audio_handle(&mut self) -> Option<Box<dyn Any + Send>> {
         self.inner.borrow_mut().freeze_audio_handle()
+    }
+
+    /// Delegate to the inner plugin's `freeze_for_wasm()`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn freeze_for_wasm(&mut self) -> Option<crate::runtime::wasm::WasmPluginFnMap> {
+        self.inner.borrow_mut().freeze_for_wasm()
     }
 
     /// Get a mutable reference to the inner plugin.

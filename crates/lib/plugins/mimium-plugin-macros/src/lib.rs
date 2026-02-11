@@ -538,6 +538,7 @@ struct PluginExportInput {
     runtime_functions: Vec<FunctionMapping>,
     macro_functions: Vec<FunctionMapping>,
     type_infos: Vec<TypeInfoEntry>,
+    wasm_audio_handle: Option<WasmAudioHandle>,
 }
 
 #[derive(Clone)]
@@ -572,6 +573,30 @@ enum TypeInfoEntry {
     },
 }
 
+/// Configuration for auto-generating `into_wasm_plugin_fn_map` on an audio
+/// handle type.
+///
+/// When specified in `mimium_export_plugin!`, the macro generates an
+/// `into_wasm_plugin_fn_map` method that creates `WasmPluginFn` closures
+/// forwarding `&[f64]` arguments to the handle's methods.
+///
+/// All handle methods referenced here must accept `f64` arguments to match
+/// the WASM trampoline calling convention.
+struct WasmAudioHandle {
+    handle_type: syn::Path,
+    functions: Vec<WasmHandleFn>,
+}
+
+/// A single function entry for WASM audio handle code generation.
+struct WasmHandleFn {
+    /// The FFI function name (e.g. `"__get_slider"`).
+    ffi_name: syn::LitStr,
+    /// The method name on the audio handle type (e.g. `get_slider`).
+    method_name: syn::Ident,
+    /// Number of `f64` arguments the method takes.
+    nargs: usize,
+}
+
 // Custom parser for the plugin export macro input
 impl syn::parse::Parse for PluginExportInput {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
@@ -583,6 +608,7 @@ impl syn::parse::Parse for PluginExportInput {
         let mut runtime_functions = Vec::new();
         let mut macro_functions = Vec::new();
         let mut type_infos = Vec::new();
+        let mut wasm_audio_handle: Option<WasmAudioHandle> = None;
 
         while !input.is_empty() {
             let key: Ident = input.parse()?;
@@ -631,6 +657,11 @@ impl syn::parse::Parse for PluginExportInput {
                     syn::bracketed!(content in input);
                     type_infos = parse_type_infos(&content)?;
                 }
+                "wasm_audio_handle" => {
+                    let content;
+                    syn::braced!(content in input);
+                    wasm_audio_handle = Some(parse_wasm_audio_handle(&content)?);
+                }
                 other => {
                     return Err(Error::new(key.span(), format!("unknown field: {other}")));
                 }
@@ -655,6 +686,7 @@ impl syn::parse::Parse for PluginExportInput {
             runtime_functions,
             macro_functions,
             type_infos,
+            wasm_audio_handle,
         })
     }
 }
@@ -766,6 +798,65 @@ fn parse_type_infos(input: syn::parse::ParseStream) -> syn::Result<Vec<TypeInfoE
         let _ = input.parse::<syn::Token![,]>();
     }
     Ok(result)
+}
+
+/// Parse the `wasm_audio_handle` section.
+///
+/// ```text
+/// wasm_audio_handle: {
+///     handle_type: MyAudioHandle,
+///     functions: [
+///         ("__get_slider", get_slider, 1),
+///         ("__probe_intercept", probe_intercept, 2),
+///     ],
+/// },
+/// ```
+fn parse_wasm_audio_handle(input: syn::parse::ParseStream) -> syn::Result<WasmAudioHandle> {
+    let mut handle_type: Option<syn::Path> = None;
+    let mut functions = Vec::new();
+
+    while !input.is_empty() {
+        let key: Ident = input.parse()?;
+        input.parse::<syn::Token![:]>()?;
+
+        match key.to_string().as_str() {
+            "handle_type" => {
+                handle_type = Some(input.parse()?);
+            }
+            "functions" => {
+                let content;
+                syn::bracketed!(content in input);
+                while !content.is_empty() {
+                    let inner;
+                    syn::parenthesized!(inner in content);
+                    let ffi_name: syn::LitStr = inner.parse()?;
+                    inner.parse::<syn::Token![,]>()?;
+                    let method_name: Ident = inner.parse()?;
+                    inner.parse::<syn::Token![,]>()?;
+                    let nargs_lit: syn::LitInt = inner.parse()?;
+                    let nargs: usize = nargs_lit.base10_parse()?;
+                    functions.push(WasmHandleFn {
+                        ffi_name,
+                        method_name,
+                        nargs,
+                    });
+                    let _ = content.parse::<syn::Token![,]>();
+                }
+            }
+            _ => return Err(Error::new_spanned(key, "unknown wasm_audio_handle field")),
+        }
+        let _ = input.parse::<syn::Token![,]>();
+    }
+
+    Ok(WasmAudioHandle {
+        handle_type: handle_type.ok_or_else(|| {
+            Error::new(
+                proc_macro2::Span::call_site(),
+                "wasm_audio_handle: missing handle_type",
+            )
+        })?,
+        functions,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -907,6 +998,9 @@ fn generate_plugin_exports(input: &PluginExportInput) -> syn::Result<proc_macro2
     let plugin_name_with_nul = format!("{}\0", plugin_name_lit.value());
     let plugin_author_with_nul = format!("{}\0", plugin_author_lit.value());
 
+    // Generate optional WASM audio handle impl
+    let wasm_handle_impl = generate_wasm_handle_impl(&input.wasm_audio_handle);
+
     Ok(quote! {
         #[cfg(not(target_arch = "wasm32"))]
         const _: () = {
@@ -1042,5 +1136,71 @@ fn generate_plugin_exports(input: &PluginExportInput) -> syn::Result<proc_macro2
                 }
             }
         };
+
+        #wasm_handle_impl
     })
+}
+
+/// Generate an `into_wasm_plugin_fn_map` impl block for the audio handle type.
+///
+/// Each function entry becomes a closure that:
+/// 1. Locks the `Arc<Mutex<Handle>>`
+/// 2. Extracts the required number of `f64` args from the `&[f64]` slice
+/// 3. Calls the handle's method with those args
+/// 4. Returns the result as `Option<f64>`
+fn generate_wasm_handle_impl(
+    wasm_handle: &Option<WasmAudioHandle>,
+) -> proc_macro2::TokenStream {
+    let wasm_handle = match wasm_handle {
+        Some(h) => h,
+        None => return quote! {},
+    };
+
+    let handle_ty = &wasm_handle.handle_type;
+
+    let closure_entries = wasm_handle.functions.iter().map(|f| {
+        let ffi_name_str = &f.ffi_name;
+        let method = &f.method_name;
+        let nargs = f.nargs;
+
+        // Generate arg forwarding: args[0], args[1], ..., args[n-1]
+        let arg_indices: Vec<proc_macro2::TokenStream> = (0..nargs)
+            .map(|i| {
+                let idx = syn::Index::from(i);
+                quote! { args[#idx] }
+            })
+            .collect();
+
+        quote! {
+            {
+                let h = handle.clone();
+                map.insert(
+                    #ffi_name_str.to_string(),
+                    ::std::sync::Arc::new(move |args: &[f64]| -> Option<f64> {
+                        if args.len() >= #nargs {
+                            Some(h.lock().ok()?.#method(#(#arg_indices),*))
+                        } else {
+                            None
+                        }
+                    }) as ::mimium_lang::runtime::wasm::WasmPluginFn,
+                );
+            }
+        }
+    });
+
+    quote! {
+        #[cfg(not(target_arch = "wasm32"))]
+        impl #handle_ty {
+            /// Convert this audio handle into a `WasmPluginFnMap` for WASM
+            /// trampoline registration.
+            ///
+            /// Auto-generated by `mimium_export_plugin!`.
+            pub fn into_wasm_plugin_fn_map(self) -> ::mimium_lang::runtime::wasm::WasmPluginFnMap {
+                let handle = ::std::sync::Arc::new(::std::sync::Mutex::new(self));
+                let mut map = ::mimium_lang::runtime::wasm::WasmPluginFnMap::new();
+                #(#closure_entries)*
+                map
+            }
+        }
+    }
 }
