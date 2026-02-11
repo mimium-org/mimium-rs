@@ -262,10 +262,11 @@ pub fn run_wasm_test(
     // Compile to MIR
     let mut ctx = ExecContext::new([].into_iter(), path, Config::default());
     ctx.prepare_compiler();
+    let ext_fns = ctx.get_extfun_types();
     let mir = ctx.get_compiler().unwrap().emit_mir(src)?;
 
     // Generate WASM
-    let mut wasmgen = WasmGenerator::new(Arc::new(mir));
+    let mut wasmgen = WasmGenerator::new(Arc::new(mir), &ext_fns);
     let wasm_bytes = wasmgen.generate().map_err(|e| {
         eprintln!("[WASM] Code generation error: {e}");
         vec![Box::new(runtime::RuntimeError(
@@ -275,7 +276,7 @@ pub fn run_wasm_test(
     })?;
 
     // Load and execute with WasmRuntime
-    let mut wasm_runtime = WasmRuntime::new().map_err(|e| {
+    let mut wasm_runtime = WasmRuntime::new(&ext_fns).map_err(|e| {
         eprintln!("[WASM] Runtime creation error: {e}");
         vec![Box::new(runtime::RuntimeError(
             runtime::ErrorKind::Unknown,

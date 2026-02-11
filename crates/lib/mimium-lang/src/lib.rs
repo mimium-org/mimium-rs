@@ -162,7 +162,9 @@ impl ExecContext {
     pub fn get_vm_mut(&mut self) -> Option<&mut runtime::vm::Machine> {
         self.vm.as_mut()
     }
-    fn get_extfun_types(&self) -> Vec<ExtFunTypeInfo> {
+    /// Collect type information for all external functions from all plugin
+    /// sources: regular plugins, system plugins, and dynamically loaded plugins.
+    pub fn get_extfun_types(&self) -> Vec<ExtFunTypeInfo> {
         let static_types = plugin::get_extfun_types(&self.plugins).chain(
             self.sys_plugins
                 .iter()

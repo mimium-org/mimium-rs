@@ -16,9 +16,12 @@ pub struct WasmEngine {
 }
 
 impl WasmEngine {
-    /// Create a new WASM execution engine
-    pub fn new() -> Result<Self, String> {
-        let runtime = WasmRuntime::new()?;
+    /// Create a new WASM execution engine.
+    ///
+    /// `ext_fns` provides external function type info from all plugin sources
+    /// so that the runtime can register host trampolines for plugin functions.
+    pub fn new(ext_fns: &[crate::plugin::ExtFunTypeInfo]) -> Result<Self, String> {
+        let runtime = WasmRuntime::new(ext_fns)?;
         Ok(Self {
             runtime,
             current_module: None,
@@ -78,7 +81,7 @@ impl WasmEngine {
 
 impl Default for WasmEngine {
     fn default() -> Self {
-        Self::new().expect("Failed to create WASM engine")
+        Self::new(&[]).expect("Failed to create WASM engine")
     }
 }
 
@@ -133,7 +136,7 @@ impl WasmDspRuntime {
                 // Try old name for compatibility
                 match self.engine.execute_function("mimium_main", &[]) {
                     Ok(_) => Ok(()),
-                    Err(e) if e.contains("not found") => Ok(()), // no main — that's fine
+                    Err(e) if e.contains("not found") => Ok(()), // no main  Ethat's fine
                     Err(e) => Err(e),
                 }
             }
@@ -151,7 +154,7 @@ impl DspRuntime for WasmDspRuntime {
             }
         }
 
-        // Convert input samples to Words (bit-cast f64 → u64).
+        // Convert input samples to Words (bit-cast f64 ↁEu64).
         let args: Vec<Word> = self.input_cache.iter().map(|v| v.to_bits()).collect();
 
         let out_channels = self.io_channels.map_or(1, |io| io.output as usize);
@@ -231,13 +234,13 @@ mod tests {
 
     #[test]
     fn test_wasm_engine_create() {
-        let engine = WasmEngine::new();
+        let engine = WasmEngine::new(&[]);
         assert!(engine.is_ok(), "Should create WASM engine");
     }
 
     #[test]
     fn test_wasm_engine_load_and_call() {
-        let mut engine = WasmEngine::new().unwrap();
+        let mut engine = WasmEngine::new(&[]).unwrap();
 
         // Simple WASM module with an add function
         let wasm_bytes = wat::parse_str(

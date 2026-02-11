@@ -729,6 +729,10 @@ impl std::error::Error for PluginLoaderError {}
 // -------------------------------------------------------------------------
 
 /// Get the standard plugin directory.
+///
+/// Resolution order:
+/// 1. `MIMIUM_PLUGIN_DIR` environment variable (if set)
+/// 2. `$HOME/.mimium/plugins` (cross-platform default)
 #[cfg(not(target_arch = "wasm32"))]
 fn get_plugin_directory() -> Result<PathBuf, PluginLoaderError> {
     // Try environment variable first
@@ -736,37 +740,14 @@ fn get_plugin_directory() -> Result<PathBuf, PluginLoaderError> {
         return Ok(PathBuf::from(dir));
     }
 
-    // Use platform-specific defaults
+    // Cross-platform default: $HOME/.mimium/plugins
     #[cfg(target_os = "windows")]
-    {
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            return Ok(PathBuf::from(appdata).join("mimium").join("plugins"));
-        }
-    }
+    let home = std::env::var("USERPROFILE").ok();
+    #[cfg(not(target_os = "windows"))]
+    let home = std::env::var("HOME").ok();
 
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            return Ok(PathBuf::from(home)
-                .join(".local")
-                .join("share")
-                .join("mimium")
-                .join("plugins"));
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            return Ok(PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join("mimium")
-                .join("plugins"));
-        }
-    }
-
-    Err(PluginLoaderError::PluginDirectoryNotFound)
+    home.map(|h| PathBuf::from(h).join(".mimium").join("plugins"))
+        .ok_or(PluginLoaderError::PluginDirectoryNotFound)
 }
 
 /// Determine the correct library path with platform-specific extension.

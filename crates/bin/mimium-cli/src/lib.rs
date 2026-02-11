@@ -297,10 +297,11 @@ pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config
         log::warn!("Midi is not supported on this platform.")
     }
 
-    if with_gui {
-        #[cfg(not(target_arch = "wasm32"))]
-        ctx.add_system_plugin(mimium_guitools::GuiToolPlugin::default());
-    }
+    // Always register GuiToolPlugin so that Slider!/Probe! macros are
+    // available in every compilation mode.  The actual GUI window is only
+    // shown when with_gui is true (handled elsewhere).
+    #[cfg(not(target_arch = "wasm32"))]
+    ctx.add_system_plugin(mimium_guitools::GuiToolPlugin::default());
 
     ctx
 }
@@ -470,10 +471,11 @@ pub fn run_file(
             use std::sync::Arc;
 
             ctx.prepare_compiler();
+            let ext_fns = ctx.get_extfun_types();
             let mir = ctx.get_compiler().unwrap().emit_mir(content)?;
 
             // Generate WASM module
-            let mut generator = compiler::wasmgen::WasmGenerator::new(Arc::new(mir));
+            let mut generator = compiler::wasmgen::WasmGenerator::new(Arc::new(mir), &ext_fns);
             let wasm_bytes = generator.generate().map_err(|e| {
                 vec![Box::new(mimium_lang::utils::error::SimpleError {
                     message: e,
@@ -510,12 +512,13 @@ pub fn run_file(
             use std::sync::Arc;
 
             ctx.prepare_compiler();
+            let ext_fns = ctx.get_extfun_types();
             let mir = ctx.get_compiler().unwrap().emit_mir(content)?;
 
             let io_channels = mir.get_dsp_iochannels();
 
             // Generate WASM module
-            let mut generator = WasmGenerator::new(Arc::new(mir));
+            let mut generator = WasmGenerator::new(Arc::new(mir), &ext_fns);
             let wasm_bytes = generator.generate().map_err(|e| {
                 vec![Box::new(mimium_lang::utils::error::SimpleError {
                     message: e,
@@ -526,7 +529,7 @@ pub fn run_file(
             log::info!("Generated WASM module ({} bytes)", wasm_bytes.len());
 
             // Create WASM engine and load module
-            let mut wasm_engine = WasmEngine::new().map_err(|e| {
+            let mut wasm_engine = WasmEngine::new(&ext_fns).map_err(|e| {
                 vec![Box::new(mimium_lang::utils::error::SimpleError {
                     message: format!("Failed to create WASM engine: {e}"),
                     span: Location::default(),
@@ -575,10 +578,11 @@ pub fn run_file(
             let mut driver = options.get_driver();
 
             ctx.prepare_compiler();
+            let ext_fns = ctx.get_extfun_types();
             let mir = ctx.get_compiler().unwrap().emit_mir(content)?;
             let io_channels = mir.get_dsp_iochannels();
 
-            let mut generator = WasmGenerator::new(Arc::new(mir));
+            let mut generator = WasmGenerator::new(Arc::new(mir), &ext_fns);
             let wasm_bytes = generator.generate().map_err(|e| {
                 vec![Box::new(mimium_lang::utils::error::SimpleError {
                     message: e,
@@ -588,7 +592,7 @@ pub fn run_file(
 
             log::info!("Generated WASM module ({} bytes)", wasm_bytes.len());
 
-            let mut wasm_engine = WasmEngine::new().map_err(|e| {
+            let mut wasm_engine = WasmEngine::new(&ext_fns).map_err(|e| {
                 vec![Box::new(mimium_lang::utils::error::SimpleError {
                     message: format!("Failed to create WASM engine: {e}"),
                     span: Location::default(),

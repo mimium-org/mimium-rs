@@ -237,8 +237,13 @@ struct SwitchContext<'a> {
 }
 
 impl WasmGenerator {
-    /// Create a new WASM generator for the given MIR
-    pub fn new(mir: Arc<Mir>) -> Self {
+    /// Create a new WASM generator for the given MIR.
+    ///
+    /// `ext_fns` should contain the complete list of external function type
+    /// information gathered from all plugin sources (system plugins, dynamic
+    /// plugins, etc.).  The generator uses this to set up the WASM import
+    /// declarations that the runtime will later satisfy with host trampolines.
+    pub fn new(mir: Arc<Mir>, ext_fns: &[crate::plugin::ExtFunTypeInfo]) -> Self {
         let mut generator = Self {
             type_section: TypeSection::new(),
             import_section: ImportSection::new(),
@@ -281,13 +286,20 @@ impl WasmGenerator {
         generator.setup_runtime_imports();
         generator.setup_math_imports();
         generator.setup_builtin_imports();
-        generator.setup_plugin_imports();
+        generator.setup_plugin_imports(ext_fns);
         generator.setup_memory_and_table();
 
         // Save number of imported functions for use in function index calculations
         generator.num_imports = generator.current_fn_idx;
 
         generator
+    }
+
+    /// Create a generator with no plugin imports.
+    ///
+    /// Shorthand used by tests and callers that do not need plugin support.
+    pub fn new_without_plugins(mir: Arc<Mir>) -> Self {
+        Self::new(mir, &[])
     }
 
     /// Setup import section for RuntimePrimitives host functions
@@ -507,53 +519,55 @@ impl WasmGenerator {
     }
 
     /// Setup plugin function imports from dynamically loaded plugins
+    /// Setup plugin function imports.
+    ///
+    /// Registers a WASM import for every runtime-stage external function
+    /// described in `ext_fns`.  This covers both system plugins (like
+    /// `GuiToolPlugin`) and dynamically loaded ones.
     #[cfg(not(target_arch = "wasm32"))]
-    fn setup_plugin_imports(&mut self) {
-        use crate::plugin::loader::PluginLoader;
-
-        // Load plugins and get type information
-        let mut loader = PluginLoader::new();
-        if let Err(e) = loader.load_builtin_plugins() {
-            eprintln!("[W] Failed to load plugins for WASM imports: {e}");
-            return;
-        }
-
-        let type_infos = loader.get_type_infos();
-
-        for type_info in type_infos {
+    fn setup_plugin_imports(&mut self, ext_fns: &[crate::plugin::ExtFunTypeInfo]) {
+        for type_info in ext_fns {
             let name = type_info.name;
-            let type_id = type_info.ty;
+            let fn_ty = type_info.ty.to_type();
 
-            // Convert TypeNodeId to WASM function type
-            let fn_ty = type_id.to_type();
-            if let Type::Function { arg, ret } = fn_ty {
-                // Create WASM function type
-                // For now, assuming single parameter (arg) and single return (ret)
-                let param_types: Vec<ValType> = vec![Self::type_to_valtype(&arg.to_type())];
-                let return_types: Vec<ValType> = vec![Self::type_to_valtype(&ret.to_type())];
-
-                let type_idx = self.type_section.len();
-                self.type_section
-                    .ty()
-                    .function(param_types.clone(), return_types.clone());
-
-                // Add import from "plugin" module
-                let fn_idx = self.add_import_from("plugin", name.as_str(), type_idx);
-                self.plugin_fns.functions.insert(name, fn_idx);
-            } else {
+            let Type::Function { arg, ret } = fn_ty else {
                 log::warn!(
                     "Plugin function {} has non-function type: {:?}",
                     name.as_str(),
                     fn_ty
                 );
-            }
+                continue;
+            };
+
+            // Flatten tuple arguments into separate WASM parameters
+            let param_types: Vec<ValType> = match arg.to_type() {
+                Type::Tuple(elems) => elems
+                    .iter()
+                    .map(|t| Self::type_to_valtype(&t.to_type()))
+                    .collect(),
+                arg_ty => vec![Self::type_to_valtype(&arg_ty)],
+            };
+            let return_types: Vec<ValType> = vec![Self::type_to_valtype(&ret.to_type())];
+
+            let type_idx = self.type_section.len();
+            self.type_section
+                .ty()
+                .function(param_types.clone(), return_types);
+
+            let fn_idx = self.add_import_from("plugin", name.as_str(), type_idx);
+            self.plugin_fns.functions.insert(name, fn_idx);
+
+            log::debug!(
+                "Added plugin import: {} ({} params)",
+                name.as_str(),
+                param_types.len()
+            );
         }
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn setup_plugin_imports(&mut self) {
-        // WASM環境（ブラウザ）ではプラグインは使わない
-        // mimium-web は VM 全体を WASM 化するため、別の仕組み
+    fn setup_plugin_imports(&mut self, _ext_fns: &[crate::plugin::ExtFunTypeInfo]) {
+        // Browser WASM does not use the native plugin mechanism.
     }
 
     /// Setup memory and table sections
@@ -791,7 +805,7 @@ impl WasmGenerator {
             self.alloc_base_local = self.closure_save_local + 1;
 
             // Detect entry-point functions that need alloc pointer save/restore.
-            // Only `dsp` resets the allocator each call — `_mimium_global` runs
+            // Only `dsp` resets the allocator each call  E`_mimium_global` runs
             // once and its allocations (closures stored in globals) must persist.
             let is_entry = func.label.as_str() == "dsp";
             self.is_entry_function = is_entry;
@@ -2484,7 +2498,7 @@ impl WasmGenerator {
                                     _ => func.instruction(&W::I64Load(memarg)),
                                 };
                             } else {
-                                // Loading the entire tuple — return the pointer as-is
+                                // Loading the entire tuple  Ereturn the pointer as-is
                                 self.emit_value_load(ptr, func);
                             }
                         } else {
@@ -2622,38 +2636,40 @@ impl WasmGenerator {
                         let temp_addr = self.mem_layout.alloc_offset;
                         self.mem_layout.alloc_offset += ret_words * 8;
 
-                        // Load normal args
-                        for (arg, ty) in args {
-                            let expected = Self::type_to_valtype(&ty.to_type());
-                            self.emit_value_load_typed(arg, expected, func);
-                        }
-                        // Push dest pointer as extra argument
-                        func.instruction(&W::I32Const(temp_addr as i32));
-
                         if let Some(import_idx) = self.resolve_ext_function(name) {
+                            // Load normal args
+                            for (arg, ty) in args {
+                                let expected = Self::type_to_valtype(&ty.to_type());
+                                self.emit_value_load_typed(arg, expected, func);
+                            }
+                            // Push dest pointer as extra argument
+                            func.instruction(&W::I32Const(temp_addr as i32));
                             func.instruction(&W::Call(import_idx));
                         } else {
                             eprintln!(
                                 "Warning: Unknown ext function (multi-word): {}",
                                 name.as_str()
                             );
+                            // Don't load arguments for unknown functions
                         }
-                        // Push temp address as I64 — this is the tuple pointer result
+                        // Push temp address as I64  Ethis is the tuple pointer result
                         func.instruction(&W::I64Const(temp_addr as i64));
                     } else {
                         // Single-word return ExtFunction: standard call
-                        for (arg, ty) in args {
-                            let expected = Self::type_to_valtype(&ty.to_type());
-                            self.emit_value_load_typed(arg, expected, func);
-                        }
                         if let Some(import_idx) = self.resolve_ext_function(name) {
+                            // Load arguments and make the call
+                            for (arg, ty) in args {
+                                let expected = Self::type_to_valtype(&ty.to_type());
+                                self.emit_value_load_typed(arg, expected, func);
+                            }
                             func.instruction(&W::Call(import_idx));
                         } else {
+                            // Unknown external function - don't load args, just push placeholder
                             eprintln!(
                                 "Warning: Unknown external function in Call: {}",
                                 name.as_str()
                             );
-                            // Push placeholder value
+                            // Push placeholder value without loading arguments
                             match Self::type_to_valtype(&ret_ty.to_type()) {
                                 ValType::F64 => func.instruction(&W::F64Const(0.0)),
                                 ValType::I64 => func.instruction(&W::I64Const(0)),
@@ -2736,15 +2752,15 @@ impl WasmGenerator {
                 match closure_ptr.as_ref() {
                     mir::Value::ExtFunction(name, _fn_ty) => {
                         // External function call - map to runtime imports
-                        // Load arguments first with type coercion
-                        for (arg, ty) in args {
-                            let expected = Self::type_to_valtype(&ty.to_type());
-                            self.emit_value_load_typed(arg, expected, func);
-                        }
                         if let Some(import_idx) = self.resolve_ext_function(name) {
+                            // Load arguments first with type coercion
+                            for (arg, ty) in args {
+                                let expected = Self::type_to_valtype(&ty.to_type());
+                                self.emit_value_load_typed(arg, expected, func);
+                            }
                             func.instruction(&W::Call(import_idx));
                         } else {
-                            // Unknown external function - push placeholder
+                            // Unknown external function - don't load args, just push placeholder
                             eprintln!("Warning: Unknown external function: {}", name.as_str());
                             match Self::type_to_valtype(&ret_ty.to_type()) {
                                 ValType::F64 => func.instruction(&W::F64Const(0.0)),
@@ -3623,7 +3639,7 @@ impl WasmGenerator {
                 if let Some(parent) = &tv.parent {
                     Self::type_to_valtype(&parent.to_type())
                 } else {
-                    // Unresolved type variable — default to F64 for numeric compatibility
+                    // Unresolved type variable  Edefault to F64 for numeric compatibility
                     ValType::F64
                 }
             }
@@ -3708,7 +3724,7 @@ mod tests {
     #[test]
     fn test_wasmgen_create() {
         let mir = Arc::new(Mir::default());
-        let generator = WasmGenerator::new(mir);
+        let generator = WasmGenerator::new_without_plugins(mir);
         // Verify runtime primitive imports are set up
         assert!(generator.current_fn_idx > 20); // At least 25 runtime functions imported
         assert!(generator.rt.heap_alloc < generator.current_fn_idx);
@@ -3719,7 +3735,7 @@ mod tests {
     #[test]
     fn test_wasmgen_generate_empty() {
         let mir = Arc::new(Mir::default());
-        let mut generator = WasmGenerator::new(mir);
+        let mut generator = WasmGenerator::new_without_plugins(mir);
         let result = generator.generate();
         assert!(
             result.is_ok(),
@@ -3745,7 +3761,7 @@ mod tests {
         let src = "fn dsp() -> float { 0.5 }";
 
         let mir = compile_to_mir(src);
-        let mut generator = WasmGenerator::new(mir);
+        let mut generator = WasmGenerator::new_without_plugins(mir);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
         // Write to tmp directory for inspection
@@ -3776,7 +3792,7 @@ fn dsp() -> float { helper(21.0) }
 "#;
 
         let mir = compile_to_mir(src);
-        let mut generator = WasmGenerator::new(mir);
+        let mut generator = WasmGenerator::new_without_plugins(mir);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
         // Write to tmp directory for inspection
@@ -3808,7 +3824,7 @@ fn dsp() -> float {
 "#;
 
         let mir = compile_to_mir(src);
-        let mut generator = WasmGenerator::new(mir);
+        let mut generator = WasmGenerator::new_without_plugins(mir);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
         // Write to tmp directory (3 levels up from crates/lib/mimium-lang)
@@ -3825,7 +3841,7 @@ fn dsp() -> float {
     /// Helper: Compile source to WASM and validate with wasmtime
     fn compile_and_validate(src: &str, test_name: &str) -> Vec<u8> {
         let mir = compile_to_mir(src);
-        let mut generator = WasmGenerator::new(mir);
+        let mut generator = WasmGenerator::new_without_plugins(mir);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
         // Write to tmp for inspection

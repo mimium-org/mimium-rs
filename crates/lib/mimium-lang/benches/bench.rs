@@ -36,16 +36,17 @@ mod tests {
 
         let mut ctx = ExecContext::new([].into_iter(), None, Config::default());
         ctx.prepare_compiler();
+        let ext_fns = ctx.get_extfun_types();
         let mir = ctx
             .get_compiler()
             .unwrap()
             .emit_mir(content)
             .expect("MIR generation failed");
 
-        let mut generator = WasmGenerator::new(Arc::new(mir));
+        let mut generator = WasmGenerator::new(Arc::new(mir), &ext_fns);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
-        let mut engine = WasmEngine::new().expect("Failed to create WASM engine");
+        let mut engine = WasmEngine::new(&ext_fns).expect("Failed to create WASM engine");
         engine
             .load_module(&wasm_bytes)
             .expect("Failed to load WASM module");

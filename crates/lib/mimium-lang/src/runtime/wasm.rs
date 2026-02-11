@@ -103,8 +103,12 @@ impl Default for RuntimeState {
 }
 
 impl WasmRuntime {
-    /// Create a new WASM runtime with JIT compilation
-    pub fn new() -> Result<Self, String> {
+    /// Create a new WASM runtime with JIT compilation.
+    ///
+    /// `ext_fns` provides the complete set of external function type info
+    /// so that plugin host trampolines can be registered for all plugins
+    /// (system and dynamic).
+    pub fn new(ext_fns: &[crate::plugin::ExtFunTypeInfo]) -> Result<Self, String> {
         // Configure Wasmtime with JIT compiler and optimizations
         let mut config = Config::new();
 
@@ -127,7 +131,7 @@ impl WasmRuntime {
 
         // Register plugin functions as host functions
         #[cfg(not(target_arch = "wasm32"))]
-        let plugin_loader = Self::register_plugin_functions(&mut linker)?;
+        let plugin_loader = Self::register_plugin_functions(&mut linker, ext_fns)?;
 
         Ok(Self {
             engine,
@@ -281,22 +285,34 @@ impl WasmRuntime {
     /// Dynamically generates trampolines for all plugin functions based on their
     /// type info. The WASM function signature is derived from each plugin's
     /// `ExtFunTypeInfo`, matching what `wasmgen::setup_plugin_imports` produces.
+    /// Register plugin host functions so that the WASM module can call them.
+    ///
+    /// For each plugin function we create a lightweight trampoline that
+    /// inspects the WASM-level arguments and returns a sensible default.
+    /// The rule is simple: **return the first argument unchanged** for any
+    /// function whose return type matches its first parameter type (the
+    /// typical "intercept / passthrough" pattern used by Probe), and return
+    /// a zero otherwise.
     #[cfg(not(target_arch = "wasm32"))]
     fn register_plugin_functions(
         linker: &mut Linker<RuntimeState>,
+        ext_fns: &[crate::plugin::ExtFunTypeInfo],
     ) -> Result<Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>, String> {
         use crate::plugin::loader::PluginLoader;
         use crate::types::Type;
 
+        // Optionally try to load dynamic plugins (for actual FFI dispatch later)
         let mut loader = PluginLoader::new();
-        loader
-            .load_builtin_plugins()
-            .map_err(|e| format!("Failed to load plugins: {e}"))?;
+        let loader = if loader.load_builtin_plugins().is_ok()
+            && !loader.get_type_infos().is_empty()
+        {
+            Some(Arc::new(Mutex::new(loader)))
+        } else {
+            None
+        };
 
-        let type_infos = loader.get_type_infos();
-        let loader = Arc::new(Mutex::new(loader));
-
-        for type_info in type_infos {
+        // Register trampolines for every runtime-stage external function.
+        for type_info in ext_fns {
             let name = type_info.name;
             let fn_ty = type_info.ty.to_type();
 
@@ -306,22 +322,43 @@ impl WasmRuntime {
             };
 
             // Build wasmtime FuncType matching wasmgen's setup_plugin_imports.
-            // Currently assumes single WASM parameter and single return value.
-            let param_valtype = mimium_type_to_wasmtime_valtype(&arg.to_type());
+            // Flatten tuple arguments into separate WASM parameters
+            let param_valtypes: Vec<ValType> = match arg.to_type() {
+                Type::Tuple(elems) => {
+                    // Flatten tuple arguments
+                    elems
+                        .iter()
+                        .map(|t| mimium_type_to_wasmtime_valtype(&t.to_type()))
+                        .collect()
+                }
+                arg_ty => {
+                    // Single argument
+                    vec![mimium_type_to_wasmtime_valtype(&arg_ty)]
+                }
+            };
             let return_valtype = mimium_type_to_wasmtime_valtype(&ret.to_type());
             let plugin_name = name.as_str().to_string();
 
             log::debug!(
-                "Registering plugin host function: {} ({:?} -> {:?})",
+                "Registering plugin host function: {} ({} params -> {:?})",
                 plugin_name,
-                param_valtype,
+                param_valtypes.len(),
                 return_valtype
             );
 
-            let func_type =
-                FuncType::new(linker.engine(), [param_valtype], [return_valtype.clone()]);
+            let func_type = FuncType::new(
+                linker.engine(),
+                param_valtypes.clone(),
+                [return_valtype.clone()],
+            );
 
-            let return_vt = return_valtype;
+            let return_vt = return_valtype.clone();
+
+            // Determine if this function is a "passthrough" shape:
+            // first param type == return type  (e.g. __probe_intercept).
+            let is_passthrough = param_valtypes
+                .first()
+                .is_some_and(|first| valtype_eq(first, &return_valtype));
 
             linker
                 .func_new(
@@ -329,13 +366,17 @@ impl WasmRuntime {
                     name.as_str(),
                     func_type,
                     move |_caller, params, results| {
-                        log::trace!("Plugin trampoline called: {}({:?})", plugin_name, params);
-                        // Fill return slots with type-appropriate defaults.
-                        // Full plugin dispatch (bridging WASM args to the native
-                        // PluginFunctionFn FFI) will be added once the plugin
-                        // calling convention for WASM is stabilized.
-                        for result in results.iter_mut() {
-                            *result = default_val_for_valtype(return_vt.clone());
+                        log::trace!("Plugin trampoline called: {plugin_name}({params:?})");
+
+                        if is_passthrough && !params.is_empty() {
+                            // Passthrough: return the first argument unchanged.
+                            // Covers __probe_intercept, identity-wrapper patterns, etc.
+                            results[0] = params[0];
+                        } else {
+                            // No passthrough  Ereturn type-appropriate zero.
+                            for result in results.iter_mut() {
+                                *result = default_val_for_valtype(return_vt.clone());
+                            }
                         }
                         Ok(())
                     },
@@ -343,13 +384,13 @@ impl WasmRuntime {
                 .map_err(|e| format!("Failed to register plugin '{}': {e}", name.as_str()))?;
         }
 
-        Ok(Some(loader))
+        Ok(loader)
     }
 }
 
 impl Default for WasmRuntime {
     fn default() -> Self {
-        Self::new().expect("Failed to create WASM runtime")
+        Self::new(&[]).expect("Failed to create WASM runtime")
     }
 }
 
@@ -477,6 +518,21 @@ fn mimium_type_to_wasmtime_valtype(ty: &crate::types::Type) -> ValType {
 }
 
 /// Produce a zero/default `Val` for a given `ValType`.
+/// Compare two [`ValType`] values for equality.
+///
+/// `wasmtime::ValType` does not implement `PartialEq`, so we match on the
+/// discriminant instead.
+#[cfg(not(target_arch = "wasm32"))]
+fn valtype_eq(a: &ValType, b: &ValType) -> bool {
+    matches!(
+        (a, b),
+        (ValType::I32, ValType::I32)
+            | (ValType::I64, ValType::I64)
+            | (ValType::F32, ValType::F32)
+            | (ValType::F64, ValType::F64)
+    )
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn default_val_for_valtype(vt: ValType) -> Val {
     match vt {
@@ -637,7 +693,7 @@ fn box_store_host(caller: Caller<'_, RuntimeState>, obj: i64, src_ptr: i32, size
 
 /// Copy a user-defined sum type value within linear memory.
 /// The wasmgen emits `CloneUserSum` for values that may contain
-/// heap-allocated inner payloads — for now we perform a shallow
+/// heap-allocated inner payloads  Efor now we perform a shallow
 /// byte-level copy (deep clone of boxed payloads is not yet handled).
 fn usersum_clone_host(mut caller: Caller<'_, RuntimeState>, dst_ptr: i32, src_ptr: i32, size: i32) {
     log::trace!("usersum_clone_host: dst_ptr={dst_ptr}, src_ptr={src_ptr}, size={size}");
@@ -723,7 +779,7 @@ fn closure_state_push_host(
 ) {
     log::trace!("closure_state_push_host: closure_addr={closure_addr}, state_size={state_size}");
     let state = caller.data_mut();
-    
+
     // Push closure address onto the state stack
     state.state_stack.push(closure_addr);
     // Lazily allocate state storage for this closure if it doesn't exist yet
@@ -737,7 +793,7 @@ fn closure_state_push_host(
 /// Combines the caller's closure address with a static call site ID to create
 /// a unique key, ensuring each closure instance calling the same function
 /// gets its own independent state storage.
-/// 
+///
 /// This is used for Call instructions (direct function calls) that occur within
 /// closures, where multiple closure instances may call the same stateful function.
 /// By incorporating the caller's address, we ensure state isolation between instances.
@@ -757,13 +813,13 @@ fn closure_state_push_with_caller_host(
         // Closure context: combine with caller address
         (((caller_addr as u64) << 32) | (call_site_id as u64 & 0xFFFFFFFF)) as i64
     };
-    
+
     log::trace!(
         "closure_state_push_with_caller_host: caller_addr={caller_addr}, call_site_id={call_site_id}, combined_key={combined_key}, state_size={state_size}"
     );
-    
+
     let state = caller.data_mut();
-    
+
     // Push combined key onto the state stack
     state.state_stack.push(combined_key);
     // Lazily allocate state storage for this key if it doesn't exist yet
@@ -1160,13 +1216,13 @@ mod tests {
 
     #[test]
     fn test_wasm_runtime_create() {
-        let runtime = WasmRuntime::new();
+        let runtime = WasmRuntime::new(&[]);
         assert!(runtime.is_ok(), "Should create WASM runtime");
     }
 
     #[test]
     fn test_wasm_runtime_load_empty_module() {
-        let mut runtime = WasmRuntime::new().unwrap();
+        let mut runtime = WasmRuntime::new(&[]).unwrap();
 
         // Minimal valid WASM module with memory export
         let wasm_bytes = wat::parse_str(
@@ -1184,7 +1240,7 @@ mod tests {
 
     #[test]
     fn test_heap_operations() {
-        let mut runtime = WasmRuntime::new().unwrap();
+        let mut runtime = WasmRuntime::new(&[]).unwrap();
 
         // WASM module that tests heap operations
         let wasm_bytes = wat::parse_str(
@@ -1227,7 +1283,7 @@ mod tests {
 
     #[test]
     fn test_array_operations() {
-        let mut runtime = WasmRuntime::new().unwrap();
+        let mut runtime = WasmRuntime::new(&[]).unwrap();
 
         // WASM module that tests array operations
         let wasm_bytes = wat::parse_str(
@@ -1303,7 +1359,7 @@ mod tests {
         eprintln!("Loading WASM from: {wasm_path:?}");
         let wasm_bytes = std::fs::read(&wasm_path).expect("Failed to read generated WASM file");
 
-        let mut runtime = WasmRuntime::new().unwrap();
+        let mut runtime = WasmRuntime::new(&[]).unwrap();
         let result = runtime.load_module(&wasm_bytes);
 
         assert!(
