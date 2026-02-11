@@ -14,7 +14,7 @@ use crate::interner::Symbol;
 use crate::mir::{self, Mir, VPtr};
 use crate::runtime::primitives::WordSize;
 use crate::types::{PType, Type};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use wasm_encoder::{
     CodeSection, DataSection, ElementSection, EntityType, ExportSection, Function, FunctionSection,
@@ -73,6 +73,50 @@ struct RuntimeFunctionIndices {
     builtin_split_tail: u32,
 }
 
+/// Linear memory layout manager
+/// 
+/// Manages the layout of WASM linear memory regions:
+/// - 0..256: Reserved for future use
+/// - 256..512: Global variable storage
+/// - 512..1024: State exchange temporary region
+/// - 1024..: Dynamic allocation region
+#[derive(Debug, Clone)]
+struct MemoryLayout {
+    /// Current offset for dynamic allocations (Alloc instructions)
+    alloc_offset: u32,
+    /// Base address for state exchange temporary memory region
+    state_temp_base: u32,
+    /// Global variable memory offsets: maps global VPtr to linear memory address
+    global_offsets: HashMap<VPtr, u32>,
+    /// Next available offset for global variable allocation
+    next_global_offset: u32,
+}
+
+impl Default for MemoryLayout {
+    fn default() -> Self {
+        Self {
+            alloc_offset: 1024,           // Start dynamic allocation after reserved regions
+            state_temp_base: 512,         // Reserve 512..1024 for state exchange
+            global_offsets: HashMap::new(),
+            next_global_offset: 256,      // Reserve 256..512 for globals
+        }
+    }
+}
+
+impl MemoryLayout {
+    /// Allocate a linear memory offset for a global variable, or return existing one.
+    fn get_or_alloc_global_offset(&mut self, global: &VPtr) -> u32 {
+        if let Some(&offset) = self.global_offsets.get(global) {
+            offset
+        } else {
+            let offset = self.next_global_offset;
+            self.next_global_offset += 8; // 8 bytes per global slot
+            self.global_offsets.insert(global.clone(), offset);
+            offset
+        }
+    }
+}
+
 /// WASM code generator state
 pub struct WasmGenerator {
     /// Type table (WASM function types)
@@ -125,18 +169,9 @@ pub struct WasmGenerator {
     /// Number of i64 local slots for the current function.
     /// Used as offset base for f64 locals: f64 reg `r` maps to local `num_args + num_i64_locals + r`.
     current_num_i64_locals: u32,
-    /// Linear memory offset counter for Alloc instructions.
-    /// Each Alloc reserves a unique range in linear memory for local variables.
-    alloc_offset: u32,
 
-    /// Base address for state exchange temporary memory region.
-    /// Used by GetState/ReturnFeed to transfer data to/from the runtime state storage.
-    state_temp_base: u32,
-
-    /// Global variable memory offsets: maps global VPtr to linear memory address.
-    global_offsets: HashMap<VPtr, u32>,
-    /// Next available offset for global variable allocation.
-    next_global_offset: u32,
+    /// Linear memory layout manager
+    mem_layout: MemoryLayout,
 
     /// Runtime primitive function indices
     rt: RuntimeFunctionIndices,
@@ -160,6 +195,37 @@ pub struct WasmGenerator {
     alloc_ptr_global: u32,
     /// Maps function signatures (params, results) to type section indices for call_indirect
     call_type_cache: HashMap<(Vec<wasm_encoder::ValType>, Vec<wasm_encoder::ValType>), u32>,
+}
+
+/// Context for emitting control flow blocks
+struct BlockEmitContext<'a> {
+    blocks: &'a [mir::Block],
+    processed: HashSet<usize>,
+}
+
+impl<'a> BlockEmitContext<'a> {
+    fn new(blocks: &'a [mir::Block]) -> Self {
+        Self {
+            blocks,
+            processed: HashSet::new(),
+        }
+    }
+
+    fn mark_processed(&mut self, idx: usize) {
+        self.processed.insert(idx);
+    }
+
+    fn is_processed(&self, idx: usize) -> bool {
+        self.processed.contains(&idx)
+    }
+}
+
+/// Context for emitting a Switch instruction
+struct SwitchContext<'a> {
+    scrutinee: &'a VPtr,
+    cases: &'a [(i64, u64)],
+    default_block: Option<u64>,
+    merge_block: u64,
 }
 
 impl WasmGenerator {
@@ -187,10 +253,7 @@ impl WasmGenerator {
             current_arg_types: Vec::new(),
             current_arg_map: Vec::new(),
             current_num_i64_locals: 0,
-            alloc_offset: 1024,
-            state_temp_base: 512, // Reserve 512..1024 for state exchange
-            global_offsets: HashMap::new(),
-            next_global_offset: 256, // Reserve 256..512 for globals
+            mem_layout: MemoryLayout::default(),
             // Runtime primitive indices will be set by setup_runtime_imports
             rt: RuntimeFunctionIndices::default(),
             plugin_fns: PluginFunctionIndices::default(),
@@ -521,7 +584,7 @@ impl WasmGenerator {
                 mutable: true,
                 shared: false,
             },
-            &wasm_encoder::ConstExpr::i32_const(self.alloc_offset as i32),
+            &wasm_encoder::ConstExpr::i32_const(self.mem_layout.alloc_offset as i32),
         );
         self.alloc_ptr_global = 0; // first (and only) global
 
@@ -725,13 +788,13 @@ impl WasmGenerator {
         use wasm_encoder::Instruction as W;
 
         let blocks = &func.body;
-        let mut processed = vec![false; blocks.len()];
+        let mut ctx = BlockEmitContext::new(blocks);
 
         for block_idx in 0..blocks.len() {
-            if processed[block_idx] {
+            if ctx.is_processed(block_idx) {
                 continue;
             }
-            processed[block_idx] = true;
+            ctx.mark_processed(block_idx);
 
             let block = &blocks[block_idx];
             for (dest, instr) in &block.0 {
@@ -777,11 +840,10 @@ impl WasmGenerator {
                         wasm_func.instruction(&W::If(block_type));
 
                         // Emit then-branch block
-                        processed[then_idx] = true;
+                        ctx.mark_processed(then_idx);
                         self.emit_branch_block(
-                            &blocks[then_idx],
-                            blocks,
-                            &mut processed,
+                            &ctx.blocks[then_idx],
+                            &mut ctx,
                             phi_info.as_ref().map(|(inputs, _)| &inputs.0),
                             phi_result_type,
                             wasm_func,
@@ -790,11 +852,10 @@ impl WasmGenerator {
                         wasm_func.instruction(&W::Else);
 
                         // Emit else-branch block
-                        processed[else_idx] = true;
+                        ctx.mark_processed(else_idx);
                         self.emit_branch_block(
-                            &blocks[else_idx],
-                            blocks,
-                            &mut processed,
+                            &ctx.blocks[else_idx],
+                            &mut ctx,
                             phi_info.as_ref().map(|(inputs, _)| &inputs.1),
                             phi_result_type,
                             wasm_func,
@@ -803,8 +864,8 @@ impl WasmGenerator {
                         wasm_func.instruction(&W::End);
 
                         // Emit merge block (skip Phi, which is on the stack from if/else)
-                        processed[merge_idx] = true;
-                        self.emit_merge_block(&blocks[merge_idx], phi_info.is_some(), wasm_func);
+                        ctx.mark_processed(merge_idx);
+                        self.emit_merge_block(&ctx.blocks[merge_idx], phi_info.is_some(), wasm_func);
                     }
                     I::Switch {
                         scrutinee,
@@ -813,12 +874,13 @@ impl WasmGenerator {
                         merge_block,
                     } => {
                         self.emit_switch(
-                            scrutinee,
-                            cases,
-                            default_block,
-                            merge_block,
-                            blocks,
-                            &mut processed,
+                            SwitchContext {
+                                scrutinee,
+                                cases,
+                                default_block: *default_block,
+                                merge_block: *merge_block,
+                            },
+                            &mut ctx,
                             wasm_func,
                         );
                     }
@@ -834,20 +896,16 @@ impl WasmGenerator {
     /// Extracted as a method so it can be called recursively for nested switches.
     fn emit_switch(
         &mut self,
-        scrutinee: &VPtr,
-        cases: &[(i64, u64)],
-        default_block: &Option<u64>,
-        merge_block: &u64,
-        blocks: &[mir::Block],
-        processed: &mut [bool],
+        switch_ctx: SwitchContext,
+        ctx: &mut BlockEmitContext,
         wasm_func: &mut Function,
     ) {
         use wasm_encoder::Instruction as W;
 
-        let merge_idx = *merge_block as usize;
+        let merge_idx = switch_ctx.merge_block as usize;
 
         // Find PhiSwitch in merge block
-        let phi_switch_info = Self::find_phi_switch_in_block(&blocks[merge_idx]);
+        let phi_switch_info = Self::find_phi_switch_in_block(&ctx.blocks[merge_idx]);
 
         // Determine result type from PhiSwitch
         let (block_type, phi_result_type) = if let Some((_, ref phi_dest)) = phi_switch_info {
@@ -864,24 +922,24 @@ impl WasmGenerator {
             (wasm_encoder::BlockType::Empty, None)
         };
 
-        let num_cases = cases.len();
+        let num_cases = switch_ctx.cases.len();
         let phi_inputs = phi_switch_info
             .as_ref()
             .map(|(inputs, _)| inputs.clone())
             .unwrap_or_default();
 
-        for (i, (case_val, case_bb)) in cases.iter().enumerate() {
+        for (i, (case_val, case_bb)) in switch_ctx.cases.iter().enumerate() {
             let case_idx = *case_bb as usize;
 
             // Load scrutinee and compare with case value
-            self.emit_value_load(scrutinee, wasm_func);
+            self.emit_value_load(switch_ctx.scrutinee, wasm_func);
             wasm_func.instruction(&W::I64Const(*case_val));
             wasm_func.instruction(&W::I64Eq);
             wasm_func.instruction(&W::If(block_type));
 
             // Emit case block with nested control flow support
-            processed[case_idx] = true;
-            self.emit_block_instructions(&blocks[case_idx], blocks, processed, wasm_func);
+            ctx.mark_processed(case_idx);
+            self.emit_block_instructions(&ctx.blocks[case_idx], ctx, wasm_func);
 
             // Push phi input for this case
             if let Some(input) = phi_inputs.get(i) {
@@ -896,10 +954,10 @@ impl WasmGenerator {
         }
 
         // Default or last else
-        if let Some(default_bb) = default_block {
-            let default_idx = *default_bb as usize;
-            processed[default_idx] = true;
-            self.emit_block_instructions(&blocks[default_idx], blocks, processed, wasm_func);
+        if let Some(default_bb) = switch_ctx.default_block {
+            let default_idx = default_bb as usize;
+            ctx.mark_processed(default_idx);
+            self.emit_block_instructions(&ctx.blocks[default_idx], ctx, wasm_func);
 
             if let Some(input) = phi_inputs.get(num_cases) {
                 if let Some(expected) = phi_result_type {
@@ -924,8 +982,8 @@ impl WasmGenerator {
         }
 
         // Emit merge block (skip PhiSwitch)
-        processed[merge_idx] = true;
-        self.emit_merge_block_switch(&blocks[merge_idx], phi_switch_info.is_some(), wasm_func);
+        ctx.mark_processed(merge_idx);
+        self.emit_merge_block_switch(&ctx.blocks[merge_idx], phi_switch_info.is_some(), wasm_func);
     }
 
     /// Find the Phi instruction in a merge block.
@@ -955,8 +1013,7 @@ impl WasmGenerator {
     fn emit_branch_block(
         &mut self,
         block: &mir::Block,
-        blocks: &[mir::Block],
-        processed: &mut [bool],
+        ctx: &mut BlockEmitContext,
         phi_input: Option<&VPtr>,
         expected_phi_type: Option<ValType>,
         func: &mut Function,
@@ -971,7 +1028,7 @@ impl WasmGenerator {
                     let else_idx = *else_bb as usize;
                     let merge_idx = *merge_bb as usize;
 
-                    let phi_info = Self::find_phi_in_block(&blocks[merge_idx]);
+                    let phi_info = Self::find_phi_in_block(&ctx.blocks[merge_idx]);
 
                     self.emit_value_load(cond, func);
                     if self.infer_value_type(cond) == ValType::F64 {
@@ -997,11 +1054,10 @@ impl WasmGenerator {
                     };
                     func.instruction(&W::If(block_type));
 
-                    processed[then_idx] = true;
+                    ctx.mark_processed(then_idx);
                     self.emit_branch_block(
-                        &blocks[then_idx],
-                        blocks,
-                        processed,
+                        &ctx.blocks[then_idx],
+                        ctx,
                         phi_info.as_ref().map(|(inputs, _)| &inputs.0),
                         inner_phi_type,
                         func,
@@ -1009,11 +1065,10 @@ impl WasmGenerator {
 
                     func.instruction(&W::Else);
 
-                    processed[else_idx] = true;
+                    ctx.mark_processed(else_idx);
                     self.emit_branch_block(
-                        &blocks[else_idx],
-                        blocks,
-                        processed,
+                        &ctx.blocks[else_idx],
+                        ctx,
                         phi_info.as_ref().map(|(inputs, _)| &inputs.1),
                         inner_phi_type,
                         func,
@@ -1021,8 +1076,8 @@ impl WasmGenerator {
 
                     func.instruction(&W::End);
 
-                    processed[merge_idx] = true;
-                    self.emit_merge_block(&blocks[merge_idx], phi_info.is_some(), func);
+                    ctx.mark_processed(merge_idx);
+                    self.emit_merge_block(&ctx.blocks[merge_idx], phi_info.is_some(), func);
                 }
                 I::Switch {
                     scrutinee,
@@ -1031,12 +1086,13 @@ impl WasmGenerator {
                     merge_block,
                 } => {
                     self.emit_switch(
-                        scrutinee,
-                        cases,
-                        default_block,
-                        merge_block,
-                        blocks,
-                        processed,
+                        SwitchContext {
+                            scrutinee,
+                            cases,
+                            default_block: *default_block,
+                            merge_block: *merge_block,
+                        },
+                        ctx,
                         func,
                     );
                 }
@@ -1060,8 +1116,7 @@ impl WasmGenerator {
     fn emit_block_instructions(
         &mut self,
         block: &mir::Block,
-        blocks: &[mir::Block],
-        processed: &mut [bool],
+        ctx: &mut BlockEmitContext,
         func: &mut Function,
     ) {
         use mir::Instruction as I;
@@ -1074,7 +1129,7 @@ impl WasmGenerator {
                     let else_idx = *else_bb as usize;
                     let merge_idx = *merge_bb as usize;
 
-                    let phi_info = Self::find_phi_in_block(&blocks[merge_idx]);
+                    let phi_info = Self::find_phi_in_block(&ctx.blocks[merge_idx]);
 
                     self.emit_value_load(cond, func);
                     if self.infer_value_type(cond) == ValType::F64 {
@@ -1100,11 +1155,10 @@ impl WasmGenerator {
                     };
                     func.instruction(&W::If(block_type));
 
-                    processed[then_idx] = true;
+                    ctx.mark_processed(then_idx);
                     self.emit_branch_block(
-                        &blocks[then_idx],
-                        blocks,
-                        processed,
+                        &ctx.blocks[then_idx],
+                        ctx,
                         phi_info.as_ref().map(|(inputs, _)| &inputs.0),
                         inner_phi_type,
                         func,
@@ -1112,11 +1166,10 @@ impl WasmGenerator {
 
                     func.instruction(&W::Else);
 
-                    processed[else_idx] = true;
+                    ctx.mark_processed(else_idx);
                     self.emit_branch_block(
-                        &blocks[else_idx],
-                        blocks,
-                        processed,
+                        &ctx.blocks[else_idx],
+                        ctx,
                         phi_info.as_ref().map(|(inputs, _)| &inputs.1),
                         inner_phi_type,
                         func,
@@ -1124,8 +1177,8 @@ impl WasmGenerator {
 
                     func.instruction(&W::End);
 
-                    processed[merge_idx] = true;
-                    self.emit_merge_block(&blocks[merge_idx], phi_info.is_some(), func);
+                    ctx.mark_processed(merge_idx);
+                    self.emit_merge_block(&ctx.blocks[merge_idx], phi_info.is_some(), func);
                 }
                 I::Switch {
                     scrutinee,
@@ -1134,12 +1187,13 @@ impl WasmGenerator {
                     merge_block,
                 } => {
                     self.emit_switch(
-                        scrutinee,
-                        cases,
-                        default_block,
-                        merge_block,
-                        blocks,
-                        processed,
+                        SwitchContext {
+                            scrutinee,
+                            cases,
+                            default_block: *default_block,
+                            merge_block: *merge_block,
+                        },
+                        ctx,
                         func,
                     );
                 }
@@ -1887,8 +1941,8 @@ impl WasmGenerator {
                 // Write value to temp memory, then pass its address
                 let size = inner_type.word_size() as u32;
                 let size_words = size.max(1);
-                let temp_addr = self.alloc_offset;
-                self.alloc_offset += size_words * 8;
+                let temp_addr = self.mem_layout.alloc_offset;
+                self.mem_layout.alloc_offset += size_words * 8;
 
                 // Write value to temp memory
                 let val_type = self.infer_value_type(value);
@@ -1943,8 +1997,8 @@ impl WasmGenerator {
                 // We allocate temp memory and read from it after the call.
                 let size = inner_type.word_size() as i32;
                 let size_bytes = (size as u32).max(1) * 8;
-                let temp_addr = self.alloc_offset;
-                self.alloc_offset += size_bytes;
+                let temp_addr = self.mem_layout.alloc_offset;
+                self.mem_layout.alloc_offset += size_bytes;
 
                 func.instruction(&W::I32Const(temp_addr as i32)); // dst_ptr
                 self.emit_value_load_deref(ptr, ValType::I64, func); // obj: HeapIdx
@@ -1989,8 +2043,8 @@ impl WasmGenerator {
                 // box_store(obj: i64, src_ptr: i32, size_words: i32)
                 let size = inner_type.word_size() as u32;
                 let size_words = size.max(1);
-                let temp_addr = self.alloc_offset;
-                self.alloc_offset += size_words * 8;
+                let temp_addr = self.mem_layout.alloc_offset;
+                self.mem_layout.alloc_offset += size_words * 8;
 
                 // Write new value to temp memory
                 let val_type = self.infer_value_type(value);
@@ -2165,8 +2219,8 @@ impl WasmGenerator {
                 // Allocate a temp region in linear memory for state exchange
                 let size = ty.word_size() as i32;
                 let size_bytes = (size as u32).max(1) * 8;
-                let temp_addr = self.state_temp_base;
-                self.state_temp_base += size_bytes;
+                let temp_addr = self.mem_layout.state_temp_base;
+                self.mem_layout.state_temp_base += size_bytes;
 
                 // Call state_get(dst_ptr: i32, size_words: i32) to fill temp memory
                 func.instruction(&W::I32Const(temp_addr as i32));
@@ -2184,8 +2238,8 @@ impl WasmGenerator {
                 if size <= 1 {
                     // Single-word value: store to temp memory, then state_set from temp
                     let size_bytes = 8u32;
-                    let temp_addr = self.state_temp_base;
-                    self.state_temp_base += size_bytes;
+                    let temp_addr = self.mem_layout.state_temp_base;
+                    self.mem_layout.state_temp_base += size_bytes;
 
                     let memarg = MemArg {
                         offset: 0,
@@ -2243,8 +2297,8 @@ impl WasmGenerator {
                 let total_bytes = total_words * 8;
 
                 // Allocate temp memory region for element data
-                let temp_addr = self.alloc_offset;
-                self.alloc_offset += total_bytes;
+                let temp_addr = self.mem_layout.alloc_offset;
+                self.mem_layout.alloc_offset += total_bytes;
 
                 // Write each element's data to linear memory
                 for (i, val) in values.iter().enumerate() {
@@ -2299,8 +2353,8 @@ impl WasmGenerator {
                 // We allocate temp memory and read from it after the call.
                 let elem_size = elem_ty.word_size() as i32;
                 let size_bytes = (elem_size as u32).max(1) * 8;
-                let temp_addr = self.alloc_offset;
-                self.alloc_offset += size_bytes;
+                let temp_addr = self.mem_layout.alloc_offset;
+                self.mem_layout.alloc_offset += size_bytes;
 
                 func.instruction(&W::I32Const(temp_addr as i32)); // dst_ptr
                 self.emit_value_load_typed(array, ValType::I64, func); // array handle
@@ -2508,8 +2562,8 @@ impl WasmGenerator {
                     let ret_words = ret_ty.word_size() as u32;
                     if ret_words > 1 {
                         // Multi-word return: dest-pointer convention
-                        let temp_addr = self.alloc_offset;
-                        self.alloc_offset += ret_words * 8;
+                        let temp_addr = self.mem_layout.alloc_offset;
+                        self.mem_layout.alloc_offset += ret_words * 8;
 
                         // Load normal args
                         for (arg, ty) in args {
@@ -2983,8 +3037,8 @@ impl WasmGenerator {
                 // Store tag and value inline into temp memory, return pointer.
                 // Layout: [tag: i64] [value_word_0] [value_word_1] ...
                 let size_bytes = (union_type.word_size() as u32).max(2) * 8;
-                let temp_addr = self.alloc_offset;
-                self.alloc_offset += size_bytes;
+                let temp_addr = self.mem_layout.alloc_offset;
+                self.mem_layout.alloc_offset += size_bytes;
 
                 // Store tag to first word
                 let memarg = MemArg {
@@ -3160,8 +3214,8 @@ impl WasmGenerator {
                         // Multi-word arg (tuple/record): store all params to temp memory
                         // and return the pointer so subsequent GetElement/Load can access it
                         let size_bytes = (word_count as u32) * 8;
-                        let temp_addr = self.alloc_offset;
-                        self.alloc_offset += size_bytes;
+                        let temp_addr = self.mem_layout.alloc_offset;
+                        self.mem_layout.alloc_offset += size_bytes;
 
                         for i in 0..word_count {
                             let param_idx = param_start + i;
@@ -3277,7 +3331,7 @@ impl WasmGenerator {
                 // Look up actual argument type from the current function's arg map.
                 // For multi-word args (tuples), the materialized value is a pointer (I64).
                 if let Some(&(param_start, word_count)) =
-                    self.current_arg_map.get(*arg_idx as usize)
+                    self.current_arg_map.get(*arg_idx)
                 {
                     if word_count > 1 {
                         ValType::I64 // Multi-word arg is materialized as a pointer
@@ -3394,14 +3448,7 @@ impl WasmGenerator {
 
     /// Allocate a linear memory offset for a global variable, or return existing one.
     fn get_or_alloc_global_offset(&mut self, global: &VPtr) -> u32 {
-        if let Some(&offset) = self.global_offsets.get(global) {
-            offset
-        } else {
-            let offset = self.next_global_offset;
-            self.next_global_offset += 8; // 8 bytes per global slot
-            self.global_offsets.insert(global.clone(), offset);
-            offset
-        }
+        self.mem_layout.get_or_alloc_global_offset(global)
     }
 
     /// Helper: Map mimium type to WASM ValType

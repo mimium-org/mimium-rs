@@ -282,7 +282,7 @@ impl WasmRuntime {
         let mut loader = PluginLoader::new();
         loader
             .load_builtin_plugins()
-            .map_err(|e| format!("Failed to load plugins: {}", e))?;
+            .map_err(|e| format!("Failed to load plugins: {e}"))?;
 
         // Get type infos to know function signatures
         let type_infos = loader.get_type_infos();
@@ -303,10 +303,7 @@ impl WasmRuntime {
                     .func_wrap(
                         "plugin",
                         "sampler_mono",
-                        move |mut caller: Caller<RuntimeState>,
-                              path_ptr: i32,
-                              path_len: i32|
-                              -> f64 {
+                        move |caller: Caller<RuntimeState>, path_ptr: i32, path_len: i32| -> f64 {
                             // Read string from linear memory
                             let memory = caller.data().memory.expect("Memory not set");
                             let mem_data = memory.data(&caller);
@@ -316,9 +313,7 @@ impl WasmRuntime {
 
                             if end > mem_data.len() {
                                 eprintln!(
-                                    "[E] Invalid memory access: ptr={}, len={}, mem_size={}",
-                                    path_ptr,
-                                    path_len,
+                                    "[E] Invalid memory access: ptr={path_ptr}, len={path_len}, mem_size={}",
                                     mem_data.len()
                                 );
                                 return 0.0;
@@ -328,12 +323,12 @@ impl WasmRuntime {
                             let path_str = match std::str::from_utf8(path_bytes) {
                                 Ok(s) => s,
                                 Err(e) => {
-                                    eprintln!("[E] Invalid UTF-8 in path string: {}", e);
+                                    eprintln!("[E] Invalid UTF-8 in path string: {e}");
                                     return 0.0;
                                 }
                             };
 
-                            log::debug!("Plugin call: sampler_mono(\"{}\")", path_str);
+                            log::debug!("Plugin call: sampler_mono(\"{path_str}\")");
 
                             // Call plugin function via stored loader
                             // Note: This is a simplified implementation
@@ -344,7 +339,7 @@ impl WasmRuntime {
                             0.0
                         },
                     )
-                    .map_err(|e| format!("Failed to register sampler_mono: {}", e))?;
+                    .map_err(|e| format!("Failed to register sampler_mono: {e}"))?;
             }
         }
 
@@ -1164,14 +1159,11 @@ mod tests {
 
         // Skip test if the file doesn't exist (e.g., in CI environment)
         if !wasm_path.exists() {
-            eprintln!(
-                "Skipping test_load_generated_wasm: file not found at {:?}",
-                wasm_path
-            );
+            eprintln!("Skipping test_load_generated_wasm: file not found at {wasm_path:?}");
             return;
         }
 
-        eprintln!("Loading WASM from: {:?}", wasm_path);
+        eprintln!("Loading WASM from: {wasm_path:?}");
         let wasm_bytes = std::fs::read(&wasm_path).expect("Failed to read generated WASM file");
 
         let mut runtime = WasmRuntime::new().unwrap();
@@ -1187,7 +1179,7 @@ mod tests {
 
         // Try to call the dsp function if it exists
         if let Ok(result) = module.call_function("fn_0", &[]) {
-            eprintln!("fn_0 returned: {:?}", result);
+            eprintln!("fn_0 returned: {result:?}");
         }
     }
 }
