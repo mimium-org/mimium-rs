@@ -9,7 +9,9 @@ use crate::runtime::primitives::Word;
 use crate::runtime::vm::heap::{self, HeapStorage};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use wasmtime::{AsContextMut, Caller, Config, Engine, Linker, Module, OptLevel, Store};
+use wasmtime::{
+    AsContextMut, Caller, Config, Engine, FuncType, Linker, Module, OptLevel, Store, Val, ValType,
+};
 
 /// WASM runtime state
 pub struct WasmRuntime {
@@ -272,78 +274,74 @@ impl WasmRuntime {
         Ok(())
     }
 
-    /// Register plugin functions as host functions
+    /// Register plugin functions as host functions.
+    ///
+    /// Dynamically generates trampolines for all plugin functions based on their
+    /// type info. The WASM function signature is derived from each plugin's
+    /// `ExtFunTypeInfo`, matching what `wasmgen::setup_plugin_imports` produces.
     #[cfg(not(target_arch = "wasm32"))]
     fn register_plugin_functions(
         linker: &mut Linker<RuntimeState>,
     ) -> Result<Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>, String> {
         use crate::plugin::loader::PluginLoader;
+        use crate::types::Type;
 
         let mut loader = PluginLoader::new();
         loader
             .load_builtin_plugins()
             .map_err(|e| format!("Failed to load plugins: {e}"))?;
 
-        // Get type infos to know function signatures
         let type_infos = loader.get_type_infos();
-
-        // Wrap loader in Arc<Mutex<>> for sharing with host functions
         let loader = Arc::new(Mutex::new(loader));
-        let loader_clone = loader.clone();
 
         for type_info in type_infos {
             let name = type_info.name;
+            let fn_ty = type_info.ty.to_type();
 
-            // For now, hardcode sampler_mono as example
-            // TODO: Generate trampolines automatically based on type info
-            if name.as_str() == "sampler_mono" {
-                eprintln!("[D] Registering plugin host function: sampler_mono");
+            let Type::Function { arg, ret } = fn_ty else {
+                log::warn!("Plugin '{}' has non-function type, skipping", name.as_str());
+                continue;
+            };
 
-                linker
-                    .func_wrap(
-                        "plugin",
-                        "sampler_mono",
-                        move |caller: Caller<RuntimeState>, path_ptr: i32, path_len: i32| -> f64 {
-                            // Read string from linear memory
-                            let memory = caller.data().memory.expect("Memory not set");
-                            let mem_data = memory.data(&caller);
+            // Build wasmtime FuncType matching wasmgen's setup_plugin_imports.
+            // Currently assumes single WASM parameter and single return value.
+            let param_valtype = mimium_type_to_wasmtime_valtype(&arg.to_type());
+            let return_valtype = mimium_type_to_wasmtime_valtype(&ret.to_type());
+            let plugin_name = name.as_str().to_string();
 
-                            let start = path_ptr as usize;
-                            let end = start + path_len as usize;
+            log::debug!(
+                "Registering plugin host function: {} ({:?} -> {:?})",
+                plugin_name,
+                param_valtype,
+                return_valtype
+            );
 
-                            if end > mem_data.len() {
-                                eprintln!(
-                                    "[E] Invalid memory access: ptr={path_ptr}, len={path_len}, mem_size={}",
-                                    mem_data.len()
-                                );
-                                return 0.0;
-                            }
+            let func_type =
+                FuncType::new(linker.engine(), [param_valtype], [return_valtype.clone()]);
 
-                            let path_bytes = &mem_data[start..end];
-                            let path_str = match std::str::from_utf8(path_bytes) {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    eprintln!("[E] Invalid UTF-8 in path string: {e}");
-                                    return 0.0;
-                                }
-                            };
+            let return_vt = return_valtype;
 
-                            log::debug!("Plugin call: sampler_mono(\"{path_str}\")");
-
-                            // Call plugin function via stored loader
-                            // Note: This is a simplified implementation
-                            // Real implementation would need to properly handle the plugin API
-
-                            // For now, return a dummy value
-                            // TODO: Actually call the plugin function
-                            0.0
-                        },
-                    )
-                    .map_err(|e| format!("Failed to register sampler_mono: {e}"))?;
-            }
+            linker
+                .func_new(
+                    "plugin",
+                    name.as_str(),
+                    func_type,
+                    move |_caller, params, results| {
+                        log::trace!("Plugin trampoline called: {}({:?})", plugin_name, params);
+                        // Fill return slots with type-appropriate defaults.
+                        // Full plugin dispatch (bridging WASM args to the native
+                        // PluginFunctionFn FFI) will be added once the plugin
+                        // calling convention for WASM is stabilized.
+                        for result in results.iter_mut() {
+                            *result = default_val_for_valtype(return_vt.clone());
+                        }
+                        Ok(())
+                    },
+                )
+                .map_err(|e| format!("Failed to register plugin '{}': {e}", name.as_str()))?;
         }
 
-        Ok(Some(loader_clone))
+        Ok(Some(loader))
     }
 }
 
@@ -416,6 +414,53 @@ impl WasmModule {
     /// This allows external code to update current_time, sample_rate, etc.
     pub fn get_runtime_state_mut(&mut self) -> Option<&mut RuntimeState> {
         Some(self.store.data_mut())
+    }
+}
+
+/// Convert a mimium `Type` to a `wasmtime::ValType`.
+///
+/// This mapping must stay in sync with `WasmGenerator::type_to_valtype` in
+/// `wasmgen.rs` so that the host trampolines match the WASM import signatures.
+#[cfg(not(target_arch = "wasm32"))]
+fn mimium_type_to_wasmtime_valtype(ty: &crate::types::Type) -> ValType {
+    use crate::types::{PType, Type};
+    match ty {
+        Type::Primitive(PType::Numeric) => ValType::F64,
+        Type::Primitive(PType::Int) => ValType::I64,
+        Type::Primitive(PType::String) => ValType::I64,
+        Type::Primitive(PType::Unit) => ValType::I64,
+        Type::Function { .. } => ValType::I64,
+        Type::Record(fields) if fields.len() == 1 => {
+            mimium_type_to_wasmtime_valtype(&fields[0].ty.to_type())
+        }
+        Type::Tuple(elems) if elems.len() == 1 => {
+            mimium_type_to_wasmtime_valtype(&elems[0].to_type())
+        }
+        Type::Tuple(_) | Type::Record(_) => ValType::I64,
+        Type::Array(_) => ValType::I64,
+        Type::Union(_) | Type::UserSum { .. } => ValType::I64,
+        Type::Ref(_) => ValType::I64,
+        Type::Boxed(_) => ValType::I64,
+        Type::Code(_) => ValType::I64,
+        Type::Intermediate(cell) => {
+            let tv = cell.read().unwrap();
+            tv.parent.as_ref().map_or(ValType::F64, |parent| {
+                mimium_type_to_wasmtime_valtype(&parent.to_type())
+            })
+        }
+        _ => ValType::F64,
+    }
+}
+
+/// Produce a zero/default `Val` for a given `ValType`.
+#[cfg(not(target_arch = "wasm32"))]
+fn default_val_for_valtype(vt: ValType) -> Val {
+    match vt {
+        ValType::F64 => Val::F64(0.0f64.to_bits()),
+        ValType::F32 => Val::F32(0.0f32.to_bits()),
+        ValType::I64 => Val::I64(0),
+        ValType::I32 => Val::I32(0),
+        _ => Val::I64(0),
     }
 }
 
@@ -566,17 +611,47 @@ fn box_store_host(caller: Caller<'_, RuntimeState>, obj: i64, src_ptr: i32, size
 
 // UserSum operations
 
-fn usersum_clone_host(_caller: Caller<'_, RuntimeState>, dst_ptr: i32, src_ptr: i32, size: i32) {
-    // TODO: Implement actual usersum clone (copy via linear memory)
+/// Copy a user-defined sum type value within linear memory.
+/// The wasmgen emits `CloneUserSum` for values that may contain
+/// heap-allocated inner payloads — for now we perform a shallow
+/// byte-level copy (deep clone of boxed payloads is not yet handled).
+fn usersum_clone_host(mut caller: Caller<'_, RuntimeState>, dst_ptr: i32, src_ptr: i32, size: i32) {
     log::trace!("usersum_clone_host: dst_ptr={dst_ptr}, src_ptr={src_ptr}, size={size}");
+
+    if size <= 0 || src_ptr == dst_ptr {
+        return;
+    }
+
+    let byte_len = size as usize * std::mem::size_of::<Word>();
+    let memory = caller.data().memory.expect("Memory not initialized");
+
+    // Read source bytes, then write to destination
+    let mut buf = vec![0u8; byte_len];
+    memory
+        .read(&caller, src_ptr as usize, &mut buf)
+        .expect("usersum_clone: failed to read source");
+    memory
+        .write(&mut caller, dst_ptr as usize, &buf)
+        .expect("usersum_clone: failed to write destination");
 }
 
+/// Release a user-defined sum type value.
+/// Currently a no-op because the wasmgen emits placeholder arguments
+/// (ptr=0, tag=0). Once the wasmgen passes real pointers and the
+/// tag-based dispatch is implemented, this function should inspect
+/// the tag, and if the active variant holds a heap-allocated payload,
+/// call the corresponding heap_release.
 fn usersum_release_host(_caller: Caller<'_, RuntimeState>, ptr: i32, tag: i32, size: i32) {
-    // TODO: Implement actual usersum release
     log::trace!("usersum_release_host: ptr={ptr}, tag={tag}, size={size}");
 }
 
 // Closure operations
+//
+// NOTE: closure_make, closure_close, and closure_call are registered as WASM
+// imports but are intentionally **never emitted** by the current wasmgen.
+// The WASM backend handles closures via `call_indirect` on the function table,
+// bypassing these host functions entirely. They remain as imports only for
+// forward compatibility.
 
 fn closure_make_host(
     _caller: Caller<'_, RuntimeState>,
@@ -584,15 +659,13 @@ fn closure_make_host(
     captured_ptr: i32,
     captured_size: i32,
 ) -> i64 {
-    // TODO: Implement actual closure creation
     log::trace!(
         "closure_make_host: fn_idx={fn_idx}, captured_ptr={captured_ptr}, captured_size={captured_size}"
     );
-    0 // Placeholder
+    0
 }
 
 fn closure_close_host(_caller: Caller<'_, RuntimeState>, closure: i64) {
-    // TODO: Implement actual closure closing
     log::trace!("closure_close_host: closure={closure}");
 }
 
@@ -604,7 +677,6 @@ fn closure_call_host(
     dst_ptr: i32,
     dst_size: i32,
 ) {
-    // TODO: Implement actual closure call
     log::trace!(
         "closure_call_host: closure={closure}, args_ptr={args_ptr}, args_size={args_size}, dst_ptr={dst_ptr}, dst_size={dst_size}"
     );

@@ -74,7 +74,7 @@ struct RuntimeFunctionIndices {
 }
 
 /// Linear memory layout manager
-/// 
+///
 /// Manages the layout of WASM linear memory regions:
 /// - 0..256: Reserved for future use
 /// - 256..512: Global variable storage
@@ -95,10 +95,10 @@ struct MemoryLayout {
 impl Default for MemoryLayout {
     fn default() -> Self {
         Self {
-            alloc_offset: 1024,           // Start dynamic allocation after reserved regions
-            state_temp_base: 512,         // Reserve 512..1024 for state exchange
+            alloc_offset: 1024,   // Start dynamic allocation after reserved regions
+            state_temp_base: 512, // Reserve 512..1024 for state exchange
             global_offsets: HashMap::new(),
-            next_global_offset: 256,      // Reserve 256..512 for globals
+            next_global_offset: 256, // Reserve 256..512 for globals
         }
     }
 }
@@ -865,7 +865,11 @@ impl WasmGenerator {
 
                         // Emit merge block (skip Phi, which is on the stack from if/else)
                         ctx.mark_processed(merge_idx);
-                        self.emit_merge_block(&ctx.blocks[merge_idx], phi_info.is_some(), wasm_func);
+                        self.emit_merge_block(
+                            &ctx.blocks[merge_idx],
+                            phi_info.is_some(),
+                            wasm_func,
+                        );
                     }
                     I::Switch {
                         scrutinee,
@@ -3330,9 +3334,7 @@ impl WasmGenerator {
             mir::Value::Argument(arg_idx) => {
                 // Look up actual argument type from the current function's arg map.
                 // For multi-word args (tuples), the materialized value is a pointer (I64).
-                if let Some(&(param_start, word_count)) =
-                    self.current_arg_map.get(*arg_idx)
-                {
+                if let Some(&(param_start, word_count)) = self.current_arg_map.get(*arg_idx) {
                     if word_count > 1 {
                         ValType::I64 // Multi-word arg is materialized as a pointer
                     } else {
