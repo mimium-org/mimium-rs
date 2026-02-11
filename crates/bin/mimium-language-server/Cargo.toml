@@ -7,6 +7,10 @@ repository.workspace = true
 description = "Language server of mimium for IDE support"
 
 [dependencies]
+mimium-lang = { workspace = true }
+log = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 serde_json = "1.0.78"
 tokio = { version = "1.17.0", features = ["full"] }
 tower-lsp = { version = "0.20.0", features = ["proposed"] }
@@ -15,13 +19,10 @@ env_logger = "0.11.5"
 ropey = "1.5.0"
 chumsky = { version = "0.11", features = ["lexical-numbers"] }
 slotmap = "1.0"
-mimium-lang = { workspace = true }
 mimium-fmt = { workspace = true }
 # these plugins are needed for obtaining type information of default plugins
 mimium-midi = { workspace = true }
 mimium-scheduler = { workspace = true }
 mimium-guitools = { workspace = true }
 mimium-symphonia = { workspace = true }
-
 dashmap = "6.1.0"
-log = { workspace = true }

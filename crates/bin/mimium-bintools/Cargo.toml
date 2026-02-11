@@ -11,6 +11,8 @@ description = "binary executable packages of mimium languages."
 [dependencies]
 mimium-cli = { workspace = true }
 mimium-fmt = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 mimium-language-server = { workspace = true }
 tokio = { version = "1.17.0", features = ["full"] }
 
