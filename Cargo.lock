@@ -2249,7 +2249,10 @@ version = "3.2.0"
 dependencies = [
  "mimium-cli",
  "mimium-fmt",
+ "mimium-guitools",
  "mimium-language-server",
+ "mimium-midi",
+ "mimium-symphonia",
  "tokio",
 ]
 

@@ -7,6 +7,23 @@ repository.workspace = true
 readme.workspace = true
 authors.workspace = true
 description = "binary executable packages of mimium languages."
+build = "build.rs"
+
+[package.metadata.dist]
+# Include plugin cdylibs by copying them from target directory
+[[package.metadata.dist.extra-artifacts]]
+build = ["sh", "./copy-plugins.sh"]
+artifacts = [
+    "libmimium_symphonia.dylib",
+    "libmimium_symphonia.so",
+    "mimium_symphonia.dll",
+    "libmimium_midi.dylib",
+    "libmimium_midi.so",
+    "mimium_midi.dll",
+    "libmimium_guitools.dylib",
+    "libmimium_guitools.so",
+    "mimium_guitools.dll",
+]
 
 [dependencies]
 mimium-cli = { workspace = true }
@@ -15,6 +32,10 @@ mimium-fmt = { workspace = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 mimium-language-server = { workspace = true }
 tokio = { version = "1.17.0", features = ["full"] }
+# Plugin dependencies to ensure they're built
+mimium-symphonia = { workspace = true }
+mimium-midi = { workspace = true }
+mimium-guitools = { workspace = true }
 
 [[bin]]
 name = "mimium-cli"
