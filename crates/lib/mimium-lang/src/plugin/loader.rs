@@ -635,27 +635,33 @@ impl PluginLoader {
         Ok(())
     }
 
-    /// Load all plugins from the standard plugin directory.
-    pub fn load_builtin_plugins(&mut self) -> Result<(), PluginLoaderError> {
-        let plugin_dir = get_plugin_directory()?;
+    /// Load all plugins from a specific directory.
+    pub fn load_plugins_from_dir<P: AsRef<Path>>(
+        &mut self,
+        dir: P,
+    ) -> Result<usize, PluginLoaderError> {
+        let plugin_dir = dir.as_ref();
 
         if !plugin_dir.exists() {
-            crate::log::warn!("Plugin directory not found: {}", plugin_dir.display());
-            return Ok(());
+            crate::log::debug!("Plugin directory not found: {}", plugin_dir.display());
+            return Ok(0);
         }
 
-        for entry in std::fs::read_dir(&plugin_dir)
-            .map_err(|e| PluginLoaderError::DirectoryReadFailed(plugin_dir.clone(), e))?
+        let mut loaded_count = 0;
+        for entry in std::fs::read_dir(plugin_dir)
+            .map_err(|e| PluginLoaderError::DirectoryReadFailed(plugin_dir.to_path_buf(), e))?
         {
-            let entry =
-                entry.map_err(|e| PluginLoaderError::DirectoryReadFailed(plugin_dir.clone(), e))?;
+            let entry = entry
+                .map_err(|e| PluginLoaderError::DirectoryReadFailed(plugin_dir.to_path_buf(), e))?;
             let path = entry.path();
 
-            if is_library_file(&path) {
+            if is_library_file(&path) && is_mimium_plugin(&path) {
                 // Remove extension for load_plugin
                 let stem = path.with_extension("");
                 match self.load_plugin(&stem) {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        loaded_count += 1;
+                    }
                     Err(e) => {
                         crate::log::warn!("Failed to load plugin {}: {:?}", path.display(), e);
                     }
@@ -663,6 +669,13 @@ impl PluginLoader {
             }
         }
 
+        Ok(loaded_count)
+    }
+
+    /// Load all plugins from the standard plugin directory.
+    pub fn load_builtin_plugins(&mut self) -> Result<(), PluginLoaderError> {
+        let plugin_dir = get_plugin_directory()?;
+        self.load_plugins_from_dir(plugin_dir)?;
         Ok(())
     }
 
@@ -909,6 +922,17 @@ fn is_library_file(path: &Path) -> bool {
         return ext == "dylib";
     }
     false
+}
+
+/// Check if a library file is a mimium plugin based on naming convention.
+/// Returns true if the file name starts with "mimium_" or "libmimium_".
+#[cfg(not(target_arch = "wasm32"))]
+fn is_mimium_plugin(path: &Path) -> bool {
+    if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+        name.starts_with("mimium_") || name.starts_with("libmimium_")
+    } else {
+        false
+    }
 }
 
 // -------------------------------------------------------------------------

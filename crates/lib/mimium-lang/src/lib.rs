@@ -182,6 +182,12 @@ impl ExecContext {
         Ok(())
     }
 
+    /// Get mutable reference to the plugin loader.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn get_plugin_loader_mut(&mut self) -> Option<&mut plugin::loader::PluginLoader> {
+        self.plugin_loader.as_mut()
+    }
+
     pub fn get_compiler(&self) -> Option<&compiler::Context> {
         self.compiler.as_ref()
     }

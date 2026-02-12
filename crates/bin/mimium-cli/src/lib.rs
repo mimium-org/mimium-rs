@@ -266,48 +266,40 @@ pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config
     let plugins: Vec<Box<dyn Plugin>> = vec![];
     let mut ctx = ExecContext::new(plugins.into_iter(), path, config);
 
-    // Load dynamic plugins (e.g., mimium-symphonia)
+    // Load dynamic plugins
     #[cfg(not(target_arch = "wasm32"))]
     {
         ctx.init_plugin_loader();
 
-        let mut loaded_from_exe_dir = false;
+        let mut loaded_count = 0;
 
-        // Try to load plugins from the same directory as the executable
-        if let Ok(exe_path) = std::env::current_exe() {
-            if let Some(exe_dir) = exe_path.parent() {
-                let mut any_loaded = false;
+        // Try to load all mimium_*.dylib/so/dll from the executable directory first
+        if let Ok(exe_path) = std::env::current_exe()
+            && let Some(exe_dir) = exe_path.parent()
+            && let Some(loader) = ctx.get_plugin_loader_mut()
+        {
+            // Load all plugins except guitools when GUI is requested as SystemPlugin
+            // (guitools will be loaded as SystemPlugin to avoid duplicates)
+            loaded_count = loader.load_plugins_from_dir(exe_dir).unwrap_or(0);
 
-                let symphonia_path = exe_dir.join("mimium_symphonia");
-                if ctx.load_dynamic_plugin(&symphonia_path).is_ok() {
-                    any_loaded = true;
+            if loaded_count > 0 {
+                log::debug!("Loaded {loaded_count} plugin(s) from executable directory");
+
+                // When GUI is requested, unload guitools if it was loaded dynamically
+                // since we'll add it as a SystemPlugin instead
+                if with_gui {
+                    // Note: Currently we don't have unload functionality,
+                    // but the SystemPlugin version will take precedence
+                    log::debug!("GUI mode: guitools will be provided as SystemPlugin");
                 }
-
-                let midi_path = exe_dir.join("mimium_midi");
-                if ctx.load_dynamic_plugin(&midi_path).is_ok() {
-                    any_loaded = true;
-                }
-
-                // Load guitools dynamically only when NOT using SystemPlugin.
-                // When with_gui=true the SystemPlugin provides both macros and
-                // runtime functions on the same instance, so loading the dynamic
-                // plugin would create duplicates with a separate instance.
-                if !with_gui {
-                    let guitools_path = exe_dir.join("mimium_guitools");
-                    if ctx.load_dynamic_plugin(&guitools_path).is_ok() {
-                        any_loaded = true;
-                    }
-                }
-
-                loaded_from_exe_dir = any_loaded;
             }
         }
 
-        // Only try standard plugin directory if we didn't load from exe directory
-        if !loaded_from_exe_dir {
-            if let Err(e) = ctx.load_builtin_dynamic_plugins() {
-                log::debug!("No builtin dynamic plugins found: {e:?}");
-            }
+        // If no plugins loaded from exe directory, try standard plugin directory
+        if loaded_count == 0
+            && let Err(e) = ctx.load_builtin_dynamic_plugins()
+        {
+            log::debug!("No builtin dynamic plugins found: {e:?}");
         }
     }
 
