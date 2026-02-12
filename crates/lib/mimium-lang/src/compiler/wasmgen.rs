@@ -201,8 +201,6 @@ pub struct WasmGenerator {
     is_entry_function: bool,
     /// Maps function signatures (params, results) to type section indices for call_indirect
     call_type_cache: HashMap<(Vec<wasm_encoder::ValType>, Vec<wasm_encoder::ValType>), u32>,
-    /// Call site counter for generating unique state addresses for each call site
-    call_site_counter: i64,
 }
 
 /// Context for emitting control flow blocks
@@ -279,7 +277,6 @@ impl WasmGenerator {
             alloc_ptr_save_local: 0,
             is_entry_function: false,
             call_type_cache: HashMap::new(),
-            call_site_counter: 0,
         };
 
         // Setup runtime primitive imports and memory/table
@@ -2686,76 +2683,37 @@ impl WasmGenerator {
                         }
                     }
                 } else {
-                    // Non-ext function call: load args and call by index
-                    // Check if the called function has state and needs state management
-                    let (wasm_fn_idx, state_size) = match fn_ptr.as_ref() {
+                    // Non-ext function call: load args and call by index.
+                    // Direct calls share the caller's state storage, navigated
+                    // by MIR's PushStateOffset/PopStateOffset instructions.
+                    // Only closure calls (CallCls/CallIndirect) switch state context.
+                    let wasm_fn_idx = match fn_ptr.as_ref() {
                         mir::Value::Function(fn_idx) => {
                             let wasm_idx = *fn_idx as u32 + self.num_imports;
-                            let state_size = if *fn_idx < self.mir.functions.len() {
-                                self.mir.functions[*fn_idx].state_skeleton.total_size()
-                            } else {
-                                0
-                            };
-                            log::debug!("Calling function idx={fn_idx}, state_size={state_size}");
-                            (wasm_idx, state_size)
+                            log::debug!("Calling function idx={fn_idx}");
+                            wasm_idx
                         }
                         mir::Value::Register(reg_idx) => {
                             if let Some(const_val) = self.register_constants.get(reg_idx) {
                                 let fn_idx = *const_val as usize;
                                 let wasm_idx = *const_val as u32 + self.num_imports;
-                                let state_size = if fn_idx < self.mir.functions.len() {
-                                    self.mir.functions[fn_idx].state_skeleton.total_size()
-                                } else {
-                                    0
-                                };
                                 log::debug!(
-                                    "Calling function (via register) idx={fn_idx}, state_size={state_size}"
+                                    "Calling function (via register) idx={fn_idx}"
                                 );
-                                (wasm_idx, state_size)
+                                wasm_idx
                             } else {
                                 eprintln!(
                                     "Warning: Indirect call through register without constant value"
                                 );
-                                (self.current_fn_idx, 0)
+                                self.current_fn_idx
                             }
                         }
-                        _ => (self.current_fn_idx, 0),
+                        _ => self.current_fn_idx,
                     };
-
-                    // If the function has state, push state context before calling
-                    if state_size > 0 {
-                        // Generate a unique call site ID for this specific call location
-                        // Combined with current closure address, this ensures each closure instance
-                        // has its own persistent state storage
-                        self.call_site_counter += 1;
-                        let call_site_id = self.call_site_counter;
-
-                        log::debug!(
-                            "Pushing state for call_site_id={call_site_id}, state_size={state_size}"
-                        );
-
-                        // Load current closure address from global memory (CLOSURE_SELF_PTR_ADDR = 0)
-                        func.instruction(&W::I32Const(0));
-                        func.instruction(&W::I64Load(MemArg {
-                            offset: 0,
-                            align: 3,
-                            memory_index: 0,
-                        }));
-                        // Push call_site_id
-                        func.instruction(&W::I64Const(call_site_id));
-                        func.instruction(&W::I64Const(state_size as i64));
-                        func.instruction(&W::Call(self.rt.closure_state_push_with_caller));
-                    }
 
                     // Load arguments with tuple flattening and make the call
                     self.emit_call_args_flattened(args, func);
                     func.instruction(&W::Call(wasm_fn_idx));
-
-                    // If the function has state, pop state context after returning
-                    if state_size > 0 {
-                        log::debug!("Popping state");
-                        func.instruction(&W::Call(self.rt.closure_state_pop));
-                    }
                 }
             }
 

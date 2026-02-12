@@ -937,12 +937,11 @@ fn state_get_host(mut caller: Caller<'_, RuntimeState>, dst_ptr: i32, size_words
         let current = state.get_current_state();
         let pos = current.pos;
         let needed = pos + size;
-        if needed <= current.data.len() {
-            current.data[pos..pos + size].to_vec()
-        } else {
-            // State not yet initialized at this position, return zeros
-            vec![0u64; size]
+        if needed > current.data.len() {
+            // Grow data to accommodate the requested range (initialized to zero)
+            current.data.resize(needed, 0);
         }
+        current.data[pos..pos + size].to_vec()
     };
 
     // Write to WASM linear memory
