@@ -86,10 +86,10 @@ impl Context {
         let out_ch = self.config.output_channels;
         let mut out_buf = vec![0.0; (out_ch * self.config.buffer_size) as usize];
         self.processor = Some(Box::new(move |_input, output: Output| -> u64 {
-            if let Ok(prog) = receiver.try_recv() {
-                if let Some(vmdata) = driver.vmdata.as_mut() {
-                    vmdata.resume_with_program(ProgramPayload::VmProgram(prog));
-                }
+            if let Ok(prog) = receiver.try_recv()
+                && let Some(vmdata) = driver.vmdata.as_mut()
+            {
+                vmdata.resume_with_program(ProgramPayload::VmProgram(prog));
             }
             driver.play();
             driver

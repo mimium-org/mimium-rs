@@ -164,10 +164,10 @@ impl WasmDspRuntime {
 impl DspRuntime for WasmDspRuntime {
     fn run_dsp(&mut self, time: Time) -> ReturnCode {
         // Update current_time in the WASM runtime state.
-        if let Some(module) = self.engine.current_module_mut() {
-            if let Some(state) = module.get_runtime_state_mut() {
-                state.current_time = time.0;
-            }
+        if let Some(module) = self.engine.current_module_mut()
+            && let Some(state) = module.get_runtime_state_mut()
+        {
+            state.current_time = time.0;
         }
 
         // Convert input samples to Words (bit-cast f64 ↁEu64).
