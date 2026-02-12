@@ -4,8 +4,10 @@
 
 use super::{WasmModule, WasmRuntime};
 use crate::compiler::IoChannelInfo;
+use crate::mir::StateType;
 use crate::runtime::primitives::Word;
 use crate::runtime::{DspRuntime, ProgramPayload, ReturnCode, Time};
+use state_tree::tree::StateTreeSkeleton;
 
 /// High-level WASM execution engine
 pub struct WasmEngine {
@@ -93,6 +95,31 @@ impl WasmEngine {
             .ok_or_else(|| "No WASM module loaded".to_string())
             .and_then(|m| m.read_memory_f64(offset))
     }
+
+    /// Read the global state data from the current module's `RuntimeState`.
+    ///
+    /// Returns `None` if no module is loaded.
+    pub fn get_global_state_data(&mut self) -> Option<&[u64]> {
+        self.current_module
+            .as_mut()
+            .and_then(|m| m.get_runtime_state_mut())
+            .map(|s| s.global_state.data.as_slice())
+    }
+
+    /// Overwrite the global state data in the current module's `RuntimeState`.
+    ///
+    /// Also resets the state position cursor to zero so the next `dsp` call
+    /// starts reading from the beginning of the new buffer.
+    pub fn set_global_state_data(&mut self, data: &[u64]) {
+        if let Some(state) = self
+            .current_module
+            .as_mut()
+            .and_then(|m| m.get_runtime_state_mut())
+        {
+            state.global_state.data = data.to_vec();
+            state.global_state.pos = 0;
+        }
+    }
 }
 
 impl Default for WasmEngine {
@@ -114,6 +141,9 @@ pub struct WasmDspRuntime {
     /// Input buffer passed to the DSP function on the next tick.
     input_cache: Vec<f64>,
     sample_rate: f64,
+    /// State tree skeleton of the currently loaded DSP function.
+    /// Used to perform state-preserving hot-swap via `state_tree::update_state_storage`.
+    current_dsp_skeleton: Option<StateTreeSkeleton<StateType>>,
 }
 
 impl WasmDspRuntime {
@@ -121,7 +151,11 @@ impl WasmDspRuntime {
     ///
     /// `engine` must already have a WASM module loaded via
     /// [`WasmEngine::load_module`].
-    pub fn new(engine: WasmEngine, io_channels: Option<IoChannelInfo>) -> Self {
+    pub fn new(
+        engine: WasmEngine,
+        io_channels: Option<IoChannelInfo>,
+        dsp_skeleton: Option<StateTreeSkeleton<StateType>>,
+    ) -> Self {
         let ochannels = io_channels.map_or(0, |io| io.output as usize);
         let ichannels = io_channels.map_or(0, |io| io.input as usize);
         Self {
@@ -130,16 +164,17 @@ impl WasmDspRuntime {
             output_cache: vec![0.0; ochannels],
             input_cache: vec![0.0; ichannels],
             sample_rate: 48000.0,
+            current_dsp_skeleton: dsp_skeleton,
         }
     }
 
     /// Set the sample rate used by the runtime.
     pub fn set_sample_rate(&mut self, sr: f64) {
         self.sample_rate = sr;
-        if let Some(module) = self.engine.current_module_mut() {
-            if let Some(state) = module.get_runtime_state_mut() {
-                state.sample_rate = sr;
-            }
+        if let Some(module) = self.engine.current_module_mut()
+            && let Some(state) = module.get_runtime_state_mut()
+        {
+            state.sample_rate = sr;
         }
     }
 
@@ -216,9 +251,49 @@ impl DspRuntime for WasmDspRuntime {
     }
 
     fn try_hot_swap(&mut self, new_program: ProgramPayload) -> bool {
-        if let ProgramPayload::WasmModule(wasm_bytes) = new_program {
-            match self.engine.load_module(&wasm_bytes) {
+        if let ProgramPayload::WasmModule {
+            bytes,
+            dsp_state_skeleton,
+        } = new_program
+        {
+            // Snapshot the old global state before loading the new module.
+            let old_global_data: Option<Vec<u64>> = self
+                .engine
+                .get_global_state_data()
+                .map(|d| d.to_vec());
+
+            match self.engine.load_module(&bytes) {
                 Ok(()) => {
+                    // Attempt state migration when both old and new skeletons exist.
+                    if let (Some(old_data), Some(old_skel), Some(new_skel)) = (
+                        &old_global_data,
+                        &self.current_dsp_skeleton,
+                        &dsp_state_skeleton,
+                    ) {
+                        match state_tree::update_state_storage(
+                            old_data,
+                            old_skel.clone(),
+                            new_skel.clone(),
+                        ) {
+                            Ok(Some(new_data)) => {
+                                self.engine.set_global_state_data(&new_data);
+                            }
+                            Ok(None) => {
+                                log::info!("No state structure change detected, copying buffer");
+                                self.engine.set_global_state_data(old_data);
+                            }
+                            Err(e) => {
+                                log::error!("Failed to migrate WASM global state: {e}");
+                            }
+                        }
+                    } else if let Some(old_data) = &old_global_data {
+                        // No skeletons available; best-effort: copy old data.
+                        self.engine.set_global_state_data(old_data);
+                    }
+
+                    // Update stored skeleton for subsequent hot-swaps.
+                    self.current_dsp_skeleton = dsp_state_skeleton;
+
                     // Re-run main after hot-swap.
                     let _ = self.run_main();
                     true

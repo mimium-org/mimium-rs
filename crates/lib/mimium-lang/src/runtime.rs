@@ -25,9 +25,16 @@ pub type ReturnCode = i64;
 pub enum ProgramPayload {
     /// Native bytecode VM program.
     VmProgram(vm::Program),
-    /// WASM module bytes.
+    /// WASM module bytes with optional DSP state skeleton for state migration.
     #[cfg(not(target_arch = "wasm32"))]
-    WasmModule(Vec<u8>),
+    WasmModule {
+        bytes: Vec<u8>,
+        /// State tree skeleton of the DSP function in the new program.
+        /// When present, enables state-preserving hot-swap via
+        /// `state_tree::update_state_storage`.
+        dsp_state_skeleton:
+            Option<state_tree::tree::StateTreeSkeleton<crate::mir::StateType>>,
+    },
 }
 
 /// Abstraction over per-sample DSP execution backends.

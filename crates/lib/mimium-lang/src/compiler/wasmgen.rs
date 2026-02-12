@@ -48,7 +48,6 @@ struct RuntimeFunctionIndices {
     closure_close: u32,
     closure_call: u32,
     closure_state_push: u32,
-    closure_state_push_with_caller: u32,
     closure_state_pop: u32,
     state_push: u32,
     state_pop: u32,
@@ -380,14 +379,6 @@ impl WasmGenerator {
             .ty()
             .function(vec![ValType::I64, ValType::I64], vec![]);
         self.rt.closure_state_push = self.add_import("closure_state_push", type_idx);
-        type_idx += 1;
-
-        // Type for closure_state_push_with_caller(caller_addr, call_site_id, state_size)
-        self.type_section
-            .ty()
-            .function(vec![ValType::I64, ValType::I64, ValType::I64], vec![]);
-        self.rt.closure_state_push_with_caller =
-            self.add_import("closure_state_push_with_caller", type_idx);
         type_idx += 1;
 
         // Type 9: () -> ()  for closure_state_pop

@@ -24,19 +24,22 @@ wasm-bindgen.workspace = true
 state-tree = { workspace = true }
 thiserror = { workspace = true }
 serde = { version = "1.0", features = ["derive", "rc"] }
-bincode = {workspace = true}
+bincode = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # WASM backend dependencies (only for native targets)
 wasm-encoder = "0.221"
 wasmtime = "27.0"
-wat = "1.221"
 homedir = { version = "0.3.4" }
 mimalloc = { version = "0.1.43" }
 libloading = "0.8"
 
 [dev-dependencies]
 wasm-bindgen-test = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+wat = "1.221"
+
 
 [lints.clippy]
 useless_format = "allow"

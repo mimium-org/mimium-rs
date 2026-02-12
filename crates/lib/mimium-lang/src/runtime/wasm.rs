@@ -253,7 +253,6 @@ impl WasmRuntime {
             "closure_call" => closure_call_host,
             // Closure state stack operations (per-closure state isolation)
             "closure_state_push" => closure_state_push_host,
-            "closure_state_push_with_caller" => closure_state_push_with_caller_host,
             "closure_state_pop" => closure_state_pop_host,
             // State operations
             "state_push" => state_push_host,
@@ -850,56 +849,16 @@ fn closure_state_push_host(
         .or_insert_with(|| StateStorage::with_size(state_size as usize));
 }
 
-/// Push state for a function call from within a closure context.
-/// Combines the caller's closure address with a static call site ID to create
-/// a unique key, ensuring each closure instance calling the same function
-/// gets its own independent state storage.
-///
-/// This is used for Call instructions (direct function calls) that occur within
-/// closures, where multiple closure instances may call the same stateful function.
-/// By incorporating the caller's address, we ensure state isolation between instances.
-fn closure_state_push_with_caller_host(
-    mut caller: Caller<'_, RuntimeState>,
-    caller_addr: i64,
-    call_site_id: i64,
-    state_size: i64,
-) {
-    // Combine caller address and call site ID to create a unique key
-    // Using a simple bit shift: (caller_addr << 32) | call_site_id
-    // This ensures each (caller instance, call site) pair has unique state
-    let combined_key: i64 = if caller_addr == 0 {
-        // Global context: use call_site_id directly
-        call_site_id
-    } else {
-        // Closure context: combine with caller address
-        (((caller_addr as u64) << 32) | (call_site_id as u64 & 0xFFFFFFFF)) as i64
-    };
-
-    log::trace!(
-        "closure_state_push_with_caller_host: caller_addr={caller_addr}, call_site_id={call_site_id}, combined_key={combined_key}, state_size={state_size}"
-    );
-
-    let state = caller.data_mut();
-
-    // Push combined key onto the state stack
-    state.state_stack.push(combined_key);
-    // Lazily allocate state storage for this key if it doesn't exist yet
-    state
-        .closure_states
-        .entry(combined_key)
-        .or_insert_with(|| StateStorage::with_size(state_size as usize));
-}
-
 /// Pop the closure state stack, restoring the previous state context.
 /// Called after a closure call returns.
 fn closure_state_pop_host(mut caller: Caller<'_, RuntimeState>) {
     log::trace!("closure_state_pop_host");
     let state = caller.data_mut();
     // Reset pos of the outgoing closure's state for next call
-    if let Some(&closure_addr) = state.state_stack.last() {
-        if let Some(cls_state) = state.closure_states.get_mut(&closure_addr) {
-            cls_state.pos = 0;
-        }
+    if let Some(&closure_addr) = state.state_stack.last()
+        && let Some(cls_state) = state.closure_states.get_mut(&closure_addr)
+    {
+        cls_state.pos = 0;
     }
     state.state_stack.pop();
 }

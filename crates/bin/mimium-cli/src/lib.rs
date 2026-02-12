@@ -318,6 +318,8 @@ struct FileRunner {
     pub rx_compiler: mpsc::Receiver<Result<Response, Errors>>,
     pub tx_prog: Option<mpsc::Sender<ProgramPayload>>,
     pub fullpath: PathBuf,
+    /// When true, recompilation targets the WASM backend instead of the native VM.
+    pub use_wasm: bool,
 }
 
 struct FileWatcher {
@@ -329,6 +331,7 @@ impl FileRunner {
         compiler: compiler::Context,
         path: PathBuf,
         prog_tx: Option<mpsc::Sender<ProgramPayload>>,
+        use_wasm: bool,
     ) -> Self {
         let client = async_compiler::start_async_compiler_service(compiler);
         Self {
@@ -336,6 +339,7 @@ impl FileRunner {
             rx_compiler: client.rx,
             tx_prog: prog_tx,
             fullpath: path,
+            use_wasm,
         }
     }
     fn try_new_watcher(&self) -> Result<FileWatcher, notify::Error> {
@@ -347,13 +351,18 @@ impl FileRunner {
     fn recompile_file(&self) {
         match fileloader::load(&self.fullpath.to_string_lossy()) {
             Ok(new_content) => {
+                let mode = if self.use_wasm {
+                    RunMode::WasmAudio
+                } else {
+                    RunMode::EmitByteCode
+                };
                 let _ = self.tx_compiler.send(CompileRequest {
                     source: new_content.clone(),
                     path: self.fullpath.clone(),
                     option: RunOptions {
-                        mode: RunMode::EmitByteCode,
+                        mode,
                         with_gui: true,
-                        use_wasm: false,
+                        use_wasm: self.use_wasm,
                         config: Config::default(),
                     },
                 });
@@ -364,7 +373,17 @@ impl FileRunner {
                     Ok(Response::ByteCode(prog)) => {
                         log::info!("compiled successfully.");
                         if let Some(tx) = &self.tx_prog {
-                            let _ = tx.send(mimium_lang::runtime::ProgramPayload::VmProgram(prog));
+                            let _ = tx.send(ProgramPayload::VmProgram(prog));
+                        }
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    Ok(Response::WasmModule(output)) => {
+                        log::info!("WASM compiled successfully ({} bytes).", output.bytes.len());
+                        if let Some(tx) = &self.tx_prog {
+                            let _ = tx.send(ProgramPayload::WasmModule {
+                                bytes: output.bytes,
+                                dsp_state_skeleton: output.dsp_state_skeleton,
+                            });
                         }
                     }
                     Err(errs) => {
@@ -523,6 +542,7 @@ pub fn run_file(
             let mir = ctx.get_compiler().unwrap().emit_mir(content)?;
 
             let io_channels = mir.get_dsp_iochannels();
+            let dsp_skeleton = mir.get_dsp_state_skeleton().cloned();
 
             // Generate WASM module
             let mut generator = WasmGenerator::new(Arc::new(mir), &ext_fns);
@@ -553,7 +573,7 @@ pub fn run_file(
             })?;
 
             // Create WasmDspRuntime and wrap in RuntimeData
-            let mut wasm_runtime = WasmDspRuntime::new(wasm_engine, io_channels);
+            let mut wasm_runtime = WasmDspRuntime::new(wasm_engine, io_channels, dsp_skeleton);
             wasm_runtime.set_sample_rate(48000.0);
             let _ = wasm_runtime.run_main();
 
@@ -562,8 +582,9 @@ pub fn run_file(
             // Use the standard audio driver infrastructure
             let mut driver = options.get_driver();
 
+            let with_gui = options.with_gui;
             let mainloop = ctx.try_get_main_loop().unwrap_or(Box::new(move || {
-                if options.with_gui {
+                if with_gui {
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(1000));
                     }
@@ -572,6 +593,18 @@ pub fn run_file(
 
             driver.init(runtimedata, Some(SampleRate::from(48000)));
             driver.play();
+
+            // Set up file watcher for WASM hot-swap recompilation
+            let compiler = ctx.take_compiler().unwrap();
+            let frunner = FileRunner::new(
+                compiler,
+                fullpath.to_path_buf(),
+                driver.get_program_channel(),
+                true,
+            );
+            if with_gui {
+                std::thread::spawn(move || frunner.cli_loop());
+            }
 
             mainloop();
             Ok(())
@@ -590,6 +623,7 @@ pub fn run_file(
             let ext_fns = ctx.get_extfun_types();
             let mir = ctx.get_compiler().unwrap().emit_mir(content)?;
             let io_channels = mir.get_dsp_iochannels();
+            let dsp_skeleton = mir.get_dsp_state_skeleton().cloned();
 
             let mut generator = WasmGenerator::new(Arc::new(mir), &ext_fns);
             let wasm_bytes = generator.generate().map_err(|e| {
@@ -618,15 +652,16 @@ pub fn run_file(
                 }) as Box<dyn ReportableError>]
             })?;
 
-            let mut wasm_runtime = WasmDspRuntime::new(wasm_engine, io_channels);
+            let mut wasm_runtime = WasmDspRuntime::new(wasm_engine, io_channels, dsp_skeleton);
             wasm_runtime.set_sample_rate(48000.0);
             let _ = wasm_runtime.run_main();
 
             let runtimedata = RuntimeData::new_from_runtime(Box::new(wasm_runtime));
 
             // Get main loop from system plugins (e.g., GUI)
+            let with_gui = options.with_gui;
             let mainloop = ctx.try_get_main_loop().unwrap_or(Box::new(move || {
-                if options.with_gui {
+                if with_gui {
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(1000));
                     }
@@ -635,6 +670,18 @@ pub fn run_file(
 
             driver.init(runtimedata, Some(SampleRate::from(48000)));
             driver.play();
+
+            // Set up file watcher for WASM hot-swap recompilation
+            let compiler = ctx.take_compiler().unwrap();
+            let frunner = FileRunner::new(
+                compiler,
+                fullpath.to_path_buf(),
+                driver.get_program_channel(),
+                true,
+            );
+            if with_gui {
+                std::thread::spawn(move || frunner.cli_loop());
+            }
 
             mainloop();
             Ok(())
@@ -669,6 +716,7 @@ pub fn run_file(
                 compiler,
                 fullpath.to_path_buf(),
                 driver.get_program_channel(),
+                false,
             );
             if options.with_gui {
                 std::thread::spawn(move || frunner.cli_loop());
