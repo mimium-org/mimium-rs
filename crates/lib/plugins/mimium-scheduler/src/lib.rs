@@ -2,14 +2,23 @@
 //!
 //! This plugin provides a simple synchronous event scheduler which is used by
 //! the runtime to execute scheduled tasks at sample boundaries.
-use mimium_lang::plugin::{SysPluginSignature, SystemPlugin, SystemPluginAudioWorker};
+//!
+//! The scheduler communicates with the audio worker through a lock-free channel.
+//! `schedule_at` enqueues tasks from the main thread, and the audio worker
+//! dequeues and executes them at the correct sample time.
+//!
+//! All VM interaction goes through [`RuntimeHandle`](mimium_lang::runtime::ffi::RuntimeHandle)
+//! rather than accessing `Machine` directly, making the scheduler compatible
+//! with both the native VM and the WASM backend.
 
-use mimium_lang::runtime::vm::{Machine, ReturnCode};
+use mimium_lang::plugin::{SysPluginSignature, SystemPlugin, SystemPluginAudioWorker};
 use mimium_lang::{
     function, numeric,
-    types::{PType, Type},
+    plugin::SystemPluginFnType,
+    types::Type,
     unit,
 };
+
 mod scheduler;
 pub use scheduler::SimpleScheduler;
 
@@ -18,29 +27,18 @@ impl SystemPlugin for SimpleScheduler {
         self
     }
 
-    fn on_init(&mut self, _machine: &mut Machine) -> ReturnCode {
-        0
-    }
     fn generate_audioworker(&mut self) -> Option<Box<dyn SystemPluginAudioWorker>> {
         Some(Box::new(self.take_audio_worker().unwrap()))
     }
 
     fn gen_interfaces(&self) -> Vec<SysPluginSignature> {
-        let fun: fn(&mut Self, &mut Machine) -> ReturnCode = Self::schedule_at;
+        let fun: SystemPluginFnType<Self> = Self::schedule_at;
         let schedule_fn = SysPluginSignature::new(
             "_mimium_schedule_at",
             fun,
             function!(vec![numeric!(), function!(vec![], unit!())], unit!()),
         );
         vec![schedule_fn]
-    }
-
-    fn after_main(&mut self, _machine: &mut Machine) -> ReturnCode {
-        0
-    }
-
-    fn try_get_main_loop(&mut self) -> Option<Box<dyn FnOnce()>> {
-        None
     }
 }
 

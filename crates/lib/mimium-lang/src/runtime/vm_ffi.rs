@@ -46,11 +46,37 @@ unsafe extern "C" fn vm_get_arg_string(rt: *mut c_void, idx: u32) -> *const c_ch
     }
 }
 
+unsafe extern "C" fn vm_get_arg_raw(rt: *mut c_void, idx: u32) -> u64 {
+    let machine = unsafe { &*(rt as *const Machine) };
+    machine.get_stack(idx as i64)
+}
+
+unsafe extern "C" fn vm_resolve_closure(rt: *mut c_void, heap_handle: u64) -> u64 {
+    let machine = unsafe { &*(rt as *const Machine) };
+    let heap_idx = Machine::get_as::<super::vm::heap::HeapIdx>(heap_handle);
+    let closure_idx = machine.get_closure_idx_from_heap(heap_idx);
+    // Transmute ClosureIdx (a slotmap key) into a raw u64 for storage.
+    unsafe { std::mem::transmute_copy::<super::vm::ClosureIdx, u64>(&closure_idx) }
+}
+
+unsafe extern "C" fn vm_execute_closure(rt: *mut c_void, closure_handle: u64) -> i64 {
+    let machine = unsafe { &mut *(rt as *mut Machine) };
+    let closure_idx =
+        unsafe { std::mem::transmute_copy::<u64, super::vm::ClosureIdx>(&closure_handle) };
+    let closure = machine.get_closure(closure_idx);
+    machine.execute(closure.fn_proto_pos, Some(closure_idx));
+    machine.drop_closure(closure_idx);
+    0
+}
+
 /// Static vtable for the native VM.
 pub static VM_RUNTIME_VTABLE: RuntimeVTable = RuntimeVTable {
     get_arg_f64: vm_get_arg_f64,
     set_return_f64: vm_set_return_f64,
     get_arg_string: vm_get_arg_string,
+    get_arg_raw: vm_get_arg_raw,
+    resolve_closure: vm_resolve_closure,
+    execute_closure: vm_execute_closure,
 };
 
 /// Create a [`RuntimeHandle`] that wraps a mutable reference to a [`Machine`].

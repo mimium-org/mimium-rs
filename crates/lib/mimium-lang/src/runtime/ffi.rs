@@ -60,6 +60,29 @@ pub struct RuntimeVTable {
     /// the duration of the current plugin call.  Returns null when the index
     /// is out of bounds.
     pub get_arg_string: unsafe extern "C" fn(rt: *mut c_void, idx: u32) -> *const c_char,
+
+    /// Read a raw `u64` argument at position `idx`.
+    ///
+    /// This provides access to the raw stack value without any type
+    /// interpretation.  Used for opaque handles such as closure indices
+    /// or heap indices.
+    pub get_arg_raw: unsafe extern "C" fn(rt: *mut c_void, idx: u32) -> u64,
+
+    /// Resolve a heap-allocated closure handle into an executable closure
+    /// index, and return it as a raw `u64`.
+    ///
+    /// The input `heap_handle` is the raw stack value for a heap-allocated
+    /// closure.  The returned value is the backend-specific closure
+    /// identifier that can later be passed to `execute_closure` or stored
+    /// for deferred execution.
+    pub resolve_closure: unsafe extern "C" fn(rt: *mut c_void, heap_handle: u64) -> u64,
+
+    /// Execute a previously resolved closure.
+    ///
+    /// `closure_handle` is the raw value returned by `resolve_closure`.
+    /// After execution the closure resources may be released.
+    /// Returns 0 on success.
+    pub execute_closure: unsafe extern "C" fn(rt: *mut c_void, closure_handle: u64) -> i64,
 }
 
 // SAFETY: RuntimeHandle is only accessed on a single thread at a time (the
@@ -112,5 +135,29 @@ impl RuntimeHandle {
                     .into_owned(),
             )
         }
+    }
+
+    /// Read a raw `u64` stack value at position `idx`.
+    ///
+    /// Use this for opaque handles (e.g. closure references) rather than
+    /// interpreting the value as a typed quantity.
+    #[inline]
+    pub fn get_arg_raw(&self, idx: u32) -> u64 {
+        unsafe { (self.vtable.get_arg_raw)(self.runtime_ptr, idx) }
+    }
+
+    /// Resolve a heap-allocated closure handle into an executable closure
+    /// identifier.
+    #[inline]
+    pub fn resolve_closure(&self, heap_handle: u64) -> u64 {
+        unsafe { (self.vtable.resolve_closure)(self.runtime_ptr, heap_handle) }
+    }
+
+    /// Execute a resolved closure and release its resources.
+    ///
+    /// Returns 0 on success.
+    #[inline]
+    pub fn execute_closure(&mut self, closure_handle: u64) -> i64 {
+        unsafe { (self.vtable.execute_closure)(self.runtime_ptr, closure_handle) }
     }
 }
