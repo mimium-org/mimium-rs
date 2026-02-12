@@ -305,7 +305,9 @@ pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config
 
     ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
 
-    // Add guitools as a system plugin when GUI is needed
+    // Add guitools as SystemPlugin when GUI is needed
+    // Note: guitools is ONLY loaded as SystemPlugin (never dynamically loaded)
+    // to ensure mainloop is properly available
     if with_gui {
         ctx.add_system_plugin(mimium_guitools::GuiToolPlugin::default());
     }
@@ -538,8 +540,13 @@ pub fn run_file(
             use std::sync::Arc;
 
             ctx.prepare_compiler();
-            let ext_fns = ctx.get_extfun_types();
-            let mir = ctx.get_compiler().unwrap().emit_mir(content)?;
+            let mut ext_fns = ctx.get_extfun_types();
+            // Deduplicate ext_fns by name to avoid "defined twice" errors in WASM runtime
+            // (can happen when same plugin is loaded both dynamically and as SystemPlugin)
+            ext_fns.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+            ext_fns.dedup_by(|a, b| a.name == b.name);
+            
+            let mir = ctx.get_compiler().unwrap().emit_mir(content)?;;
 
             let io_channels = mir.get_dsp_iochannels();
             let dsp_skeleton = mir.get_dsp_state_skeleton().cloned();
@@ -620,7 +627,12 @@ pub fn run_file(
             let mut driver = options.get_driver();
 
             ctx.prepare_compiler();
-            let ext_fns = ctx.get_extfun_types();
+            let mut ext_fns = ctx.get_extfun_types();
+            // Deduplicate ext_fns by name to avoid "defined twice" errors in WASM runtime
+            // (can happen when same plugin is loaded both dynamically and as SystemPlugin)
+            ext_fns.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+            ext_fns.dedup_by(|a, b| a.name == b.name);
+            
             let mir = ctx.get_compiler().unwrap().emit_mir(content)?;
             let io_channels = mir.get_dsp_iochannels();
             let dsp_skeleton = mir.get_dsp_state_skeleton().cloned();

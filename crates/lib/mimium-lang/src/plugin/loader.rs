@@ -598,7 +598,7 @@ impl PluginLoader {
         if let Some(set_interner) = &set_interner_fn {
             let host_globals = crate::interner::get_session_globals_ptr();
             unsafe { set_interner(host_globals) };
-            crate::log::info!("Shared host interner with plugin");
+            crate::log::debug!("Shared host interner with plugin");
         } else {
             crate::log::warn!(
                 "Plugin does not export mimium_plugin_set_interner; \
@@ -656,6 +656,26 @@ impl PluginLoader {
             let path = entry.path();
 
             if is_library_file(&path) && is_mimium_plugin(&path) {
+                // Skip guitools plugin - it should only be loaded as a SystemPlugin
+                // to ensure proper mainloop integration
+                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if file_name.contains("guitools") {
+                    crate::log::debug!("Skipping guitools plugin (should be loaded as SystemPlugin only): {}", path.display());
+                    continue;
+                }
+
+                // Check if plugin is already loaded by examining the file name
+                let already_loaded = self.plugins.iter().any(|p| {
+                    // Extract plugin name from path (e.g., libmimium_midi.dylib -> mimium-midi)
+                    let plugin_name = p.name().replace('-', "_");
+                    file_name.contains(&plugin_name) || file_name.contains(&format!("mimium_{}", plugin_name.trim_start_matches("mimium_")))
+                });
+
+                if already_loaded {
+                    crate::log::debug!("Skipping already loaded plugin: {}", path.display());
+                    continue;
+                }
+
                 // Remove extension for load_plugin
                 let stem = path.with_extension("");
                 match self.load_plugin(&stem) {

@@ -66,6 +66,9 @@ pub struct GuiToolPlugin {
     slider_namemap: HashMap<String, usize>,
     probe_instances: Vec<HeapProd<f64>>,
     probe_namemap: HashMap<String, usize>,
+    /// Cached WASM plugin function map, reused across hot-swaps.
+    #[cfg(not(target_arch = "wasm32"))]
+    wasm_plugin_fns: Option<mimium_lang::runtime::wasm::WasmPluginFnMap>,
 }
 
 impl Default for GuiToolPlugin {
@@ -76,6 +79,8 @@ impl Default for GuiToolPlugin {
             slider_namemap: HashMap::default(),
             probe_instances: Vec::new(),
             probe_namemap: HashMap::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            wasm_plugin_fns: None,
         }
     }
 }
@@ -108,11 +113,17 @@ impl GuiToolPlugin {
                 return Value::Number(0.0);
             }
         };
-        let idx = if let Some(idx) = self.slider_namemap.get(name.as_str()).cloned() {
-            let p = self.slider_instances.get_mut(idx).unwrap();
-            p.set_range(min, max);
-            idx
+        let idx = if let Some(&existing_idx) = self.slider_namemap.get(name.as_str()) {
+            // Slider with this name already exists, reuse the index
+            if let Some(p) = self.slider_instances.get_mut(existing_idx) {
+                // Instance still available, update range
+                p.set_range(min, max);
+            }
+            // Return existing index whether instance is available or not
+            // (if drained, the frozen handle will still have it)
+            existing_idx
         } else {
+            // New slider - add to window and register
             let (p, idx) = window.add_slider(name.as_str(), init, min, max);
             self.slider_instances.push(p);
             self.slider_namemap.insert(name.to_string(), idx);
@@ -149,19 +160,19 @@ impl GuiToolPlugin {
                 );
             }
         };
-        let probeid = self
-            .probe_namemap
-            .get(name.as_str())
-            .cloned()
-            .unwrap_or_else(|| {
-                let (prod, cons) = HeapRb::<f64>::new(4096).split();
-                window.add_plot(name.as_str(), cons);
-                let idx = self.probe_instances.len();
-                self.probe_instances.push(prod);
-                self.probe_namemap.insert(name.to_string(), idx);
-                log::info!("Created Probe '{}' with index {}", name, idx);
-                idx
-            });
+        let probeid = if let Some(&existing_idx) = self.probe_namemap.get(name.as_str()) {
+            // Probe with this name already exists, reuse the index
+            existing_idx
+        } else {
+            // New probe - create producer/consumer and register
+            let (prod, cons) = HeapRb::<f64>::new(4096).split();
+            window.add_plot(name.as_str(), cons);
+            let idx = self.probe_instances.len();
+            self.probe_instances.push(prod);
+            self.probe_namemap.insert(name.to_string(), idx);
+            log::info!("Created Probe '{}' with index {}", name, idx);
+            idx
+        };
 
         // Generate a lambda that calls probe_intercept with the fixed ID
         Value::Code(
@@ -280,10 +291,18 @@ impl SystemPlugin for GuiToolPlugin {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn freeze_for_wasm(&mut self) -> Option<mimium_lang::runtime::wasm::WasmPluginFnMap> {
+        // Return cached map if already created (for hot-swap reuse)
+        if let Some(ref cached) = self.wasm_plugin_fns {
+            return Some(cached.clone());
+        }
+
         if self.slider_instances.is_empty() && self.probe_instances.is_empty() {
             return None;
         }
-        Some(self.freeze().into_wasm_plugin_fn_map())
+
+        let map = self.freeze().into_wasm_plugin_fn_map();
+        self.wasm_plugin_fns = Some(map.clone());
+        Some(map)
     }
 
     fn gen_interfaces(&self) -> Vec<SysPluginSignature> {
