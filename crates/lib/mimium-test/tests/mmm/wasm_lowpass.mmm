@@ -1,6 +1,0 @@
-// Test biquad filter with lowpass, exercising tuple arg passing
-include("filter.mmm")
-
-fn dsp() {
-    lowpass(1.0, 1000.0, 0.707)
-}

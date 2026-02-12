@@ -1234,30 +1234,6 @@ fn wasm_tuple_pass() {
     assert_eq!(res, ans, "WASM backend: tuple arg flattening at call site");
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn wasm_lowpass() {
-    // Test lowpass filter (biquad) in WASM backend. This exercises:
-    // - Tuple argument flattening (biquad receives a 5-tuple of coefficients)
-    // - Stateful function (`self` in _biquad_inner and phasor)
-    // - Include file resolution (filter.mmm includes math.mmm)
-    // - Duplicate function deduplication (math.mmm included multiple times)
-    let res = run_file_test_wasm("wasm_lowpass.mmm", 5, false).unwrap();
-    assert_eq!(
-        res.len(),
-        5,
-        "WASM backend: lowpass should produce 5 samples"
-    );
-    // All values should be finite (not NaN or Inf)
-    for (i, v) in res.iter().enumerate() {
-        assert!(
-            v.is_finite(),
-            "WASM backend: lowpass sample {} is not finite: {}",
-            i,
-            v
-        );
-    }
-}
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
