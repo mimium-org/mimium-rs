@@ -18,10 +18,17 @@ type ClosureHandle = u64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Scheduled task to be executed at a specific time.
-pub struct Task {
-    when: Time,
-    closure: ClosureHandle,
+pub(crate) struct Task {
+    pub(crate) when: Time,
+    pub(crate) closure: ClosureHandle,
 }
+
+impl Task {
+    pub(crate) fn new(when: Time, closure: ClosureHandle) -> Self {
+        Self { when, closure }
+    }
+}
+
 impl PartialOrd for Task {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
@@ -37,10 +44,25 @@ impl Ord for Task {
 pub struct SimpleScheduler {
     sender: mpsc::Sender<Task>,
     audio_worker: Option<SchedulerAudioWorker>,
+    /// Cached WASM handle shared between `freeze_for_wasm()` and
+    /// `freeze_audio_handle()`.  Created lazily on first call.
+    #[cfg(not(target_arch = "wasm32"))]
+    wasm_handle: Option<super::wasm_handle::WasmSchedulerHandle>,
 }
 impl SimpleScheduler {
     pub fn take_audio_worker(&mut self) -> Option<SchedulerAudioWorker> {
         self.audio_worker.take()
+    }
+
+    /// Return the cached [`WasmSchedulerHandle`], creating one if needed.
+    ///
+    /// Both `freeze_for_wasm()` and `freeze_audio_handle()` call this so
+    /// that they share the same underlying task queue.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn take_or_create_wasm_handle(&mut self) -> super::wasm_handle::WasmSchedulerHandle {
+        self.wasm_handle
+            .get_or_insert_with(super::wasm_handle::WasmSchedulerHandle::default)
+            .clone()
     }
 }
 pub struct SchedulerAudioWorker {
@@ -100,6 +122,8 @@ impl Default for SimpleScheduler {
                 tasks: BinaryHeap::new(),
                 receiver,
             }),
+            #[cfg(not(target_arch = "wasm32"))]
+            wasm_handle: None,
         }
     }
 }

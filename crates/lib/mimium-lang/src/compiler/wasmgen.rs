@@ -200,6 +200,16 @@ pub struct WasmGenerator {
     is_entry_function: bool,
     /// Maps function signatures (params, results) to type section indices for call_indirect
     call_type_cache: HashMap<(Vec<wasm_encoder::ValType>, Vec<wasm_encoder::ValType>), u32>,
+    /// Per-function upvalue indirection info.
+    /// Maps MIR function index to a boolean vec: `true` at position `i` means upvalue `i`
+    /// stores an alloc **pointer** (not the dereferenced value), so `GetUpValue`/`SetUpValue`
+    /// must go through one extra level of indirection.
+    /// This is necessary because in WASM we combine closure creation and close into one step:
+    /// all closures are immediately "closed" and upvalues from alloc cells are shared by
+    /// reference rather than copied by value.
+    indirect_upvalues: HashMap<usize, Vec<bool>>,
+    /// MIR function index of the function currently being compiled in `generate_function_bodies`.
+    current_mir_fn_idx: usize,
 }
 
 /// Context for emitting control flow blocks
@@ -276,6 +286,8 @@ impl WasmGenerator {
             alloc_ptr_save_local: 0,
             is_entry_function: false,
             call_type_cache: HashMap::new(),
+            indirect_upvalues: HashMap::new(),
+            current_mir_fn_idx: 0,
         };
 
         // Setup runtime primitive imports and memory/table
@@ -536,7 +548,14 @@ impl WasmGenerator {
                     .collect(),
                 arg_ty => vec![Self::type_to_valtype(&arg_ty)],
             };
-            let return_types: Vec<ValType> = vec![Self::type_to_valtype(&ret.to_type())];
+            // Strip Unit return type to match process_mir_functions behavior:
+            // Unit-returning functions have no WASM return values.
+            let return_types: Vec<ValType> =
+                if matches!(ret.to_type(), Type::Primitive(PType::Unit)) {
+                    vec![]
+                } else {
+                    vec![Self::type_to_valtype(&ret.to_type())]
+                };
 
             let type_idx = self.type_section.len();
             self.type_section
@@ -592,6 +611,11 @@ impl WasmGenerator {
 
         // Phase 2: Generate function bodies
         self.generate_function_bodies()?;
+
+        // Phase 2.5: Generate the closure-execution trampoline exported as
+        // `_mimium_exec_closure_void`.  The host (scheduler, etc.) calls this
+        // to invoke a `() -> ()` closure stored in linear memory by address.
+        self.generate_exec_closure_trampoline();
 
         // Phase 3: Export functions
         self.export_functions()?;
@@ -737,7 +761,9 @@ impl WasmGenerator {
         let functions = self.mir.functions.clone();
 
         // For each MIR function, generate WASM function body
-        for func in &functions {
+        for (mir_fn_idx, func) in functions.iter().enumerate() {
+            self.current_mir_fn_idx = mir_fn_idx;
+
             // Reset register mapping and type tracking for each function
             self.registers.clear();
             self.register_types.clear();
@@ -1637,8 +1663,16 @@ impl WasmGenerator {
         // Generate the instruction (pushes result to stack)
         self.translate_instruction(instr, func);
 
+        // Calls to Unit-returning functions produce no value on the WASM stack
+        // (both MIR functions and plugin imports strip Unit return types).
+        let is_void_call = matches!(
+            instr,
+            I::Call(_, _, ret_ty) | I::CallIndirect(_, _, ret_ty) | I::CallCls(_, _, ret_ty)
+                if matches!(ret_ty.to_type(), Type::Primitive(PType::Unit))
+        );
+
         // Only handle destination for non-return instructions that produce a value
-        if !is_return && Self::instruction_produces_value(instr) {
+        if !is_return && !is_void_call && Self::instruction_produces_value(instr) {
             // Store result to destination register if specified
             match dest {
                 mir::Value::Register(reg_idx) => {
@@ -2187,7 +2221,23 @@ impl WasmGenerator {
                     memory_index: 0,
                 }));
 
-                // Capture upvalues into the closure
+                // Capture upvalues into the closure.
+                //
+                // In WASM we cannot reference the WASM value stack from
+                // outside the function, so closures are immediately "closed":
+                // upvalues originating from single-word `alloc` cells store
+                // the **alloc pointer** (not the dereferenced value).  This
+                // gives all closures sharing the same alloc cell a live
+                // reference to the same mutable storage — essential for
+                // `letrec` self-references and shared mutable state.
+                //
+                // Multi-word allocs (tuples, etc.) already store pointers
+                // (the alloc address IS the data address) and need no extra
+                // indirection at GetUpValue time.
+                //
+                // `GetUpValue` / `SetUpValue` check `indirect_upvalues` to
+                // decide whether an extra dereference is needed.
+                let mut is_indirect = vec![false; upindexes.len()];
                 for (i, upindex) in upindexes.iter().enumerate() {
                     let upval_byte_offset = ((1 + i) as u32) * 8;
                     // Push address: base + offset
@@ -2198,19 +2248,17 @@ impl WasmGenerator {
                         mir::Value::Register(reg_idx)
                             if self.alloc_registers.get(reg_idx).copied().unwrap_or(0) == 1 =>
                         {
-                            // Single-word alloc register: dereference to get the stored value
+                            // Single-word alloc: store the alloc pointer so the
+                            // closure shares the mutable cell.  GetUpValue will
+                            // dereference through the pointer.
+                            is_indirect[i] = true;
                             self.emit_value_load(upindex, func);
-                            func.instruction(&W::I32WrapI64);
-                            func.instruction(&W::I64Load(MemArg {
-                                offset: 0,
-                                align: 3,
-                                memory_index: 0,
-                            }));
                         }
                         mir::Value::Register(reg_idx)
                             if self.alloc_registers.contains_key(reg_idx) =>
                         {
-                            // Multi-word alloc register (tuple etc.): store pointer as-is
+                            // Multi-word alloc (tuple etc.): the alloc address
+                            // IS the data address; store as-is, no indirection.
                             self.emit_value_load(upindex, func);
                         }
                         _ => {
@@ -2228,6 +2276,7 @@ impl WasmGenerator {
                         memory_index: 0,
                     }));
                 }
+                self.indirect_upvalues.insert(mir_fn_idx, is_indirect);
 
                 // Push closure address as the result (i64)
                 func.instruction(&W::LocalGet(self.alloc_base_local));
@@ -2665,12 +2714,14 @@ impl WasmGenerator {
                                 "Warning: Unknown external function in Call: {}",
                                 name.as_str()
                             );
-                            // Push placeholder value without loading arguments
-                            match Self::type_to_valtype(&ret_ty.to_type()) {
-                                ValType::F64 => func.instruction(&W::F64Const(0.0)),
-                                ValType::I64 => func.instruction(&W::I64Const(0)),
-                                _ => func.instruction(&W::I32Const(0)),
-                            };
+                            // Push placeholder value (skip for Unit returns)
+                            if !matches!(ret_ty.to_type(), Type::Primitive(PType::Unit)) {
+                                match Self::type_to_valtype(&ret_ty.to_type()) {
+                                    ValType::F64 => func.instruction(&W::F64Const(0.0)),
+                                    ValType::I64 => func.instruction(&W::I64Const(0)),
+                                    _ => func.instruction(&W::I32Const(0)),
+                                };
+                            }
                         }
                     }
                 } else {
@@ -2723,11 +2774,13 @@ impl WasmGenerator {
                         } else {
                             // Unknown external function - don't load args, just push placeholder
                             eprintln!("Warning: Unknown external function: {}", name.as_str());
-                            match Self::type_to_valtype(&ret_ty.to_type()) {
-                                ValType::F64 => func.instruction(&W::F64Const(0.0)),
-                                ValType::I64 => func.instruction(&W::I64Const(0)),
-                                _ => func.instruction(&W::I32Const(0)),
-                            };
+                            if !matches!(ret_ty.to_type(), Type::Primitive(PType::Unit)) {
+                                match Self::type_to_valtype(&ret_ty.to_type()) {
+                                    ValType::F64 => func.instruction(&W::F64Const(0.0)),
+                                    ValType::I64 => func.instruction(&W::I64Const(0)),
+                                    _ => func.instruction(&W::I32Const(0)),
+                                };
+                            }
                         }
                     }
                     _ => {
@@ -2911,35 +2964,68 @@ impl WasmGenerator {
                 func.instruction(&W::I64Const(byte_offset));
                 func.instruction(&W::I64Add);
                 func.instruction(&W::I32WrapI64);
-                // Load value with appropriate type
-                match Self::type_to_valtype(&ty.to_type()) {
-                    ValType::F64 => func.instruction(&W::F64Load(memarg)),
-                    _ => func.instruction(&W::I64Load(memarg)),
-                };
+                // Load the raw slot value (always i64 in the closure struct)
+                func.instruction(&W::I64Load(memarg));
+
+                // If this upvalue is indirect (alloc pointer), dereference once
+                // more to reach the actual value stored in the alloc cell.
+                let is_indirect = self
+                    .indirect_upvalues
+                    .get(&self.current_mir_fn_idx)
+                    .and_then(|v| v.get(*idx as usize))
+                    .copied()
+                    .unwrap_or(false);
+                if is_indirect {
+                    // The slot holds an alloc cell address; load through it.
+                    func.instruction(&W::I32WrapI64);
+                    func.instruction(&W::I64Load(memarg));
+                }
+
+                // Final type conversion
+                if Self::type_to_valtype(&ty.to_type()) == ValType::F64 {
+                    func.instruction(&W::F64ReinterpretI64);
+                }
             }
 
             I::SetUpValue(idx, value, ty) => {
-                // Store to upvalue slot in the current closure
+                // Store to upvalue slot in the current closure.
                 let memarg = MemArg {
                     offset: 0,
                     align: 3,
                     memory_index: 0,
                 };
-                // Compute upvalue address: closure_self_ptr + 8 + idx * 8
+
+                // Check if this upvalue is indirect (alloc pointer).
+                let is_indirect = self
+                    .indirect_upvalues
+                    .get(&self.current_mir_fn_idx)
+                    .and_then(|v| v.get(*idx as usize))
+                    .copied()
+                    .unwrap_or(false);
+
+                // Compute the store target address.
+                // closure_self_ptr + 8 + idx * 8
                 func.instruction(&W::I32Const(0)); // CLOSURE_SELF_PTR_ADDR
                 func.instruction(&W::I64Load(memarg));
                 let byte_offset = 8 + (*idx as i64) * 8;
                 func.instruction(&W::I64Const(byte_offset));
                 func.instruction(&W::I64Add);
                 func.instruction(&W::I32WrapI64);
-                // Push value
+
+                if is_indirect {
+                    // The slot holds an alloc cell address; load the pointer,
+                    // then store the value through it.
+                    func.instruction(&W::I64Load(memarg));
+                    func.instruction(&W::I32WrapI64);
+                }
+
+                // Push value (always as i64 for uniform storage)
                 let expected = Self::type_to_valtype(&ty.to_type());
                 self.emit_value_load_typed(value, expected, func);
-                // Store
-                match expected {
-                    ValType::F64 => func.instruction(&W::F64Store(memarg)),
-                    _ => func.instruction(&W::I64Store(memarg)),
-                };
+                if expected == ValType::F64 {
+                    func.instruction(&W::I64ReinterpretF64);
+                }
+                func.instruction(&W::I64Store(memarg));
             }
 
             // Closure (old-style, non-heap) - same mechanism as MakeClosure
@@ -3560,6 +3646,103 @@ impl WasmGenerator {
     fn emit_closure_state_pop(&self, func: &mut Function) {
         use wasm_encoder::Instruction as W;
         func.instruction(&W::Call(self.rt.closure_state_pop));
+    }
+
+    /// Generate an exported WASM trampoline function `_mimium_exec_closure_void`.
+    ///
+    /// This function takes a single `i64` argument (the closure address in
+    /// linear memory) and executes it as a `() -> ()` closure via
+    /// `call_indirect`.  The host scheduler calls this to fire scheduled
+    /// tasks without needing to replicate the closure-call protocol on the
+    /// host side.
+    ///
+    /// Generated WASM (pseudo):
+    /// ```wasm
+    /// (func $_mimium_exec_closure_void (param $closure_addr i64)
+    ///   ;; closure_state_push(closure_addr, 64)
+    ///   ;; save old self-ptr, set new self-ptr = closure_addr
+    ///   ;; load fn_table_idx = mem[closure_addr as i32]
+    ///   ;; call_indirect [] -> [] (type () -> ())
+    ///   ;; restore old self-ptr
+    ///   ;; closure_state_pop()
+    /// )
+    /// ```
+    fn generate_exec_closure_trampoline(&mut self) {
+        use wasm_encoder::Instruction as W;
+
+        let memarg = wasm_encoder::MemArg {
+            offset: 0,
+            align: 3,
+            memory_index: 0,
+        };
+
+        // 1. Declare the function type: (i64) -> ()
+        let type_idx = self.type_section.len();
+        self.type_section
+            .ty()
+            .function(vec![ValType::I64], vec![]);
+
+        // 2. Add to function section
+        self.function_section.function(type_idx);
+        let fn_idx = self.current_fn_idx;
+        self.current_fn_idx += 1;
+
+        // 3. Build function body
+        //    Locals: local 0 = param (closure_addr: i64)
+        //            local 1 = saved_self_ptr (i64)
+        let mut func = Function::new([(1, ValType::I64)]);
+        let param_closure_addr: u32 = 0;
+        let local_saved_self_ptr: u32 = 1;
+
+        // closure_state_push(closure_addr, 64)
+        // 64 is a conservative default state size for dynamically dispatched closures
+        func.instruction(&W::LocalGet(param_closure_addr));
+        func.instruction(&W::I64Const(64));
+        func.instruction(&W::Call(self.rt.closure_state_push));
+
+        // Save current closure_self_ptr (at memory address 0) to local
+        func.instruction(&W::I32Const(0));
+        func.instruction(&W::I64Load(memarg));
+        func.instruction(&W::LocalSet(local_saved_self_ptr));
+
+        // Set closure_self_ptr = closure_addr
+        func.instruction(&W::I32Const(0));
+        func.instruction(&W::LocalGet(param_closure_addr));
+        func.instruction(&W::I64Store(memarg));
+
+        // Load fn_table_idx from closure[0]: i64 at closure_addr
+        func.instruction(&W::LocalGet(param_closure_addr));
+        func.instruction(&W::I32WrapI64);
+        func.instruction(&W::I64Load(memarg));
+        func.instruction(&W::I32WrapI64); // table index is i32
+
+        // call_indirect with type () -> ()
+        // In mimium's WASM codegen, Unit return types produce no WASM results
+        // (the return is stripped in process_mir_functions), so the scheduled
+        // `() -> ()` closures truly have WASM type `() -> ()`.
+        let void_void_type = self.get_or_create_call_type(vec![], vec![]);
+        func.instruction(&W::CallIndirect {
+            type_index: void_void_type,
+            table_index: 0,
+        });
+
+        // Restore the previous closure_self_ptr
+        func.instruction(&W::I32Const(0));
+        func.instruction(&W::LocalGet(local_saved_self_ptr));
+        func.instruction(&W::I64Store(memarg));
+
+        // closure_state_pop()
+        func.instruction(&W::Call(self.rt.closure_state_pop));
+
+        func.instruction(&W::End);
+        self.code_section.function(&func);
+
+        // 4. Export with canonical name
+        self.export_section.export(
+            "_mimium_exec_closure_void",
+            wasm_encoder::ExportKind::Func,
+            fn_idx,
+        );
     }
 
     /// Allocate a linear memory offset for a global variable, or return existing one.

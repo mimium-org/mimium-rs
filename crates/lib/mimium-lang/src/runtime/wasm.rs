@@ -372,23 +372,31 @@ impl WasmRuntime {
                     vec![mimium_type_to_wasmtime_valtype(&arg_ty)]
                 }
             };
-            let return_valtype = mimium_type_to_wasmtime_valtype(&ret.to_type());
+            // Strip Unit return type to match wasmgen's setup_plugin_imports:
+            // Unit-returning functions have no WASM return values.
+            let ret_type = ret.to_type();
+            let is_void = matches!(ret_type, Type::Primitive(crate::types::PType::Unit));
+            let return_valtypes: Vec<ValType> = if is_void {
+                vec![]
+            } else {
+                vec![mimium_type_to_wasmtime_valtype(&ret_type)]
+            };
             let plugin_name = name.as_str().to_string();
 
             log::debug!(
                 "Registering plugin host function: {} ({} params -> {:?})",
                 plugin_name,
                 param_valtypes.len(),
-                return_valtype
+                return_valtypes,
             );
 
             let func_type = FuncType::new(
                 linker.engine(),
                 param_valtypes.clone(),
-                [return_valtype.clone()],
+                return_valtypes.clone(),
             );
 
-            let return_vt = return_valtype.clone();
+            let return_vts = return_valtypes.clone();
 
             // Look up a specific handler closure for this function, if any.
             let handler: Option<WasmPluginFn> = plugin_fns
@@ -397,10 +405,11 @@ impl WasmRuntime {
 
             // Determine if this function is a "passthrough" shape (first param
             // type == return type, name contains "intercept").
-            let is_passthrough = param_valtypes.len() >= 2
+            let is_passthrough = !return_valtypes.is_empty()
+                && param_valtypes.len() >= 2
                 && param_valtypes
                     .first()
-                    .is_some_and(|first| valtype_eq(first, &return_valtype))
+                    .is_some_and(|first| valtype_eq(first, &return_valtypes[0]))
                 && plugin_name.contains("intercept");
 
             linker
@@ -410,6 +419,25 @@ impl WasmRuntime {
                     func_type,
                     move |_caller, params, results| {
                         log::trace!("Plugin trampoline called: {plugin_name}({params:?})");
+
+                        // If the function returns void (Unit), results is empty.
+                        // Still call the handler for its side effects, but don't
+                        // write any return value.
+                        if results.is_empty() {
+                            if let Some(ref func) = handler {
+                                let args: Vec<f64> = params
+                                    .iter()
+                                    .filter_map(|v| match v {
+                                        wasmtime::Val::F64(f) => Some(f64::from_bits(*f)),
+                                        wasmtime::Val::I64(i) => Some(*i as f64),
+                                        wasmtime::Val::I32(i) => Some(*i as f64),
+                                        _ => None,
+                                    })
+                                    .collect();
+                                let _ = func(&args);
+                            }
+                            return Ok(());
+                        }
 
                         // Try the per-function handler registered by the plugin
                         if let Some(ref func) = handler {
@@ -424,7 +452,12 @@ impl WasmRuntime {
                                 .collect();
 
                             if let Some(result) = func(&args) {
-                                results[0] = wasmtime::Val::F64(result.to_bits());
+                                // Match the Val variant to the declared return type
+                                results[0] = match &return_vts[0] {
+                                    ValType::I64 => wasmtime::Val::I64(result as i64),
+                                    ValType::I32 => wasmtime::Val::I32(result as i32),
+                                    _ => wasmtime::Val::F64(result.to_bits()),
+                                };
                                 return Ok(());
                             }
                         }
@@ -433,8 +466,8 @@ impl WasmRuntime {
                         if is_passthrough && !params.is_empty() {
                             results[0] = params[0];
                         } else {
-                            for result in results.iter_mut() {
-                                *result = default_val_for_valtype(return_vt.clone());
+                            for (i, result) in results.iter_mut().enumerate() {
+                                *result = default_val_for_valtype(return_vts[i].clone());
                             }
                         }
                         Ok(())
@@ -495,7 +528,10 @@ impl WasmModule {
 
         // Call function
         func.call(&mut self.store, &wasm_args, &mut results)
-            .map_err(|e| format!("Failed to call function: {e}"))?;
+            .map_err(|e| {
+                // Include detailed error chain
+                format!("Failed to call function: {e:#}")
+            })?;
 
         // Convert results back to Words
         Ok(results
@@ -539,6 +575,11 @@ impl WasmModule {
     /// This allows external code to update current_time, sample_rate, etc.
     pub fn get_runtime_state_mut(&mut self) -> Option<&mut RuntimeState> {
         Some(self.store.data_mut())
+    }
+
+    /// Update the current time in the runtime state.
+    pub fn set_current_time(&mut self, time: u64) {
+        self.store.data_mut().current_time = time;
     }
 }
 

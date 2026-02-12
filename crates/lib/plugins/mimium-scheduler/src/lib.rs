@@ -20,7 +20,12 @@ use mimium_lang::{
 };
 
 mod scheduler;
+#[cfg(not(target_arch = "wasm32"))]
+mod wasm_handle;
+
 pub use scheduler::SimpleScheduler;
+#[cfg(not(target_arch = "wasm32"))]
+pub use wasm_handle::WasmSchedulerHandle;
 
 impl SystemPlugin for SimpleScheduler {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
@@ -39,6 +44,17 @@ impl SystemPlugin for SimpleScheduler {
             function!(vec![numeric!(), function!(vec![], unit!())], unit!()),
         );
         vec![schedule_fn]
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn freeze_audio_handle(&mut self) -> Option<Box<dyn std::any::Any + Send>> {
+        Some(Box::new(self.take_or_create_wasm_handle()))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn freeze_for_wasm(&mut self) -> Option<mimium_lang::runtime::wasm::WasmPluginFnMap> {
+        let handle = self.take_or_create_wasm_handle();
+        Some(handle.into_wasm_plugin_fn_map())
     }
 }
 

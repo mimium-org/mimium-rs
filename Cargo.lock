@@ -2374,6 +2374,7 @@ dependencies = [
 name = "mimium-scheduler"
 version = "3.2.0"
 dependencies = [
+ "log",
  "mimium-lang",
  "mimium-test",
 ]

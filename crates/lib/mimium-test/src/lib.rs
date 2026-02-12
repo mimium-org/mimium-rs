@@ -16,7 +16,7 @@ use mimium_lang::{
 };
 
 #[cfg(not(target_arch = "wasm32"))]
-use mimium_lang::runtime::wasm::{WasmModule, WasmRuntime};
+use mimium_lang::runtime::wasm::WasmRuntime;
 
 /// Check if WASM backend should be used based on MIMIUM_BACKEND environment variable.
 ///
@@ -388,7 +388,16 @@ pub fn run_source_with_scheduler_wasm(
     })?;
 
     // Collect WASM plugin function handlers from system plugins (scheduler, etc.)
+    // freeze_for_wasm() must be called before freeze_audio_handles() so that
+    // both share the same underlying WasmSchedulerHandle.
     let plugin_fns = ctx.freeze_wasm_plugin_fns();
+
+    // Extract the WasmSchedulerHandle from audio handles.
+    let scheduler_handle: Option<mimium_scheduler::WasmSchedulerHandle> = ctx
+        .freeze_audio_handles()
+        .into_iter()
+        .find_map(|h| h.downcast::<mimium_scheduler::WasmSchedulerHandle>().ok())
+        .map(|b| *b);
 
     // Create WASM runtime with plugin trampolines
     let mut wasm_runtime = WasmRuntime::new(&ext_fns, plugin_fns).map_err(|e| {
@@ -410,9 +419,28 @@ pub fn run_source_with_scheduler_wasm(
     // Execute main to initialize globals
     let _init_result = wasm_module.call_function("main", &[]);
 
-    // Execute dsp for each sample
+    // Execute dsp for each sample, draining scheduled tasks between ticks.
     let mut results = Vec::with_capacity(times as usize);
-    for _ in 0..times {
+    for t in 0..times {
+        // Update time in WASM runtime state
+        wasm_module.set_current_time(t);
+
+        // Update scheduler handle's time and execute any due tasks
+        if let Some(ref handle) = scheduler_handle {
+            handle.set_current_time(t);
+            for closure_addr in handle.drain_due_tasks() {
+                wasm_module
+                    .call_function("_mimium_exec_closure_void", &[closure_addr as u64])
+                    .map_err(|e| {
+                        eprintln!("[WASM] _mimium_exec_closure_void error: {e}");
+                        vec![Box::new(runtime::RuntimeError(
+                            runtime::ErrorKind::Unknown,
+                            Location::default(),
+                        )) as Box<dyn ReportableError>]
+                    })?;
+            }
+        }
+
         let result = wasm_module.call_function("dsp", &[]).map_err(|e| {
             eprintln!("[WASM] dsp() call error: {e}");
             vec![Box::new(runtime::RuntimeError(

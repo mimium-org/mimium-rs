@@ -26,12 +26,6 @@ fn scheduler_multiple_at_sametime() {
 #[wasm_bindgen_test(unsupported = test)]
 #[should_panic]
 fn scheduler_invalid() {
-    if should_use_wasm_backend() {
-        // WASM scheduler is not yet implemented — the default trampoline
-        // returns silently, so this test cannot detect infinite recursion.
-        // Panic manually so that #[should_panic] still passes.
-        panic!("scheduler_invalid: skipped under WASM backend (not yet implemented)");
-    }
     let _ = run_file_with_scheduler("scheduler_invalid.mmm", 10);
 }
 
