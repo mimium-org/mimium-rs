@@ -94,6 +94,33 @@ pub trait SystemPlugin {
     fn after_main(&mut self, _machine: &mut Machine) -> ReturnCode {
         0
     }
+
+    /// WASM-side lifecycle hook called before `main()`.
+    ///
+    /// This is the WASM analogue of [`on_init`].  Receives a mutable
+    /// reference to the [`WasmEngine`] so the plugin can interact with
+    /// the WASM module before execution.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn on_init_wasm(
+        &mut self,
+        _engine: &mut crate::runtime::wasm::engine::WasmEngine,
+    ) -> ReturnCode {
+        0
+    }
+
+    /// WASM-side lifecycle hook called after `main()` completes.
+    ///
+    /// This is the WASM analogue of [`after_main`].  Receives a mutable
+    /// reference to the [`WasmEngine`] so the plugin can inspect the
+    /// module state or connect to external devices.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn after_main_wasm(
+        &mut self,
+        _engine: &mut crate::runtime::wasm::engine::WasmEngine,
+    ) -> ReturnCode {
+        0
+    }
+
     fn gen_interfaces(&self) -> Vec<SysPluginSignature>;
     fn try_get_main_loop(&mut self) -> Option<Box<dyn FnOnce()>> {
         None
@@ -177,6 +204,24 @@ impl DynSystemPlugin {
         &mut self,
     ) -> Option<Box<dyn crate::runtime::wasm::WasmSystemPluginAudioWorker>> {
         self.inner.borrow_mut().generate_wasm_audioworker()
+    }
+
+    /// Delegate to the inner plugin's `on_init_wasm()`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn on_init_wasm(
+        &self,
+        engine: &mut crate::runtime::wasm::engine::WasmEngine,
+    ) -> crate::runtime::vm::ReturnCode {
+        self.inner.borrow_mut().on_init_wasm(engine)
+    }
+
+    /// Delegate to the inner plugin's `after_main_wasm()`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn after_main_wasm(
+        &self,
+        engine: &mut crate::runtime::wasm::engine::WasmEngine,
+    ) -> crate::runtime::vm::ReturnCode {
+        self.inner.borrow_mut().after_main_wasm(engine)
     }
 
     /// Get a mutable reference to the inner plugin.

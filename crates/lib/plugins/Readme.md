@@ -323,16 +323,33 @@ For `type_infos` with stage 0, you can use either `ty_expr:` (inline type expres
 
 ## Lifecycle Hooks
 
-`SystemPlugin` provides optional lifecycle hooks:
+`SystemPlugin` provides optional lifecycle hooks for both the native VM and the WASM backend:
+
+### Native VM Hooks
 
 | Hook | Timing | Typical Use |
 |------|--------|-------------|
 | `on_init(&mut self, &mut Machine)` | Before main function execution | VM initialization |
 | `after_main(&mut self, &mut Machine)` | After main function completes | Connect to external devices, start I/O |
+| `generate_audioworker(&mut self)` | During setup | Produce per-sample audio-thread worker |
+
+### WASM Backend Hooks
+
+| Hook | Timing | Typical Use |
+|------|--------|-------------|
+| `on_init_wasm(&mut self, &mut WasmEngine)` | Before WASM main execution | WASM module initialization |
+| `after_main_wasm(&mut self, &mut WasmEngine)` | After WASM main completes | Connect to external devices, start I/O |
+| `generate_wasm_audioworker(&mut self)` | During setup | Produce per-sample audio-thread worker for WASM |
+
+### Backend-Agnostic Hooks
+
+| Hook | Timing | Typical Use |
+|------|--------|-------------|
 | `try_get_main_loop(&mut self)` | After compilation | Provide a GUI main loop (e.g., eframe) |
-| `generate_audioworker(&mut self)` | During setup | Produce audio-thread worker (native VM only) |
 | `freeze_audio_handle(&mut self)` | Before audio starts | Snapshot state for the native audio thread |
 | `freeze_for_wasm(&mut self)` | Before WASM execution | Snapshot state as `WasmPluginFnMap` |
+
+The WASM hooks mirror the native VM hooks but receive `&mut WasmEngine` instead of `&mut Machine`. Plugins can implement both sets of hooks to support both backends. If a plugin only needs to perform backend-agnostic work (e.g., connecting to MIDI devices), it can implement both `after_main` and `after_main_wasm` with the same logic, ignoring the engine parameter.
 
 ---
 
@@ -409,7 +426,7 @@ Example: `function!(vec![numeric!(), numeric!()], numeric!())` represents `(floa
 
 | Plugin | Key Features | Dynamic | WASM | Reference For |
 |--------|-------------|---------|------|---------------|
-| `mimium-scheduler` | Audio worker, lifecycle hooks | No | No | Minimal `SystemPlugin` impl |
+| `mimium-scheduler` | Audio worker, WASM audio worker, lifecycle hooks | No | Yes | `SystemPlugin` with dual-backend audio workers |
 | `mimium-midi` | `#[mimium_plugin_fn]`, macros, `mimium_export_plugin!` | Yes | No | Dynamic loading, macro + runtime combination |
 | `mimium-guitools` | Macros, `wasm_audio_handle`, GUI main loop | Yes | Yes | Full WASM integration, freeze pattern |
 | `mimium-symphonia` | UGen, sample playback | Yes | No | `UGenPlugin` pattern |

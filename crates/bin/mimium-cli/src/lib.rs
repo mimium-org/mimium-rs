@@ -588,7 +588,9 @@ pub fn run_file(
             let mut wasm_runtime = WasmDspRuntime::new(wasm_engine, io_channels, dsp_skeleton);
             wasm_runtime.set_sample_rate(48000.0);
             wasm_runtime.set_wasm_audioworkers(wasm_workers);
+            ctx.run_wasm_on_init(wasm_runtime.engine_mut());
             let _ = wasm_runtime.run_main();
+            ctx.run_wasm_after_main(wasm_runtime.engine_mut());
 
             let runtimedata = RuntimeData::new_from_runtime(Box::new(wasm_runtime));
 
@@ -678,7 +680,9 @@ pub fn run_file(
             let mut wasm_runtime = WasmDspRuntime::new(wasm_engine, io_channels, dsp_skeleton);
             wasm_runtime.set_sample_rate(48000.0);
             wasm_runtime.set_wasm_audioworkers(wasm_workers);
+            ctx.run_wasm_on_init(wasm_runtime.engine_mut());
             let _ = wasm_runtime.run_main();
+            ctx.run_wasm_after_main(wasm_runtime.engine_mut());
 
             let runtimedata = RuntimeData::new_from_runtime(Box::new(wasm_runtime));
 

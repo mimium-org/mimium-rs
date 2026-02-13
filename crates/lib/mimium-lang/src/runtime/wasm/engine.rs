@@ -195,6 +195,15 @@ impl WasmDspRuntime {
         self.sys_plugin_workers = workers;
     }
 
+    /// Get a mutable reference to the underlying [`WasmEngine`].
+    ///
+    /// This is used by the host (e.g. the CLI) to call WASM-side
+    /// lifecycle hooks (`on_init_wasm`, `after_main_wasm`) on plugins
+    /// before and after `run_main()`.
+    pub fn engine_mut(&mut self) -> &mut WasmEngine {
+        &mut self.engine
+    }
+
     /// Run the `mimium_main` (or global init) function if exported.
     pub fn run_main(&mut self) -> Result<(), String> {
         // Try "main" first (global initializer), then fall back to "mimium_main"

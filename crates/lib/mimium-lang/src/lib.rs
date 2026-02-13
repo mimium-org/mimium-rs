@@ -145,6 +145,28 @@ impl ExecContext {
             .collect()
     }
 
+    /// Call `on_init_wasm()` on all system plugins.
+    ///
+    /// Should be called before WASM `main()` execution, mirroring the
+    /// native VM path in [`run_main`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn run_wasm_on_init(&self, engine: &mut runtime::wasm::engine::WasmEngine) {
+        self.sys_plugins.iter().for_each(|plug| {
+            let _ = plug.on_init_wasm(engine);
+        });
+    }
+
+    /// Call `after_main_wasm()` on all system plugins.
+    ///
+    /// Should be called after WASM `main()` execution, mirroring the
+    /// native VM path in [`run_main`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn run_wasm_after_main(&self, engine: &mut runtime::wasm::engine::WasmEngine) {
+        self.sys_plugins.iter().for_each(|plug| {
+            let _ = plug.after_main_wasm(engine);
+        });
+    }
+
     //todo: make it to builder pattern
     pub fn add_system_plugin<T: SystemPlugin + 'static>(&mut self, plug: T) {
         let plugin_dyn = DynSystemPlugin::from(plug);
