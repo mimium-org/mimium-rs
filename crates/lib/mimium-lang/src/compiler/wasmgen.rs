@@ -1084,13 +1084,13 @@ impl WasmGenerator {
                     self.emit_value_load(input, wasm_func);
                 }
             }
-        } else if !phi_inputs.is_empty() {
-            if let Some(last) = phi_inputs.last() {
-                if let Some(expected) = phi_result_type {
-                    self.emit_value_load_typed(last, expected, wasm_func);
-                } else {
-                    self.emit_value_load(last, wasm_func);
-                }
+        } else if !phi_inputs.is_empty()
+            && let Some(last) = phi_inputs.last()
+        {
+            if let Some(expected) = phi_result_type {
+                self.emit_value_load_typed(last, expected, wasm_func);
+            } else {
+                self.emit_value_load(last, wasm_func);
             }
         }
 
@@ -3482,7 +3482,7 @@ impl WasmGenerator {
                     } else {
                         // Multi-word arg (tuple/record): store all params to temp memory
                         // and return the pointer so subsequent GetElement/Load can access it
-                        let size_bytes = (word_count as u32) * 8;
+                        let size_bytes = word_count * 8;
                         let temp_addr = self.mem_layout.alloc_offset;
                         self.mem_layout.alloc_offset += size_bytes;
 

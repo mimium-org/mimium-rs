@@ -40,15 +40,3 @@ pub(crate) const ROUND: &str = "round";
 // other operations
 pub(crate) const DELAY: &str = "delay";
 pub(crate) const MEM: &str = "mem";
-const BUILTIN_SYMS_UNSORTED: [&str; 31] = [
-    NEG, TOFLOAT, ADD, SUB, MULT, DIV, EQ, NE, LE, LT, GE, GT, MODULO, POW, AND, OR, SIN, COS, TAN,
-    ATAN, ATAN2, SQRT, ABS, LOG, MIN, MAX, CEIL, FLOOR, ROUND, DELAY, MEM,
-];
-thread_local!(pub (crate) static BUILTIN_SYMS: LazyCell<Vec<Symbol>> = LazyCell::new(|| {
-    let mut v = BUILTIN_SYMS_UNSORTED
-        .iter()
-        .map(|s| s.to_symbol())
-        .collect::<Vec<_>>();
-    v.sort();
-    v
-}));
