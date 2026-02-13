@@ -65,6 +65,8 @@ struct RuntimeFunctionIndices {
     math_cos: u32,
     math_pow: u32,
     math_log: u32,
+    math_min: u32,
+    math_max: u32,
     // Builtin function imports (from "builtin" module)
     builtin_probeln: u32,
     builtin_probe: u32,
@@ -482,12 +484,14 @@ impl WasmGenerator {
         self.rt.math_cos = self.add_import_from("math", "cos", type_idx_f64_f64);
         self.rt.math_log = self.add_import_from("math", "log", type_idx_f64_f64);
 
-        // Type: (f64, f64) -> f64 for pow
+        // Type: (f64, f64) -> f64 for pow, min, max
         let type_idx_f64_f64_f64 = self.type_section.len();
         self.type_section
             .ty()
             .function(vec![ValType::F64, ValType::F64], vec![ValType::F64]);
         self.rt.math_pow = self.add_import_from("math", "pow", type_idx_f64_f64_f64);
+        self.rt.math_min = self.add_import_from("math", "min", type_idx_f64_f64_f64);
+        self.rt.math_max = self.add_import_from("math", "max", type_idx_f64_f64_f64);
     }
 
     /// Setup builtin function imports (probeln, probe, length_array, split_head, split_tail)
@@ -2773,7 +2777,7 @@ impl WasmGenerator {
                             func.instruction(&W::Call(import_idx));
                         } else {
                             // Unknown external function - don't load args, just push placeholder
-                            eprintln!("Warning: Unknown external function: {}", name.as_str());
+                            log::warn!("Warning: Unknown external function: {}", name.as_str());
                             if !matches!(ret_ty.to_type(), Type::Primitive(PType::Unit)) {
                                 match Self::type_to_valtype(&ret_ty.to_type()) {
                                     ValType::F64 => func.instruction(&W::F64Const(0.0)),
@@ -3599,6 +3603,12 @@ impl WasmGenerator {
             "length_array" => Some(self.rt.builtin_length_array),
             "split_head" => Some(self.rt.builtin_split_head),
             "split_tail" => Some(self.rt.builtin_split_tail),
+            "sin" => Some(self.rt.math_sin),
+            "cos" => Some(self.rt.math_cos),
+            "pow" => Some(self.rt.math_pow),
+            "log" => Some(self.rt.math_log),
+            "min" => Some(self.rt.math_min),
+            "max" => Some(self.rt.math_max),
             _ => {
                 // Check plugin functions
                 self.plugin_fns.functions.get(name).copied()

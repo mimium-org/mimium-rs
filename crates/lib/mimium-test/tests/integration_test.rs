@@ -183,6 +183,30 @@ fn primitive_sqrt() {
     let r = (res[0] - ans[0]).abs() < f64::EPSILON;
     assert!(r);
 }
+
+#[wasm_bindgen_test(unsupported = test)]
+fn primitive_min() {
+    let res = run_file_test_mono("primitive_min.mmm", 1).unwrap();
+    let ans = [2.1];
+    let r = (res[0] - ans[0]).abs() < f64::EPSILON;
+    assert!(r);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn primitive_max() {
+    let res = run_file_test_mono("primitive_max.mmm", 1).unwrap();
+    let ans = [3.5];
+    let r = (res[0] - ans[0]).abs() < f64::EPSILON;
+    assert!(r);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn primitive_minmax_combo() {
+    let res = run_file_test_mono("primitive_minmax_combo.mmm", 1).unwrap();
+    let ans = [7.0]; // min(5.0, 3.0) + max(3.0, 4.0) = 3.0 + 4.0
+    let r = (res[0] - ans[0]).abs() < f64::EPSILON;
+    assert!(r);
+}
 #[wasm_bindgen_test(unsupported = test)]
 fn ifblock() {
     let res = run_file_test_mono("if.mmm", 1).unwrap();

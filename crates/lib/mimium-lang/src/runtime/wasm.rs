@@ -318,6 +318,20 @@ impl WasmRuntime {
                 |_caller: Caller<'_, RuntimeState>, base: f64, exp: f64| -> f64 { base.powf(exp) },
             )
             .map_err(|e| format!("Failed to register math::pow: {e}"))?;
+        linker
+            .func_wrap(
+                "math",
+                "min",
+                |_caller: Caller<'_, RuntimeState>, a: f64, b: f64| -> f64 { a.min(b) },
+            )
+            .map_err(|e| format!("Failed to register math::min: {e}"))?;
+        linker
+            .func_wrap(
+                "math",
+                "max",
+                |_caller: Caller<'_, RuntimeState>, a: f64, b: f64| -> f64 { a.max(b) },
+            )
+            .map_err(|e| format!("Failed to register math::max: {e}"))?;
 
         // Register builtin functions (from "builtin" module)
         macro_rules! register_builtin {
