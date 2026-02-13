@@ -821,19 +821,20 @@ impl<'a> Parser<'a> {
     /// Get precedence of an infix operator (None means not an infix operator)
     fn get_infix_precedence(&self, token_kind: TokenKind) -> Option<usize> {
         match token_kind {
-            TokenKind::OpOr => Some(1),
-            TokenKind::OpAnd => Some(2),
-            TokenKind::OpEqual | TokenKind::OpNotEqual => Some(3),
+            // Pipe should have the lowest precedence to allow chaining with other operators
+            // but must be > 0 to avoid infinite loop in statement context (min_prec == 0)
+            TokenKind::OpPipe => Some(1),
+            TokenKind::OpOr => Some(2),
+            TokenKind::OpAnd => Some(3),
+            TokenKind::OpEqual | TokenKind::OpNotEqual => Some(4),
             TokenKind::OpLessThan
             | TokenKind::OpLessEqual
             | TokenKind::OpGreaterThan
-            | TokenKind::OpGreaterEqual => Some(4),
-            TokenKind::OpSum | TokenKind::OpMinus => Some(5),
-            TokenKind::OpProduct | TokenKind::OpDivide | TokenKind::OpModulo => Some(6),
-            TokenKind::OpExponent => Some(7),
-            // Pipe should have the lowest precedence to allow chaining with other operators
-            TokenKind::OpPipe => Some(0),
-            TokenKind::OpAt => Some(9),
+            | TokenKind::OpGreaterEqual => Some(5),
+            TokenKind::OpSum | TokenKind::OpMinus => Some(6),
+            TokenKind::OpProduct | TokenKind::OpDivide | TokenKind::OpModulo => Some(7),
+            TokenKind::OpExponent => Some(8),
+            TokenKind::OpAt => Some(10),
             _ => None,
         }
     }
