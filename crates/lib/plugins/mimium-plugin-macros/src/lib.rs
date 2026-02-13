@@ -1148,9 +1148,7 @@ fn generate_plugin_exports(input: &PluginExportInput) -> syn::Result<proc_macro2
 /// 2. Extracts the required number of `f64` args from the `&[f64]` slice
 /// 3. Calls the handle's method with those args
 /// 4. Returns the result as `Option<f64>`
-fn generate_wasm_handle_impl(
-    wasm_handle: &Option<WasmAudioHandle>,
-) -> proc_macro2::TokenStream {
+fn generate_wasm_handle_impl(wasm_handle: &Option<WasmAudioHandle>) -> proc_macro2::TokenStream {
     let wasm_handle = match wasm_handle {
         Some(h) => h,
         None => return quote! {},

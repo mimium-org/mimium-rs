@@ -660,7 +660,10 @@ impl PluginLoader {
                 // to ensure proper mainloop integration
                 let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if file_name.contains("guitools") {
-                    crate::log::debug!("Skipping guitools plugin (should be loaded as SystemPlugin only): {}", path.display());
+                    crate::log::debug!(
+                        "Skipping guitools plugin (should be loaded as SystemPlugin only): {}",
+                        path.display()
+                    );
                     continue;
                 }
 
@@ -668,7 +671,11 @@ impl PluginLoader {
                 let already_loaded = self.plugins.iter().any(|p| {
                     // Extract plugin name from path (e.g., libmimium_midi.dylib -> mimium-midi)
                     let plugin_name = p.name().replace('-', "_");
-                    file_name.contains(&plugin_name) || file_name.contains(&format!("mimium_{}", plugin_name.trim_start_matches("mimium_")))
+                    file_name.contains(&plugin_name)
+                        || file_name.contains(&format!(
+                            "mimium_{}",
+                            plugin_name.trim_start_matches("mimium_")
+                        ))
                 });
 
                 if already_loaded {

@@ -438,12 +438,7 @@ pub fn run_source_with_scheduler_wasm(
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_file_with_scheduler_wasm(path: &'static str, times: u64) -> Option<Vec<f64>> {
     let (file, src) = load_src(path);
-    let res = run_source_with_scheduler_wasm(
-        &src,
-        Some(&file.to_string_lossy()),
-        times,
-        true,
-    );
+    let res = run_source_with_scheduler_wasm(&src, Some(&file.to_string_lossy()), times, true);
     match res {
         Ok(res) => Some(res),
         Err(errs) => {

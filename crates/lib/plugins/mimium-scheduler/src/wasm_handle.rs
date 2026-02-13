@@ -68,19 +68,14 @@ impl WasmSchedulerHandle {
     /// The closure captures a clone of the inner `Arc`, so calling this
     /// multiple times (or cloning the handle first) always operates on the
     /// same shared task queue.
-    pub fn into_wasm_plugin_fn_map(
-        &self,
-    ) -> mimium_lang::runtime::wasm::WasmPluginFnMap {
+    pub fn into_wasm_plugin_fn_map(&self) -> mimium_lang::runtime::wasm::WasmPluginFnMap {
         let state = Arc::clone(&self.state);
         let schedule_fn: mimium_lang::runtime::wasm::WasmPluginFn =
             Arc::new(move |args: &[f64]| -> Option<f64> {
                 // args[0] = when (f64, absolute sample time)
                 // args[1] = closure_addr (i64 bit-cast to f64)
                 if args.len() < 2 {
-                    log::error!(
-                        "_mimium_schedule_at: expected 2 args, got {}",
-                        args.len()
-                    );
+                    log::error!("_mimium_schedule_at: expected 2 args, got {}", args.len());
                     return Some(0.0);
                 }
                 let when = args[0] as u64;
@@ -93,7 +88,8 @@ impl WasmSchedulerHandle {
                         when, s.current_time
                     );
                 }
-                s.tasks.push(Reverse(Task::new(Time(when), closure_addr as u64)));
+                s.tasks
+                    .push(Reverse(Task::new(Time(when), closure_addr as u64)));
                 // Return value is unused (unit), but the trampoline expects
                 // `Option<f64>`.
                 Some(0.0)

@@ -146,9 +146,7 @@ pub trait SystemPlugin {
     /// `None` — the runtime will provide a default pass-through / zero
     /// trampoline.
     #[cfg(not(target_arch = "wasm32"))]
-    fn freeze_for_wasm(
-        &mut self,
-    ) -> Option<crate::runtime::wasm::WasmPluginFnMap> {
+    fn freeze_for_wasm(&mut self) -> Option<crate::runtime::wasm::WasmPluginFnMap> {
         None
     }
 

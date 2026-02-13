@@ -545,8 +545,8 @@ pub fn run_file(
             // (can happen when same plugin is loaded both dynamically and as SystemPlugin)
             ext_fns.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
             ext_fns.dedup_by(|a, b| a.name == b.name);
-            
-            let mir = ctx.get_compiler().unwrap().emit_mir(content)?;;
+
+            let mir = ctx.get_compiler().unwrap().emit_mir(content)?;
 
             let io_channels = mir.get_dsp_iochannels();
             let dsp_skeleton = mir.get_dsp_state_skeleton().cloned();
@@ -640,7 +640,7 @@ pub fn run_file(
             // (can happen when same plugin is loaded both dynamically and as SystemPlugin)
             ext_fns.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
             ext_fns.dedup_by(|a, b| a.name == b.name);
-            
+
             let mir = ctx.get_compiler().unwrap().emit_mir(content)?;
             let io_channels = mir.get_dsp_iochannels();
             let dsp_skeleton = mir.get_dsp_state_skeleton().cloned();

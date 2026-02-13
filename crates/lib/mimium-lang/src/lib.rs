@@ -115,13 +115,10 @@ impl ExecContext {
             .sys_plugins
             .iter_mut()
             .filter_map(|p| p.freeze_for_wasm())
-            .fold(
-                runtime::wasm::WasmPluginFnMap::new(),
-                |mut acc, map| {
-                    acc.extend(map);
-                    acc
-                },
-            );
+            .fold(runtime::wasm::WasmPluginFnMap::new(), |mut acc, map| {
+                acc.extend(map);
+                acc
+            });
         if merged.is_empty() {
             None
         } else {

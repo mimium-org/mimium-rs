@@ -12,12 +12,7 @@
 //! with both the native VM and the WASM backend.
 
 use mimium_lang::plugin::{SysPluginSignature, SystemPlugin, SystemPluginAudioWorker};
-use mimium_lang::{
-    function, numeric,
-    plugin::SystemPluginFnType,
-    types::Type,
-    unit,
-};
+use mimium_lang::{function, numeric, plugin::SystemPluginFnType, types::Type, unit};
 
 mod scheduler;
 #[cfg(not(target_arch = "wasm32"))]

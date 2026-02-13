@@ -1101,7 +1101,12 @@ impl WasmGenerator {
 
         // Emit merge block (skip PhiSwitch)
         ctx.mark_processed(merge_idx);
-        self.emit_merge_block(merge_idx, SkipPhi::from_phi_switch_info(&phi_switch_info), ctx, wasm_func);
+        self.emit_merge_block(
+            merge_idx,
+            SkipPhi::from_phi_switch_info(&phi_switch_info),
+            ctx,
+            wasm_func,
+        );
     }
 
     /// Find the Phi instruction in a merge block.
@@ -1423,7 +1428,13 @@ impl WasmGenerator {
 
                 ctx.mark_processed(merge_idx);
                 self.emit_merge_block(merge_idx, SkipPhi::from_phi_info(&phi_info), ctx, func);
-            } else if let I::Switch { scrutinee, cases, default_block, merge_block } = instr {
+            } else if let I::Switch {
+                scrutinee,
+                cases,
+                default_block,
+                merge_block,
+            } = instr
+            {
                 // Nested Switch within merge block.
                 self.emit_switch(
                     SwitchContext {
@@ -2833,9 +2844,7 @@ impl WasmGenerator {
                             if let Some(const_val) = self.register_constants.get(reg_idx) {
                                 let fn_idx = *const_val as usize;
                                 let wasm_idx = *const_val as u32 + self.num_imports;
-                                log::debug!(
-                                    "Calling function (via register) idx={fn_idx}"
-                                );
+                                log::debug!("Calling function (via register) idx={fn_idx}");
                                 wasm_idx
                             } else {
                                 eprintln!(
@@ -3778,9 +3787,7 @@ impl WasmGenerator {
 
         // 1. Declare the function type: (i64) -> ()
         let type_idx = self.type_section.len();
-        self.type_section
-            .ty()
-            .function(vec![ValType::I64], vec![]);
+        self.type_section.ty().function(vec![ValType::I64], vec![]);
 
         // 2. Add to function section
         self.function_section.function(type_idx);

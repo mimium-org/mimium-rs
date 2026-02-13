@@ -203,10 +203,7 @@ impl Context {
     /// [`StateTreeSkeleton`] (used for state-preserving hot-swap) and the
     /// I/O channel configuration.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn emit_wasm(
-        &self,
-        src: &str,
-    ) -> Result<WasmOutput, Vec<Box<dyn ReportableError>>> {
+    pub fn emit_wasm(&self, src: &str) -> Result<WasmOutput, Vec<Box<dyn ReportableError>>> {
         let mir = self.emit_mir(src)?;
         let io_channels = mir.get_dsp_iochannels();
         let dsp_state_skeleton = mir.get_dsp_state_skeleton().cloned();
@@ -232,8 +229,7 @@ pub struct WasmOutput {
     /// The compiled WASM module binary.
     pub bytes: Vec<u8>,
     /// State tree skeleton of the DSP function (for state migration).
-    pub dsp_state_skeleton:
-        Option<state_tree::tree::StateTreeSkeleton<crate::mir::StateType>>,
+    pub dsp_state_skeleton: Option<state_tree::tree::StateTreeSkeleton<crate::mir::StateType>>,
     /// I/O channel info extracted from the DSP function signature.
     pub io_channels: Option<IoChannelInfo>,
 }

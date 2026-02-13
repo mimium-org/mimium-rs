@@ -122,7 +122,7 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
                 let guard = i2.read().unwrap();
                 (guard.clone(), guard.var, guard.level, guard.parent)
             };
-            
+
             if tv1_eq == tv2_eq {
                 return Ok(Relation::Identical);
             }
@@ -132,12 +132,12 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
                     right: loc2,
                 }]);
             }
-            
+
             // Now acquire write locks only when needed
             if level2 > level1 {
                 i2.write().unwrap().level = level1;
             }
-            
+
             match (parent1, parent2) {
                 (None, None) => {
                     if var1 > var2 {
@@ -218,7 +218,7 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 let guard = i2.read().unwrap();
                 (guard.clone(), guard.var, guard.level, guard.parent)
             };
-            
+
             if tv1_eq == tv2_eq {
                 return Ok(Relation::Identical);
             }
@@ -228,12 +228,12 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                     right: loc2,
                 }]);
             }
-            
+
             // Now acquire write locks only when needed
             if level1 < level2 {
                 i1.write().unwrap().level = level2;
             }
-            
+
             match (parent1, parent2) {
                 (None, None) => {
                     if var1 > var2 {

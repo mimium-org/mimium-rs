@@ -288,10 +288,8 @@ impl DspRuntime for WasmDspRuntime {
         } = new_program
         {
             // Snapshot the old global state before loading the new module.
-            let old_global_data: Option<Vec<u64>> = self
-                .engine
-                .get_global_state_data()
-                .map(|d| d.to_vec());
+            let old_global_data: Option<Vec<u64>> =
+                self.engine.get_global_state_data().map(|d| d.to_vec());
 
             match self.engine.load_module(&bytes) {
                 Ok(()) => {

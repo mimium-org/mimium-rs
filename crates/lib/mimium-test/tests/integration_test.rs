@@ -1268,7 +1268,6 @@ fn wasm_tuple_pass() {
     assert_eq!(res, ans, "WASM backend: tuple arg flattening at call site");
 }
 
-
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn wasm_global_state() {
@@ -1276,7 +1275,7 @@ fn wasm_global_state() {
     // This catches issues where global initializer (_mimium_global) is not called
     let res = run_file_test_wasm("global_state.mmm", 5, false).unwrap();
     // Expected values: PI * (n+1) where n is iteration count
-    let ans = vec![
+    let ans = [
         3.14159265359,
         6.28318530718,
         9.42477796077,
@@ -1288,10 +1287,7 @@ fn wasm_global_state() {
     for (i, (actual, expected)) in res.iter().zip(ans.iter()).enumerate() {
         assert!(
             (actual - expected).abs() < 1e-9,
-            "WASM backend: value mismatch at index {}: {} vs {}",
-            i,
-            actual,
-            expected
+            "WASM backend: value mismatch at index {i}: {actual} vs {expected}"
         );
     }
 }
@@ -1304,7 +1300,7 @@ fn wasm_stereo_output() {
     // pointer from linear memory to extract L and R channels.
     let res = run_file_test_wasm("stereo_output.mmm", 3, true).unwrap();
     // Stereo results are flattened: [L1, R1, L2, R2, L3, R3]
-    let ans = vec![0.5, -0.5, 0.5, -0.5, 0.5, -0.5];
+    let ans = [0.5, -0.5, 0.5, -0.5, 0.5, -0.5];
     assert_eq!(
         res.len(),
         ans.len(),
@@ -1313,10 +1309,7 @@ fn wasm_stereo_output() {
     for (i, (actual, expected)) in res.iter().zip(ans.iter()).enumerate() {
         assert!(
             (actual - expected).abs() < 1e-10,
-            "WASM backend: stereo sample {} mismatch: {} vs {}",
-            i,
-            actual,
-            expected
+            "WASM backend: stereo sample {i} mismatch: {actual} vs {expected}"
         );
     }
 }

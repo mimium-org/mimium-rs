@@ -32,8 +32,7 @@ pub enum ProgramPayload {
         /// State tree skeleton of the DSP function in the new program.
         /// When present, enables state-preserving hot-swap via
         /// `state_tree::update_state_storage`.
-        dsp_state_skeleton:
-            Option<state_tree::tree::StateTreeSkeleton<crate::mir::StateType>>,
+        dsp_state_skeleton: Option<state_tree::tree::StateTreeSkeleton<crate::mir::StateType>>,
     },
 }
 
