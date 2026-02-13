@@ -144,6 +144,10 @@ pub struct WasmDspRuntime {
     /// State tree skeleton of the currently loaded DSP function.
     /// Used to perform state-preserving hot-swap via `state_tree::update_state_storage`.
     current_dsp_skeleton: Option<StateTreeSkeleton<StateType>>,
+    /// Per-sample plugin workers for the WASM backend.
+    /// Mirrors `VmDspRuntime::sys_plugin_workers` but uses the WASM-specific
+    /// [`WasmSystemPluginAudioWorker`](super::WasmSystemPluginAudioWorker) trait.
+    sys_plugin_workers: Vec<Box<dyn super::WasmSystemPluginAudioWorker>>,
 }
 
 impl WasmDspRuntime {
@@ -165,6 +169,7 @@ impl WasmDspRuntime {
             input_cache: vec![0.0; ichannels],
             sample_rate: 48000.0,
             current_dsp_skeleton: dsp_skeleton,
+            sys_plugin_workers: Vec::new(),
         }
     }
 
@@ -176,6 +181,18 @@ impl WasmDspRuntime {
         {
             state.sample_rate = sr;
         }
+    }
+
+    /// Attach per-sample audio workers for the WASM backend.
+    ///
+    /// Each worker's [`on_sample`](super::WasmSystemPluginAudioWorker::on_sample)
+    /// is called before `dsp()` on every sample, mirroring how
+    /// `VmDspRuntime` calls `SystemPluginAudioWorker::on_sample`.
+    pub fn set_wasm_audioworkers(
+        &mut self,
+        workers: Vec<Box<dyn super::WasmSystemPluginAudioWorker>>,
+    ) {
+        self.sys_plugin_workers = workers;
     }
 
     /// Run the `mimium_main` (or global init) function if exported.
@@ -205,7 +222,12 @@ impl DspRuntime for WasmDspRuntime {
             state.current_time = time.0;
         }
 
-        // Convert input samples to Words (bit-cast f64 ↁEu64).
+        // Run plugin audio workers (e.g. scheduler drains due tasks here).
+        for worker in &mut self.sys_plugin_workers {
+            worker.on_sample(time, &mut self.engine);
+        }
+
+        // Convert input samples to Words (bit-cast f64 → u64).
         let args: Vec<Word> = self.input_cache.iter().map(|v| v.to_bits()).collect();
 
         let out_channels = self.io_channels.map_or(1, |io| io.output as usize);

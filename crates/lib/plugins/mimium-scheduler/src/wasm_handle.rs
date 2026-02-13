@@ -17,6 +17,7 @@ use std::collections::BinaryHeap;
 use std::sync::{Arc, Mutex};
 
 use mimium_lang::runtime::Time;
+use mimium_lang::runtime::wasm::WasmSystemPluginAudioWorker;
 
 use crate::scheduler::Task;
 
@@ -101,6 +102,24 @@ impl WasmSchedulerHandle {
         let mut map = mimium_lang::runtime::wasm::WasmPluginFnMap::new();
         map.insert("_mimium_schedule_at".to_string(), schedule_fn);
         map
+    }
+}
+
+impl WasmSystemPluginAudioWorker for WasmSchedulerHandle {
+    fn on_sample(
+        &mut self,
+        time: mimium_lang::runtime::Time,
+        engine: &mut mimium_lang::runtime::wasm::engine::WasmEngine,
+    ) -> mimium_lang::runtime::vm::ReturnCode {
+        self.set_current_time(time.0);
+        for closure_addr in self.drain_due_tasks() {
+            if let Err(e) =
+                engine.execute_function("_mimium_exec_closure_void", &[closure_addr as u64])
+            {
+                log::error!("_mimium_exec_closure_void error: {e}");
+            }
+        }
+        0
     }
 }
 

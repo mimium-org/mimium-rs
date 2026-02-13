@@ -56,6 +56,13 @@ impl SystemPlugin for SimpleScheduler {
         let handle = self.take_or_create_wasm_handle();
         Some(handle.into_wasm_plugin_fn_map())
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn generate_wasm_audioworker(
+        &mut self,
+    ) -> Option<Box<dyn mimium_lang::runtime::wasm::WasmSystemPluginAudioWorker>> {
+        Some(Box::new(self.take_or_create_wasm_handle()))
+    }
 }
 
 /// Return a [`SystemPlugin`] with the default synchronous scheduler.

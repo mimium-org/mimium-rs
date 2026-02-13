@@ -3690,9 +3690,16 @@ impl WasmGenerator {
         // 3. Build function body
         //    Locals: local 0 = param (closure_addr: i64)
         //            local 1 = saved_self_ptr (i64)
-        let mut func = Function::new([(1, ValType::I64)]);
+        //            local 2 = saved_alloc_ptr (i32)
+        let mut func = Function::new([(1, ValType::I64), (1, ValType::I32)]);
         let param_closure_addr: u32 = 0;
         let local_saved_self_ptr: u32 = 1;
+        let local_saved_alloc_ptr: u32 = 2;
+
+        // Save alloc pointer so that temporary Alloc instructions inside
+        // the scheduled closure do not cause unbounded memory growth.
+        func.instruction(&W::GlobalGet(self.alloc_ptr_global));
+        func.instruction(&W::LocalSet(local_saved_alloc_ptr));
 
         // closure_state_push(closure_addr, 64)
         // 64 is a conservative default state size for dynamically dispatched closures
@@ -3730,6 +3737,11 @@ impl WasmGenerator {
         func.instruction(&W::I32Const(0));
         func.instruction(&W::LocalGet(local_saved_self_ptr));
         func.instruction(&W::I64Store(memarg));
+
+        // Restore alloc pointer — reclaim temporary allocations made by
+        // the scheduled closure body.
+        func.instruction(&W::LocalGet(local_saved_alloc_ptr));
+        func.instruction(&W::GlobalSet(self.alloc_ptr_global));
 
         // closure_state_pop()
         func.instruction(&W::Call(self.rt.closure_state_pop));

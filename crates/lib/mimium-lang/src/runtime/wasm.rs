@@ -13,6 +13,25 @@ use wasmtime::{
     AsContextMut, Caller, Config, Engine, FuncType, Linker, Module, OptLevel, Store, Val, ValType,
 };
 
+/// WASM-side analogue of [`SystemPluginAudioWorker`](crate::plugin::SystemPluginAudioWorker).
+///
+/// Plugins that need per-sample processing on the WASM backend implement
+/// this trait on their audio-thread handle.  [`WasmDspRuntime`] holds a
+/// `Vec<Box<dyn WasmSystemPluginAudioWorker>>` and calls [`on_sample`]
+/// for each worker before invoking `dsp()`.
+pub trait WasmSystemPluginAudioWorker: Send {
+    /// Called once per sample, before `dsp()`.
+    ///
+    /// The worker receives the current time and a mutable reference to the
+    /// [`WasmEngine`] so that it can execute WASM-side closures (e.g. via
+    /// `_mimium_exec_closure_void`).
+    fn on_sample(
+        &mut self,
+        time: crate::runtime::Time,
+        engine: &mut engine::WasmEngine,
+    ) -> crate::runtime::vm::ReturnCode;
+}
+
 /// A single plugin function callable from WASM trampolines.
 pub type WasmPluginFn = std::sync::Arc<dyn Fn(&[f64]) -> Option<f64> + Send + Sync>;
 

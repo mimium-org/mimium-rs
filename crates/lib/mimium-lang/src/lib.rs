@@ -129,6 +129,22 @@ impl ExecContext {
         }
     }
 
+    /// Collect WASM audio workers from all system plugins.
+    ///
+    /// Each plugin's `generate_wasm_audioworker()` returns an optional
+    /// worker that will be called once per sample inside
+    /// [`WasmDspRuntime::run_dsp`].  Should be called after
+    /// `freeze_wasm_plugin_fns()`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn generate_wasm_audioworkers(
+        &mut self,
+    ) -> Vec<Box<dyn runtime::wasm::WasmSystemPluginAudioWorker>> {
+        self.sys_plugins
+            .iter_mut()
+            .filter_map(|p| p.generate_wasm_audioworker())
+            .collect()
+    }
+
     //todo: make it to builder pattern
     pub fn add_system_plugin<T: SystemPlugin + 'static>(&mut self, plug: T) {
         let plugin_dyn = DynSystemPlugin::from(plug);

@@ -124,6 +124,19 @@ pub trait SystemPlugin {
     ) -> Option<crate::runtime::wasm::WasmPluginFnMap> {
         None
     }
+
+    /// Produce a per-sample audio worker for the WASM backend.
+    ///
+    /// This is the WASM analogue of [`generate_audioworker`].  The returned
+    /// worker is stored by [`WasmDspRuntime`](crate::runtime::wasm::engine::WasmDspRuntime)
+    /// and its [`on_sample`](crate::runtime::wasm::WasmSystemPluginAudioWorker::on_sample)
+    /// method is called once per sample, before `dsp()`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn generate_wasm_audioworker(
+        &mut self,
+    ) -> Option<Box<dyn crate::runtime::wasm::WasmSystemPluginAudioWorker>> {
+        None
+    }
 }
 
 pub trait SystemPluginAudioWorker {
@@ -156,6 +169,14 @@ impl DynSystemPlugin {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn freeze_for_wasm(&mut self) -> Option<crate::runtime::wasm::WasmPluginFnMap> {
         self.inner.borrow_mut().freeze_for_wasm()
+    }
+
+    /// Delegate to the inner plugin's `generate_wasm_audioworker()`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn generate_wasm_audioworker(
+        &mut self,
+    ) -> Option<Box<dyn crate::runtime::wasm::WasmSystemPluginAudioWorker>> {
+        self.inner.borrow_mut().generate_wasm_audioworker()
     }
 
     /// Get a mutable reference to the inner plugin.

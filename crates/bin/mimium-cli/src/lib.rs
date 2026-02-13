@@ -562,8 +562,13 @@ pub fn run_file(
 
             log::info!("Generated WASM module ({} bytes)", wasm_bytes.len());
 
-            // Collect WASM plugin functions from all system plugins
+            // Collect WASM plugin functions from all system plugins.
+            // freeze_wasm_plugin_fns() must be called before generate_wasm_audioworkers()
+            // so that both share the same underlying scheduler state.
             let plugin_fns = ctx.freeze_wasm_plugin_fns();
+
+            // Collect per-sample audio workers from all plugins.
+            let wasm_workers = ctx.generate_wasm_audioworkers();
 
             let mut wasm_engine = WasmEngine::new(&ext_fns, plugin_fns).map_err(|e| {
                 vec![Box::new(mimium_lang::utils::error::SimpleError {
@@ -582,6 +587,7 @@ pub fn run_file(
             // Create WasmDspRuntime and wrap in RuntimeData
             let mut wasm_runtime = WasmDspRuntime::new(wasm_engine, io_channels, dsp_skeleton);
             wasm_runtime.set_sample_rate(48000.0);
+            wasm_runtime.set_wasm_audioworkers(wasm_workers);
             let _ = wasm_runtime.run_main();
 
             let runtimedata = RuntimeData::new_from_runtime(Box::new(wasm_runtime));
@@ -647,8 +653,13 @@ pub fn run_file(
 
             log::info!("Generated WASM module ({} bytes)", wasm_bytes.len());
 
-            // Collect WASM plugin functions from all system plugins
+            // Collect WASM plugin functions from all system plugins.
+            // freeze_wasm_plugin_fns() must be called before generate_wasm_audioworkers()
+            // so that both share the same underlying scheduler state.
             let plugin_fns = ctx.freeze_wasm_plugin_fns();
+
+            // Collect per-sample audio workers from all plugins.
+            let wasm_workers = ctx.generate_wasm_audioworkers();
 
             let mut wasm_engine = WasmEngine::new(&ext_fns, plugin_fns).map_err(|e| {
                 vec![Box::new(mimium_lang::utils::error::SimpleError {
@@ -666,6 +677,7 @@ pub fn run_file(
 
             let mut wasm_runtime = WasmDspRuntime::new(wasm_engine, io_channels, dsp_skeleton);
             wasm_runtime.set_sample_rate(48000.0);
+            wasm_runtime.set_wasm_audioworkers(wasm_workers);
             let _ = wasm_runtime.run_main();
 
             let runtimedata = RuntimeData::new_from_runtime(Box::new(wasm_runtime));
