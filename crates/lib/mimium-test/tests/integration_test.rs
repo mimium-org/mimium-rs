@@ -207,6 +207,16 @@ fn primitive_minmax_combo() {
     let r = (res[0] - ans[0]).abs() < f64::EPSILON;
     assert!(r);
 }
+
+#[wasm_bindgen_test(unsupported = test)]
+fn adsr_simple() {
+    // Nested conditionals in stateful function (JmpIf within merge blocks).
+    // This is a regression test for WASM backend's emit_merge_block handling.
+    let res = run_file_test_mono("adsr_simple.mmm", 7).unwrap();
+    let ans = vec![1.0, 2.0, 3.0, 4.0, 5.0, 5.0, 5.0];
+    assert_eq!(res, ans);
+}
+
 #[wasm_bindgen_test(unsupported = test)]
 fn ifblock() {
     let res = run_file_test_mono("if.mmm", 1).unwrap();

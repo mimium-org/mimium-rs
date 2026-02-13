@@ -245,6 +245,37 @@ struct SwitchContext<'a> {
     merge_block: u64,
 }
 
+/// Specifies which phi instruction to skip in a merge block because its
+/// result value is already on the WASM operand stack from the enclosing
+/// structured control flow.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SkipPhi {
+    /// Do not skip any phi instruction.
+    None,
+    /// Skip a `Phi(_, _)` instruction (from JmpIf).
+    Phi,
+    /// Skip a `PhiSwitch(_)` instruction (from Switch).
+    PhiSwitch,
+}
+
+impl SkipPhi {
+    fn from_phi_info(phi_info: &Option<((VPtr, VPtr), VPtr)>) -> Self {
+        if phi_info.is_some() {
+            Self::Phi
+        } else {
+            Self::None
+        }
+    }
+
+    fn from_phi_switch_info(phi_info: &Option<(Vec<VPtr>, VPtr)>) -> Self {
+        if phi_info.is_some() {
+            Self::PhiSwitch
+        } else {
+            Self::None
+        }
+    }
+}
+
 impl WasmGenerator {
     /// Create a new WASM generator for the given MIR.
     ///
@@ -948,8 +979,9 @@ impl WasmGenerator {
                         // Emit merge block (skip Phi, which is on the stack from if/else)
                         ctx.mark_processed(merge_idx);
                         self.emit_merge_block(
-                            &ctx.blocks[merge_idx],
-                            phi_info.is_some(),
+                            merge_idx,
+                            SkipPhi::from_phi_info(&phi_info),
+                            &mut ctx,
                             wasm_func,
                         );
                     }
@@ -1069,7 +1101,7 @@ impl WasmGenerator {
 
         // Emit merge block (skip PhiSwitch)
         ctx.mark_processed(merge_idx);
-        self.emit_merge_block_switch(&ctx.blocks[merge_idx], phi_switch_info.is_some(), wasm_func);
+        self.emit_merge_block(merge_idx, SkipPhi::from_phi_switch_info(&phi_switch_info), ctx, wasm_func);
     }
 
     /// Find the Phi instruction in a merge block.
@@ -1163,7 +1195,7 @@ impl WasmGenerator {
                     func.instruction(&W::End);
 
                     ctx.mark_processed(merge_idx);
-                    self.emit_merge_block(&ctx.blocks[merge_idx], phi_info.is_some(), func);
+                    self.emit_merge_block(merge_idx, SkipPhi::from_phi_info(&phi_info), ctx, func);
                 }
                 I::Switch {
                     scrutinee,
@@ -1264,7 +1296,7 @@ impl WasmGenerator {
                     func.instruction(&W::End);
 
                     ctx.mark_processed(merge_idx);
-                    self.emit_merge_block(&ctx.blocks[merge_idx], phi_info.is_some(), func);
+                    self.emit_merge_block(merge_idx, SkipPhi::from_phi_info(&phi_info), ctx, func);
                 }
                 I::Switch {
                     scrutinee,
@@ -1290,46 +1322,36 @@ impl WasmGenerator {
         }
     }
 
-    /// Emit a merge block, handling the Phi at the top (already on stack from if/else)
-    fn emit_merge_block(&mut self, block: &mir::Block, skip_phi: bool, func: &mut Function) {
-        use wasm_encoder::Instruction as W;
-
-        for (dest, instr) in &block.0 {
-            if skip_phi && matches!(instr, mir::Instruction::Phi(_, _)) {
-                // Phi value is already on the stack from if/else; store to dest
-                if let mir::Value::Register(reg_idx) = dest.as_ref() {
-                    let reg_type = self
-                        .register_types
-                        .get(reg_idx)
-                        .copied()
-                        .unwrap_or(ValType::F64);
-                    let local_idx = match reg_type {
-                        ValType::I64 => self.current_num_args + *reg_idx as u32,
-                        ValType::F64 => {
-                            self.current_num_args + self.current_num_i64_locals + *reg_idx as u32
-                        }
-                        _ => self.current_num_args + self.current_num_i64_locals + *reg_idx as u32,
-                    };
-                    func.instruction(&W::LocalSet(local_idx));
-                }
-            } else {
-                self.translate_instruction_with_dest(dest.as_ref(), instr, func);
-            }
-        }
-    }
-
-    /// Emit a merge block for Switch, handling PhiSwitch (already on stack from nested if/else)
-    fn emit_merge_block_switch(
+    /// Emit a merge block, handling the Phi at the top (already on stack from if/else).
+    /// Also handles nested JmpIf/Switch instructions within the merge block.
+    /// Takes block_idx instead of a block reference to avoid borrow conflicts with ctx.
+    /// Emit instructions from a merge block. When `skip_phi` is set, the first
+    /// Phi (or PhiSwitch) instruction's result is assumed to already be on the
+    /// WASM stack from the enclosing if/else or nested-if chain, so we just
+    /// `local.set` it into the destination register. All other instructions,
+    /// including nested `JmpIf` and `Switch`, are emitted recursively.
+    fn emit_merge_block(
         &mut self,
-        block: &mir::Block,
-        skip_phi_switch: bool,
+        block_idx: usize,
+        skip_phi: SkipPhi,
+        ctx: &mut BlockEmitContext,
         func: &mut Function,
     ) {
+        use mir::Instruction as I;
         use wasm_encoder::Instruction as W;
 
-        for (dest, instr) in &block.0 {
-            if skip_phi_switch && matches!(instr, mir::Instruction::PhiSwitch(_)) {
-                // PhiSwitch value is already on the stack from nested if/else; store to dest
+        // Clone instructions to avoid holding a borrow on ctx.blocks.
+        let instructions: Vec<_> = ctx.blocks[block_idx].0.clone();
+
+        for (dest, instr) in &instructions {
+            let is_skipped_phi = match skip_phi {
+                SkipPhi::None => false,
+                SkipPhi::Phi => matches!(instr, I::Phi(_, _)),
+                SkipPhi::PhiSwitch => matches!(instr, I::PhiSwitch(_)),
+            };
+
+            if is_skipped_phi {
+                // Phi value is already on the stack from if/else; store to dest.
                 if let mir::Value::Register(reg_idx) = dest.as_ref() {
                     let reg_type = self
                         .register_types
@@ -1345,6 +1367,74 @@ impl WasmGenerator {
                     };
                     func.instruction(&W::LocalSet(local_idx));
                 }
+            } else if let I::JmpIf(cond, then_bb, else_bb, merge_bb) = instr {
+                // Nested JmpIf within merge block.
+                let then_idx = *then_bb as usize;
+                let else_idx = *else_bb as usize;
+                let merge_idx = *merge_bb as usize;
+
+                let phi_info = Self::find_phi_in_block(&ctx.blocks[merge_idx]);
+
+                self.emit_value_load(cond, func);
+                if self.infer_value_type(cond) == ValType::F64 {
+                    func.instruction(&W::F64Const(0.0));
+                    func.instruction(&W::F64Gt);
+                } else {
+                    func.instruction(&W::I64Const(0));
+                    func.instruction(&W::I64GtS);
+                }
+
+                let (block_type, inner_phi_type) = if let Some((_, ref phi_dest)) = phi_info {
+                    let reg_type = if let mir::Value::Register(reg_idx) = phi_dest.as_ref() {
+                        self.register_types
+                            .get(reg_idx)
+                            .copied()
+                            .unwrap_or(ValType::F64)
+                    } else {
+                        ValType::F64
+                    };
+                    (wasm_encoder::BlockType::Result(reg_type), Some(reg_type))
+                } else {
+                    (wasm_encoder::BlockType::Empty, None)
+                };
+                func.instruction(&W::If(block_type));
+
+                ctx.mark_processed(then_idx);
+                self.emit_branch_block(
+                    &ctx.blocks[then_idx],
+                    ctx,
+                    phi_info.as_ref().map(|(inputs, _)| &inputs.0),
+                    inner_phi_type,
+                    func,
+                );
+
+                func.instruction(&W::Else);
+
+                ctx.mark_processed(else_idx);
+                self.emit_branch_block(
+                    &ctx.blocks[else_idx],
+                    ctx,
+                    phi_info.as_ref().map(|(inputs, _)| &inputs.1),
+                    inner_phi_type,
+                    func,
+                );
+
+                func.instruction(&W::End);
+
+                ctx.mark_processed(merge_idx);
+                self.emit_merge_block(merge_idx, SkipPhi::from_phi_info(&phi_info), ctx, func);
+            } else if let I::Switch { scrutinee, cases, default_block, merge_block } = instr {
+                // Nested Switch within merge block.
+                self.emit_switch(
+                    SwitchContext {
+                        scrutinee,
+                        cases,
+                        default_block: *default_block,
+                        merge_block: *merge_block,
+                    },
+                    ctx,
+                    func,
+                );
             } else {
                 self.translate_instruction_with_dest(dest.as_ref(), instr, func);
             }
