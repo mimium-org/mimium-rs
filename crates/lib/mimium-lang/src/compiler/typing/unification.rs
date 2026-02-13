@@ -113,21 +113,34 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
         (Type::Record(v), _t) if v.len() == 1 => unify_types_args(v.first().unwrap().ty, t2)?,
 
         (Type::Intermediate(i1), Type::Intermediate(i2)) => {
-            if *i1.read().unwrap() == *i2.read().unwrap() {
+            // Read all necessary values first, then release read locks
+            let (tv1_eq, var1, level1, parent1) = {
+                let guard = i1.read().unwrap();
+                (guard.clone(), guard.var, guard.level, guard.parent)
+            };
+            let (tv2_eq, var2, level2, parent2) = {
+                let guard = i2.read().unwrap();
+                (guard.clone(), guard.var, guard.level, guard.parent)
+            };
+            
+            if tv1_eq == tv2_eq {
                 return Ok(Relation::Identical);
             }
-            if occur_check(i1.read().unwrap().var, t2) {
+            if occur_check(var1, t2) {
                 return Err(vec![Error::CircularType {
                     left: loc1,
                     right: loc2,
                 }]);
             }
-            if i2.read().unwrap().level > i1.read().unwrap().level {
-                i2.write().unwrap().level = i1.read().unwrap().level;
+            
+            // Now acquire write locks only when needed
+            if level2 > level1 {
+                i2.write().unwrap().level = level1;
             }
-            match (i1.read().unwrap().parent, i2.read().unwrap().parent) {
+            
+            match (parent1, parent2) {
                 (None, None) => {
-                    if i1.read().unwrap().var > i2.read().unwrap().var {
+                    if var1 > var2 {
                         i2.write().unwrap().parent = Some(t1r);
                     } else {
                         i1.write().unwrap().parent = Some(t2r);
@@ -146,6 +159,7 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
             let mut tv1 = i1.write().unwrap();
             tv1.parent = Some(t2r);
             tv1.bound.upper = t2r;
+            drop(tv1); // Explicitly release lock
 
             Relation::Identical
         }
@@ -153,6 +167,7 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
             let mut tv2 = i2.write().unwrap();
             tv2.parent = Some(t1r);
             tv2.bound.upper = t1r;
+            drop(tv2); // Explicitly release lock
             Relation::Identical
         }
         (Type::Record(kvs), Type::Tuple(_)) => {
@@ -194,24 +209,33 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
     let t2r = t2.get_root();
     let res = match &(t1r.to_type(), t2r.to_type()) {
         (Type::Intermediate(i1), Type::Intermediate(i2)) => {
-            if *i1.read().unwrap() == *i2.read().unwrap() {
+            // Read all necessary values first, then release read locks
+            let (tv1_eq, var1, level1, parent1) = {
+                let guard = i1.read().unwrap();
+                (guard.clone(), guard.var, guard.level, guard.parent)
+            };
+            let (tv2_eq, var2, level2, parent2) = {
+                let guard = i2.read().unwrap();
+                (guard.clone(), guard.var, guard.level, guard.parent)
+            };
+            
+            if tv1_eq == tv2_eq {
                 return Ok(Relation::Identical);
             }
-            if occur_check(i1.read().unwrap().var, t2) {
+            if occur_check(var1, t2) {
                 return Err(vec![Error::CircularType {
                     left: loc1,
                     right: loc2,
                 }]);
             }
-            let (level1, level2) = (i1.read().unwrap().level, i2.read().unwrap().level);
+            
+            // Now acquire write locks only when needed
             if level1 < level2 {
                 i1.write().unwrap().level = level2;
             }
-            let parent1 = i1.read().unwrap().parent;
-            let parent2 = i2.read().unwrap().parent;
+            
             match (parent1, parent2) {
                 (None, None) => {
-                    let (var1, var2) = (i1.read().unwrap().var, i2.read().unwrap().var);
                     if var1 > var2 {
                         i2.write().unwrap().parent = Some(t1r);
                     } else {
@@ -231,6 +255,7 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             let mut tv1 = i1.write().unwrap();
             tv1.parent = Some(t2r);
             tv1.bound.lower = t2r;
+            drop(tv1); // Explicitly release lock
 
             Relation::Identical
         }
@@ -238,6 +263,7 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             let mut tv2 = i2.write().unwrap();
             tv2.parent = Some(t1r);
             tv2.bound.lower = t1r;
+            drop(tv2); // Explicitly release lock
             Relation::Identical
         }
         (Type::Array(a1), Type::Array(a2)) => {
