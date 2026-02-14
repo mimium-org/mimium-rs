@@ -1006,102 +1006,157 @@ impl InferContext {
         )
     }
 
+    fn make_tuple_binop_arity_error(&self, actual_arity: usize, loc: &Location) -> Error {
+        Error::TypeMismatch {
+            left: (
+                Type::Tuple(vec![numeric!(); Self::TUPLE_BINOP_MAX_ARITY])
+                    .into_id_with_location(loc.clone()),
+                loc.clone(),
+            ),
+            right: (
+                Type::Tuple(vec![numeric!(); actual_arity]).into_id_with_location(loc.clone()),
+                loc.clone(),
+            ),
+        }
+    }
+
+    fn infer_tuple_arithmetic_binop_type_rec(
+        &mut self,
+        lhs_ty: TypeNodeId,
+        rhs_ty: TypeNodeId,
+        loc: &Location,
+        errs: &mut Vec<Error>,
+    ) -> Option<TypeNodeId> {
+        let lhs_resolved = self.resolve_for_tuple_binop(lhs_ty);
+        let rhs_resolved = self.resolve_for_tuple_binop(rhs_ty);
+
+        match (lhs_resolved.to_type(), rhs_resolved.to_type()) {
+            (Type::Tuple(lhs_elems), Type::Tuple(rhs_elems)) => {
+                if lhs_elems.len() != rhs_elems.len() {
+                    errs.push(Error::TypeMismatch {
+                        left: (lhs_ty, loc.clone()),
+                        right: (rhs_ty, loc.clone()),
+                    });
+                    return None;
+                }
+                if lhs_elems.len() > Self::TUPLE_BINOP_MAX_ARITY {
+                    errs.push(self.make_tuple_binop_arity_error(lhs_elems.len(), loc));
+                    return None;
+                }
+
+                let result_elems = lhs_elems
+                    .iter()
+                    .zip(rhs_elems.iter())
+                    .filter_map(|(lt, rt)| {
+                        self.infer_tuple_arithmetic_binop_type_rec(*lt, *rt, loc, errs)
+                    })
+                    .collect::<Vec<_>>();
+
+                if result_elems.len() != lhs_elems.len() {
+                    None
+                } else {
+                    Some(Type::Tuple(result_elems).into_id_with_location(loc.clone()))
+                }
+            }
+            (Type::Tuple(tuple_elems), _) => {
+                if tuple_elems.len() > Self::TUPLE_BINOP_MAX_ARITY {
+                    errs.push(self.make_tuple_binop_arity_error(tuple_elems.len(), loc));
+                    return None;
+                }
+                if !self.is_numeric_scalar_for_tuple_binop(rhs_ty) {
+                    errs.push(Error::TypeMismatch {
+                        left: (numeric!(), rhs_ty.to_loc()),
+                        right: (rhs_ty, rhs_ty.to_loc()),
+                    });
+                    return None;
+                }
+
+                let result_elems = tuple_elems
+                    .iter()
+                    .filter_map(|elem_ty| {
+                        self.infer_tuple_arithmetic_binop_type_rec(*elem_ty, rhs_ty, loc, errs)
+                    })
+                    .collect::<Vec<_>>();
+
+                if result_elems.len() != tuple_elems.len() {
+                    None
+                } else {
+                    Some(Type::Tuple(result_elems).into_id_with_location(loc.clone()))
+                }
+            }
+            (_, Type::Tuple(tuple_elems)) => {
+                if tuple_elems.len() > Self::TUPLE_BINOP_MAX_ARITY {
+                    errs.push(self.make_tuple_binop_arity_error(tuple_elems.len(), loc));
+                    return None;
+                }
+                if !self.is_numeric_scalar_for_tuple_binop(lhs_ty) {
+                    errs.push(Error::TypeMismatch {
+                        left: (numeric!(), lhs_ty.to_loc()),
+                        right: (lhs_ty, lhs_ty.to_loc()),
+                    });
+                    return None;
+                }
+
+                let result_elems = tuple_elems
+                    .iter()
+                    .filter_map(|elem_ty| {
+                        self.infer_tuple_arithmetic_binop_type_rec(lhs_ty, *elem_ty, loc, errs)
+                    })
+                    .collect::<Vec<_>>();
+
+                if result_elems.len() != tuple_elems.len() {
+                    None
+                } else {
+                    Some(Type::Tuple(result_elems).into_id_with_location(loc.clone()))
+                }
+            }
+            _ => {
+                let mut valid = true;
+                if !self.is_numeric_scalar_for_tuple_binop(lhs_ty) {
+                    errs.push(Error::TypeMismatch {
+                        left: (numeric!(), lhs_ty.to_loc()),
+                        right: (lhs_ty, lhs_ty.to_loc()),
+                    });
+                    valid = false;
+                }
+                if !self.is_numeric_scalar_for_tuple_binop(rhs_ty) {
+                    errs.push(Error::TypeMismatch {
+                        left: (numeric!(), rhs_ty.to_loc()),
+                        right: (rhs_ty, rhs_ty.to_loc()),
+                    });
+                    valid = false;
+                }
+                if valid {
+                    Some(numeric!())
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     fn infer_tuple_arithmetic_binop_type(
         &mut self,
         lhs_ty: TypeNodeId,
         rhs_ty: TypeNodeId,
         loc: Location,
     ) -> Result<TypeNodeId, Vec<Error>> {
-        let lhs_resolved = self.resolve_for_tuple_binop(lhs_ty);
-        let rhs_resolved = self.resolve_for_tuple_binop(rhs_ty);
         let mut errs = vec![];
-        let result_arity = match (lhs_resolved.to_type(), rhs_resolved.to_type()) {
-            (Type::Tuple(lhs_elems), Type::Tuple(rhs_elems)) => {
-                if lhs_elems.len() != rhs_elems.len() {
-                    return Err(vec![Error::TypeMismatch {
-                        left: (lhs_ty, loc.clone()),
-                        right: (rhs_ty, loc),
-                    }]);
-                }
-
-                lhs_elems.iter().zip(rhs_elems.iter()).for_each(|(lt, rt)| {
-                    if !self.is_numeric_scalar_for_tuple_binop(*lt) {
-                        errs.push(Error::TypeMismatch {
-                            left: (numeric!(), lt.to_loc()),
-                            right: (*lt, lt.to_loc()),
-                        });
-                    }
-                    if !self.is_numeric_scalar_for_tuple_binop(*rt) {
-                        errs.push(Error::TypeMismatch {
-                            left: (numeric!(), rt.to_loc()),
-                            right: (*rt, rt.to_loc()),
-                        });
-                    }
-                });
-
-                lhs_elems.len()
-            }
-            (Type::Tuple(tuple_elems), _) => {
-                if !self.is_numeric_scalar_for_tuple_binop(rhs_ty) {
-                    errs.push(Error::TypeMismatch {
-                        left: (numeric!(), rhs_ty.to_loc()),
-                        right: (rhs_ty, rhs_ty.to_loc()),
-                    });
-                }
-                tuple_elems.iter().for_each(|elem_ty| {
-                    if !self.is_numeric_scalar_for_tuple_binop(*elem_ty) {
-                        errs.push(Error::TypeMismatch {
-                            left: (numeric!(), elem_ty.to_loc()),
-                            right: (*elem_ty, elem_ty.to_loc()),
-                        });
-                    }
-                });
-                tuple_elems.len()
-            }
-            (_, Type::Tuple(tuple_elems)) => {
-                if !self.is_numeric_scalar_for_tuple_binop(lhs_ty) {
-                    errs.push(Error::TypeMismatch {
-                        left: (numeric!(), lhs_ty.to_loc()),
-                        right: (lhs_ty, lhs_ty.to_loc()),
-                    });
-                }
-                tuple_elems.iter().for_each(|elem_ty| {
-                    if !self.is_numeric_scalar_for_tuple_binop(*elem_ty) {
-                        errs.push(Error::TypeMismatch {
-                            left: (numeric!(), elem_ty.to_loc()),
-                            right: (*elem_ty, elem_ty.to_loc()),
-                        });
-                    }
-                });
-                tuple_elems.len()
-            }
-            _ => {
-                return Err(vec![Error::TypeMismatch {
-                    left: (lhs_ty, loc.clone()),
-                    right: (rhs_ty, loc),
-                }]);
-            }
-        };
-
-        if result_arity > Self::TUPLE_BINOP_MAX_ARITY {
-            return Err(vec![Error::TypeMismatch {
-                left: (
-                    Type::Tuple(vec![numeric!(); Self::TUPLE_BINOP_MAX_ARITY])
-                        .into_id_with_location(loc.clone()),
-                    loc.clone(),
-                ),
-                right: (
-                    Type::Tuple(vec![numeric!(); result_arity]).into_id_with_location(loc.clone()),
-                    loc.clone(),
-                ),
-            }]);
-        }
-
+        let result_ty = self.infer_tuple_arithmetic_binop_type_rec(
+            lhs_ty,
+            rhs_ty,
+            &loc,
+            &mut errs,
+        );
         if !errs.is_empty() {
             return Err(errs);
         }
-
-        Ok(Type::Tuple(vec![numeric!(); result_arity]).into_id_with_location(loc))
+        result_ty.ok_or_else(|| {
+            vec![Error::TypeMismatch {
+                left: (lhs_ty, loc.clone()),
+                right: (rhs_ty, loc),
+            }]
+        })
     }
 
     /// Get the type associated with a constructor name from a union or user-defined sum type

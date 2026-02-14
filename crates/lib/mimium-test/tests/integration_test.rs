@@ -715,6 +715,33 @@ fn tuple_binop_tuple_int_scalar_broadcast() {
 }
 
 #[test]
+fn tuple_binop_nested_basic() {
+    let res = run_file_test_mono("tuple_binop_nested_basic.mmm", 1).unwrap();
+    let ans = vec![110.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_nested_tuple_scalar_broadcast() {
+    let res = run_file_test_mono("tuple_binop_nested_tuple_scalar_broadcast.mmm", 1).unwrap();
+    let ans = vec![20.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_nested_scalar_tuple_broadcast() {
+    let res = run_file_test_mono("tuple_binop_nested_scalar_tuple_broadcast.mmm", 1).unwrap();
+    let ans = vec![18.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_nested_shape_mismatch_fail() {
+    let res = run_error_test("tuple_binop_nested_shape_mismatch_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+}
+
+#[test]
 fn record_imcomplete() {
     let res = run_file_test_mono("record_imcomplete.mmm", 1).unwrap();
     let ans = vec![701.0]; // 2*(5-7)

@@ -256,6 +256,168 @@ impl Context {
         )
     }
 
+    fn make_tuple_arithmetic_binop_leaf(
+        &mut self,
+        label: Symbol,
+        lhs_val: VPtr,
+        lhs_ty: TypeNodeId,
+        rhs_val: VPtr,
+        rhs_ty: TypeNodeId,
+    ) -> Option<VPtr> {
+        let lhs_scalar = match lhs_ty.to_type() {
+            Type::Primitive(PType::Numeric) => lhs_val,
+            Type::Primitive(PType::Int) => self.push_inst(Instruction::CastItoF(lhs_val)),
+            _ => return None,
+        };
+        let rhs_scalar = match rhs_ty.to_type() {
+            Type::Primitive(PType::Numeric) => rhs_val,
+            Type::Primitive(PType::Int) => self.push_inst(Instruction::CastItoF(rhs_val)),
+            _ => return None,
+        };
+
+        Some(match label.as_str() {
+            intrinsics::ADD => self.push_inst(Instruction::AddF(lhs_scalar, rhs_scalar)),
+            intrinsics::SUB => self.push_inst(Instruction::SubF(lhs_scalar, rhs_scalar)),
+            intrinsics::MULT => self.push_inst(Instruction::MulF(lhs_scalar, rhs_scalar)),
+            intrinsics::DIV => self.push_inst(Instruction::DivF(lhs_scalar, rhs_scalar)),
+            _ => unreachable!("already filtered by is_tuple_arithmetic_binop_label"),
+        })
+    }
+
+    fn make_tuple_arithmetic_binop_intrinsic_rec(
+        &mut self,
+        label: Symbol,
+        lhs_val: VPtr,
+        lhs_ty: TypeNodeId,
+        rhs_val: VPtr,
+        rhs_ty: TypeNodeId,
+        ret_ty: TypeNodeId,
+    ) -> Option<VPtr> {
+        let lhs_tuple = match lhs_ty.to_type() {
+            Type::Tuple(elems) => Some(elems),
+            _ => None,
+        };
+        let rhs_tuple = match rhs_ty.to_type() {
+            Type::Tuple(elems) => Some(elems),
+            _ => None,
+        };
+
+        match ret_ty.to_type() {
+            Type::Tuple(ret_elem_types) => {
+                if lhs_tuple.is_none() && rhs_tuple.is_none() {
+                    return None;
+                }
+
+                let tuple_len = lhs_tuple
+                    .as_ref()
+                    .map_or_else(|| rhs_tuple.as_ref().map_or(0, |v| v.len()), |v| v.len());
+                if let (Some(lhs_elems), Some(rhs_elems)) = (&lhs_tuple, &rhs_tuple)
+                    && lhs_elems.len() != rhs_elems.len()
+                {
+                    return None;
+                }
+                if tuple_len > 16 || ret_elem_types.len() != tuple_len {
+                    return None;
+                }
+
+                let lhs_scalar_slot = if lhs_tuple.is_none() {
+                    let slot = self.push_inst(Instruction::Alloc(lhs_ty));
+                    self.push_inst(Instruction::Store(slot.clone(), lhs_val.clone(), lhs_ty));
+                    Some(slot)
+                } else {
+                    None
+                };
+                let rhs_scalar_slot = if rhs_tuple.is_none() {
+                    let slot = self.push_inst(Instruction::Alloc(rhs_ty));
+                    self.push_inst(Instruction::Store(slot.clone(), rhs_val.clone(), rhs_ty));
+                    Some(slot)
+                } else {
+                    None
+                };
+
+                let tuple_ptr = self.push_inst(Instruction::Alloc(ret_ty));
+                ret_elem_types
+                    .iter()
+                    .enumerate()
+                    .try_for_each(|(idx, ret_elem_ty)| {
+                        let (lhs_elem, lhs_elem_ty) = if let Some(lhs_elems) = &lhs_tuple {
+                            (
+                                self.push_inst(Instruction::GetElement {
+                                    value: lhs_val.clone(),
+                                    ty: lhs_ty,
+                                    tuple_offset: idx as u64,
+                                }),
+                                lhs_elems[idx],
+                            )
+                        } else {
+                            (
+                                self.push_inst(Instruction::Load(
+                                    lhs_scalar_slot
+                                        .as_ref()
+                                        .expect("scalar slot exists when lhs is not tuple")
+                                        .clone(),
+                                    lhs_ty,
+                                )),
+                                lhs_ty,
+                            )
+                        };
+
+                        let (rhs_elem, rhs_elem_ty) = if let Some(rhs_elems) = &rhs_tuple {
+                            (
+                                self.push_inst(Instruction::GetElement {
+                                    value: rhs_val.clone(),
+                                    ty: rhs_ty,
+                                    tuple_offset: idx as u64,
+                                }),
+                                rhs_elems[idx],
+                            )
+                        } else {
+                            (
+                                self.push_inst(Instruction::Load(
+                                    rhs_scalar_slot
+                                        .as_ref()
+                                        .expect("scalar slot exists when rhs is not tuple")
+                                        .clone(),
+                                    rhs_ty,
+                                )),
+                                rhs_ty,
+                            )
+                        };
+
+                        self.make_tuple_arithmetic_binop_intrinsic_rec(
+                            label,
+                            lhs_elem,
+                            lhs_elem_ty,
+                            rhs_elem,
+                            rhs_elem_ty,
+                            *ret_elem_ty,
+                        )
+                        .map(|elem_val| {
+                            let dst = self.push_inst(Instruction::GetElement {
+                                value: tuple_ptr.clone(),
+                                ty: ret_ty,
+                                tuple_offset: idx as u64,
+                            });
+                            self.push_inst(Instruction::Store(dst, elem_val, *ret_elem_ty));
+                        })
+                        .ok_or(())
+                    })
+                    .ok()?;
+
+                Some(tuple_ptr)
+            }
+            _ => {
+                if lhs_tuple.is_some() || rhs_tuple.is_some() {
+                    None
+                } else {
+                    self.make_tuple_arithmetic_binop_leaf(
+                        label, lhs_val, lhs_ty, rhs_val, rhs_ty,
+                    )
+                }
+            }
+        }
+    }
+
     fn make_tuple_arithmetic_binop_intrinsic(
         &mut self,
         label: Symbol,
@@ -266,128 +428,14 @@ impl Context {
             return None;
         }
 
-        let lhs_ty = raw_args[0].1;
-        let rhs_ty = raw_args[1].1;
-        let lhs_tuple = match lhs_ty.to_type() {
-            Type::Tuple(elems) => Some(elems),
-            _ => None,
-        };
-        let rhs_tuple = match rhs_ty.to_type() {
-            Type::Tuple(elems) => Some(elems),
-            _ => None,
-        };
-
-        if lhs_tuple.is_none() && rhs_tuple.is_none() {
-            return None;
-        }
-        let tuple_len = lhs_tuple
-            .as_ref()
-            .map_or_else(|| rhs_tuple.as_ref().map_or(0, |v| v.len()), |v| v.len());
-        if let (Some(lhs_elems), Some(rhs_elems)) = (&lhs_tuple, &rhs_tuple)
-            && lhs_elems.len() != rhs_elems.len()
-        {
-            return None;
-        }
-        if tuple_len > 16 {
-            return None;
-        }
-
-        let tuple_elem_types = match ret_ty.to_type() {
-            Type::Tuple(elem_types) if elem_types.len() == tuple_len => elem_types,
-            _ => return None,
-        };
-
-        let lhs_scalar_slot = if lhs_tuple.is_none() {
-            let slot = self.push_inst(Instruction::Alloc(lhs_ty));
-            self.push_inst(Instruction::Store(slot.clone(), raw_args[0].0.clone(), lhs_ty));
-            Some(slot)
-        } else {
-            None
-        };
-        let rhs_scalar_slot = if rhs_tuple.is_none() {
-            let slot = self.push_inst(Instruction::Alloc(rhs_ty));
-            self.push_inst(Instruction::Store(slot.clone(), raw_args[1].0.clone(), rhs_ty));
-            Some(slot)
-        } else {
-            None
-        };
-
-        let tuple_ptr = self.push_inst(Instruction::Alloc(ret_ty));
-        tuple_elem_types
-            .iter()
-            .enumerate()
-            .for_each(|(idx, ret_elem_ty)| {
-                let (lhs_elem, lhs_elem_ty) = if let Some(lhs_elems) = &lhs_tuple {
-                    (
-                        self.push_inst(Instruction::GetElement {
-                            value: raw_args[0].0.clone(),
-                            ty: lhs_ty,
-                            tuple_offset: idx as u64,
-                        }),
-                        lhs_elems[idx],
-                    )
-                } else {
-                    (
-                        self.push_inst(Instruction::Load(
-                            lhs_scalar_slot
-                                .as_ref()
-                                .expect("scalar slot exists when lhs is not tuple")
-                                .clone(),
-                            lhs_ty,
-                        )),
-                        lhs_ty,
-                    )
-                };
-                let (rhs_elem, rhs_elem_ty) = if let Some(rhs_elems) = &rhs_tuple {
-                    (
-                        self.push_inst(Instruction::GetElement {
-                            value: raw_args[1].0.clone(),
-                            ty: rhs_ty,
-                            tuple_offset: idx as u64,
-                        }),
-                        rhs_elems[idx],
-                    )
-                } else {
-                    (
-                        self.push_inst(Instruction::Load(
-                            rhs_scalar_slot
-                                .as_ref()
-                                .expect("scalar slot exists when rhs is not tuple")
-                                .clone(),
-                            rhs_ty,
-                        )),
-                        rhs_ty,
-                    )
-                };
-
-                let lhs_val = if matches!(lhs_elem_ty.to_type(), Type::Primitive(PType::Int)) {
-                    self.push_inst(Instruction::CastItoF(lhs_elem))
-                } else {
-                    lhs_elem
-                };
-                let rhs_val = if matches!(rhs_elem_ty.to_type(), Type::Primitive(PType::Int)) {
-                    self.push_inst(Instruction::CastItoF(rhs_elem))
-                } else {
-                    rhs_elem
-                };
-
-                let elem_val = match label.as_str() {
-                    intrinsics::ADD => self.push_inst(Instruction::AddF(lhs_val, rhs_val)),
-                    intrinsics::SUB => self.push_inst(Instruction::SubF(lhs_val, rhs_val)),
-                    intrinsics::MULT => self.push_inst(Instruction::MulF(lhs_val, rhs_val)),
-                    intrinsics::DIV => self.push_inst(Instruction::DivF(lhs_val, rhs_val)),
-                    _ => unreachable!("already filtered by is_tuple_arithmetic_binop_label"),
-                };
-
-                let dst = self.push_inst(Instruction::GetElement {
-                    value: tuple_ptr.clone(),
-                    ty: ret_ty,
-                    tuple_offset: idx as u64,
-                });
-                self.push_inst(Instruction::Store(dst, elem_val, *ret_elem_ty));
-            });
-
-        Some(tuple_ptr)
+        self.make_tuple_arithmetic_binop_intrinsic_rec(
+            label,
+            raw_args[0].0.clone(),
+            raw_args[0].1,
+            raw_args[1].0.clone(),
+            raw_args[1].1,
+            ret_ty,
+        )
     }
 
     fn make_uniop_intrinsic(
