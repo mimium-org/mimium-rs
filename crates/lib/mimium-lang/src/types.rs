@@ -3,6 +3,8 @@ use std::{
     sync::{Arc, RwLock},
 };
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     format_vec,
     interner::{Symbol, TypeNodeId, with_session_globals},
@@ -12,7 +14,7 @@ use crate::{
 
 /// Basic types that are not boxed.
 /// They should be splitted semantically as the type of `feed x.e`cannot take function type.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PType {
     Unit,
     Int,
@@ -55,7 +57,7 @@ impl TypeVar {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RecordTypeField {
     pub key: Symbol,
     pub ty: TypeNodeId,
@@ -590,6 +592,7 @@ impl fmt::Display for Type {
 }
 
 pub mod builder;
+mod serde_impl;
 
 // #[cfg(test)]
 // mod type_test {

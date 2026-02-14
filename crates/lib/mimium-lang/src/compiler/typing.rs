@@ -1187,28 +1187,27 @@ impl InferContext {
                 );
 
                 // Check visibility if module_info is available
-                if let Some(ref module_info) = self.module_info {
-                    if let Some(&is_public) = module_info.visibility_map.get(&resolved_name) {
-                        if !is_public {
-                            // Type is private - report error for accessing it from outside
-                            let type_path: Vec<&str> = resolved_name.as_str().split('$').collect();
-                            if type_path.len() > 1 {
-                                // This is a module member type
-                                let module_path: Vec<crate::interner::Symbol> = type_path
-                                    [..type_path.len() - 1]
-                                    .iter()
-                                    .map(ToSymbol::to_symbol)
-                                    .collect();
-                                let type_name = type_path.last().unwrap().to_symbol();
+                if let Some(ref module_info) = self.module_info
+                    && let Some(&is_public) = module_info.visibility_map.get(&resolved_name)
+                    && !is_public
+                {
+                    // Type is private - report error for accessing it from outside
+                    let type_path: Vec<&str> = resolved_name.as_str().split('$').collect();
+                    if type_path.len() > 1 {
+                        // This is a module member type
+                        let module_path: Vec<crate::interner::Symbol> = type_path
+                            [..type_path.len() - 1]
+                            .iter()
+                            .map(ToSymbol::to_symbol)
+                            .collect();
+                        let type_name = type_path.last().unwrap().to_symbol();
 
-                                // Report error for private type access
-                                self.errors.push(Error::PrivateTypeAccess {
-                                    module_path,
-                                    type_name,
-                                    location: loc.clone(),
-                                });
-                            }
-                        }
+                        // Report error for private type access
+                        self.errors.push(Error::PrivateTypeAccess {
+                            module_path,
+                            type_name,
+                            location: loc.clone(),
+                        });
                     }
                 }
 
@@ -1346,10 +1345,10 @@ impl InferContext {
 
                 // Check payload types of variants
                 for (_variant_name, payload_ty_opt) in variants.iter() {
-                    if let Some(payload_ty) = payload_ty_opt {
-                        if let Some(private_type) = self.contains_private_type(*payload_ty) {
-                            return Some(private_type);
-                        }
+                    if let Some(payload_ty) = payload_ty_opt
+                        && let Some(private_type) = self.contains_private_type(*payload_ty)
+                    {
+                        return Some(private_type);
                     }
                 }
                 None
@@ -1780,14 +1779,11 @@ impl InferContext {
                 // Check for private type leak in public function declarations
                 // Use the original type before resolution to catch TypeAlias references
                 if let Pattern::Single(name) = &tpat.pat {
-                    eprintln!(
-                        "[DEBUG] Checking private type leak for Let binding: {}",
+                    log::trace!(
+                        "Checking private type leak for Let binding: {}",
                         name.as_str()
                     );
-                    eprintln!(
-                        "[DEBUG] Original type before resolution: {:?}",
-                        tpat.ty.to_type()
-                    );
+                    log::trace!("Original type before resolution: {:?}", tpat.ty.to_type());
                     self.check_private_type_leak(*name, tpat.ty, loc_p.clone());
                 }
 
@@ -2253,7 +2249,7 @@ mod tests {
             assert_eq!(expected_stage, EvalStage::Stage(1));
             assert_eq!(found_stage, EvalStage::Stage(0));
         } else {
-            panic!("Expected StageMismatch error, got: {:?}", result);
+            panic!("Expected StageMismatch error, got: {result:?}");
         }
     }
 
@@ -2275,8 +2271,7 @@ mod tests {
             let result = ctx.lookup(var_name, loc.clone());
             assert!(
                 result.is_ok(),
-                "Persistent stage variables should be accessible from stage {}",
-                stage
+                "Persistent stage variables should be accessible from stage {stage}"
             );
         }
     }
@@ -2288,7 +2283,7 @@ mod tests {
 
         // Define variables at different stages
         for stage in [0, 1, 2] {
-            let var_name = format!("var_stage_{}", stage).to_symbol();
+            let var_name = format!("var_stage_{stage}").to_symbol();
             let var_type =
                 Type::Primitive(crate::types::PType::Numeric).into_id_with_location(loc.clone());
             ctx.env
@@ -2298,12 +2293,11 @@ mod tests {
         // Each variable should only be accessible from its own stage
         for stage in [0, 1, 2] {
             ctx.stage = EvalStage::Stage(stage);
-            let var_name = format!("var_stage_{}", stage).to_symbol();
+            let var_name = format!("var_stage_{stage}").to_symbol();
             let result = ctx.lookup(var_name, loc.clone());
             assert!(
                 result.is_ok(),
-                "Variable should be accessible from its own stage {}",
-                stage
+                "Variable should be accessible from its own stage {stage}"
             );
 
             // Should not be accessible from other stages
@@ -2313,9 +2307,7 @@ mod tests {
                     let result = ctx.lookup(var_name, loc.clone());
                     assert!(
                         result.is_err(),
-                        "Variable from stage {} should not be accessible from stage {}",
-                        stage,
-                        other_stage
+                        "Variable from stage {stage} should not be accessible from stage {other_stage}",
                     );
                 }
             }

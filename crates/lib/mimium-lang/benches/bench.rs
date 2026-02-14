@@ -27,6 +27,36 @@ mod tests {
             }
         });
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn bench_runtime_wasm(b: &mut Bencher, content: &str, times: usize) {
+        use mimium_lang::compiler::wasmgen::WasmGenerator;
+        use mimium_lang::runtime::wasm::engine::WasmEngine;
+        use std::sync::Arc;
+
+        let mut ctx = ExecContext::new([].into_iter(), None, Config::default());
+        ctx.prepare_compiler();
+        let ext_fns = ctx.get_extfun_types();
+        let mir = ctx
+            .get_compiler()
+            .unwrap()
+            .emit_mir(content)
+            .expect("MIR generation failed");
+
+        let mut generator = WasmGenerator::new(Arc::new(mir), &ext_fns);
+        let wasm_bytes = generator.generate().expect("WASM generation failed");
+
+        let mut engine = WasmEngine::new(&ext_fns, None).expect("Failed to create WASM engine");
+        engine
+            .load_module(&wasm_bytes)
+            .expect("Failed to load WASM module");
+
+        b.iter(move || {
+            for _i in 0..times {
+                let _ = engine.execute_dsp(&[]);
+            }
+        });
+    }
     mod multistage {
         use super::*;
         fn src_normal() -> String {
@@ -145,11 +175,42 @@ fn dsp(){{
         }
         #[bench]
         fn bench_multiosc10(b: &mut Bencher) {
-            bench_runtime(b, &make_multiosc_src(9), 1);
+            bench_runtime(b, &make_multiosc_src(10), 1);
         }
         #[bench]
         fn bench_multiosc15(b: &mut Bencher) {
             bench_runtime(b, &make_multiosc_src(15), 1);
+        }
+        #[bench]
+        fn bench_multiosc20(b: &mut Bencher) {
+            bench_runtime(b, &make_multiosc_src(20), 1);
+        }
+
+        // WASM backend benchmarks
+        #[bench]
+        #[cfg(not(target_arch = "wasm32"))]
+        fn bench_multiosc5_wasm(b: &mut Bencher) {
+            bench_runtime_wasm(b, &make_multiosc_src(5), 1);
+        }
+        #[bench]
+        #[cfg(not(target_arch = "wasm32"))]
+        fn bench_multiosc7_wasm(b: &mut Bencher) {
+            bench_runtime_wasm(b, &make_multiosc_src(7), 1);
+        }
+        #[bench]
+        #[cfg(not(target_arch = "wasm32"))]
+        fn bench_multiosc10_wasm(b: &mut Bencher) {
+            bench_runtime_wasm(b, &make_multiosc_src(10), 1);
+        }
+        #[bench]
+        #[cfg(not(target_arch = "wasm32"))]
+        fn bench_multiosc15_wasm(b: &mut Bencher) {
+            bench_runtime_wasm(b, &make_multiosc_src(15), 1);
+        }
+        #[bench]
+        #[cfg(not(target_arch = "wasm32"))]
+        fn bench_multiosc20_wasm(b: &mut Bencher) {
+            bench_runtime_wasm(b, &make_multiosc_src(20), 1);
         }
         fn make_partialapp_src_from_template(c: &str) -> String {
             format!(
@@ -180,6 +241,17 @@ fn dsp(){{
         #[bench]
         fn bench_partialapp_no(b: &mut Bencher) {
             bench_runtime(b, &make_no_partialapp_src(), 10);
+        }
+
+        #[bench]
+        #[cfg(not(target_arch = "wasm32"))]
+        fn bench_partialapp_wasm(b: &mut Bencher) {
+            bench_runtime_wasm(b, &make_partialapp_src(), 10);
+        }
+        #[bench]
+        #[cfg(not(target_arch = "wasm32"))]
+        fn bench_partialapp_no_wasm(b: &mut Bencher) {
+            bench_runtime_wasm(b, &make_no_partialapp_src(), 10);
         }
     }
     mod parse {

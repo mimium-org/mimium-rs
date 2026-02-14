@@ -15,6 +15,25 @@ use mimium_lang::{
     },
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+use mimium_lang::runtime::wasm::WasmRuntime;
+
+/// Check if WASM backend should be used based on MIMIUM_BACKEND environment variable.
+///
+/// Tests can use this to skip or adjust behavior for VM-specific checks
+/// (e.g. GC internals) that are not applicable to the WASM backend.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn should_use_wasm_backend() -> bool {
+    std::env::var("MIMIUM_BACKEND")
+        .map(|v| v.to_lowercase() == "wasm")
+        .unwrap_or(false)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn should_use_wasm_backend() -> bool {
+    false
+}
+
 pub fn run_bytecode_test(
     machine: &mut vm::Machine,
     n: usize,
@@ -56,6 +75,12 @@ pub fn run_source_with_plugins(
     plugins: impl Iterator<Item = Box<dyn Plugin>>,
     with_scheduler: bool,
 ) -> Result<Vec<f64>, Vec<Box<dyn ReportableError>>> {
+    // Check if WASM backend should be used
+    #[cfg(not(target_arch = "wasm32"))]
+    if should_use_wasm_backend() {
+        return run_source_with_scheduler_wasm(src, path, times, with_scheduler);
+    }
+
     let mut driver = LocalBufferDriver::new(times as _);
     let audiodriverplug: Box<dyn Plugin> = Box::new(driver.get_as_plugin());
     let mut ctx = ExecContext::new(
@@ -91,6 +116,12 @@ pub fn run_source_test(
     stereo: bool,
     path: Option<PathBuf>,
 ) -> Result<Vec<f64>, Vec<Box<dyn ReportableError>>> {
+    // Check if WASM backend should be used
+    #[cfg(not(target_arch = "wasm32"))]
+    if should_use_wasm_backend() {
+        return run_wasm_test(src, times, stereo, path);
+    }
+
     let mut ctx = ExecContext::new([].into_iter(), path, Config::default());
 
     ctx.prepare_machine(src)?;
@@ -124,6 +155,12 @@ pub fn run_file_with_scheduler(path: &'static str, times: u64) -> Option<Vec<f64
     run_file_with_plugins(path, times, [].into_iter(), true)
 }
 pub fn run_file_test(path: &'static str, times: u64, stereo: bool) -> Option<Vec<f64>> {
+    // Check if WASM backend should be used
+    #[cfg(not(target_arch = "wasm32"))]
+    if should_use_wasm_backend() {
+        return run_file_test_wasm(path, times, stereo);
+    }
+
     let (file, src) = load_src(path);
     let res = run_source_test(&src, times, stereo, Some(file));
     match res {
@@ -217,5 +254,196 @@ pub fn test_state_sizes<T: IntoIterator<Item = (&'static str, u64)>>(path: &'sta
             }
             None => panic!("no such function: {fn_name}"),
         };
+    }
+}
+
+/// Run a WASM backend test with the given source code
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_wasm_test(
+    src: &str,
+    times: u64,
+    stereo: bool,
+    path: Option<PathBuf>,
+) -> Result<Vec<f64>, Vec<Box<dyn ReportableError>>> {
+    use mimium_lang::compiler::wasmgen::WasmGenerator;
+    use std::sync::Arc;
+
+    // Compile to MIR
+    let mut ctx = ExecContext::new([].into_iter(), path, Config::default());
+    ctx.prepare_compiler();
+    let ext_fns = ctx.get_extfun_types();
+    let mir = ctx.get_compiler().unwrap().emit_mir(src)?;
+
+    // Generate WASM
+    let mut wasmgen = WasmGenerator::new(Arc::new(mir), &ext_fns);
+    let wasm_bytes = wasmgen.generate().map_err(|e| {
+        eprintln!("[WASM] Code generation error: {e}");
+        vec![Box::new(runtime::RuntimeError(
+            runtime::ErrorKind::Unknown,
+            Location::default(),
+        )) as Box<dyn ReportableError>]
+    })?;
+
+    // Load and execute with WasmRuntime
+    let mut wasm_runtime = WasmRuntime::new(&ext_fns, None).map_err(|e| {
+        eprintln!("[WASM] Runtime creation error: {e}");
+        vec![Box::new(runtime::RuntimeError(
+            runtime::ErrorKind::Unknown,
+            Location::default(),
+        )) as Box<dyn ReportableError>]
+    })?;
+
+    let mut wasm_module = wasm_runtime.load_module(&wasm_bytes).map_err(|e| {
+        eprintln!("[WASM] Module load error: {e}");
+        vec![Box::new(runtime::RuntimeError(
+            runtime::ErrorKind::Unknown,
+            Location::default(),
+        )) as Box<dyn ReportableError>]
+    })?;
+
+    // Execute main to initialize
+    let _init_result = wasm_module.call_function("main", &[]);
+
+    // Execute dsp multiple times
+    let n = if stereo { 2 } else { 1 };
+    let mut results = Vec::with_capacity(times as usize * n);
+
+    for _ in 0..times {
+        let result = wasm_module.call_function("dsp", &[]).map_err(|e| {
+            eprintln!("[WASM] dsp() call error: {e}");
+            vec![Box::new(runtime::RuntimeError(
+                runtime::ErrorKind::Unknown,
+                Location::default(),
+            )) as Box<dyn ReportableError>]
+        })?;
+
+        // Extract f64 values from result
+        if let Some(val) = result.first() {
+            if stereo {
+                // dsp() returns a pointer to a (f64, f64) tuple in linear memory
+                let ptr = *val as usize;
+                let left = wasm_module.read_memory_f64(ptr).unwrap_or(0.0);
+                let right = wasm_module.read_memory_f64(ptr + 8).unwrap_or(0.0);
+                results.push(left);
+                results.push(right);
+            } else {
+                results.push(f64::from_bits(*val));
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// Run a file test using WASM backend
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_file_test_wasm(path: &'static str, times: u64, stereo: bool) -> Option<Vec<f64>> {
+    let (file, src) = load_src(path);
+    let res = run_wasm_test(&src, times, stereo, Some(file));
+    match res {
+        Ok(res) => Some(res),
+        Err(errs) => {
+            report(&src, path.into(), &errs);
+            None
+        }
+    }
+}
+
+/// Run a source test with scheduler plugin via the WASM backend.
+///
+/// This mirrors [`run_source_with_plugins`] but compiles to WASM and registers
+/// scheduler plugin functions as host trampolines via `freeze_for_wasm()`.
+/// Uses `WasmDspRuntime` to ensure the test exercises the same code path
+/// as the CLI.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_source_with_scheduler_wasm(
+    src: &str,
+    path: Option<&str>,
+    times: u64,
+    with_scheduler: bool,
+) -> Result<Vec<f64>, Vec<Box<dyn ReportableError>>> {
+    use mimium_lang::compiler::wasmgen::WasmGenerator;
+    use mimium_lang::runtime::DspRuntime;
+    use mimium_lang::runtime::wasm::engine::{WasmDspRuntime, WasmEngine};
+    use std::sync::Arc;
+
+    let path_buf = path.map(PathBuf::from);
+
+    // Build ExecContext with scheduler so that ext_fns includes
+    // `_mimium_schedule_at` type information for WASM import generation.
+    let mut ctx = ExecContext::new([].into_iter(), path_buf, Config::default());
+    if with_scheduler {
+        ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
+    }
+
+    // Compile to MIR
+    ctx.prepare_compiler();
+    let ext_fns = ctx.get_extfun_types();
+    let mir = ctx.get_compiler().unwrap().emit_mir(src)?;
+
+    // Generate WASM bytecode
+    let mut wasmgen = WasmGenerator::new(Arc::new(mir), &ext_fns);
+    let wasm_bytes = wasmgen.generate().map_err(|e| {
+        eprintln!("[WASM] Code generation error: {e}");
+        vec![Box::new(runtime::RuntimeError(
+            runtime::ErrorKind::Unknown,
+            Location::default(),
+        )) as Box<dyn ReportableError>]
+    })?;
+
+    // Collect WASM plugin function handlers from system plugins (scheduler, etc.)
+    // freeze_for_wasm() must be called before generate_wasm_audioworkers() so
+    // that both share the same underlying WasmSchedulerHandle.
+    let plugin_fns = ctx.freeze_wasm_plugin_fns();
+
+    // Collect per-sample audio workers from all plugins.
+    let wasm_workers = ctx.generate_wasm_audioworkers();
+
+    // Create WASM engine and load module
+    let mut wasm_engine = WasmEngine::new(&ext_fns, plugin_fns).map_err(|e| {
+        eprintln!("[WASM] Engine creation error: {e}");
+        vec![Box::new(runtime::RuntimeError(
+            runtime::ErrorKind::Unknown,
+            Location::default(),
+        )) as Box<dyn ReportableError>]
+    })?;
+
+    wasm_engine.load_module(&wasm_bytes).map_err(|e| {
+        eprintln!("[WASM] Module load error: {e}");
+        vec![Box::new(runtime::RuntimeError(
+            runtime::ErrorKind::Unknown,
+            Location::default(),
+        )) as Box<dyn ReportableError>]
+    })?;
+
+    // Create WasmDspRuntime, the same code path as CLI
+    let mut wasm_runtime = WasmDspRuntime::new(wasm_engine, None, None);
+    wasm_runtime.set_wasm_audioworkers(wasm_workers);
+    let _ = wasm_runtime.run_main();
+
+    // Execute dsp for each sample via DspRuntime trait
+    let mut results = Vec::with_capacity(times as usize);
+    for t in 0..times {
+        wasm_runtime.run_dsp(runtime::Time(t));
+        let output = wasm_runtime.get_output(1);
+        if let Some(&val) = output.first() {
+            results.push(val);
+        }
+    }
+
+    Ok(results)
+}
+
+/// Run a file test with scheduler plugin via the WASM backend.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_file_with_scheduler_wasm(path: &'static str, times: u64) -> Option<Vec<f64>> {
+    let (file, src) = load_src(path);
+    let res = run_source_with_scheduler_wasm(&src, Some(&file.to_string_lossy()), times, true);
+    match res {
+        Ok(res) => Some(res),
+        Err(errs) => {
+            report(&src, path.into(), &errs);
+            None
+        }
     }
 }

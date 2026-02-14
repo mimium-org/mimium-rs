@@ -12,6 +12,7 @@ description = "basic scheduler implementation as a plugin for mimium"
 [dependencies]
 
 mimium-lang = { workspace = true }
+log = { workspace = true }
 
 [dev-dependencies]
 mimium-test = { workspace = true }

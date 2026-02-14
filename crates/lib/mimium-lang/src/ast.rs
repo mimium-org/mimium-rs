@@ -3,6 +3,8 @@ pub mod operators;
 pub mod program;
 mod resolve_include;
 pub mod statement;
+use serde::{Deserialize, Serialize};
+
 use crate::ast::operators::Op;
 use crate::ast::program::QualifiedPath;
 use crate::interner::{ExprNodeId, Symbol, TypeNodeId, with_session_globals};
@@ -12,7 +14,7 @@ use crate::utils::miniprint::MiniPrint;
 use std::fmt::{self};
 pub type Time = i64;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum StageKind {
     Persistent = -1,
     Macro = 0,
@@ -27,7 +29,7 @@ impl std::fmt::Display for StageKind {
         }
     }
 }
-#[derive(Clone, Debug, PartialEq, Hash)]
+#[derive(Clone, Debug, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Literal {
     String(Symbol),
     Int(i64),
@@ -54,7 +56,7 @@ impl Expr {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RecordField {
     pub name: Symbol,
     pub expr: ExprNodeId,
@@ -62,7 +64,7 @@ pub struct RecordField {
 
 /// Pattern for match expressions
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum MatchPattern {
     /// Literal pattern: matches a specific value (e.g., 0, 1, 2)
     Literal(Literal),
@@ -80,13 +82,13 @@ pub enum MatchPattern {
 }
 
 /// A single arm of a match expression
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MatchArm {
     pub pattern: MatchPattern,
     pub body: ExprNodeId,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Expr {
     Literal(Literal), // literal, or special symbols (self, now, _)
     Var(Symbol),

@@ -1,0 +1,9 @@
+let PI = 3.14159265359
+
+fn calc(){
+    self + PI
+}
+
+fn dsp(){
+    calc()
+}

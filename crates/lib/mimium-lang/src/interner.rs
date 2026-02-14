@@ -9,9 +9,13 @@ use std::{
     fmt::{self, Display},
     hash::Hash,
     path::PathBuf,
-    sync::{LazyLock, Mutex},
+    sync::{
+        LazyLock, Mutex,
+        atomic::{AtomicPtr, Ordering},
+    },
 };
 
+use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use string_interner::{StringInterner, backend::StringBackend};
 
@@ -96,18 +100,58 @@ static SESSION_GLOBALS: LazyLock<Mutex<SessionGlobals>> = LazyLock::new(|| {
     })
 });
 
+/// Pointer to an external `Mutex<SessionGlobals>` for dynamic plugin support.
+///
+/// When a plugin DLL is loaded, the host passes a pointer to its own
+/// `SESSION_GLOBALS` so the DLL shares the same interner. This avoids the
+/// problem of interned IDs (TypeNodeId, ExprNodeId, Symbol) being invalid
+/// across DLL boundaries.
+static EXTERNAL_SESSION_GLOBALS: AtomicPtr<Mutex<SessionGlobals>> =
+    AtomicPtr::new(std::ptr::null_mut());
+
+/// Get a pointer to the host's session globals for sharing with plugins.
+///
+/// The returned pointer is valid for the lifetime of the program.
+pub fn get_session_globals_ptr() -> *const std::ffi::c_void {
+    &*SESSION_GLOBALS as *const Mutex<SessionGlobals> as *const std::ffi::c_void
+}
+
+/// Direct the current process to use an external session globals instance.
+///
+/// After this call, all interner operations (`with_session_globals`, `to_symbol`,
+/// `into_id`, etc.) will use the provided mutex instead of the local copy.
+/// This is intended for dynamic plugins (cdylib) that need to share the host
+/// process's interner.
+///
+/// # Safety
+///
+/// The pointed-to `Mutex<SessionGlobals>` must remain valid for as long as
+/// this module is in use. In practice, the host's `SESSION_GLOBALS` lives for
+/// the entire program execution.
+pub unsafe fn set_external_session_globals(ptr: *const std::ffi::c_void) {
+    EXTERNAL_SESSION_GLOBALS.store(ptr as *mut Mutex<SessionGlobals>, Ordering::Release);
+}
+
 pub fn with_session_globals<R, F>(f: F) -> R
 where
     F: FnOnce(&mut SessionGlobals) -> R,
 {
-    if let Ok(mut guard) = SESSION_GLOBALS.lock() {
+    let external = EXTERNAL_SESSION_GLOBALS.load(Ordering::Acquire);
+    let mutex: &Mutex<SessionGlobals> = if !external.is_null() {
+        // SAFETY: set_external_session_globals guarantees the pointer is valid.
+        unsafe { &*external }
+    } else {
+        &SESSION_GLOBALS
+    };
+    if let Ok(mut guard) = mutex.lock() {
         f(&mut guard)
     } else {
         panic!("Failed to acquire lock on SESSION_GLOBALS");
     }
 }
 
-#[derive(Default, Copy, Clone, PartialEq, Hash, Eq, PartialOrd, Ord)]
+#[derive(Default, Copy, Clone, PartialEq, Hash, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Symbol(pub usize); //Symbol Trait is implemented on usize
 
 pub trait ToSymbol {
@@ -177,16 +221,18 @@ impl std::fmt::Debug for Symbol {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum NodeId {
     ExprArena(ExprKey),
     TypeArena(TypeKey),
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct ExprNodeId(pub ExprKey);
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct TypeNodeId(pub TypeKey);
 
 // traits required for Key trait
