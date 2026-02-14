@@ -174,20 +174,14 @@ fn resolve_external_module(
     module_info: &mut ModuleInfo,
 ) -> Vec<(Statement, Location)> {
     let module_filename = format!("{}.mmm", name.as_str());
-    let (imported_program, mut new_errs) =
+    let (imported, mut new_errs) =
         resolve_include(file_path.to_str().unwrap(), &module_filename, span);
     errs.append(&mut new_errs);
 
-    // Get the actual file path for the imported module
-    let module_file_path = file_path
-        .parent()
-        .map(|p| p.join(&module_filename))
-        .unwrap_or_else(|| PathBuf::from(&module_filename));
-
     // Process imported program with the module prefix
     stmts_from_program_with_prefix(
-        imported_program.statements,
-        module_file_path,
+        imported.program.statements,
+        imported.resolved_path,
         errs,
         module_prefix,
         module_info,
@@ -338,11 +332,15 @@ fn stmts_from_program_with_prefix(
             }
             ProgramStatement::Comment(_) | ProgramStatement::DocComment(_) => None,
             ProgramStatement::Import(filename) => {
-                let (imported_program, mut new_errs) =
+                let (imported, mut new_errs) =
                     resolve_include(file_path.to_str().unwrap(), filename.as_str(), span.clone());
                 errs.append(&mut new_errs);
-                let res =
-                    stmts_from_program(imported_program, file_path.clone(), errs, module_info);
+                let res = stmts_from_program(
+                    imported.program,
+                    imported.resolved_path,
+                    errs,
+                    module_info,
+                );
                 Some(res)
             }
             ProgramStatement::StageDeclaration { stage } => Some(vec![(
