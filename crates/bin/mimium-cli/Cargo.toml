@@ -24,3 +24,5 @@ mimium-guitools = { workspace = true }
 colog = { workspace = true }
 ringbuf = { workspace = true }
 notify = "8.2.0"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

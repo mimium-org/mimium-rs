@@ -110,6 +110,7 @@ mod test {
                 mode: RunMode::EmitAst,
                 with_gui: false,
                 use_wasm: false,
+                audio_setting: crate::AudioSetting::default(),
                 config: Config::default(),
             },
         };

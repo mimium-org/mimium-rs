@@ -2268,6 +2268,8 @@ dependencies = [
  "mimium-scheduler",
  "notify",
  "ringbuf",
+ "serde",
+ "toml",
 ]
 
 [[package]]

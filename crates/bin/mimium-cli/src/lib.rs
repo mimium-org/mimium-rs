@@ -1,6 +1,7 @@
 mod async_compiler;
 
 use std::{
+    env, fs,
     path::{Path, PathBuf},
     sync::mpsc,
 };
@@ -8,9 +9,10 @@ use std::{
 use crate::async_compiler::{CompileRequest, Errors, Response};
 use clap::{Parser, ValueEnum};
 use mimium_audiodriver::{
+    AudioDriverOptions,
     backends::{csv::csv_driver, local_buffer::LocalBufferDriver},
     driver::{Driver, RuntimeData, SampleRate},
-    load_default_runtime,
+    load_runtime_with_options,
 };
 use mimium_lang::{
     Config, ExecContext,
@@ -30,6 +32,7 @@ use mimium_lang::{
     },
 };
 use notify::{Event, RecursiveMode, Watcher};
+use serde::{Deserialize, Serialize};
 
 #[derive(clap::Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -62,6 +65,10 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = Backend::Vm)]
     pub backend: Backend,
 
+    /// Path to config.toml (default: ~/.mimium/config.toml)
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
     /// Change the behavior of `self` in the code. It this is set to true, `| | {self+1}` will return 0 at t=0, which normally returns 1.
     #[arg(long, default_value_t = false)]
     pub self_init_0: bool,
@@ -92,6 +99,99 @@ pub enum Backend {
     Wasm,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, Default)]
+pub struct CliConfig {
+    #[serde(default)]
+    pub audio_setting: AudioSetting,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+#[serde(rename_all = "kebab-case")]
+pub struct AudioSetting {
+    pub input_device: String,
+    pub output_device: String,
+    pub buffer_size: u32,
+    pub sample_rate: u32,
+}
+
+impl Default for AudioSetting {
+    fn default() -> Self {
+        Self {
+            input_device: String::new(),
+            output_device: String::new(),
+            buffer_size: 4096,
+            sample_rate: 48000,
+        }
+    }
+}
+
+impl AudioSetting {
+    fn to_driver_options(&self) -> AudioDriverOptions {
+        AudioDriverOptions {
+            input_device: (!self.input_device.trim().is_empty())
+                .then_some(self.input_device.clone()),
+            output_device: (!self.output_device.trim().is_empty())
+                .then_some(self.output_device.clone()),
+            buffer_size: (self.buffer_size > 0).then_some(self.buffer_size as usize),
+        }
+    }
+
+    fn effective_sample_rate(&self) -> u32 {
+        if self.sample_rate > 0 {
+            self.sample_rate
+        } else {
+            48000
+        }
+    }
+}
+
+fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("USERPROFILE").map(PathBuf::from))
+}
+
+fn default_config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    home_dir()
+        .map(|home| home.join(".mimium").join("config.toml"))
+        .ok_or_else(|| "Could not resolve home directory for default config path".into())
+}
+
+fn expand_tilde(path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let raw = path.to_string_lossy();
+    if raw == "~" {
+        return home_dir().ok_or_else(|| "Could not resolve home directory".into());
+    }
+    if let Some(suffix) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+        return home_dir()
+            .map(|home| home.join(suffix))
+            .ok_or_else(|| "Could not resolve home directory".into());
+    }
+    Ok(path.to_path_buf())
+}
+
+fn resolve_config_path(path: Option<&PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    path.map_or_else(default_config_path, |p| expand_tilde(p.as_path()))
+}
+
+fn load_or_create_cli_config(path: &Path) -> Result<CliConfig, Box<dyn std::error::Error>> {
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let default_cfg = CliConfig::default();
+        let serialized = toml::to_string_pretty(&default_cfg)?;
+        fs::write(path, serialized)?;
+        log::info!("Created default config at {}", path.display());
+        return Ok(default_cfg);
+    }
+
+    let content = fs::read_to_string(path)?;
+    let parsed: CliConfig = toml::from_str(&content)?;
+    Ok(parsed)
+}
+
 #[derive(clap::Args, Debug, Clone, Copy)]
 #[group(required = false, multiple = false)]
 pub struct Mode {
@@ -114,7 +214,6 @@ pub struct Mode {
     /// Generate WASM module and exit
     #[arg(long, default_value_t = false)]
     pub emit_wasm: bool,
-
 }
 
 pub enum RunMode {
@@ -139,12 +238,13 @@ pub struct RunOptions {
     with_gui: bool,
     /// Use the WASM backend instead of the native VM.
     use_wasm: bool,
+    audio_setting: AudioSetting,
     config: Config,
 }
 
 impl RunOptions {
     /// Convert parsed command line arguments into [`RunOptions`].
-    pub fn from_args(args: &Args) -> Self {
+    pub fn from_args(args: &Args, audio_setting: &AudioSetting) -> Self {
         let config = args.clone().to_execctx_config();
         #[cfg(not(target_arch = "wasm32"))]
         let use_wasm_backend = matches!(args.backend, Backend::Wasm);
@@ -156,6 +256,7 @@ impl RunOptions {
                 mode: RunMode::EmitCst,
                 with_gui: false,
                 use_wasm: false,
+                audio_setting: audio_setting.clone(),
                 config,
             };
         }
@@ -165,6 +266,7 @@ impl RunOptions {
                 mode: RunMode::EmitAst,
                 with_gui: true,
                 use_wasm: false,
+                audio_setting: audio_setting.clone(),
                 config,
             };
         }
@@ -174,6 +276,7 @@ impl RunOptions {
                 mode: RunMode::EmitMir,
                 with_gui: true,
                 use_wasm: false,
+                audio_setting: audio_setting.clone(),
                 config,
             };
         }
@@ -183,6 +286,7 @@ impl RunOptions {
                 mode: RunMode::EmitByteCode,
                 with_gui: true,
                 use_wasm: false,
+                audio_setting: audio_setting.clone(),
                 config,
             };
         }
@@ -193,6 +297,7 @@ impl RunOptions {
                 mode: RunMode::EmitWasm,
                 with_gui: false,
                 use_wasm: false,
+                audio_setting: audio_setting.clone(),
                 config,
             };
         }
@@ -225,6 +330,7 @@ impl RunOptions {
                 mode,
                 with_gui,
                 use_wasm: true,
+                audio_setting: audio_setting.clone(),
                 config,
             };
         }
@@ -258,15 +364,20 @@ impl RunOptions {
             mode,
             with_gui,
             use_wasm: false,
+            audio_setting: audio_setting.clone(),
             config,
         }
     }
 
     fn get_driver(&self) -> Box<dyn Driver<Sample = f64>> {
         match &self.mode {
-            RunMode::NativeAudio => load_default_runtime(),
+            RunMode::NativeAudio => {
+                load_runtime_with_options(&self.audio_setting.to_driver_options())
+            }
             #[cfg(not(target_arch = "wasm32"))]
-            RunMode::WasmAudio => load_default_runtime(),
+            RunMode::WasmAudio => {
+                load_runtime_with_options(&self.audio_setting.to_driver_options())
+            }
             RunMode::WriteCsv { times, output } => csv_driver(*times, output),
             _ => unreachable!(),
         }
@@ -377,6 +488,7 @@ impl FileRunner {
                         mode,
                         with_gui: true,
                         use_wasm: self.use_wasm,
+                        audio_setting: AudioSetting::default(),
                         config: Config::default(),
                     },
                 });
@@ -618,7 +730,12 @@ pub fn run_file(
                 }
             }));
 
-            driver.init(runtimedata, Some(SampleRate::from(48000)));
+            driver.init(
+                runtimedata,
+                Some(SampleRate::from(
+                    options.audio_setting.effective_sample_rate(),
+                )),
+            );
             driver.play();
 
             // Set up file watcher for WASM hot-swap recompilation
@@ -708,7 +825,12 @@ pub fn run_file(
                 }
             }));
 
-            driver.init(runtimedata, Some(SampleRate::from(48000)));
+            driver.init(
+                runtimedata,
+                Some(SampleRate::from(
+                    options.audio_setting.effective_sample_rate(),
+                )),
+            );
             driver.play();
 
             // Set up file watcher for WASM hot-swap recompilation
@@ -747,7 +869,12 @@ pub fn run_file(
                 }
             }));
             //this takes ownership of ctx
-            driver.init(runtimedata, Some(SampleRate::from(48000)));
+            driver.init(
+                runtimedata,
+                Some(SampleRate::from(
+                    options.audio_setting.effective_sample_rate(),
+                )),
+            );
             driver.play();
 
             let compiler = ctx.take_compiler().unwrap();
@@ -776,11 +903,14 @@ pub fn lib_main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let args = Args::parse();
+    let config_path = resolve_config_path(args.config.as_ref())?;
+    let cli_config = load_or_create_cli_config(&config_path)?;
+
     match &args.file {
         Some(file) => {
             let fullpath = fileloader::get_canonical_path(".", file)?;
             let content = fileloader::load(fullpath.to_str().unwrap())?;
-            let options = RunOptions::from_args(&args);
+            let options = RunOptions::from_args(&args, &cli_config.audio_setting);
             match run_file(options, &content, &fullpath) {
                 Ok(()) => {}
                 Err(e) => {

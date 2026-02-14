@@ -24,10 +24,16 @@ pub struct NativeDriver {
     ostream: Option<cpal::Stream>,
     count: Arc<AtomicU64>,
     buffer_size: usize,
+    input_device_name: Option<String>,
+    output_device_name: Option<String>,
     swap_prod: Option<mpsc::Sender<ProgramPayload>>,
 }
 impl NativeDriver {
-    pub fn new(buffer_size: usize) -> Self {
+    pub fn new(
+        buffer_size: usize,
+        input_device_name: Option<String>,
+        output_device_name: Option<String>,
+    ) -> Self {
         Self {
             sr: SampleRate::from(48000),
             hardware_ichannels: 1,
@@ -37,6 +43,8 @@ impl NativeDriver {
             ostream: None,
             count: Default::default(),
             buffer_size,
+            input_device_name,
+            output_device_name,
             swap_prod: None,
         }
     }
@@ -44,12 +52,20 @@ impl NativeDriver {
 
 impl Default for NativeDriver {
     fn default() -> Self {
-        Self::new(DEFAULT_BUFFER_SIZE)
+        Self::new(DEFAULT_BUFFER_SIZE, None, None)
     }
 }
 
-pub fn native_driver(buffer_size: usize) -> Box<dyn Driver<Sample = f64>> {
-    Box::new(NativeDriver::new(buffer_size))
+pub fn native_driver(
+    buffer_size: usize,
+    input_device_name: Option<String>,
+    output_device_name: Option<String>,
+) -> Box<dyn Driver<Sample = f64>> {
+    Box::new(NativeDriver::new(
+        buffer_size,
+        input_device_name,
+        output_device_name,
+    ))
 }
 
 //Runtime data, which will be created and immidiately send to audio thread.
@@ -183,6 +199,32 @@ impl NativeAudioReceiver {
     }
 }
 impl NativeDriver {
+    fn pick_input_device(&self, host: &cpal::Host) -> Option<cpal::Device> {
+        self.input_device_name.as_ref().and_then(|name| {
+            host.input_devices().ok().and_then(|devices| {
+                devices
+                    .filter_map(|device| {
+                        let device_name = device.name().ok()?;
+                        Some((device, device_name))
+                    })
+                    .find_map(|(device, device_name)| (device_name == *name).then_some(device))
+            })
+        })
+    }
+
+    fn pick_output_device(&self, host: &cpal::Host) -> Option<cpal::Device> {
+        self.output_device_name.as_ref().and_then(|name| {
+            host.output_devices().ok().and_then(|devices| {
+                devices
+                    .filter_map(|device| {
+                        let device_name = device.name().ok()?;
+                        Some((device, device_name))
+                    })
+                    .find_map(|(device, device_name)| (device_name == *name).then_some(device))
+            })
+        })
+    }
+
     fn init_iconfig(device: &cpal::Device, sample_rate: Option<SampleRate>) -> StreamConfig {
         let config_builder = device
             .supported_input_configs()
@@ -254,7 +296,14 @@ impl Driver for NativeDriver {
 
         let (prod, cons) = HeapRb::<Self::Sample>::new(ochannels * self.buffer_size).split();
 
-        let idevice = host.default_input_device();
+        let idevice = self.pick_input_device(&host).or_else(|| {
+            if let Some(name) = &self.input_device_name {
+                log::warn!(
+                    "Configured input device '{name}' was not found. Falling back to default input device."
+                );
+            }
+            host.default_input_device()
+        });
         let in_stream = if let Some(idevice) = idevice {
             let mut iconfig = Self::init_iconfig(&idevice, sample_rate.clone());
             iconfig.buffer_size = BufferSize::Fixed((self.buffer_size) as u32);
@@ -282,7 +331,14 @@ impl Driver for NativeDriver {
             None
         };
         let _ = in_stream.as_ref().map(|i| i.pause());
-        let odevice = host.default_output_device();
+        let odevice = self.pick_output_device(&host).or_else(|| {
+            if let Some(name) = &self.output_device_name {
+                log::warn!(
+                    "Configured output device '{name}' was not found. Falling back to default output device."
+                );
+            }
+            host.default_output_device()
+        });
         let (swap_prod, swap_cons) = mpsc::channel();
         self.swap_prod = Some(swap_prod);
         let out_stream = if let Some(odevice) = odevice {
