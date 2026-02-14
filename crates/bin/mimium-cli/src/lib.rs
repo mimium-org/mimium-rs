@@ -58,6 +58,10 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub no_gui: bool,
 
+    /// Execution backend (default: vm).
+    #[arg(long, value_enum, default_value_t = Backend::Vm)]
+    pub backend: Backend,
+
     /// Change the behavior of `self` in the code. It this is set to true, `| | {self+1}` will return 0 at t=0, which normally returns 1.
     #[arg(long, default_value_t = false)]
     pub self_init_0: bool,
@@ -80,6 +84,12 @@ impl Args {
 #[derive(Clone, Debug, ValueEnum)]
 pub enum OutputFileFormat {
     Csv,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, Eq, PartialEq)]
+pub enum Backend {
+    Vm,
+    Wasm,
 }
 
 #[derive(clap::Args, Debug, Clone, Copy)]
@@ -105,9 +115,6 @@ pub struct Mode {
     #[arg(long, default_value_t = false)]
     pub emit_wasm: bool,
 
-    /// Run audio processing using WASM JIT compiler
-    #[arg(long, default_value_t = false)]
-    pub wasm: bool,
 }
 
 pub enum RunMode {
@@ -139,6 +146,11 @@ impl RunOptions {
     /// Convert parsed command line arguments into [`RunOptions`].
     pub fn from_args(args: &Args) -> Self {
         let config = args.clone().to_execctx_config();
+        #[cfg(not(target_arch = "wasm32"))]
+        let use_wasm_backend = matches!(args.backend, Backend::Wasm);
+        #[cfg(target_arch = "wasm32")]
+        let use_wasm_backend = false;
+
         if args.mode.emit_cst {
             return Self {
                 mode: RunMode::EmitCst,
@@ -186,7 +198,7 @@ impl RunOptions {
         }
 
         #[cfg(not(target_arch = "wasm32"))]
-        if args.mode.wasm {
+        if use_wasm_backend {
             // For WASM backend, respect output format
             let mode = match (&args.output_format, args.output.as_ref()) {
                 (Some(OutputFileFormat::Csv), path) => RunMode::WriteCsv {
