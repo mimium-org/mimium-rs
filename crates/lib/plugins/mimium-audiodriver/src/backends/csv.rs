@@ -69,9 +69,12 @@ impl Driver for CsvDriver {
     fn play(&mut self) -> bool {
         let res = self.driver.play();
 
-        let chunk_size = self.driver.vmdata.as_ref().map_or(0, |vmdata| {
-            vmdata.vm.prog.iochannels.map_or(0, |io| io.output)
-        }) as _;
+        let chunk_size = self
+            .driver
+            .vmdata
+            .as_ref()
+            .and_then(|vmdata| vmdata.io_channels())
+            .map_or(0, |io| io.output) as _;
         let mut line = String::new();
         for sample in self.driver.get_generated_samples().chunks(chunk_size) {
             for (i, v) in sample.iter().enumerate() {

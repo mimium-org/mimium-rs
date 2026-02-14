@@ -10,7 +10,7 @@ use mimium_lang::compiler::IoChannelInfo;
 use mimium_lang::log;
 use mimium_lang::plugin::ExtClsInfo;
 
-use mimium_lang::runtime::{Time, vm};
+use mimium_lang::runtime::{ProgramPayload, Time};
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 pub(crate) const DEFAULT_BUFFER_SIZE: usize = 4096;
@@ -24,10 +24,16 @@ pub struct NativeDriver {
     ostream: Option<cpal::Stream>,
     count: Arc<AtomicU64>,
     buffer_size: usize,
-    swap_prod: Option<mpsc::Sender<vm::Program>>,
+    input_device_name: Option<String>,
+    output_device_name: Option<String>,
+    swap_prod: Option<mpsc::Sender<ProgramPayload>>,
 }
 impl NativeDriver {
-    pub fn new(buffer_size: usize) -> Self {
+    pub fn new(
+        buffer_size: usize,
+        input_device_name: Option<String>,
+        output_device_name: Option<String>,
+    ) -> Self {
         Self {
             sr: SampleRate::from(48000),
             hardware_ichannels: 1,
@@ -37,6 +43,8 @@ impl NativeDriver {
             ostream: None,
             count: Default::default(),
             buffer_size,
+            input_device_name,
+            output_device_name,
             swap_prod: None,
         }
     }
@@ -44,12 +52,20 @@ impl NativeDriver {
 
 impl Default for NativeDriver {
     fn default() -> Self {
-        Self::new(DEFAULT_BUFFER_SIZE)
+        Self::new(DEFAULT_BUFFER_SIZE, None, None)
     }
 }
 
-pub fn native_driver(buffer_size: usize) -> Box<dyn Driver<Sample = f64>> {
-    Box::new(NativeDriver::new(buffer_size))
+pub fn native_driver(
+    buffer_size: usize,
+    input_device_name: Option<String>,
+    output_device_name: Option<String>,
+) -> Box<dyn Driver<Sample = f64>> {
+    Box::new(NativeDriver::new(
+        buffer_size,
+        input_device_name,
+        output_device_name,
+    ))
 }
 
 //Runtime data, which will be created and immidiately send to audio thread.
@@ -59,7 +75,7 @@ struct NativeAudioData {
     buffer: HeapCons<f64>,
     localbuffer: Vec<f64>,
     count: Arc<AtomicU64>,
-    pub swap_channel: mpsc::Receiver<vm::Program>,
+    pub swap_channel: mpsc::Receiver<ProgramPayload>,
 }
 unsafe impl Send for NativeAudioData {}
 
@@ -69,11 +85,10 @@ impl NativeAudioData {
         runtime_data: RuntimeData,
         count: Arc<AtomicU64>,
         h_ochannels: usize,
-        swap_cons: mpsc::Receiver<vm::Program>,
+        swap_cons: mpsc::Receiver<ProgramPayload>,
     ) -> Self {
-        //todo: split as trait interface method
         let vmdata = runtime_data;
-        let iochannels = vmdata.vm.prog.iochannels.unwrap_or(IoChannelInfo {
+        let iochannels = vmdata.io_channels().unwrap_or(IoChannelInfo {
             input: 0,
             output: 0,
         });
@@ -81,7 +96,6 @@ impl NativeAudioData {
         Self {
             vmdata,
             iochannels,
-
             buffer,
             localbuffer,
             count,
@@ -90,10 +104,8 @@ impl NativeAudioData {
     }
     pub fn process(&mut self, dst: &mut [f32], h_ochannels: usize) {
         if let Ok(swap) = self.swap_channel.try_recv() {
-            self.vmdata.dsp_i = swap.get_fun_index("dsp").unwrap_or(self.vmdata.dsp_i);
-            self.vmdata.vm = self.vmdata.vm.new_resume(swap);
+            self.vmdata.resume_with_program(swap);
         }
-        // let len = dst.len().min(self.localbuffer.len());
         let len = dst.len();
 
         let local = &mut self.localbuffer.as_mut_slice()[..len];
@@ -102,15 +114,11 @@ impl NativeAudioData {
             .chunks_mut(h_ochannels)
             .zip(local.chunks(self.iochannels.output as usize))
         {
-            self.vmdata
-                .vm
-                .set_stack_range(0, unsafe { std::mem::transmute::<&[f64], &[u64]>(s) });
+            self.vmdata.set_input(s);
             let _rc = self
                 .vmdata
                 .run_dsp(Time(self.count.load(Ordering::Relaxed)));
-            let res = vm::Machine::get_as_array::<f64>(
-                self.vmdata.vm.get_top_n(self.iochannels.output as _),
-            );
+            let res = self.vmdata.get_output(self.iochannels.output as usize);
             self.count.fetch_add(1, Ordering::Relaxed);
             o.fill(0.0);
             match (h_ochannels, self.iochannels.output as usize) {
@@ -191,6 +199,32 @@ impl NativeAudioReceiver {
     }
 }
 impl NativeDriver {
+    fn pick_input_device(&self, host: &cpal::Host) -> Option<cpal::Device> {
+        self.input_device_name.as_ref().and_then(|name| {
+            host.input_devices().ok().and_then(|devices| {
+                devices
+                    .filter_map(|device| {
+                        let device_name = device.name().ok()?;
+                        Some((device, device_name))
+                    })
+                    .find_map(|(device, device_name)| (device_name == *name).then_some(device))
+            })
+        })
+    }
+
+    fn pick_output_device(&self, host: &cpal::Host) -> Option<cpal::Device> {
+        self.output_device_name.as_ref().and_then(|name| {
+            host.output_devices().ok().and_then(|devices| {
+                devices
+                    .filter_map(|device| {
+                        let device_name = device.name().ok()?;
+                        Some((device, device_name))
+                    })
+                    .find_map(|(device, device_name)| (device_name == *name).then_some(device))
+            })
+        })
+    }
+
     fn init_iconfig(device: &cpal::Device, sample_rate: Option<SampleRate>) -> StreamConfig {
         let config_builder = device
             .supported_input_configs()
@@ -256,13 +290,20 @@ impl Driver for NativeDriver {
     ) -> Option<IoChannelInfo> {
         let host = cpal::default_host();
 
-        let iochannels = runtime_data.vm.prog.iochannels;
+        let iochannels = runtime_data.io_channels();
         let ichannels = iochannels.map_or(0, |io| io.input) as usize;
         let ochannels = iochannels.map_or(0, |io| io.output) as usize;
 
         let (prod, cons) = HeapRb::<Self::Sample>::new(ochannels * self.buffer_size).split();
 
-        let idevice = host.default_input_device();
+        let idevice = self.pick_input_device(&host).or_else(|| {
+            if let Some(name) = &self.input_device_name {
+                log::warn!(
+                    "Configured input device '{name}' was not found. Falling back to default input device."
+                );
+            }
+            host.default_input_device()
+        });
         let in_stream = if let Some(idevice) = idevice {
             let mut iconfig = Self::init_iconfig(&idevice, sample_rate.clone());
             iconfig.buffer_size = BufferSize::Fixed((self.buffer_size) as u32);
@@ -290,7 +331,14 @@ impl Driver for NativeDriver {
             None
         };
         let _ = in_stream.as_ref().map(|i| i.pause());
-        let odevice = host.default_output_device();
+        let odevice = self.pick_output_device(&host).or_else(|| {
+            if let Some(name) = &self.output_device_name {
+                log::warn!(
+                    "Configured output device '{name}' was not found. Falling back to default output device."
+                );
+            }
+            host.default_output_device()
+        });
         let (swap_prod, swap_cons) = mpsc::channel();
         self.swap_prod = Some(swap_prod);
         let out_stream = if let Some(odevice) = odevice {
@@ -390,12 +438,12 @@ impl Driver for NativeDriver {
         false
     }
 
-    fn renew_vm(&mut self, new_prog: vm::Program) {
+    fn renew_program(&mut self, new_program: ProgramPayload) {
         self.swap_prod
             .as_mut()
-            .and_then(|sp| sp.send(new_prog).ok());
+            .and_then(|sp| sp.send(new_program).ok());
     }
-    fn get_vm_channel(&self) -> Option<mpsc::Sender<vm::Program>> {
+    fn get_program_channel(&self) -> Option<mpsc::Sender<ProgramPayload>> {
         self.swap_prod.clone()
     }
     fn is_playing(&self) -> bool {

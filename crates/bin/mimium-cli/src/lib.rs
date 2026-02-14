@@ -1,6 +1,7 @@
 mod async_compiler;
 
 use std::{
+    env, fs,
     path::{Path, PathBuf},
     sync::mpsc,
 };
@@ -8,9 +9,10 @@ use std::{
 use crate::async_compiler::{CompileRequest, Errors, Response};
 use clap::{Parser, ValueEnum};
 use mimium_audiodriver::{
+    AudioDriverOptions,
     backends::{csv::csv_driver, local_buffer::LocalBufferDriver},
     driver::{Driver, RuntimeData, SampleRate},
-    load_default_runtime,
+    load_runtime_with_options,
 };
 use mimium_lang::{
     Config, ExecContext,
@@ -22,15 +24,15 @@ use mimium_lang::{
     },
     log,
     plugin::Plugin,
-    runtime::vm,
+    runtime::ProgramPayload,
     utils::{
         error::{ReportableError, report},
         fileloader,
         miniprint::MiniPrint,
     },
 };
-use mimium_symphonia::SamplerPlugin;
 use notify::{Event, RecursiveMode, Watcher};
+use serde::{Deserialize, Serialize};
 
 #[derive(clap::Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -59,6 +61,14 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub no_gui: bool,
 
+    /// Execution backend (default: vm).
+    #[arg(long, value_enum, default_value_t = Backend::Vm)]
+    pub backend: Backend,
+
+    /// Path to config.toml (default: ~/.mimium/config.toml)
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
     /// Change the behavior of `self` in the code. It this is set to true, `| | {self+1}` will return 0 at t=0, which normally returns 1.
     #[arg(long, default_value_t = false)]
     pub self_init_0: bool,
@@ -83,6 +93,105 @@ pub enum OutputFileFormat {
     Csv,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum, Eq, PartialEq)]
+pub enum Backend {
+    Vm,
+    Wasm,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Default)]
+pub struct CliConfig {
+    #[serde(default)]
+    pub audio_setting: AudioSetting,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+#[serde(rename_all = "kebab-case")]
+pub struct AudioSetting {
+    pub input_device: String,
+    pub output_device: String,
+    pub buffer_size: u32,
+    pub sample_rate: u32,
+}
+
+impl Default for AudioSetting {
+    fn default() -> Self {
+        Self {
+            input_device: String::new(),
+            output_device: String::new(),
+            buffer_size: 4096,
+            sample_rate: 48000,
+        }
+    }
+}
+
+impl AudioSetting {
+    fn to_driver_options(&self) -> AudioDriverOptions {
+        AudioDriverOptions {
+            input_device: (!self.input_device.trim().is_empty())
+                .then_some(self.input_device.clone()),
+            output_device: (!self.output_device.trim().is_empty())
+                .then_some(self.output_device.clone()),
+            buffer_size: (self.buffer_size > 0).then_some(self.buffer_size as usize),
+        }
+    }
+
+    fn effective_sample_rate(&self) -> u32 {
+        if self.sample_rate > 0 {
+            self.sample_rate
+        } else {
+            48000
+        }
+    }
+}
+
+fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("USERPROFILE").map(PathBuf::from))
+}
+
+fn default_config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    home_dir()
+        .map(|home| home.join(".mimium").join("config.toml"))
+        .ok_or_else(|| "Could not resolve home directory for default config path".into())
+}
+
+fn expand_tilde(path: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let raw = path.to_string_lossy();
+    if raw == "~" {
+        return home_dir().ok_or_else(|| "Could not resolve home directory".into());
+    }
+    if let Some(suffix) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+        return home_dir()
+            .map(|home| home.join(suffix))
+            .ok_or_else(|| "Could not resolve home directory".into());
+    }
+    Ok(path.to_path_buf())
+}
+
+fn resolve_config_path(path: Option<&PathBuf>) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    path.map_or_else(default_config_path, |p| expand_tilde(p.as_path()))
+}
+
+fn load_or_create_cli_config(path: &Path) -> Result<CliConfig, Box<dyn std::error::Error>> {
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let default_cfg = CliConfig::default();
+        let serialized = toml::to_string_pretty(&default_cfg)?;
+        fs::write(path, serialized)?;
+        log::info!("Created default config at {}", path.display());
+        return Ok(default_cfg);
+    }
+
+    let content = fs::read_to_string(path)?;
+    let parsed: CliConfig = toml::from_str(&content)?;
+    Ok(parsed)
+}
+
 #[derive(clap::Args, Debug, Clone, Copy)]
 #[group(required = false, multiple = false)]
 pub struct Mode {
@@ -101,6 +210,10 @@ pub struct Mode {
     /// Print bytecode and exit
     #[arg(long, default_value_t = false)]
     pub emit_bytecode: bool,
+
+    /// Generate WASM module and exit
+    #[arg(long, default_value_t = false)]
+    pub emit_wasm: bool,
 }
 
 pub enum RunMode {
@@ -108,7 +221,11 @@ pub enum RunMode {
     EmitAst,
     EmitMir,
     EmitByteCode,
+    #[cfg(not(target_arch = "wasm32"))]
+    EmitWasm,
     NativeAudio,
+    #[cfg(not(target_arch = "wasm32"))]
+    WasmAudio,
     WriteCsv {
         times: usize,
         output: Option<PathBuf>,
@@ -119,17 +236,27 @@ pub enum RunMode {
 pub struct RunOptions {
     mode: RunMode,
     with_gui: bool,
+    /// Use the WASM backend instead of the native VM.
+    use_wasm: bool,
+    audio_setting: AudioSetting,
     config: Config,
 }
 
 impl RunOptions {
     /// Convert parsed command line arguments into [`RunOptions`].
-    pub fn from_args(args: &Args) -> Self {
+    pub fn from_args(args: &Args, audio_setting: &AudioSetting) -> Self {
         let config = args.clone().to_execctx_config();
+        #[cfg(not(target_arch = "wasm32"))]
+        let use_wasm_backend = matches!(args.backend, Backend::Wasm);
+        #[cfg(target_arch = "wasm32")]
+        let use_wasm_backend = false;
+
         if args.mode.emit_cst {
             return Self {
                 mode: RunMode::EmitCst,
                 with_gui: false,
+                use_wasm: false,
+                audio_setting: audio_setting.clone(),
                 config,
             };
         }
@@ -138,6 +265,8 @@ impl RunOptions {
             return Self {
                 mode: RunMode::EmitAst,
                 with_gui: true,
+                use_wasm: false,
+                audio_setting: audio_setting.clone(),
                 config,
             };
         }
@@ -146,6 +275,8 @@ impl RunOptions {
             return Self {
                 mode: RunMode::EmitMir,
                 with_gui: true,
+                use_wasm: false,
+                audio_setting: audio_setting.clone(),
                 config,
             };
         }
@@ -154,6 +285,52 @@ impl RunOptions {
             return Self {
                 mode: RunMode::EmitByteCode,
                 with_gui: true,
+                use_wasm: false,
+                audio_setting: audio_setting.clone(),
+                config,
+            };
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if args.mode.emit_wasm {
+            return Self {
+                mode: RunMode::EmitWasm,
+                with_gui: false,
+                use_wasm: false,
+                audio_setting: audio_setting.clone(),
+                config,
+            };
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if use_wasm_backend {
+            // For WASM backend, respect output format
+            let mode = match (&args.output_format, args.output.as_ref()) {
+                (Some(OutputFileFormat::Csv), path) => RunMode::WriteCsv {
+                    times: args.times,
+                    output: path.cloned(),
+                },
+                (None, Some(output))
+                    if output.extension().and_then(|x| x.to_str()) == Some("csv") =>
+                {
+                    RunMode::WriteCsv {
+                        times: args.times,
+                        output: Some(output.clone()),
+                    }
+                }
+                _ => RunMode::WasmAudio,
+            };
+
+            let with_gui = match &mode {
+                RunMode::WasmAudio => !args.no_gui,
+                _ => false,
+            };
+
+            return Self {
+                mode,
+                with_gui,
+                use_wasm: true,
+                audio_setting: audio_setting.clone(),
                 config,
             };
         }
@@ -186,13 +363,21 @@ impl RunOptions {
         Self {
             mode,
             with_gui,
+            use_wasm: false,
+            audio_setting: audio_setting.clone(),
             config,
         }
     }
 
     fn get_driver(&self) -> Box<dyn Driver<Sample = f64>> {
         match &self.mode {
-            RunMode::NativeAudio => load_default_runtime(),
+            RunMode::NativeAudio => {
+                load_runtime_with_options(&self.audio_setting.to_driver_options())
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            RunMode::WasmAudio => {
+                load_runtime_with_options(&self.audio_setting.to_driver_options())
+            }
             RunMode::WriteCsv { times, output } => csv_driver(*times, output),
             _ => unreachable!(),
         }
@@ -203,16 +388,50 @@ impl RunOptions {
 pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config) -> ExecContext {
     let plugins: Vec<Box<dyn Plugin>> = vec![];
     let mut ctx = ExecContext::new(plugins.into_iter(), path, config);
-    ctx.add_system_plugin(SamplerPlugin::default());
-    ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
-    if let Some(midi_plug) = mimium_midi::MidiPlugin::try_new() {
-        ctx.add_system_plugin(midi_plug);
-    } else {
-        log::warn!("Midi is not supported on this platform.")
+
+    // Load dynamic plugins
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        ctx.init_plugin_loader();
+
+        let mut loaded_count = 0;
+
+        // Try to load all mimium_*.dylib/so/dll from the executable directory first
+        if let Ok(exe_path) = std::env::current_exe()
+            && let Some(exe_dir) = exe_path.parent()
+            && let Some(loader) = ctx.get_plugin_loader_mut()
+        {
+            // Load all plugins except guitools when GUI is requested as SystemPlugin
+            // (guitools will be loaded as SystemPlugin to avoid duplicates)
+            loaded_count = loader.load_plugins_from_dir(exe_dir).unwrap_or(0);
+
+            if loaded_count > 0 {
+                log::debug!("Loaded {loaded_count} plugin(s) from executable directory");
+
+                // When GUI is requested, unload guitools if it was loaded dynamically
+                // since we'll add it as a SystemPlugin instead
+                if with_gui {
+                    // Note: Currently we don't have unload functionality,
+                    // but the SystemPlugin version will take precedence
+                    log::debug!("GUI mode: guitools will be provided as SystemPlugin");
+                }
+            }
+        }
+
+        // If no plugins loaded from exe directory, try standard plugin directory
+        if loaded_count == 0
+            && let Err(e) = ctx.load_builtin_dynamic_plugins()
+        {
+            log::debug!("No builtin dynamic plugins found: {e:?}");
+        }
     }
 
+    ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
+
+    // Add guitools as SystemPlugin when GUI is needed
+    // Note: guitools is ONLY loaded as SystemPlugin (never dynamically loaded)
+    // to ensure mainloop is properly available
     if with_gui {
-        #[cfg(not(target_arch = "wasm32"))]
         ctx.add_system_plugin(mimium_guitools::GuiToolPlugin::default());
     }
 
@@ -222,8 +441,10 @@ pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config
 struct FileRunner {
     pub tx_compiler: mpsc::Sender<CompileRequest>,
     pub rx_compiler: mpsc::Receiver<Result<Response, Errors>>,
-    pub tx_prog: Option<mpsc::Sender<vm::Program>>,
+    pub tx_prog: Option<mpsc::Sender<ProgramPayload>>,
     pub fullpath: PathBuf,
+    /// When true, recompilation targets the WASM backend instead of the native VM.
+    pub use_wasm: bool,
 }
 
 struct FileWatcher {
@@ -234,7 +455,8 @@ impl FileRunner {
     pub fn new(
         compiler: compiler::Context,
         path: PathBuf,
-        prog_tx: Option<mpsc::Sender<vm::Program>>,
+        prog_tx: Option<mpsc::Sender<ProgramPayload>>,
+        use_wasm: bool,
     ) -> Self {
         let client = async_compiler::start_async_compiler_service(compiler);
         Self {
@@ -242,6 +464,7 @@ impl FileRunner {
             rx_compiler: client.rx,
             tx_prog: prog_tx,
             fullpath: path,
+            use_wasm,
         }
     }
     fn try_new_watcher(&self) -> Result<FileWatcher, notify::Error> {
@@ -253,12 +476,19 @@ impl FileRunner {
     fn recompile_file(&self) {
         match fileloader::load(&self.fullpath.to_string_lossy()) {
             Ok(new_content) => {
+                let mode = if self.use_wasm {
+                    RunMode::WasmAudio
+                } else {
+                    RunMode::EmitByteCode
+                };
                 let _ = self.tx_compiler.send(CompileRequest {
                     source: new_content.clone(),
                     path: self.fullpath.clone(),
                     option: RunOptions {
-                        mode: RunMode::EmitByteCode,
+                        mode,
                         with_gui: true,
+                        use_wasm: self.use_wasm,
+                        audio_setting: AudioSetting::default(),
                         config: Config::default(),
                     },
                 });
@@ -269,7 +499,17 @@ impl FileRunner {
                     Ok(Response::ByteCode(prog)) => {
                         log::info!("compiled successfully.");
                         if let Some(tx) = &self.tx_prog {
-                            let _ = tx.send(prog);
+                            let _ = tx.send(ProgramPayload::VmProgram(prog));
+                        }
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    Ok(Response::WasmModule(output)) => {
+                        log::info!("WASM compiled successfully ({} bytes).", output.bytes.len());
+                        if let Some(tx) = &self.tx_prog {
+                            let _ = tx.send(ProgramPayload::WasmModule {
+                                bytes: output.bytes,
+                                dsp_state_skeleton: output.dsp_state_skeleton,
+                            });
                         }
                     }
                     Err(errs) => {
@@ -377,6 +617,237 @@ pub fn run_file(
             println!("{}", ctx.get_vm().unwrap().prog);
             Ok(())
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        RunMode::EmitWasm => {
+            use mimium_lang::utils::metadata::Location;
+            use std::sync::Arc;
+
+            ctx.prepare_compiler();
+            let ext_fns = ctx.get_extfun_types();
+            let mir = ctx.get_compiler().unwrap().emit_mir(content)?;
+
+            // Generate WASM module
+            let mut generator = compiler::wasmgen::WasmGenerator::new(Arc::new(mir), &ext_fns);
+            let wasm_bytes = generator.generate().map_err(|e| {
+                vec![Box::new(mimium_lang::utils::error::SimpleError {
+                    message: e,
+                    span: Location::default(),
+                }) as Box<dyn ReportableError>]
+            })?;
+
+            // Output module info
+            println!("Generated WASM module ({} bytes)", wasm_bytes.len());
+            println!("Magic: {:?}", &wasm_bytes[0..4]);
+            println!("Version: {:?}", &wasm_bytes[4..8]);
+
+            // Write to file
+            if let Some(parent) = fullpath.parent() {
+                let wasm_path = parent
+                    .join(fullpath.file_stem().unwrap())
+                    .with_extension("wasm");
+                std::fs::write(&wasm_path, &wasm_bytes).map_err(|e| {
+                    vec![Box::new(mimium_lang::utils::error::SimpleError {
+                        message: e.to_string(),
+                        span: Location::default(),
+                    }) as Box<dyn ReportableError>]
+                })?;
+                println!("Written to: {}", wasm_path.display());
+            }
+
+            Ok(())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        RunMode::WasmAudio => {
+            use mimium_lang::compiler::wasmgen::WasmGenerator;
+            use mimium_lang::runtime::wasm::engine::{WasmDspRuntime, WasmEngine};
+            use mimium_lang::utils::metadata::Location;
+            use std::sync::Arc;
+
+            ctx.prepare_compiler();
+            let mut ext_fns = ctx.get_extfun_types();
+            // Deduplicate ext_fns by name to avoid "defined twice" errors in WASM runtime
+            // (can happen when same plugin is loaded both dynamically and as SystemPlugin)
+            ext_fns.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+            ext_fns.dedup_by(|a, b| a.name == b.name);
+
+            let mir = ctx.get_compiler().unwrap().emit_mir(content)?;
+
+            let io_channels = mir.get_dsp_iochannels();
+            let dsp_skeleton = mir.get_dsp_state_skeleton().cloned();
+
+            // Generate WASM module
+            let mut generator = WasmGenerator::new(Arc::new(mir), &ext_fns);
+            let wasm_bytes = generator.generate().map_err(|e| {
+                vec![Box::new(mimium_lang::utils::error::SimpleError {
+                    message: e,
+                    span: Location::default(),
+                }) as Box<dyn ReportableError>]
+            })?;
+
+            log::info!("Generated WASM module ({} bytes)", wasm_bytes.len());
+
+            // Collect WASM plugin functions from all system plugins.
+            // freeze_wasm_plugin_fns() must be called before generate_wasm_audioworkers()
+            // so that both share the same underlying scheduler state.
+            let plugin_fns = ctx.freeze_wasm_plugin_fns();
+
+            // Collect per-sample audio workers from all plugins.
+            let wasm_workers = ctx.generate_wasm_audioworkers();
+
+            let mut wasm_engine = WasmEngine::new(&ext_fns, plugin_fns).map_err(|e| {
+                vec![Box::new(mimium_lang::utils::error::SimpleError {
+                    message: format!("Failed to create WASM engine: {e}"),
+                    span: Location::default(),
+                }) as Box<dyn ReportableError>]
+            })?;
+
+            wasm_engine.load_module(&wasm_bytes).map_err(|e| {
+                vec![Box::new(mimium_lang::utils::error::SimpleError {
+                    message: format!("Failed to load WASM module: {e}"),
+                    span: Location::default(),
+                }) as Box<dyn ReportableError>]
+            })?;
+
+            // Create WasmDspRuntime and wrap in RuntimeData
+            let mut wasm_runtime = WasmDspRuntime::new(wasm_engine, io_channels, dsp_skeleton);
+            wasm_runtime.set_sample_rate(48000.0);
+            wasm_runtime.set_wasm_audioworkers(wasm_workers);
+            ctx.run_wasm_on_init(wasm_runtime.engine_mut());
+            let _ = wasm_runtime.run_main();
+            ctx.run_wasm_after_main(wasm_runtime.engine_mut());
+
+            let runtimedata = RuntimeData::new_from_runtime(Box::new(wasm_runtime));
+
+            // Use the standard audio driver infrastructure
+            let mut driver = options.get_driver();
+
+            let with_gui = options.with_gui;
+            let mainloop = ctx.try_get_main_loop().unwrap_or(Box::new(move || {
+                if with_gui {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(1000));
+                    }
+                }
+            }));
+
+            driver.init(
+                runtimedata,
+                Some(SampleRate::from(
+                    options.audio_setting.effective_sample_rate(),
+                )),
+            );
+            driver.play();
+
+            // Set up file watcher for WASM hot-swap recompilation
+            let compiler = ctx.take_compiler().unwrap();
+            let frunner = FileRunner::new(
+                compiler,
+                fullpath.to_path_buf(),
+                driver.get_program_channel(),
+                true,
+            );
+            if with_gui {
+                std::thread::spawn(move || frunner.cli_loop());
+            }
+
+            mainloop();
+            Ok(())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        _ if options.use_wasm => {
+            // WASM backend with standard audio driver (WriteCsv or NativeAudio).
+            use mimium_lang::compiler::wasmgen::WasmGenerator;
+            use mimium_lang::runtime::wasm::engine::{WasmDspRuntime, WasmEngine};
+            use mimium_lang::utils::metadata::Location;
+            use std::sync::Arc;
+
+            let mut driver = options.get_driver();
+
+            ctx.prepare_compiler();
+            let mut ext_fns = ctx.get_extfun_types();
+            // Deduplicate ext_fns by name to avoid "defined twice" errors in WASM runtime
+            // (can happen when same plugin is loaded both dynamically and as SystemPlugin)
+            ext_fns.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+            ext_fns.dedup_by(|a, b| a.name == b.name);
+
+            let mir = ctx.get_compiler().unwrap().emit_mir(content)?;
+            let io_channels = mir.get_dsp_iochannels();
+            let dsp_skeleton = mir.get_dsp_state_skeleton().cloned();
+
+            let mut generator = WasmGenerator::new(Arc::new(mir), &ext_fns);
+            let wasm_bytes = generator.generate().map_err(|e| {
+                vec![Box::new(mimium_lang::utils::error::SimpleError {
+                    message: e,
+                    span: Location::default(),
+                }) as Box<dyn ReportableError>]
+            })?;
+
+            log::info!("Generated WASM module ({} bytes)", wasm_bytes.len());
+
+            // Collect WASM plugin functions from all system plugins.
+            // freeze_wasm_plugin_fns() must be called before generate_wasm_audioworkers()
+            // so that both share the same underlying scheduler state.
+            let plugin_fns = ctx.freeze_wasm_plugin_fns();
+
+            // Collect per-sample audio workers from all plugins.
+            let wasm_workers = ctx.generate_wasm_audioworkers();
+
+            let mut wasm_engine = WasmEngine::new(&ext_fns, plugin_fns).map_err(|e| {
+                vec![Box::new(mimium_lang::utils::error::SimpleError {
+                    message: format!("Failed to create WASM engine: {e}"),
+                    span: Location::default(),
+                }) as Box<dyn ReportableError>]
+            })?;
+
+            wasm_engine.load_module(&wasm_bytes).map_err(|e| {
+                vec![Box::new(mimium_lang::utils::error::SimpleError {
+                    message: format!("Failed to load WASM module: {e}"),
+                    span: Location::default(),
+                }) as Box<dyn ReportableError>]
+            })?;
+
+            let mut wasm_runtime = WasmDspRuntime::new(wasm_engine, io_channels, dsp_skeleton);
+            wasm_runtime.set_sample_rate(48000.0);
+            wasm_runtime.set_wasm_audioworkers(wasm_workers);
+            ctx.run_wasm_on_init(wasm_runtime.engine_mut());
+            let _ = wasm_runtime.run_main();
+            ctx.run_wasm_after_main(wasm_runtime.engine_mut());
+
+            let runtimedata = RuntimeData::new_from_runtime(Box::new(wasm_runtime));
+
+            // Get main loop from system plugins (e.g., GUI)
+            let with_gui = options.with_gui;
+            let mainloop = ctx.try_get_main_loop().unwrap_or(Box::new(move || {
+                if with_gui {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(1000));
+                    }
+                }
+            }));
+
+            driver.init(
+                runtimedata,
+                Some(SampleRate::from(
+                    options.audio_setting.effective_sample_rate(),
+                )),
+            );
+            driver.play();
+
+            // Set up file watcher for WASM hot-swap recompilation
+            let compiler = ctx.take_compiler().unwrap();
+            let frunner = FileRunner::new(
+                compiler,
+                fullpath.to_path_buf(),
+                driver.get_program_channel(),
+                true,
+            );
+            if with_gui {
+                std::thread::spawn(move || frunner.cli_loop());
+            }
+
+            mainloop();
+            Ok(())
+        }
         _ => {
             let mut driver = options.get_driver();
             let audiodriver_plug = driver.get_as_plugin();
@@ -398,13 +869,22 @@ pub fn run_file(
                 }
             }));
             //this takes ownership of ctx
-            driver.init(runtimedata, Some(SampleRate::from(48000)));
+            driver.init(
+                runtimedata,
+                Some(SampleRate::from(
+                    options.audio_setting.effective_sample_rate(),
+                )),
+            );
             driver.play();
 
             let compiler = ctx.take_compiler().unwrap();
 
-            let frunner =
-                FileRunner::new(compiler, fullpath.to_path_buf(), driver.get_vm_channel());
+            let frunner = FileRunner::new(
+                compiler,
+                fullpath.to_path_buf(),
+                driver.get_program_channel(),
+                false,
+            );
             if options.with_gui {
                 std::thread::spawn(move || frunner.cli_loop());
             }
@@ -423,11 +903,14 @@ pub fn lib_main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let args = Args::parse();
+    let config_path = resolve_config_path(args.config.as_ref())?;
+    let cli_config = load_or_create_cli_config(&config_path)?;
+
     match &args.file {
         Some(file) => {
             let fullpath = fileloader::get_canonical_path(".", file)?;
             let content = fileloader::load(fullpath.to_str().unwrap())?;
-            let options = RunOptions::from_args(&args);
+            let options = RunOptions::from_args(&args, &cli_config.audio_setting);
             match run_file(options, &content, &fullpath) {
                 Ok(()) => {}
                 Err(e) => {

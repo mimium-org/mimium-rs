@@ -1,0 +1,20 @@
+// Test nested conditionals in stateful functions
+// This is a regression test for WASM backend handling of nested JmpIf in merge blocks
+
+fn simple_nested_if(gate) {
+    let time = self + 1.0
+    let result = if gate > 0.0 {
+        if time < 5.0 {
+            time
+        } else {
+            5.0
+        }
+    } else {
+        0.0
+    }
+    result
+}
+
+fn dsp()->float{
+    simple_nested_if(1.0)
+}

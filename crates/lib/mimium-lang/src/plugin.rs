@@ -9,6 +9,10 @@
 
 mod builtin_functins;
 mod system_plugin;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod loader;
+
 pub use builtin_functins::get_builtin_fns_as_plugins;
 use std::{cell::RefCell, rc::Rc};
 

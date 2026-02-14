@@ -3,6 +3,7 @@ use slotmap::{DefaultKey, SlotMap};
 use std::{cell::RefCell, cmp::Ordering, collections::HashMap, ops::Range, rc::Rc};
 pub mod bytecode;
 pub mod heap;
+mod primitives;
 pub mod program;
 mod ringbuffer;
 pub use bytecode::*;
@@ -137,7 +138,7 @@ impl LocalUpValueMap {
         let OpenUpValue { pos, .. } = ov;
         self.0
             .iter()
-            .find_map(|(i2, v)| (pos == *i2 as _).then_some(v.clone()))
+            .find_map(|(i2, v)| (pos == *i2 as usize).then_some(v.clone()))
             .unwrap_or_else(|| {
                 let v = Rc::new(RefCell::new(UpValue::Open(ov)));
                 self.0.push((pos as Reg, v.clone()));

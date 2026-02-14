@@ -44,5 +44,10 @@ jobs:
             ~/.cargo/git/db/
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
       - run: cargo test -- --test-threads=1
+        name: test VM backend
+      - run: cargo test -- --test-threads=1
+        name: test wasm backend
+        env: 
+          MIMIUM_BACKEND: wasm
+          

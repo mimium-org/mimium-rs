@@ -29,6 +29,9 @@ pub enum Response {
     Ast(ExprNodeId),
     Mir(Mir),
     ByteCode(vm::Program),
+    /// Compiled WASM module with state skeleton for hot-swap.
+    #[cfg(not(target_arch = "wasm32"))]
+    WasmModule(compiler::WasmOutput),
 }
 struct MacroInfo(Box<dyn MacroFunction>);
 //macro will modify system plugin instance from different threads but it will never confilict with VM execution
@@ -62,6 +65,12 @@ impl AsyncCompilerService {
                     .compiler
                     .emit_bytecode(&request.source)
                     .map(Response::ByteCode)
+                    .map_err(|errs| errs.into_iter().map(RichError::from).collect()),
+                #[cfg(not(target_arch = "wasm32"))]
+                RunMode::WasmAudio | RunMode::EmitWasm => self
+                    .compiler
+                    .emit_wasm(&request.source)
+                    .map(Response::WasmModule)
                     .map_err(|errs| errs.into_iter().map(RichError::from).collect()),
                 _ => {
                     todo!()
@@ -100,6 +109,8 @@ mod test {
             option: crate::RunOptions {
                 mode: RunMode::EmitAst,
                 with_gui: false,
+                use_wasm: false,
+                audio_setting: crate::AudioSetting::default(),
                 config: Config::default(),
             },
         };
