@@ -248,6 +248,148 @@ impl Context {
             _ => None,
         }
     }
+
+    fn is_tuple_arithmetic_binop_label(label: Symbol) -> bool {
+        matches!(
+            label.as_str(),
+            intrinsics::ADD | intrinsics::SUB | intrinsics::MULT | intrinsics::DIV
+        )
+    }
+
+    fn make_tuple_arithmetic_binop_intrinsic(
+        &mut self,
+        label: Symbol,
+        raw_args: &[(VPtr, TypeNodeId)],
+        ret_ty: TypeNodeId,
+    ) -> Option<VPtr> {
+        if raw_args.len() != 2 || !Self::is_tuple_arithmetic_binop_label(label) {
+            return None;
+        }
+
+        let lhs_ty = raw_args[0].1;
+        let rhs_ty = raw_args[1].1;
+        let lhs_tuple = match lhs_ty.to_type() {
+            Type::Tuple(elems) => Some(elems),
+            _ => None,
+        };
+        let rhs_tuple = match rhs_ty.to_type() {
+            Type::Tuple(elems) => Some(elems),
+            _ => None,
+        };
+
+        if lhs_tuple.is_none() && rhs_tuple.is_none() {
+            return None;
+        }
+        let tuple_len = lhs_tuple
+            .as_ref()
+            .map_or_else(|| rhs_tuple.as_ref().map_or(0, |v| v.len()), |v| v.len());
+        if let (Some(lhs_elems), Some(rhs_elems)) = (&lhs_tuple, &rhs_tuple)
+            && lhs_elems.len() != rhs_elems.len()
+        {
+            return None;
+        }
+        if tuple_len > 16 {
+            return None;
+        }
+
+        let tuple_elem_types = match ret_ty.to_type() {
+            Type::Tuple(elem_types) if elem_types.len() == tuple_len => elem_types,
+            _ => return None,
+        };
+
+        let lhs_scalar_slot = if lhs_tuple.is_none() {
+            let slot = self.push_inst(Instruction::Alloc(lhs_ty));
+            self.push_inst(Instruction::Store(slot.clone(), raw_args[0].0.clone(), lhs_ty));
+            Some(slot)
+        } else {
+            None
+        };
+        let rhs_scalar_slot = if rhs_tuple.is_none() {
+            let slot = self.push_inst(Instruction::Alloc(rhs_ty));
+            self.push_inst(Instruction::Store(slot.clone(), raw_args[1].0.clone(), rhs_ty));
+            Some(slot)
+        } else {
+            None
+        };
+
+        let tuple_ptr = self.push_inst(Instruction::Alloc(ret_ty));
+        tuple_elem_types
+            .iter()
+            .enumerate()
+            .for_each(|(idx, ret_elem_ty)| {
+                let (lhs_elem, lhs_elem_ty) = if let Some(lhs_elems) = &lhs_tuple {
+                    (
+                        self.push_inst(Instruction::GetElement {
+                            value: raw_args[0].0.clone(),
+                            ty: lhs_ty,
+                            tuple_offset: idx as u64,
+                        }),
+                        lhs_elems[idx],
+                    )
+                } else {
+                    (
+                        self.push_inst(Instruction::Load(
+                            lhs_scalar_slot
+                                .as_ref()
+                                .expect("scalar slot exists when lhs is not tuple")
+                                .clone(),
+                            lhs_ty,
+                        )),
+                        lhs_ty,
+                    )
+                };
+                let (rhs_elem, rhs_elem_ty) = if let Some(rhs_elems) = &rhs_tuple {
+                    (
+                        self.push_inst(Instruction::GetElement {
+                            value: raw_args[1].0.clone(),
+                            ty: rhs_ty,
+                            tuple_offset: idx as u64,
+                        }),
+                        rhs_elems[idx],
+                    )
+                } else {
+                    (
+                        self.push_inst(Instruction::Load(
+                            rhs_scalar_slot
+                                .as_ref()
+                                .expect("scalar slot exists when rhs is not tuple")
+                                .clone(),
+                            rhs_ty,
+                        )),
+                        rhs_ty,
+                    )
+                };
+
+                let lhs_val = if matches!(lhs_elem_ty.to_type(), Type::Primitive(PType::Int)) {
+                    self.push_inst(Instruction::CastItoF(lhs_elem))
+                } else {
+                    lhs_elem
+                };
+                let rhs_val = if matches!(rhs_elem_ty.to_type(), Type::Primitive(PType::Int)) {
+                    self.push_inst(Instruction::CastItoF(rhs_elem))
+                } else {
+                    rhs_elem
+                };
+
+                let elem_val = match label.as_str() {
+                    intrinsics::ADD => self.push_inst(Instruction::AddF(lhs_val, rhs_val)),
+                    intrinsics::SUB => self.push_inst(Instruction::SubF(lhs_val, rhs_val)),
+                    intrinsics::MULT => self.push_inst(Instruction::MulF(lhs_val, rhs_val)),
+                    intrinsics::DIV => self.push_inst(Instruction::DivF(lhs_val, rhs_val)),
+                    _ => unreachable!("already filtered by is_tuple_arithmetic_binop_label"),
+                };
+
+                let dst = self.push_inst(Instruction::GetElement {
+                    value: tuple_ptr.clone(),
+                    ty: ret_ty,
+                    tuple_offset: idx as u64,
+                });
+                self.push_inst(Instruction::Store(dst, elem_val, *ret_elem_ty));
+            });
+
+        Some(tuple_ptr)
+    }
+
     fn make_uniop_intrinsic(
         &mut self,
         label: Symbol,
@@ -273,8 +415,14 @@ impl Context {
     fn make_intrinsics(
         &mut self,
         label: Symbol,
+        raw_args: &[(VPtr, TypeNodeId)],
         args: &[(VPtr, TypeNodeId)],
+        ret_ty: TypeNodeId,
     ) -> (Option<VPtr>, Vec<StateSkeleton>) {
+        if let Some(v) = self.make_tuple_arithmetic_binop_intrinsic(label, raw_args, ret_ty) {
+            return (Some(v), vec![]);
+        }
+
         let (inst, states) = match args.len() {
             1 => self.make_uniop_intrinsic(label, args),
             2 => (self.make_binop_intrinsic(label, args), vec![]),
@@ -416,6 +564,7 @@ impl Context {
         ty: TypeNodeId,
         is_global: bool,
     ) {
+        let ty = InferContext::substitute_type(ty);
         let TypedPattern { pat, .. } = pattern;
         let span = pattern.to_span();
         match (pat, ty.to_type()) {
@@ -1279,7 +1428,7 @@ impl Context {
                         (f_val.clone(), rt)
                     }
                 } else {
-                    (f_val.clone(), rt)
+                    (f_val.clone(), ty)
                 };
 
                 // Handle parameter packing/unpacking if needed
@@ -1297,6 +1446,7 @@ impl Context {
                 };
 
                 // Coerce arguments based on subtype relationships (union wrapping, int->float, etc.)
+                let raw_atvvec = atvvec.clone();
                 let atvvec = self.coerce_args_for_call(atvvec, at);
 
                 let (res, state) = match f_to_call.as_ref() {
@@ -1332,20 +1482,24 @@ impl Context {
                         self.emit_fncall(*idx as u64, atvvec.clone(), monomorphized_rt)
                     }
                     Value::ExtFunction(label, _ty) => {
-                        let (res, states) =
-                            if let (Some(res), states) = self.make_intrinsics(*label, &atvvec) {
-                                (res, states)
-                            } else {
-                                // we assume non-builtin external functions are stateless for now
-                                (
-                                    self.push_inst(Instruction::Call(
-                                        f_to_call.clone(),
-                                        atvvec.clone(),
-                                        monomorphized_rt,
-                                    )),
-                                    vec![],
-                                )
-                            };
+                        let (res, states) = if let (Some(res), states) = self.make_intrinsics(
+                            *label,
+                            &raw_atvvec,
+                            &atvvec,
+                            monomorphized_rt,
+                        ) {
+                            (res, states)
+                        } else {
+                            // we assume non-builtin external functions are stateless for now
+                            (
+                                self.push_inst(Instruction::Call(
+                                    f_to_call.clone(),
+                                    atvvec.clone(),
+                                    monomorphized_rt,
+                                )),
+                                vec![],
+                            )
+                        };
                         (res, states)
                     }
                     // Value::ExternalClosure(i) => todo!(),

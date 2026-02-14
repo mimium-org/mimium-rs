@@ -931,6 +931,8 @@ impl InferContext {
     }
 }
 impl InferContext {
+    const TUPLE_BINOP_MAX_ARITY: usize = 16;
+
     fn intrinsic_types() -> Vec<(Symbol, TypeNodeId)> {
         let binop_ty = function!(vec![numeric!(), numeric!()], numeric!());
         let binop_names = [
@@ -976,6 +978,130 @@ impl InferContext {
         .chain(binds)
         .chain(unibinds)
         .collect()
+    }
+
+    fn is_tuple_arithmetic_binop_label(label: Symbol) -> bool {
+        matches!(
+            label.as_str(),
+            intrinsics::ADD | intrinsics::SUB | intrinsics::MULT | intrinsics::DIV
+        )
+    }
+
+    fn try_get_tuple_arithmetic_binop_label(&self, fun: ExprNodeId) -> Option<Symbol> {
+        match fun.to_expr() {
+            Expr::Var(name) if Self::is_tuple_arithmetic_binop_label(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    fn resolve_for_tuple_binop(&self, ty: TypeNodeId) -> TypeNodeId {
+        let resolved_alias = self.resolve_type_alias(ty);
+        Self::substitute_type(resolved_alias)
+    }
+
+    fn is_numeric_scalar_for_tuple_binop(&self, ty: TypeNodeId) -> bool {
+        matches!(
+            self.resolve_for_tuple_binop(ty).to_type(),
+            Type::Primitive(PType::Numeric) | Type::Primitive(PType::Int)
+        )
+    }
+
+    fn infer_tuple_arithmetic_binop_type(
+        &mut self,
+        lhs_ty: TypeNodeId,
+        rhs_ty: TypeNodeId,
+        loc: Location,
+    ) -> Result<TypeNodeId, Vec<Error>> {
+        let lhs_resolved = self.resolve_for_tuple_binop(lhs_ty);
+        let rhs_resolved = self.resolve_for_tuple_binop(rhs_ty);
+        let mut errs = vec![];
+        let result_arity = match (lhs_resolved.to_type(), rhs_resolved.to_type()) {
+            (Type::Tuple(lhs_elems), Type::Tuple(rhs_elems)) => {
+                if lhs_elems.len() != rhs_elems.len() {
+                    return Err(vec![Error::TypeMismatch {
+                        left: (lhs_ty, loc.clone()),
+                        right: (rhs_ty, loc),
+                    }]);
+                }
+
+                lhs_elems.iter().zip(rhs_elems.iter()).for_each(|(lt, rt)| {
+                    if !self.is_numeric_scalar_for_tuple_binop(*lt) {
+                        errs.push(Error::TypeMismatch {
+                            left: (numeric!(), lt.to_loc()),
+                            right: (*lt, lt.to_loc()),
+                        });
+                    }
+                    if !self.is_numeric_scalar_for_tuple_binop(*rt) {
+                        errs.push(Error::TypeMismatch {
+                            left: (numeric!(), rt.to_loc()),
+                            right: (*rt, rt.to_loc()),
+                        });
+                    }
+                });
+
+                lhs_elems.len()
+            }
+            (Type::Tuple(tuple_elems), _) => {
+                if !self.is_numeric_scalar_for_tuple_binop(rhs_ty) {
+                    errs.push(Error::TypeMismatch {
+                        left: (numeric!(), rhs_ty.to_loc()),
+                        right: (rhs_ty, rhs_ty.to_loc()),
+                    });
+                }
+                tuple_elems.iter().for_each(|elem_ty| {
+                    if !self.is_numeric_scalar_for_tuple_binop(*elem_ty) {
+                        errs.push(Error::TypeMismatch {
+                            left: (numeric!(), elem_ty.to_loc()),
+                            right: (*elem_ty, elem_ty.to_loc()),
+                        });
+                    }
+                });
+                tuple_elems.len()
+            }
+            (_, Type::Tuple(tuple_elems)) => {
+                if !self.is_numeric_scalar_for_tuple_binop(lhs_ty) {
+                    errs.push(Error::TypeMismatch {
+                        left: (numeric!(), lhs_ty.to_loc()),
+                        right: (lhs_ty, lhs_ty.to_loc()),
+                    });
+                }
+                tuple_elems.iter().for_each(|elem_ty| {
+                    if !self.is_numeric_scalar_for_tuple_binop(*elem_ty) {
+                        errs.push(Error::TypeMismatch {
+                            left: (numeric!(), elem_ty.to_loc()),
+                            right: (*elem_ty, elem_ty.to_loc()),
+                        });
+                    }
+                });
+                tuple_elems.len()
+            }
+            _ => {
+                return Err(vec![Error::TypeMismatch {
+                    left: (lhs_ty, loc.clone()),
+                    right: (rhs_ty, loc),
+                }]);
+            }
+        };
+
+        if result_arity > Self::TUPLE_BINOP_MAX_ARITY {
+            return Err(vec![Error::TypeMismatch {
+                left: (
+                    Type::Tuple(vec![numeric!(); Self::TUPLE_BINOP_MAX_ARITY])
+                        .into_id_with_location(loc.clone()),
+                    loc.clone(),
+                ),
+                right: (
+                    Type::Tuple(vec![numeric!(); result_arity]).into_id_with_location(loc.clone()),
+                    loc.clone(),
+                ),
+            }]);
+        }
+
+        if !errs.is_empty() {
+            return Err(errs);
+        }
+
+        Ok(Type::Tuple(vec![numeric!(); result_arity]).into_id_with_location(loc))
     }
 
     /// Get the type associated with a constructor name from a union or user-defined sum type
@@ -1878,6 +2004,24 @@ impl InferContext {
             }
             Expr::Apply(fun, callee) => {
                 let loc_f = fun.to_location();
+                if callee.len() == 2
+                    && self.try_get_tuple_arithmetic_binop_label(*fun).is_some()
+                {
+                    let lhs_ty = self.infer_type_unwrapping(callee[0]);
+                    let rhs_ty = self.infer_type_unwrapping(callee[1]);
+                    let lhs_is_tuple = matches!(
+                        self.resolve_for_tuple_binop(lhs_ty).to_type(),
+                        Type::Tuple(_)
+                    );
+                    let rhs_is_tuple = matches!(
+                        self.resolve_for_tuple_binop(rhs_ty).to_type(),
+                        Type::Tuple(_)
+                    );
+                    if lhs_is_tuple || rhs_is_tuple {
+                        return self.infer_tuple_arithmetic_binop_type(lhs_ty, rhs_ty, loc_f.clone());
+                    }
+                }
+
                 let fnl = self.infer_type_unwrapping(*fun);
                 let callee_t = match callee.len() {
                     0 => Type::Primitive(PType::Unit).into_id_with_location(loc.clone()),
