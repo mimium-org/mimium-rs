@@ -508,9 +508,8 @@ fn shadowing_assign() {
 
 #[wasm_bindgen_test(unsupported = test)]
 fn many_errors() {
-    let res = run_error_test("many_errors.mmm", false);
-    //todo! check error types
-    assert_eq!(res.len(), 9);
+    let errs = run_error_test_rich("many_errors.mmm", false);
+    assert_eq!(errs.len(), 10);
 }
 #[wasm_bindgen_test(unsupported = test)]
 fn hof_typefail() {
@@ -533,12 +532,6 @@ fn error_include_itself() {
     )
 }
 
-#[wasm_bindgen_test(unsupported = test)]
-fn typing_tuple_fail() {
-    let res = run_error_test("typing_tuple_fail.mmm", false);
-    assert_eq!(res.len(), 1);
-    assert!(res[0].get_message().contains("Type mismatch"))
-}
 #[wasm_bindgen_test(unsupported = test)]
 fn block_local_scope() {
     let res = run_file_test_mono("block_local_scope.mmm", 1).unwrap();
@@ -666,6 +659,114 @@ fn parameter_pack_record_fail() {
 fn parameter_pack_record_fail2() {
     let res = run_error_test("parameter_pack_record_fail2.mmm", false);
     assert_eq!(res.len(), 1);
+}
+
+#[test]
+fn tuple_binop_basic() {
+    let res = run_file_test_mono("tuple_binop_basic.mmm", 1).unwrap();
+    let ans = vec![21.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_len_mismatch_fail() {
+    let res = run_error_test("tuple_binop_len_mismatch_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+}
+
+#[test]
+fn tuple_binop_nonnumeric_fail() {
+    let res = run_error_test("tuple_binop_nonnumeric_fail.mmm", false);
+    assert_eq!(res.len(), 2);
+}
+
+#[test]
+fn tuple_binop_arity_over16_fail() {
+    let res = run_error_test("tuple_binop_arity_over16_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+}
+
+#[test]
+fn tuple_binop_tuple_scalar_broadcast() {
+    let res = run_file_test_mono("tuple_binop_tuple_scalar_broadcast.mmm", 1).unwrap();
+    let ans = vec![12.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_scalar_tuple_broadcast() {
+    let res = run_file_test_mono("tuple_binop_scalar_tuple_broadcast.mmm", 1).unwrap();
+    let ans = vec![12.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_tuple_int_scalar_broadcast() {
+    let res = run_file_test_mono("tuple_binop_tuple_int_scalar_broadcast.mmm", 1).unwrap();
+    let ans = vec![12.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_nested_basic() {
+    let res = run_file_test_mono("tuple_binop_nested_basic.mmm", 1).unwrap();
+    let ans = vec![110.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_nested_tuple_scalar_broadcast() {
+    let res = run_file_test_mono("tuple_binop_nested_tuple_scalar_broadcast.mmm", 1).unwrap();
+    let ans = vec![20.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_nested_scalar_tuple_broadcast() {
+    let res = run_file_test_mono("tuple_binop_nested_scalar_tuple_broadcast.mmm", 1).unwrap();
+    let ans = vec![18.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_nested_shape_mismatch_fail() {
+    let res = run_error_test("tuple_binop_nested_shape_mismatch_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+}
+
+#[test]
+fn auto_spread_stateless() {
+    let res = run_file_test_mono("tuple_map_f2f_stateless.mmm", 1).unwrap();
+    let ans = vec![5.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn auto_spread_stateful() {
+    let res = run_file_test_mono("tuple_map_f2f_stateful.mmm", 3).unwrap();
+    let ans = vec![3.0, 6.0, 9.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn auto_spread_stateful_nested() {
+    let res = run_file_test_mono("tuple_map_f2f_stateful_nested.mmm", 3).unwrap();
+    let ans = vec![10.0, 20.0, 30.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn auto_spread_macro_stage() {
+    let res = run_file_test_mono("auto_spread_macro_stage.mmm", 1).unwrap();
+    let ans = vec![5.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_macro_stage() {
+    let res = run_file_test_mono("tuple_binop_macro_stage.mmm", 1).unwrap();
+    let ans = vec![56.0];
+    assert_eq!(res, ans);
 }
 
 #[test]

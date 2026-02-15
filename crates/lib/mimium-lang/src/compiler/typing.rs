@@ -931,6 +931,8 @@ impl InferContext {
     }
 }
 impl InferContext {
+    const TUPLE_BINOP_MAX_ARITY: usize = 16;
+
     fn intrinsic_types() -> Vec<(Symbol, TypeNodeId)> {
         let binop_ty = function!(vec![numeric!(), numeric!()], numeric!());
         let binop_names = [
@@ -976,6 +978,273 @@ impl InferContext {
         .chain(binds)
         .chain(unibinds)
         .collect()
+    }
+
+    fn is_tuple_arithmetic_binop_label(label: Symbol) -> bool {
+        matches!(
+            label.as_str(),
+            intrinsics::ADD | intrinsics::SUB | intrinsics::MULT | intrinsics::DIV
+        )
+    }
+
+    fn try_get_tuple_arithmetic_binop_label(&self, fun: ExprNodeId) -> Option<Symbol> {
+        match fun.to_expr() {
+            Expr::Var(name) if Self::is_tuple_arithmetic_binop_label(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    fn resolve_for_tuple_binop(&self, ty: TypeNodeId) -> TypeNodeId {
+        let resolved_alias = self.resolve_type_alias(ty);
+        Self::substitute_type(resolved_alias)
+    }
+
+    fn is_numeric_scalar_for_tuple_binop(&self, ty: TypeNodeId) -> bool {
+        matches!(
+            self.resolve_for_tuple_binop(ty).to_type(),
+            Type::Primitive(PType::Numeric) | Type::Primitive(PType::Int)
+        )
+    }
+
+    fn make_tuple_binop_arity_error(&self, actual_arity: usize, loc: &Location) -> Error {
+        Error::TypeMismatch {
+            left: (
+                Type::Tuple(vec![numeric!(); Self::TUPLE_BINOP_MAX_ARITY])
+                    .into_id_with_location(loc.clone()),
+                loc.clone(),
+            ),
+            right: (
+                Type::Tuple(vec![numeric!(); actual_arity]).into_id_with_location(loc.clone()),
+                loc.clone(),
+            ),
+        }
+    }
+
+    fn infer_tuple_arithmetic_binop_type_rec(
+        &mut self,
+        lhs_ty: TypeNodeId,
+        rhs_ty: TypeNodeId,
+        loc: &Location,
+        errs: &mut Vec<Error>,
+    ) -> Option<TypeNodeId> {
+        let lhs_resolved = self.resolve_for_tuple_binop(lhs_ty);
+        let rhs_resolved = self.resolve_for_tuple_binop(rhs_ty);
+
+        match (lhs_resolved.to_type(), rhs_resolved.to_type()) {
+            (Type::Tuple(lhs_elems), Type::Tuple(rhs_elems)) => {
+                if lhs_elems.len() != rhs_elems.len() {
+                    errs.push(Error::TypeMismatch {
+                        left: (lhs_ty, loc.clone()),
+                        right: (rhs_ty, loc.clone()),
+                    });
+                    return None;
+                }
+                if lhs_elems.len() > Self::TUPLE_BINOP_MAX_ARITY {
+                    errs.push(self.make_tuple_binop_arity_error(lhs_elems.len(), loc));
+                    return None;
+                }
+
+                let result_elems = lhs_elems
+                    .iter()
+                    .zip(rhs_elems.iter())
+                    .filter_map(|(lt, rt)| {
+                        self.infer_tuple_arithmetic_binop_type_rec(*lt, *rt, loc, errs)
+                    })
+                    .collect::<Vec<_>>();
+
+                if result_elems.len() != lhs_elems.len() {
+                    None
+                } else {
+                    Some(Type::Tuple(result_elems).into_id_with_location(loc.clone()))
+                }
+            }
+            (Type::Tuple(tuple_elems), _) => {
+                if tuple_elems.len() > Self::TUPLE_BINOP_MAX_ARITY {
+                    errs.push(self.make_tuple_binop_arity_error(tuple_elems.len(), loc));
+                    return None;
+                }
+                if !self.is_numeric_scalar_for_tuple_binop(rhs_ty) {
+                    errs.push(Error::TypeMismatch {
+                        left: (numeric!(), rhs_ty.to_loc()),
+                        right: (rhs_ty, rhs_ty.to_loc()),
+                    });
+                    return None;
+                }
+
+                let result_elems = tuple_elems
+                    .iter()
+                    .filter_map(|elem_ty| {
+                        self.infer_tuple_arithmetic_binop_type_rec(*elem_ty, rhs_ty, loc, errs)
+                    })
+                    .collect::<Vec<_>>();
+
+                if result_elems.len() != tuple_elems.len() {
+                    None
+                } else {
+                    Some(Type::Tuple(result_elems).into_id_with_location(loc.clone()))
+                }
+            }
+            (_, Type::Tuple(tuple_elems)) => {
+                if tuple_elems.len() > Self::TUPLE_BINOP_MAX_ARITY {
+                    errs.push(self.make_tuple_binop_arity_error(tuple_elems.len(), loc));
+                    return None;
+                }
+                if !self.is_numeric_scalar_for_tuple_binop(lhs_ty) {
+                    errs.push(Error::TypeMismatch {
+                        left: (numeric!(), lhs_ty.to_loc()),
+                        right: (lhs_ty, lhs_ty.to_loc()),
+                    });
+                    return None;
+                }
+
+                let result_elems = tuple_elems
+                    .iter()
+                    .filter_map(|elem_ty| {
+                        self.infer_tuple_arithmetic_binop_type_rec(lhs_ty, *elem_ty, loc, errs)
+                    })
+                    .collect::<Vec<_>>();
+
+                if result_elems.len() != tuple_elems.len() {
+                    None
+                } else {
+                    Some(Type::Tuple(result_elems).into_id_with_location(loc.clone()))
+                }
+            }
+            _ => {
+                let mut valid = true;
+                if !self.is_numeric_scalar_for_tuple_binop(lhs_ty) {
+                    errs.push(Error::TypeMismatch {
+                        left: (numeric!(), lhs_ty.to_loc()),
+                        right: (lhs_ty, lhs_ty.to_loc()),
+                    });
+                    valid = false;
+                }
+                if !self.is_numeric_scalar_for_tuple_binop(rhs_ty) {
+                    errs.push(Error::TypeMismatch {
+                        left: (numeric!(), rhs_ty.to_loc()),
+                        right: (rhs_ty, rhs_ty.to_loc()),
+                    });
+                    valid = false;
+                }
+                if valid {
+                    Some(numeric!())
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    fn infer_tuple_arithmetic_binop_type(
+        &mut self,
+        lhs_ty: TypeNodeId,
+        rhs_ty: TypeNodeId,
+        loc: Location,
+    ) -> Result<TypeNodeId, Vec<Error>> {
+        let mut errs = vec![];
+        let result_ty = self.infer_tuple_arithmetic_binop_type_rec(
+            lhs_ty,
+            rhs_ty,
+            &loc,
+            &mut errs,
+        );
+        if !errs.is_empty() {
+            return Err(errs);
+        }
+        result_ty.ok_or_else(|| {
+            vec![Error::TypeMismatch {
+                left: (lhs_ty, loc.clone()),
+                right: (rhs_ty, loc),
+            }]
+        })
+    }
+
+    fn is_auto_spread_endpoint_type(&self, ty: TypeNodeId) -> bool {
+        matches!(
+            self.resolve_for_tuple_binop(ty).to_type(),
+            Type::Primitive(PType::Numeric)
+                | Type::Primitive(PType::Int)
+                | Type::Intermediate(_)
+                | Type::TypeScheme(_)
+                | Type::Unknown
+                | Type::Failure
+        )
+    }
+
+    fn auto_spread_param_endpoint_type(&self, param_ty: TypeNodeId) -> Option<TypeNodeId> {
+        let resolved = self.resolve_for_tuple_binop(param_ty);
+        match resolved.to_type() {
+            Type::Record(fields) if fields.len() == 1 => Some(fields[0].ty),
+            _ => Some(resolved),
+        }
+    }
+
+    fn is_numeric_to_numeric_function_for_auto_spread(&self, fn_ty: TypeNodeId) -> bool {
+        let resolved = self.resolve_for_tuple_binop(fn_ty);
+        matches!(
+            resolved.to_type(),
+            Type::Function { arg, ret }
+                if self
+                    .auto_spread_param_endpoint_type(arg)
+                    .is_some_and(|endpoint| self.is_auto_spread_endpoint_type(endpoint))
+                    && self.is_auto_spread_endpoint_type(ret)
+        )
+    }
+
+    fn infer_auto_spread_type_rec(
+        &mut self,
+        arg_ty: TypeNodeId,
+        loc: &Location,
+        errs: &mut Vec<Error>,
+    ) -> Option<TypeNodeId> {
+        let resolved = self.resolve_for_tuple_binop(arg_ty);
+        match resolved.to_type() {
+            Type::Tuple(elems) => {
+                if elems.len() > Self::TUPLE_BINOP_MAX_ARITY {
+                    errs.push(self.make_tuple_binop_arity_error(elems.len(), loc));
+                    return None;
+                }
+                let mapped = elems
+                    .iter()
+                    .filter_map(|elem_ty| self.infer_auto_spread_type_rec(*elem_ty, loc, errs))
+                    .collect::<Vec<_>>();
+                if mapped.len() != elems.len() {
+                    None
+                } else {
+                    Some(Type::Tuple(mapped).into_id_with_location(loc.clone()))
+                }
+            }
+            _ => {
+                if self.is_numeric_scalar_for_tuple_binop(arg_ty) {
+                    Some(numeric!())
+                } else {
+                    errs.push(Error::TypeMismatch {
+                        left: (numeric!(), arg_ty.to_loc()),
+                        right: (arg_ty, arg_ty.to_loc()),
+                    });
+                    None
+                }
+            }
+        }
+    }
+
+    fn infer_auto_spread_type(
+        &mut self,
+        fn_ty: TypeNodeId,
+        arg_ty: TypeNodeId,
+        loc: Location,
+    ) -> Result<TypeNodeId, Vec<Error>> {
+        let mut errs = vec![];
+        let result_ty = self.infer_auto_spread_type_rec(arg_ty, &loc, &mut errs);
+        if !errs.is_empty() {
+            return Err(errs);
+        }
+        result_ty.ok_or_else(|| {
+            vec![Error::TypeMismatch {
+                left: (arg_ty, loc.clone()),
+                right: (arg_ty, loc),
+            }]
+        })
     }
 
     /// Get the type associated with a constructor name from a union or user-defined sum type
@@ -1878,6 +2147,33 @@ impl InferContext {
             }
             Expr::Apply(fun, callee) => {
                 let loc_f = fun.to_location();
+                if callee.len() == 2
+                    && self.try_get_tuple_arithmetic_binop_label(*fun).is_some()
+                {
+                    let lhs_ty = self.infer_type_unwrapping(callee[0]);
+                    let rhs_ty = self.infer_type_unwrapping(callee[1]);
+                    let lhs_is_tuple = matches!(
+                        self.resolve_for_tuple_binop(lhs_ty).to_type(),
+                        Type::Tuple(_)
+                    );
+                    let rhs_is_tuple = matches!(
+                        self.resolve_for_tuple_binop(rhs_ty).to_type(),
+                        Type::Tuple(_)
+                    );
+                    if lhs_is_tuple || rhs_is_tuple {
+                        return self.infer_tuple_arithmetic_binop_type(lhs_ty, rhs_ty, loc_f.clone());
+                    }
+                }
+
+                if callee.len() == 1 {
+                    let fnl = self.infer_type_unwrapping(*fun);
+                    let arg_ty = self.infer_type_unwrapping(callee[0]);
+                    let arg_is_tuple = matches!(self.resolve_for_tuple_binop(arg_ty).to_type(), Type::Tuple(_));
+                    if arg_is_tuple && self.is_numeric_to_numeric_function_for_auto_spread(fnl) {
+                        return self.infer_auto_spread_type(fnl, arg_ty, loc_f.clone());
+                    }
+                }
+
                 let fnl = self.infer_type_unwrapping(*fun);
                 let callee_t = match callee.len() {
                     0 => Type::Primitive(PType::Unit).into_id_with_location(loc.clone()),
@@ -2053,9 +2349,11 @@ impl InferContext {
         match self.infer_type(e) {
             Ok(t) => t,
             Err(err) => {
+                let failure_ty = Type::Failure
+                    .into_id_with_location(Location::new(e.to_span(), self.file_path.clone()));
                 self.errors.extend(err);
-                Type::Failure
-                    .into_id_with_location(Location::new(e.to_span(), self.file_path.clone()))
+                self.result_memo.insert(e.0, failure_ty);
+                failure_ty
             }
         }
     }

@@ -9,7 +9,7 @@ use mimium_lang::{
     plugin::Plugin,
     runtime::{self, vm},
     utils::{
-        error::{ReportableError, report},
+        error::{ReportableError, RichError, report},
         fileloader,
         metadata::Location,
     },
@@ -181,6 +181,13 @@ pub fn run_error_test(path: &'static str, stereo: bool) -> Vec<Box<dyn Reportabl
         }
         Err(errs) => errs,
     }
+}
+
+pub fn run_error_test_rich(path: &'static str, stereo: bool) -> Vec<RichError> {
+    run_error_test(path, stereo)
+        .into_iter()
+        .map(RichError::from)
+        .collect()
 }
 
 pub fn load_src(path: &'static str) -> (PathBuf, String) {

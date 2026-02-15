@@ -184,6 +184,40 @@ where
     ))
 }
 
+fn split_projection_float_tokens(tokens: Vec<Token>, source: &str) -> Vec<Token> {
+    let mut result: Vec<Token> = Vec::with_capacity(tokens.len());
+    tokens.into_iter().for_each(|token| {
+        let maybe_split = result
+            .last()
+            .filter(|prev| prev.kind == TokenKind::Dot && prev.end() == token.start)
+            .and_then(|_| {
+                if token.kind != TokenKind::Float {
+                    return None;
+                }
+                token.text(source).split_once('.').and_then(|(head, tail)| {
+                    let is_digit_only = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+                    if is_digit_only(head) && is_digit_only(tail) {
+                        Some((head.len(), tail.len()))
+                    } else {
+                        None
+                    }
+                })
+            });
+
+        if let Some((head_len, tail_len)) = maybe_split {
+            let head = Token::new(TokenKind::Int, token.start, head_len);
+            let dot = Token::new(TokenKind::Dot, token.start + head_len, 1);
+            let tail = Token::new(TokenKind::Int, token.start + head_len + 1, tail_len);
+            result.push(head);
+            result.push(dot);
+            result.push(tail);
+        } else {
+            result.push(token);
+        }
+    });
+    result
+}
+
 /// Tokenize the source text into a sequence of tokens
 /// Uses chumsky's error recovery to continue parsing after errors
 pub fn tokenize(source: &str) -> Vec<Token> {
@@ -217,6 +251,7 @@ pub fn tokenize(source: &str) -> Vec<Token> {
 
     match tokens {
         Some(mut tokens) => {
+            tokens = split_projection_float_tokens(tokens, source);
             // Add EOF token
             tokens.push(Token::new(TokenKind::Eof, source.len(), 0));
             tokens
@@ -256,6 +291,29 @@ mod tests {
 
         assert_eq!(tokens[2].kind, TokenKind::Float);
         assert_eq!(tokens[2].text(source), "3.14");
+    }
+
+    #[test]
+    fn test_tokenize_projection_chain_numbers() {
+        let source = "c.0.0";
+        let tokens = tokenize(source);
+
+        let kinds: Vec<_> = tokens
+            .iter()
+            .filter(|t| !matches!(t.kind, TokenKind::Whitespace | TokenKind::Eof))
+            .map(|t| t.kind)
+            .collect();
+
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Ident,
+                TokenKind::Dot,
+                TokenKind::Int,
+                TokenKind::Dot,
+                TokenKind::Int
+            ]
+        );
     }
 
     #[test]

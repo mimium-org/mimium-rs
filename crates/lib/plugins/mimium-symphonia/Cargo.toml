@@ -10,6 +10,10 @@ build = "build.rs"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+dynamic-plugin-abi = []
+
 
 [dependencies]
 

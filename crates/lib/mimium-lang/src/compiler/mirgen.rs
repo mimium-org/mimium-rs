@@ -248,6 +248,196 @@ impl Context {
             _ => None,
         }
     }
+
+    fn is_tuple_arithmetic_binop_label(label: Symbol) -> bool {
+        matches!(
+            label.as_str(),
+            intrinsics::ADD | intrinsics::SUB | intrinsics::MULT | intrinsics::DIV
+        )
+    }
+
+    fn make_tuple_arithmetic_binop_leaf(
+        &mut self,
+        label: Symbol,
+        lhs_val: VPtr,
+        lhs_ty: TypeNodeId,
+        rhs_val: VPtr,
+        rhs_ty: TypeNodeId,
+    ) -> Option<VPtr> {
+        let lhs_scalar = match lhs_ty.to_type() {
+            Type::Primitive(PType::Numeric) => lhs_val,
+            Type::Primitive(PType::Int) => self.push_inst(Instruction::CastItoF(lhs_val)),
+            _ => return None,
+        };
+        let rhs_scalar = match rhs_ty.to_type() {
+            Type::Primitive(PType::Numeric) => rhs_val,
+            Type::Primitive(PType::Int) => self.push_inst(Instruction::CastItoF(rhs_val)),
+            _ => return None,
+        };
+
+        Some(match label.as_str() {
+            intrinsics::ADD => self.push_inst(Instruction::AddF(lhs_scalar, rhs_scalar)),
+            intrinsics::SUB => self.push_inst(Instruction::SubF(lhs_scalar, rhs_scalar)),
+            intrinsics::MULT => self.push_inst(Instruction::MulF(lhs_scalar, rhs_scalar)),
+            intrinsics::DIV => self.push_inst(Instruction::DivF(lhs_scalar, rhs_scalar)),
+            _ => unreachable!("already filtered by is_tuple_arithmetic_binop_label"),
+        })
+    }
+
+    fn make_tuple_arithmetic_binop_intrinsic_rec(
+        &mut self,
+        label: Symbol,
+        lhs_val: VPtr,
+        lhs_ty: TypeNodeId,
+        rhs_val: VPtr,
+        rhs_ty: TypeNodeId,
+        ret_ty: TypeNodeId,
+    ) -> Option<VPtr> {
+        let lhs_tuple = match lhs_ty.to_type() {
+            Type::Tuple(elems) => Some(elems),
+            _ => None,
+        };
+        let rhs_tuple = match rhs_ty.to_type() {
+            Type::Tuple(elems) => Some(elems),
+            _ => None,
+        };
+
+        match ret_ty.to_type() {
+            Type::Tuple(ret_elem_types) => {
+                if lhs_tuple.is_none() && rhs_tuple.is_none() {
+                    return None;
+                }
+
+                let tuple_len = lhs_tuple
+                    .as_ref()
+                    .map_or_else(|| rhs_tuple.as_ref().map_or(0, |v| v.len()), |v| v.len());
+                if let (Some(lhs_elems), Some(rhs_elems)) = (&lhs_tuple, &rhs_tuple)
+                    && lhs_elems.len() != rhs_elems.len()
+                {
+                    return None;
+                }
+                if tuple_len > 16 || ret_elem_types.len() != tuple_len {
+                    return None;
+                }
+
+                let lhs_scalar_slot = if lhs_tuple.is_none() {
+                    let slot = self.push_inst(Instruction::Alloc(lhs_ty));
+                    self.push_inst(Instruction::Store(slot.clone(), lhs_val.clone(), lhs_ty));
+                    Some(slot)
+                } else {
+                    None
+                };
+                let rhs_scalar_slot = if rhs_tuple.is_none() {
+                    let slot = self.push_inst(Instruction::Alloc(rhs_ty));
+                    self.push_inst(Instruction::Store(slot.clone(), rhs_val.clone(), rhs_ty));
+                    Some(slot)
+                } else {
+                    None
+                };
+
+                let tuple_ptr = self.push_inst(Instruction::Alloc(ret_ty));
+                ret_elem_types
+                    .iter()
+                    .enumerate()
+                    .try_for_each(|(idx, ret_elem_ty)| {
+                        let (lhs_elem, lhs_elem_ty) = if let Some(lhs_elems) = &lhs_tuple {
+                            (
+                                self.push_inst(Instruction::GetElement {
+                                    value: lhs_val.clone(),
+                                    ty: lhs_ty,
+                                    tuple_offset: idx as u64,
+                                }),
+                                lhs_elems[idx],
+                            )
+                        } else {
+                            (
+                                self.push_inst(Instruction::Load(
+                                    lhs_scalar_slot
+                                        .as_ref()
+                                        .expect("scalar slot exists when lhs is not tuple")
+                                        .clone(),
+                                    lhs_ty,
+                                )),
+                                lhs_ty,
+                            )
+                        };
+
+                        let (rhs_elem, rhs_elem_ty) = if let Some(rhs_elems) = &rhs_tuple {
+                            (
+                                self.push_inst(Instruction::GetElement {
+                                    value: rhs_val.clone(),
+                                    ty: rhs_ty,
+                                    tuple_offset: idx as u64,
+                                }),
+                                rhs_elems[idx],
+                            )
+                        } else {
+                            (
+                                self.push_inst(Instruction::Load(
+                                    rhs_scalar_slot
+                                        .as_ref()
+                                        .expect("scalar slot exists when rhs is not tuple")
+                                        .clone(),
+                                    rhs_ty,
+                                )),
+                                rhs_ty,
+                            )
+                        };
+
+                        self.make_tuple_arithmetic_binop_intrinsic_rec(
+                            label,
+                            lhs_elem,
+                            lhs_elem_ty,
+                            rhs_elem,
+                            rhs_elem_ty,
+                            *ret_elem_ty,
+                        )
+                        .map(|elem_val| {
+                            let dst = self.push_inst(Instruction::GetElement {
+                                value: tuple_ptr.clone(),
+                                ty: ret_ty,
+                                tuple_offset: idx as u64,
+                            });
+                            self.push_inst(Instruction::Store(dst, elem_val, *ret_elem_ty));
+                        })
+                        .ok_or(())
+                    })
+                    .ok()?;
+
+                Some(tuple_ptr)
+            }
+            _ => {
+                if lhs_tuple.is_some() || rhs_tuple.is_some() {
+                    None
+                } else {
+                    self.make_tuple_arithmetic_binop_leaf(
+                        label, lhs_val, lhs_ty, rhs_val, rhs_ty,
+                    )
+                }
+            }
+        }
+    }
+
+    fn make_tuple_arithmetic_binop_intrinsic(
+        &mut self,
+        label: Symbol,
+        raw_args: &[(VPtr, TypeNodeId)],
+        ret_ty: TypeNodeId,
+    ) -> Option<VPtr> {
+        if raw_args.len() != 2 || !Self::is_tuple_arithmetic_binop_label(label) {
+            return None;
+        }
+
+        self.make_tuple_arithmetic_binop_intrinsic_rec(
+            label,
+            raw_args[0].0.clone(),
+            raw_args[0].1,
+            raw_args[1].0.clone(),
+            raw_args[1].1,
+            ret_ty,
+        )
+    }
+
     fn make_uniop_intrinsic(
         &mut self,
         label: Symbol,
@@ -273,8 +463,14 @@ impl Context {
     fn make_intrinsics(
         &mut self,
         label: Symbol,
+        raw_args: &[(VPtr, TypeNodeId)],
         args: &[(VPtr, TypeNodeId)],
+        ret_ty: TypeNodeId,
     ) -> (Option<VPtr>, Vec<StateSkeleton>) {
+        if let Some(v) = self.make_tuple_arithmetic_binop_intrinsic(label, raw_args, ret_ty) {
+            return (Some(v), vec![]);
+        }
+
         let (inst, states) = match args.len() {
             1 => self.make_uniop_intrinsic(label, args),
             2 => (self.make_binop_intrinsic(label, args), vec![]),
@@ -416,6 +612,7 @@ impl Context {
         ty: TypeNodeId,
         is_global: bool,
     ) {
+        let ty = InferContext::substitute_type(ty);
         let TypedPattern { pat, .. } = pattern;
         let span = pattern.to_span();
         match (pat, ty.to_type()) {
@@ -863,6 +1060,117 @@ impl Context {
         (res, s)
     }
 
+    fn emit_call_to_value(
+        &mut self,
+        f_to_call: &VPtr,
+        raw_args: &[(VPtr, TypeNodeId)],
+        coerced_args: &[(VPtr, TypeNodeId)],
+        ret_ty: TypeNodeId,
+    ) -> (VPtr, Vec<StateSkeleton>) {
+        match f_to_call.as_ref() {
+            Value::Global(v) => match v.as_ref() {
+                Value::Function(idx) => self.emit_fncall(*idx as u64, coerced_args.to_vec(), ret_ty),
+                Value::Register(_) => (
+                    self.push_inst(Instruction::CallIndirect(
+                        v.clone(),
+                        coerced_args.to_vec(),
+                        ret_ty,
+                    )),
+                    vec![],
+                ),
+                _ => panic!("calling non-function global value"),
+            },
+            Value::Register(_) => (
+                self.push_inst(Instruction::CallIndirect(
+                    f_to_call.clone(),
+                    coerced_args.to_vec(),
+                    ret_ty,
+                )),
+                vec![],
+            ),
+            Value::Function(idx) => self.emit_fncall(*idx as u64, coerced_args.to_vec(), ret_ty),
+            Value::ExtFunction(label, _ty) => {
+                if let (Some(res), states) =
+                    self.make_intrinsics(*label, raw_args, coerced_args, ret_ty)
+                {
+                    (res, states)
+                } else {
+                    (
+                        self.push_inst(Instruction::Call(
+                            f_to_call.clone(),
+                            coerced_args.to_vec(),
+                            ret_ty,
+                        )),
+                        vec![],
+                    )
+                }
+            }
+            Value::None => unreachable!(),
+            _ => todo!(),
+        }
+    }
+
+    fn make_auto_spread_call_rec(
+        &mut self,
+        f_to_call: &VPtr,
+        arg_val: VPtr,
+        arg_ty: TypeNodeId,
+        param_ty: TypeNodeId,
+        ret_ty: TypeNodeId,
+    ) -> Option<(VPtr, Vec<StateSkeleton>)> {
+        match (arg_ty.to_type(), ret_ty.to_type()) {
+            (Type::Tuple(arg_elems), Type::Tuple(ret_elems)) => {
+                if arg_elems.len() != ret_elems.len() || arg_elems.len() > 16 {
+                    return None;
+                }
+                let tuple_ptr = self.push_inst(Instruction::Alloc(ret_ty));
+                let states = arg_elems
+                    .iter()
+                    .zip(ret_elems.iter())
+                    .enumerate()
+                    .try_fold(vec![], |mut acc_states, (idx, (arg_elem_ty, ret_elem_ty))| {
+                        let arg_elem = self.push_inst(Instruction::GetElement {
+                            value: arg_val.clone(),
+                            ty: arg_ty,
+                            tuple_offset: idx as u64,
+                        });
+                        let (mapped_elem, child_states) = self.make_auto_spread_call_rec(
+                            f_to_call,
+                            arg_elem,
+                            *arg_elem_ty,
+                            param_ty,
+                            *ret_elem_ty,
+                        )?;
+                        acc_states.extend(child_states);
+
+                        let dst = self.push_inst(Instruction::GetElement {
+                            value: tuple_ptr.clone(),
+                            ty: ret_ty,
+                            tuple_offset: idx as u64,
+                        });
+                        self.push_inst(Instruction::Store(dst, mapped_elem, *ret_elem_ty));
+                        Some(acc_states)
+                    })?;
+                Some((tuple_ptr, states))
+            }
+            (_, Type::Primitive(PType::Numeric)) => {
+                let raw_args = vec![(arg_val.clone(), arg_ty)];
+                let coerced_val = self.coerce_value(arg_val, arg_ty, param_ty);
+                let coerced_args = vec![(coerced_val, param_ty)];
+                Some(self.emit_call_to_value(f_to_call, &raw_args, &coerced_args, ret_ty))
+            }
+            _ => None,
+        }
+    }
+
+    fn auto_spread_param_endpoint_type(param_ty: TypeNodeId) -> Option<TypeNodeId> {
+        match param_ty.to_type() {
+            Type::Primitive(PType::Numeric) => Some(param_ty),
+            Type::Record(fields) if fields.len() == 1 => Some(fields[0].ty),
+            _ => None,
+        }
+    }
+
     fn eval_args(&mut self, args: &[ExprNodeId]) -> (Vec<(VPtr, TypeNodeId)>, Vec<StateSkeleton>) {
         let res = args
             .iter()
@@ -1279,79 +1587,56 @@ impl Context {
                         (f_val.clone(), rt)
                     }
                 } else {
-                    (f_val.clone(), rt)
+                    (f_val.clone(), ty)
                 };
 
                 // Handle parameter packing/unpacking if needed
                 // How can we distinguish when the function takes a single tuple and argument is just a single tuple
-                let (atvvec, arg_states) = if args.len() == 1 {
-                    let (ats, states) = self.eval_args(args);
-                    let (arg_val, ty) = ats.first().unwrap().clone();
+                let (evaluated_args, arg_states) = self.eval_args(args);
+
+                let tuple_map_param_ty = Self::auto_spread_param_endpoint_type(at);
+                let tuple_map_applicable = args.len() == 1
+                    && !needs_monomorphization
+                    && tuple_map_param_ty.is_some()
+                    && matches!(rt.to_type(), Type::Primitive(PType::Numeric));
+
+                if tuple_map_applicable {
+                    let (arg_val, arg_ty) = evaluated_args.first().unwrap().clone();
+                    if matches!(arg_ty.to_type(), Type::Tuple(_))
+                        && matches!(monomorphized_rt.to_type(), Type::Tuple(_))
+                        && let Some((res, state)) = self.make_auto_spread_call_rec(
+                            &f_to_call,
+                            arg_val,
+                            arg_ty,
+                            tuple_map_param_ty.expect("checked above"),
+                            monomorphized_rt,
+                        )
+                    {
+                        return (
+                            res,
+                            monomorphized_rt,
+                            [app_state, arg_states, state].concat(),
+                        );
+                    }
+                }
+
+                let atvvec = if args.len() == 1 {
+                    let (arg_val, ty) = evaluated_args.first().unwrap().clone();
                     if ty.to_type().can_be_unpacked() {
-                        (self.unpack_argument(f_val, arg_val, at, ty), states)
+                        self.unpack_argument(f_val, arg_val, at, ty)
                     } else {
-                        (vec![(arg_val, ty)], states)
+                        vec![(arg_val, ty)]
                     }
                 } else {
-                    self.eval_args(args)
+                    evaluated_args
                 };
 
                 // Coerce arguments based on subtype relationships (union wrapping, int->float, etc.)
+                let raw_atvvec = atvvec.clone();
                 let atvvec = self.coerce_args_for_call(atvvec, at);
 
-                let (res, state) = match f_to_call.as_ref() {
-                    Value::Global(v) => match v.as_ref() {
-                        Value::Function(idx) => {
-                            self.emit_fncall(*idx as u64, atvvec.clone(), monomorphized_rt)
-                        }
-                        Value::Register(_) => (
-                            self.push_inst(Instruction::CallIndirect(
-                                v.clone(),
-                                atvvec.clone(),
-                                monomorphized_rt,
-                            )),
-                            vec![],
-                        ),
-                        _ => {
-                            panic!("calling non-function global value")
-                        }
-                    },
-                    Value::Register(_) => {
-                        //closure
-                        //do not increment state size for closure
-                        (
-                            self.push_inst(Instruction::CallIndirect(
-                                f_to_call.clone(),
-                                atvvec.clone(),
-                                monomorphized_rt,
-                            )),
-                            vec![],
-                        )
-                    }
-                    Value::Function(idx) => {
-                        self.emit_fncall(*idx as u64, atvvec.clone(), monomorphized_rt)
-                    }
-                    Value::ExtFunction(label, _ty) => {
-                        let (res, states) =
-                            if let (Some(res), states) = self.make_intrinsics(*label, &atvvec) {
-                                (res, states)
-                            } else {
-                                // we assume non-builtin external functions are stateless for now
-                                (
-                                    self.push_inst(Instruction::Call(
-                                        f_to_call.clone(),
-                                        atvvec.clone(),
-                                        monomorphized_rt,
-                                    )),
-                                    vec![],
-                                )
-                            };
-                        (res, states)
-                    }
-                    // Value::ExternalClosure(i) => todo!(),
-                    Value::None => unreachable!(),
-                    _ => todo!(),
-                };
+                let (res, state) =
+                    self.emit_call_to_value(&f_to_call, &raw_atvvec, &atvvec, monomorphized_rt);
                 (
                     res,
                     monomorphized_rt,
