@@ -11,7 +11,7 @@ build = "build.rs"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["dynamic-plugin-abi"]
+default = []
 dynamic-plugin-abi = []
 
 
