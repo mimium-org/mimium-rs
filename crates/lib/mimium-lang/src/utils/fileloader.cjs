@@ -19,6 +19,7 @@ const LIB_FILES = [
 ];
 
 const memoryCache = new Map();
+let lastPreloadBaseUrl = "";
 
 function normalizePath(path) {
   if (typeof path !== "string") {
@@ -138,15 +139,17 @@ async function fetchLibFile(baseUrl, filename) {
 }
 
 async function preload_mimium_lib_cache(base_url) {
-  if (isNode) {
-    return;
-  }
   const baseUrlCandidate =
     base_url && base_url.length > 0
       ? base_url
       : `${DEFAULT_GITHUB_LIB_BASE}${DEFAULT_GITHUB_TAG}/lib/`;
   const baseUrl = baseUrlCandidate.endsWith("/") ? baseUrlCandidate : `${baseUrlCandidate}/`;
   globalThis.__mimium_lib_base_url = baseUrl;
+  lastPreloadBaseUrl = baseUrl;
+
+  if (isNode) {
+    return;
+  }
 
   for (const filename of LIB_FILES) {
     const fromMemory = memoryCache.get(filename);
@@ -167,3 +170,20 @@ async function preload_mimium_lib_cache(base_url) {
   }
 }
 exports.preload_mimium_lib_cache = preload_mimium_lib_cache;
+
+function __mimium_test_put_cache(path, content) {
+  putMemoryAliases(path, content);
+}
+exports.__mimium_test_put_cache = __mimium_test_put_cache;
+
+function __mimium_test_clear_cache() {
+  memoryCache.clear();
+  lastPreloadBaseUrl = "";
+  delete globalThis.__mimium_lib_base_url;
+}
+exports.__mimium_test_clear_cache = __mimium_test_clear_cache;
+
+function __mimium_test_get_last_preload_base_url() {
+  return lastPreloadBaseUrl;
+}
+exports.__mimium_test_get_last_preload_base_url = __mimium_test_get_last_preload_base_url;

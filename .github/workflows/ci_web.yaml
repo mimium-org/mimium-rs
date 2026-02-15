@@ -40,5 +40,5 @@ jobs:
         run: wasm-pack test --node
         working-directory: crates/lib/mimium-test
       - name: "mimium-lang test for web"
-        run: wasm-pack test --node
+        run: wasm-pack test --chrome --headless
         working-directory: crates/lib/mimium-lang
