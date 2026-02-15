@@ -335,12 +335,8 @@ fn stmts_from_program_with_prefix(
                 let (imported, mut new_errs) =
                     resolve_include(file_path.to_str().unwrap(), filename.as_str(), span.clone());
                 errs.append(&mut new_errs);
-                let res = stmts_from_program(
-                    imported.program,
-                    imported.resolved_path,
-                    errs,
-                    module_info,
-                );
+                let res =
+                    stmts_from_program(imported.program, imported.resolved_path, errs, module_info);
                 Some(res)
             }
             ProgramStatement::StageDeclaration { stage } => Some(vec![(

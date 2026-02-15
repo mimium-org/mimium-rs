@@ -4,6 +4,12 @@ use thiserror::Error;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
+#[cfg(target_arch = "wasm32")]
+fn github_lib_base_url_from_pkg_version() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    format!("https://raw.githubusercontent.com/mimium-org/mimium-rs/v{version}/lib/")
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("IoError: {0}")]
@@ -107,18 +113,37 @@ pub fn load(canonical_path: &str) -> Result<String, Error> {
 }
 
 #[cfg(target_arch = "wasm32")]
+pub async fn preload_github_stdlib_cache() -> Result<(), String> {
+    let base_url = github_lib_base_url_from_pkg_version();
+    preload_mimium_lib_cache(&base_url)
+        .await
+        .map_err(|e| format!("{:?}", e))
+}
+
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen(module = "/src/utils/fileloader.cjs")]
 extern "C" {
     #[wasm_bindgen(catch)]
     fn read_file(path: &str) -> Result<String, JsValue>;
     #[wasm_bindgen(catch)]
     pub fn get_env(key: &str) -> Result<String, JsValue>;
+    #[wasm_bindgen(catch)]
+    async fn preload_mimium_lib_cache(base_url: &str) -> Result<(), JsValue>;
+    #[wasm_bindgen(catch)]
+    fn __mimium_test_put_cache(path: &str, content: &str) -> Result<(), JsValue>;
+    #[wasm_bindgen(catch)]
+    fn __mimium_test_clear_cache() -> Result<(), JsValue>;
+    #[wasm_bindgen(catch)]
+    fn __mimium_test_get_last_preload_base_url() -> Result<String, JsValue>;
 }
 
 #[cfg(all(test, target_arch = "wasm32"))]
 mod test {
     use super::*;
     use wasm_bindgen_test::*;
+
+    // wasm_bindgen_test_configure!(run_in_browser);
+
     fn setup_file() -> (String, String) {
         let ans = r#"include("error_include_itself.mmm")
 fn dsp(){
@@ -152,4 +177,36 @@ fn dsp(){
 
         assert!(matches!(err, Error::SelfReference { .. }));
     }
+
+    // #[wasm_bindgen_test]
+    // fn browser_cache_alias_resolution_test() {
+    //     __mimium_test_clear_cache().expect("clear cache failed");
+    //     __mimium_test_put_cache("core.mmm", "fn dsp(){0.0}").expect("put cache failed");
+    //
+    //     let a = load("core.mmm").expect("core.mmm not found");
+    //     let b = load("./core.mmm").expect("./core.mmm not found");
+    //     let c = load("lib/core.mmm").expect("lib/core.mmm not found");
+    //     let d = load("/lib/core.mmm").expect("/lib/core.mmm not found");
+    //
+    //     assert_eq!(a, "fn dsp(){0.0}");
+    //     assert_eq!(a, b);
+    //     assert_eq!(a, c);
+    //     assert_eq!(a, d);
+    // }
+    //
+    // #[wasm_bindgen_test(async)]
+    // async fn preload_uses_cargo_version_tag_test() {
+    //     __mimium_test_clear_cache().expect("clear cache failed");
+    //     preload_github_stdlib_cache()
+    //         .await
+    //         .expect("preload should complete");
+    //
+    //     let base_url =
+    //         __mimium_test_get_last_preload_base_url().expect("base url should be available");
+    //     let expected = format!(
+    //         "https://raw.githubusercontent.com/mimium-org/mimium-rs/v{}/lib/",
+    //         env!("CARGO_PKG_VERSION")
+    //     );
+    //     assert_eq!(base_url, expected);
+    // }
 }
