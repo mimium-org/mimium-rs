@@ -1060,6 +1060,117 @@ impl Context {
         (res, s)
     }
 
+    fn emit_call_to_value(
+        &mut self,
+        f_to_call: &VPtr,
+        raw_args: &[(VPtr, TypeNodeId)],
+        coerced_args: &[(VPtr, TypeNodeId)],
+        ret_ty: TypeNodeId,
+    ) -> (VPtr, Vec<StateSkeleton>) {
+        match f_to_call.as_ref() {
+            Value::Global(v) => match v.as_ref() {
+                Value::Function(idx) => self.emit_fncall(*idx as u64, coerced_args.to_vec(), ret_ty),
+                Value::Register(_) => (
+                    self.push_inst(Instruction::CallIndirect(
+                        v.clone(),
+                        coerced_args.to_vec(),
+                        ret_ty,
+                    )),
+                    vec![],
+                ),
+                _ => panic!("calling non-function global value"),
+            },
+            Value::Register(_) => (
+                self.push_inst(Instruction::CallIndirect(
+                    f_to_call.clone(),
+                    coerced_args.to_vec(),
+                    ret_ty,
+                )),
+                vec![],
+            ),
+            Value::Function(idx) => self.emit_fncall(*idx as u64, coerced_args.to_vec(), ret_ty),
+            Value::ExtFunction(label, _ty) => {
+                if let (Some(res), states) =
+                    self.make_intrinsics(*label, raw_args, coerced_args, ret_ty)
+                {
+                    (res, states)
+                } else {
+                    (
+                        self.push_inst(Instruction::Call(
+                            f_to_call.clone(),
+                            coerced_args.to_vec(),
+                            ret_ty,
+                        )),
+                        vec![],
+                    )
+                }
+            }
+            Value::None => unreachable!(),
+            _ => todo!(),
+        }
+    }
+
+    fn make_auto_spread_call_rec(
+        &mut self,
+        f_to_call: &VPtr,
+        arg_val: VPtr,
+        arg_ty: TypeNodeId,
+        param_ty: TypeNodeId,
+        ret_ty: TypeNodeId,
+    ) -> Option<(VPtr, Vec<StateSkeleton>)> {
+        match (arg_ty.to_type(), ret_ty.to_type()) {
+            (Type::Tuple(arg_elems), Type::Tuple(ret_elems)) => {
+                if arg_elems.len() != ret_elems.len() || arg_elems.len() > 16 {
+                    return None;
+                }
+                let tuple_ptr = self.push_inst(Instruction::Alloc(ret_ty));
+                let states = arg_elems
+                    .iter()
+                    .zip(ret_elems.iter())
+                    .enumerate()
+                    .try_fold(vec![], |mut acc_states, (idx, (arg_elem_ty, ret_elem_ty))| {
+                        let arg_elem = self.push_inst(Instruction::GetElement {
+                            value: arg_val.clone(),
+                            ty: arg_ty,
+                            tuple_offset: idx as u64,
+                        });
+                        let (mapped_elem, child_states) = self.make_auto_spread_call_rec(
+                            f_to_call,
+                            arg_elem,
+                            *arg_elem_ty,
+                            param_ty,
+                            *ret_elem_ty,
+                        )?;
+                        acc_states.extend(child_states);
+
+                        let dst = self.push_inst(Instruction::GetElement {
+                            value: tuple_ptr.clone(),
+                            ty: ret_ty,
+                            tuple_offset: idx as u64,
+                        });
+                        self.push_inst(Instruction::Store(dst, mapped_elem, *ret_elem_ty));
+                        Some(acc_states)
+                    })?;
+                Some((tuple_ptr, states))
+            }
+            (_, Type::Primitive(PType::Numeric)) => {
+                let raw_args = vec![(arg_val.clone(), arg_ty)];
+                let coerced_val = self.coerce_value(arg_val, arg_ty, param_ty);
+                let coerced_args = vec![(coerced_val, param_ty)];
+                Some(self.emit_call_to_value(f_to_call, &raw_args, &coerced_args, ret_ty))
+            }
+            _ => None,
+        }
+    }
+
+    fn auto_spread_param_endpoint_type(param_ty: TypeNodeId) -> Option<TypeNodeId> {
+        match param_ty.to_type() {
+            Type::Primitive(PType::Numeric) => Some(param_ty),
+            Type::Record(fields) if fields.len() == 1 => Some(fields[0].ty),
+            _ => None,
+        }
+    }
+
     fn eval_args(&mut self, args: &[ExprNodeId]) -> (Vec<(VPtr, TypeNodeId)>, Vec<StateSkeleton>) {
         let res = args
             .iter()
@@ -1481,79 +1592,51 @@ impl Context {
 
                 // Handle parameter packing/unpacking if needed
                 // How can we distinguish when the function takes a single tuple and argument is just a single tuple
-                let (atvvec, arg_states) = if args.len() == 1 {
-                    let (ats, states) = self.eval_args(args);
-                    let (arg_val, ty) = ats.first().unwrap().clone();
+                let (evaluated_args, arg_states) = self.eval_args(args);
+
+                let tuple_map_param_ty = Self::auto_spread_param_endpoint_type(at);
+                let tuple_map_applicable = args.len() == 1
+                    && !needs_monomorphization
+                    && tuple_map_param_ty.is_some()
+                    && matches!(rt.to_type(), Type::Primitive(PType::Numeric));
+
+                if tuple_map_applicable {
+                    let (arg_val, arg_ty) = evaluated_args.first().unwrap().clone();
+                    if matches!(arg_ty.to_type(), Type::Tuple(_))
+                        && matches!(monomorphized_rt.to_type(), Type::Tuple(_))
+                        && let Some((res, state)) = self.make_auto_spread_call_rec(
+                            &f_to_call,
+                            arg_val,
+                            arg_ty,
+                            tuple_map_param_ty.expect("checked above"),
+                            monomorphized_rt,
+                        )
+                    {
+                        return (
+                            res,
+                            monomorphized_rt,
+                            [app_state, arg_states, state].concat(),
+                        );
+                    }
+                }
+
+                let atvvec = if args.len() == 1 {
+                    let (arg_val, ty) = evaluated_args.first().unwrap().clone();
                     if ty.to_type().can_be_unpacked() {
-                        (self.unpack_argument(f_val, arg_val, at, ty), states)
+                        self.unpack_argument(f_val, arg_val, at, ty)
                     } else {
-                        (vec![(arg_val, ty)], states)
+                        vec![(arg_val, ty)]
                     }
                 } else {
-                    self.eval_args(args)
+                    evaluated_args
                 };
 
                 // Coerce arguments based on subtype relationships (union wrapping, int->float, etc.)
                 let raw_atvvec = atvvec.clone();
                 let atvvec = self.coerce_args_for_call(atvvec, at);
 
-                let (res, state) = match f_to_call.as_ref() {
-                    Value::Global(v) => match v.as_ref() {
-                        Value::Function(idx) => {
-                            self.emit_fncall(*idx as u64, atvvec.clone(), monomorphized_rt)
-                        }
-                        Value::Register(_) => (
-                            self.push_inst(Instruction::CallIndirect(
-                                v.clone(),
-                                atvvec.clone(),
-                                monomorphized_rt,
-                            )),
-                            vec![],
-                        ),
-                        _ => {
-                            panic!("calling non-function global value")
-                        }
-                    },
-                    Value::Register(_) => {
-                        //closure
-                        //do not increment state size for closure
-                        (
-                            self.push_inst(Instruction::CallIndirect(
-                                f_to_call.clone(),
-                                atvvec.clone(),
-                                monomorphized_rt,
-                            )),
-                            vec![],
-                        )
-                    }
-                    Value::Function(idx) => {
-                        self.emit_fncall(*idx as u64, atvvec.clone(), monomorphized_rt)
-                    }
-                    Value::ExtFunction(label, _ty) => {
-                        let (res, states) = if let (Some(res), states) = self.make_intrinsics(
-                            *label,
-                            &raw_atvvec,
-                            &atvvec,
-                            monomorphized_rt,
-                        ) {
-                            (res, states)
-                        } else {
-                            // we assume non-builtin external functions are stateless for now
-                            (
-                                self.push_inst(Instruction::Call(
-                                    f_to_call.clone(),
-                                    atvvec.clone(),
-                                    monomorphized_rt,
-                                )),
-                                vec![],
-                            )
-                        };
-                        (res, states)
-                    }
-                    // Value::ExternalClosure(i) => todo!(),
-                    Value::None => unreachable!(),
-                    _ => todo!(),
-                };
+                let (res, state) =
+                    self.emit_call_to_value(&f_to_call, &raw_atvvec, &atvvec, monomorphized_rt);
                 (
                     res,
                     monomorphized_rt,

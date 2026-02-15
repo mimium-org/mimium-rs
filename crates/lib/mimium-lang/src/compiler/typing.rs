@@ -1159,6 +1159,94 @@ impl InferContext {
         })
     }
 
+    fn is_auto_spread_endpoint_type(&self, ty: TypeNodeId) -> bool {
+        matches!(
+            self.resolve_for_tuple_binop(ty).to_type(),
+            Type::Primitive(PType::Numeric)
+                | Type::Primitive(PType::Int)
+                | Type::Intermediate(_)
+                | Type::TypeScheme(_)
+                | Type::Unknown
+                | Type::Failure
+        )
+    }
+
+    fn auto_spread_param_endpoint_type(&self, param_ty: TypeNodeId) -> Option<TypeNodeId> {
+        let resolved = self.resolve_for_tuple_binop(param_ty);
+        match resolved.to_type() {
+            Type::Record(fields) if fields.len() == 1 => Some(fields[0].ty),
+            _ => Some(resolved),
+        }
+    }
+
+    fn is_numeric_to_numeric_function_for_auto_spread(&self, fn_ty: TypeNodeId) -> bool {
+        let resolved = self.resolve_for_tuple_binop(fn_ty);
+        matches!(
+            resolved.to_type(),
+            Type::Function { arg, ret }
+                if self
+                    .auto_spread_param_endpoint_type(arg)
+                    .is_some_and(|endpoint| self.is_auto_spread_endpoint_type(endpoint))
+                    && self.is_auto_spread_endpoint_type(ret)
+        )
+    }
+
+    fn infer_auto_spread_type_rec(
+        &mut self,
+        arg_ty: TypeNodeId,
+        loc: &Location,
+        errs: &mut Vec<Error>,
+    ) -> Option<TypeNodeId> {
+        let resolved = self.resolve_for_tuple_binop(arg_ty);
+        match resolved.to_type() {
+            Type::Tuple(elems) => {
+                if elems.len() > Self::TUPLE_BINOP_MAX_ARITY {
+                    errs.push(self.make_tuple_binop_arity_error(elems.len(), loc));
+                    return None;
+                }
+                let mapped = elems
+                    .iter()
+                    .filter_map(|elem_ty| self.infer_auto_spread_type_rec(*elem_ty, loc, errs))
+                    .collect::<Vec<_>>();
+                if mapped.len() != elems.len() {
+                    None
+                } else {
+                    Some(Type::Tuple(mapped).into_id_with_location(loc.clone()))
+                }
+            }
+            _ => {
+                if self.is_numeric_scalar_for_tuple_binop(arg_ty) {
+                    Some(numeric!())
+                } else {
+                    errs.push(Error::TypeMismatch {
+                        left: (numeric!(), arg_ty.to_loc()),
+                        right: (arg_ty, arg_ty.to_loc()),
+                    });
+                    None
+                }
+            }
+        }
+    }
+
+    fn infer_auto_spread_type(
+        &mut self,
+        fn_ty: TypeNodeId,
+        arg_ty: TypeNodeId,
+        loc: Location,
+    ) -> Result<TypeNodeId, Vec<Error>> {
+        let mut errs = vec![];
+        let result_ty = self.infer_auto_spread_type_rec(arg_ty, &loc, &mut errs);
+        if !errs.is_empty() {
+            return Err(errs);
+        }
+        result_ty.ok_or_else(|| {
+            vec![Error::TypeMismatch {
+                left: (arg_ty, loc.clone()),
+                right: (arg_ty, loc),
+            }]
+        })
+    }
+
     /// Get the type associated with a constructor name from a union or user-defined sum type
     /// For primitive types in unions like `float | string`, the constructor names are "float" and "string"
     /// For user-defined sum types, returns Unit for payloadless constructors
@@ -2077,6 +2165,15 @@ impl InferContext {
                     }
                 }
 
+                if callee.len() == 1 {
+                    let fnl = self.infer_type_unwrapping(*fun);
+                    let arg_ty = self.infer_type_unwrapping(callee[0]);
+                    let arg_is_tuple = matches!(self.resolve_for_tuple_binop(arg_ty).to_type(), Type::Tuple(_));
+                    if arg_is_tuple && self.is_numeric_to_numeric_function_for_auto_spread(fnl) {
+                        return self.infer_auto_spread_type(fnl, arg_ty, loc_f.clone());
+                    }
+                }
+
                 let fnl = self.infer_type_unwrapping(*fun);
                 let callee_t = match callee.len() {
                     0 => Type::Primitive(PType::Unit).into_id_with_location(loc.clone()),
@@ -2252,9 +2349,11 @@ impl InferContext {
         match self.infer_type(e) {
             Ok(t) => t,
             Err(err) => {
+                let failure_ty = Type::Failure
+                    .into_id_with_location(Location::new(e.to_span(), self.file_path.clone()));
                 self.errors.extend(err);
-                Type::Failure
-                    .into_id_with_location(Location::new(e.to_span(), self.file_path.clone()))
+                self.result_memo.insert(e.0, failure_ty);
+                failure_ty
             }
         }
     }
