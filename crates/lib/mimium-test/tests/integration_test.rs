@@ -756,6 +756,20 @@ fn auto_spread_stateful_nested() {
 }
 
 #[test]
+fn auto_spread_macro_stage() {
+    let res = run_file_test_mono("auto_spread_macro_stage.mmm", 1).unwrap();
+    let ans = vec![5.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_macro_stage() {
+    let res = run_file_test_mono("tuple_binop_macro_stage.mmm", 1).unwrap();
+    let ans = vec![56.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
 fn record_imcomplete() {
     let res = run_file_test_mono("record_imcomplete.mmm", 1).unwrap();
     let ans = vec![701.0]; // 2*(5-7)

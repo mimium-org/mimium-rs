@@ -1,0 +1,14 @@
+#stage(macro)
+fn make(){
+  let a = (1.0, 2.0)
+  let b = (3.0, 4.0)
+  let c = a + b
+  let d = a + 10.0
+  let e = 10.0 + a
+  `{ $(c.0 |> lift_f) + $(c.1 |> lift_f) + $(d.0 |> lift_f) + $(d.1 |> lift_f) + $(e.0 |> lift_f) + $(e.1 |> lift_f) }
+}
+
+#stage(main)
+fn dsp(){
+  make!()
+}

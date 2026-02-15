@@ -1,0 +1,14 @@
+#stage(macro)
+fn inc(x){
+  x + 1.0
+}
+
+fn make(){
+  let p = inc((1.0, 2.0))
+  `{ $(p.0 |> lift_f) + $(p.1 |> lift_f) }
+}
+
+#stage(main)
+fn dsp(){
+  make!()
+}
