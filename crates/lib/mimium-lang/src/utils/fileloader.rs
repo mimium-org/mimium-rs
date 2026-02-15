@@ -4,6 +4,14 @@ use thiserror::Error;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
+#[cfg(target_arch = "wasm32")]
+fn github_lib_base_url_from_pkg_version() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    format!(
+        "https://raw.githubusercontent.com/mimium-org/mimium-rs/v{version}/lib/"
+    )
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("IoError: {0}")]
@@ -107,12 +115,22 @@ pub fn load(canonical_path: &str) -> Result<String, Error> {
 }
 
 #[cfg(target_arch = "wasm32")]
+pub async fn preload_github_stdlib_cache() -> Result<(), String> {
+    let base_url = github_lib_base_url_from_pkg_version();
+    preload_mimium_lib_cache(&base_url)
+        .await
+        .map_err(|e| format!("{:?}", e))
+}
+
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen(module = "/src/utils/fileloader.cjs")]
 extern "C" {
     #[wasm_bindgen(catch)]
     fn read_file(path: &str) -> Result<String, JsValue>;
     #[wasm_bindgen(catch)]
     pub fn get_env(key: &str) -> Result<String, JsValue>;
+    #[wasm_bindgen(catch)]
+    async fn preload_mimium_lib_cache(base_url: &str) -> Result<(), JsValue>;
 }
 
 #[cfg(all(test, target_arch = "wasm32"))]

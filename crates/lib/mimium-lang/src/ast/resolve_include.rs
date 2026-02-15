@@ -91,9 +91,7 @@ mod native_test {
 
         fs::write(
             &root_path,
-            format!(
-                "include(\"./{child_rel}\")\nfn dsp(){{\n    0.0\n}}\n"
-            ),
+            format!("include(\"./{child_rel}\")\nfn dsp(){{\n    0.0\n}}\n"),
         )
         .unwrap();
         let child_source = "fn bad( {\n";

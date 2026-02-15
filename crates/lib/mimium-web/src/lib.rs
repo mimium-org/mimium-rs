@@ -104,6 +104,23 @@ impl Context {
             0
         }));
     }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen]
+    pub async fn init_github_lib_cache(&self) -> Result<(), JsValue> {
+        mimium_lang::utils::fileloader::preload_github_stdlib_cache()
+            .await
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen]
+    pub async fn compile_with_github_lib_cache(&mut self, src: String) -> Result<(), JsValue> {
+        self.init_github_lib_cache().await?;
+        self.compile(src);
+        Ok(())
+    }
+
     #[wasm_bindgen]
     pub fn recompile(&mut self, src: String) {
         let mut ctx = get_default_context();

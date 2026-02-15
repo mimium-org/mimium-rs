@@ -2325,6 +2325,7 @@ dependencies = [
  "string-interner",
  "thiserror 2.0.18",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "wasm-encoder 0.221.3",
  "wasmtime",
