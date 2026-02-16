@@ -33,9 +33,9 @@ mimium-fmt = { workspace = true }
 mimium-language-server = { workspace = true }
 tokio = { version = "1.17.0", features = ["full"] }
 # Plugin dependencies to ensure they're built
-mimium-symphonia = { workspace = true }
-mimium-midi = { workspace = true }
-mimium-guitools = { workspace = true }
+mimium-symphonia = { path = "../../lib/plugins/mimium-symphonia", version = "3.2.0", default-features = false }
+mimium-midi = { path = "../../lib/plugins/mimium-midi", version = "3.2.0", default-features = false }
+mimium-guitools = { path = "../../lib/plugins/mimium-guitools", version = "3.2.0", default-features = false }
 
 [[bin]]
 name = "mimium-cli"
