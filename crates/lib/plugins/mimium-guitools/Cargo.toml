@@ -12,6 +12,10 @@ dist = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+dynamic-plugin-abi = []
+
 [dependencies]
 bincode = { workspace = true }
 egui = "0.29.1"

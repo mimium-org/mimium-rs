@@ -1002,7 +1002,7 @@ fn generate_plugin_exports(input: &PluginExportInput) -> syn::Result<proc_macro2
     let wasm_handle_impl = generate_wasm_handle_impl(&input.wasm_audio_handle);
 
     Ok(quote! {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "dynamic-plugin-abi"))]
         const _: () = {
             use ::std::ffi::{CString, c_char};
             use ::mimium_lang::plugin::loader::{
