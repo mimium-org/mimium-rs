@@ -476,9 +476,16 @@ impl FileRunner {
     fn recompile_file(&self) {
         match fileloader::load(&self.fullpath.to_string_lossy()) {
             Ok(new_content) => {
+                #[cfg(not(target_arch = "wasm32"))]
                 let mode = if self.use_wasm {
                     RunMode::WasmAudio
                 } else {
+                    RunMode::EmitByteCode
+                };
+
+                #[cfg(target_arch = "wasm32")]
+                let mode = {
+                    let _ = self.use_wasm;
                     RunMode::EmitByteCode
                 };
                 let _ = self.tx_compiler.send(CompileRequest {

@@ -157,7 +157,8 @@ mod tests {
         let (_program, parse_errs) = parse_program(included_src, canonical_included_path.clone());
         assert!(!parse_errs.is_empty());
 
-        let errs = parser_errors_to_reportable(included_src, canonical_included_path.clone(), parse_errs);
+        let errs =
+            parser_errors_to_reportable(included_src, canonical_included_path.clone(), parse_errs);
 
         assert!(errs[0].get_message().starts_with("Parse error:"));
         let labels = errs[0].get_labels();
