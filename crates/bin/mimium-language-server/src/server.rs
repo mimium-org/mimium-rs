@@ -19,6 +19,7 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use crate::analysis::{AnalysisRequest, AnalysisResponse, analyze_source};
 use crate::semantic_token::{ImCompleteSemanticToken, LEGEND_TYPE};
 type SrcUri = String;
+const CHANGE_DEBOUNCE_MS: u64 = 200;
 
 /// Construct an [`ExecContext`] with the default set of plugins.
 fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config) -> ExecContext {
@@ -72,6 +73,7 @@ struct Backend {
     analysis_mode: AnalysisMode,
     document_map: DashMap<SrcUri, Rope>,
     semantic_token_map: DashMap<SrcUri, Vec<ImCompleteSemanticToken>>,
+    latest_change_version: DashMap<SrcUri, i32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -206,6 +208,10 @@ impl LanguageServer for Backend {
     }
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         debug!("file opened");
+        self.latest_change_version.insert(
+            params.text_document.uri.to_string(),
+            params.text_document.version,
+        );
         self.on_change(TextDocumentItem {
             uri: params.text_document.uri,
             text: params.text_document.text,
@@ -215,18 +221,36 @@ impl LanguageServer for Backend {
         .await
     }
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        self.on_change(TextDocumentItem {
+        let uri = params.text_document.uri;
+        let uri_str = uri.to_string();
+        let version = params.text_document.version;
+        self.latest_change_version.insert(uri_str.clone(), version);
+
+        let item = TextDocumentItem {
             text: params.content_changes[0].text.clone(),
-            uri: params.text_document.uri,
-            version: params.text_document.version,
+            uri,
+            version,
             language_id: "mimium".to_string(),
-        })
-        .await
+        };
+
+        tokio::time::sleep(Duration::from_millis(CHANGE_DEBOUNCE_MS)).await;
+
+        let is_latest = self
+            .latest_change_version
+            .get(&uri_str)
+            .map(|latest| *latest == version)
+            .unwrap_or(false);
+
+        if is_latest {
+            self.on_change(item).await;
+        }
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         dbg!(&params.text);
         if let Some(text) = params.text {
+            self.latest_change_version
+                .insert(params.text_document.uri.to_string(), -1);
             let item = TextDocumentItem {
                 uri: params.text_document.uri,
                 text,
@@ -240,6 +264,7 @@ impl LanguageServer for Backend {
     }
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri.to_string();
+        self.latest_change_version.remove(&uri);
         self.document_map.remove(&uri);
         self.semantic_token_map.remove(&uri);
         debug!("file closed!");
@@ -424,6 +449,7 @@ pub async fn lib_main() {
         analysis_mode,
         document_map: DashMap::new(),
         semantic_token_map: DashMap::new(),
+        latest_change_version: DashMap::new(),
     })
     .finish();
 
