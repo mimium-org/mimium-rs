@@ -4,10 +4,19 @@
 //! tokio and tower-lsp which don't support wasm32.
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod analysis;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub mod semantic_token;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod server;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod worker;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub use server::lib_main;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use worker::worker_main;

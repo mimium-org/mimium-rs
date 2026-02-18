@@ -10,7 +10,7 @@ use mimium_lang::{
 use tower_lsp::lsp_types::SemanticTokenType;
 
 /// Same as lstp_types::SemanticToken but lacks some fields like token_modifiers_bitset.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImCompleteSemanticToken {
     pub start: usize,
     pub length: usize,

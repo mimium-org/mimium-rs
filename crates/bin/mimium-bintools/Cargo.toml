@@ -46,3 +46,6 @@ path = "src/fmt/bin/main.rs"
 [[bin]]
 name = "mimium-language-server"
 path = "src/language-server/bin/main.rs"
+[[bin]]
+name = "mimium-language-server-worker"
+path = "src/language-server-worker/bin/main.rs"
