@@ -63,9 +63,13 @@ impl Driver for LocalBufferDriver {
         runtime_data: RuntimeData,
         sample_rate: Option<crate::driver::SampleRate>,
     ) -> Option<IoChannelInfo> {
+        let mut runtime_data = runtime_data;
         if let Some(iochannels) = runtime_data.io_channels() {
             self.localbuffer = Vec::with_capacity(iochannels.output as usize * self.times);
             self.samplerate = sample_rate.unwrap_or(SampleRate::from(48000));
+            runtime_data
+                .runtime
+                .set_sample_rate(self.samplerate.get() as f64);
             self.vmdata = Some(runtime_data);
             Some(iochannels)
         } else {

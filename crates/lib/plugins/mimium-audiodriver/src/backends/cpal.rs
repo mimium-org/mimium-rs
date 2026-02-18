@@ -288,6 +288,7 @@ impl Driver for NativeDriver {
         runtime_data: RuntimeData,
         sample_rate: Option<SampleRate>,
     ) -> Option<IoChannelInfo> {
+        let mut runtime_data = runtime_data;
         let host = cpal::default_host();
 
         let iochannels = runtime_data.io_channels();
@@ -316,6 +317,12 @@ impl Driver for NativeDriver {
             let mut receiver = NativeAudioReceiver::new(ichannels, prod);
             self.hardware_ichannels = iconfig.channels as usize;
             let h_ichannels = self.hardware_ichannels;
+            self.sr
+                .0
+                .store(iconfig.sample_rate.0, Ordering::Relaxed);
+            runtime_data
+                .runtime
+                .set_sample_rate(iconfig.sample_rate.0 as f64);
             let in_stream = idevice.build_input_stream(
                 &iconfig,
                 move |data: &[f32], _s: &cpal::InputCallbackInfo| {
@@ -345,6 +352,12 @@ impl Driver for NativeDriver {
             let mut oconfig = Self::init_oconfig(&odevice, sample_rate);
             let h_ochannels = oconfig.channels as usize;
             self.hardware_ochannels = h_ochannels;
+            self.sr
+                .0
+                .store(oconfig.sample_rate.0, Ordering::Relaxed);
+            runtime_data
+                .runtime
+                .set_sample_rate(oconfig.sample_rate.0 as f64);
 
             let mut processor = NativeAudioData::new(
                 cons,

@@ -404,13 +404,12 @@ fn stmts_from_program_with_prefix(
                 target,
             } => {
                 let imported_stmts = if let Some(base_module) = path.segments.first().copied() {
-                    let module_symbol = mangle_qualified_name(module_prefix, base_module);
+                    let module_symbol = mangle_qualified_name(&[], base_module);
                     if module_info.loaded_external_modules.contains(&module_symbol) {
                         vec![]
                     } else {
                         module_info.loaded_external_modules.insert(module_symbol);
-                        let mut new_prefix = module_prefix.to_vec();
-                        new_prefix.push(base_module);
+                        let new_prefix = vec![base_module];
                         let inner_stmts = resolve_external_module(
                             base_module,
                             &file_path,

@@ -281,6 +281,10 @@ impl DspRuntime for WasmDspRuntime {
         self.io_channels
     }
 
+    fn set_sample_rate(&mut self, sample_rate: f64) {
+        WasmDspRuntime::set_sample_rate(self, sample_rate);
+    }
+
     fn try_hot_swap(&mut self, new_program: ProgramPayload) -> bool {
         if let ProgramPayload::WasmModule {
             bytes,

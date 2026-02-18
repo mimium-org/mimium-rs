@@ -56,6 +56,9 @@ pub trait DspRuntime {
     /// I/O channel configuration (None if the dsp function was not found).
     fn io_channels(&self) -> Option<IoChannelInfo>;
 
+    /// Update sample rate for runtimes that keep an internal runtime state.
+    fn set_sample_rate(&mut self, _sample_rate: f64) {}
+
     /// Attempt to hot-swap the running program.
     ///
     /// Takes a type-safe `ProgramPayload` which can be either a native VM
