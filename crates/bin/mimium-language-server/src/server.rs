@@ -208,17 +208,14 @@ impl LanguageServer for Backend {
     }
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         debug!("file opened");
-        self.latest_change_version.insert(
-            params.text_document.uri.to_string(),
-            params.text_document.version,
-        );
-        self.on_change(TextDocumentItem {
-            uri: params.text_document.uri,
-            text: params.text_document.text,
-            version: params.text_document.version,
-            language_id: "mimium".to_string(),
-        })
-        .await
+        let uri = params.text_document.uri;
+        let version = params.text_document.version;
+        let text = params.text_document.text;
+        self.latest_change_version
+            .insert(uri.to_string(), version);
+        self.document_map
+            .insert(uri.to_string(), ropey::Rope::from_str(&text));
+        self.on_change(uri, version).await
     }
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
@@ -226,12 +223,10 @@ impl LanguageServer for Backend {
         let version = params.text_document.version;
         self.latest_change_version.insert(uri_str.clone(), version);
 
-        let item = TextDocumentItem {
-            text: params.content_changes[0].text.clone(),
-            uri,
-            version,
-            language_id: "mimium".to_string(),
-        };
+        if let Some(change) = params.content_changes.first() {
+            self.document_map
+                .insert(uri_str.clone(), ropey::Rope::from_str(&change.text));
+        }
 
         tokio::time::sleep(Duration::from_millis(CHANGE_DEBOUNCE_MS)).await;
 
@@ -242,22 +237,17 @@ impl LanguageServer for Backend {
             .unwrap_or(false);
 
         if is_latest {
-            self.on_change(item).await;
+            self.on_change(uri, version).await;
         }
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
-        dbg!(&params.text);
         if let Some(text) = params.text {
+            self.document_map
+                .insert(params.text_document.uri.to_string(), ropey::Rope::from_str(&text));
             self.latest_change_version
                 .insert(params.text_document.uri.to_string(), -1);
-            let item = TextDocumentItem {
-                uri: params.text_document.uri,
-                text,
-                version: -1,
-                language_id: "mimium".to_string(),
-            };
-            self.on_change(item).await;
+            self.on_change(params.text_document.uri, -1).await;
             _ = self.client.semantic_tokens_refresh().await;
         }
         debug!("file saved!");
@@ -383,14 +373,15 @@ impl Backend {
             .map(|compiler_ctx| analyze_source(src, url, &compiler_ctx.builtin_types))
     }
 
-    async fn on_change(&self, params: TextDocumentItem) {
-        debug!("{}", &params.version);
-        let rope = ropey::Rope::from_str(&params.text);
-        self.document_map
-            .insert(params.uri.to_string(), rope.clone());
+    async fn on_change(&self, uri: Url, version: i32) {
+        debug!("{}", version);
+        let text = match self.document_map.get(uri.as_str()) {
+            Some(rope) => rope.to_string(),
+            None => return,
+        };
 
         let analysis = match self.analysis_mode {
-            AnalysisMode::Worker => match self.compile_via_worker(&params.text, params.uri.clone()).await {
+            AnalysisMode::Worker => match self.compile_via_worker(&text, uri.clone()).await {
                 Ok(analysis) => analysis,
                 Err(message) => {
                     self
@@ -405,7 +396,7 @@ impl Backend {
                     return;
                 }
             },
-            AnalysisMode::InProcess => match self.compile_in_process(&params.text, params.uri.clone()) {
+            AnalysisMode::InProcess => match self.compile_in_process(&text, uri.clone()) {
                 Some(analysis) => analysis,
                 None => {
                     self
@@ -421,12 +412,12 @@ impl Backend {
         };
 
         self.semantic_token_map
-            .insert(params.uri.to_string(), analysis.semantic_tokens);
+            .insert(uri.to_string(), analysis.semantic_tokens);
         self.client
             .publish_diagnostics(
-                params.uri.clone(),
+                uri,
                 analysis.diagnostics,
-                Some(params.version),
+                Some(version),
             )
             .await;
     }

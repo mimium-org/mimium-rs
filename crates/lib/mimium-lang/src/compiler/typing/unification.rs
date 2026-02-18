@@ -15,8 +15,8 @@ pub(crate) enum Relation {
 #[derive(PartialEq, Eq, Debug)]
 pub(crate) enum Error {
     TypeMismatch {
-        left: TypeNodeId,
-        right: TypeNodeId,
+        left: (TypeNodeId, Span),
+        right: (TypeNodeId, Span),
     },
     LengthMismatch {
         left: (Vec<TypeNodeId>, Span),
@@ -99,7 +99,7 @@ fn unify_vec(a1: &[TypeNodeId], a2: &[TypeNodeId]) -> Result<Relation, Vec<Error
 fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Error>> {
     log::trace!("unify_args {} and {}", t1.to_type(), t2.to_type());
     let loc1 = t1.to_span(); //todo file
-    let loc2 = t1.to_span();
+    let loc2 = t2.to_span();
     let t1r = t1.get_root();
     let t2r = t2.get_root();
     let res = match &(t1r.to_type(), t2r.to_type()) {
@@ -190,8 +190,8 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
                 }
             }
             return Err(vec![Error::TypeMismatch {
-                left: t1,
-                right: t2,
+                left: (t1, loc1.clone()),
+                right: (t2, loc2.clone()),
             }]);
         }
         (_, _) => unify_types(t1, t2)?,
@@ -203,7 +203,7 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
 /// If the result is `Relation::Subtype`, it means "t1 is subtype of t2".
 pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Error>> {
     let loc1 = t1.to_span(); //todo file
-    let loc2 = t1.to_span();
+    let loc2 = t2.to_span();
 
     let t1r = t1.get_root();
     let t2r = t2.get_root();
@@ -273,8 +273,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 Relation::Identical => Relation::Identical,
                 _ => {
                     return Err(vec![Error::TypeMismatch {
-                        left: *a1,
-                        right: *a2,
+                        left: (*a1, loc1.clone()),
+                        right: (*a2, loc2.clone()),
                     }]);
                 }
             }
@@ -425,8 +425,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             match (arg_res, ret_res) {
                 (Ok(Relation::Subtype), Ok(_)) | (Ok(_), Ok(Relation::Supertype)) => {
                     return Err(vec![Error::TypeMismatch {
-                        left: t1,
-                        right: t2,
+                        left: (t1, loc1.clone()),
+                        right: (t2, loc2.clone()),
                     }]);
                 }
                 (Ok(Relation::Identical), Ok(Relation::Identical)) => Relation::Identical,
@@ -467,8 +467,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             // Two unions are identical if they have the same members (in any order)
             if union_types1.len() != union_types2.len() {
                 return Err(vec![Error::TypeMismatch {
-                    left: t1,
-                    right: t2,
+                    left: (t1, loc1.clone()),
+                    right: (t2, loc2.clone()),
                 }]);
             }
             // Check that each member of union1 matches exactly one member of union2
@@ -481,8 +481,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 Relation::Identical
             } else {
                 return Err(vec![Error::TypeMismatch {
-                    left: t1,
-                    right: t2,
+                    left: (t1, loc1.clone()),
+                    right: (t2, loc2.clone()),
                 }]);
             }
         }
@@ -495,8 +495,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 }
             }
             return Err(vec![Error::TypeMismatch {
-                left: t1,
-                right: t2,
+                left: (t1, loc1.clone()),
+                right: (t2, loc2.clone()),
             }]);
         }
         (Type::Union(union_types), _t) => {
@@ -509,8 +509,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 return Ok(Relation::Supertype);
             }
             return Err(vec![Error::TypeMismatch {
-                left: t1,
-                right: t2,
+                left: (t1, loc1.clone()),
+                right: (t2, loc2.clone()),
             }]);
         }
         // UserSum type support: nominal typing — same name means identical type
@@ -519,8 +519,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 Relation::Identical
             } else {
                 return Err(vec![Error::TypeMismatch {
-                    left: t1,
-                    right: t2,
+                    left: (t1, loc1.clone()),
+                    right: (t2, loc2.clone()),
                 }]);
             }
         }
@@ -535,8 +535,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 Ok(_) => Relation::Identical,
                 Err(_) => {
                     return Err(vec![Error::TypeMismatch {
-                        left: t1,
-                        right: t2,
+                        left: (t1, loc1.clone()),
+                        right: (t2, loc2.clone()),
                     }]);
                 }
             }
@@ -547,20 +547,67 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 Ok(_) => Relation::Identical,
                 Err(_) => {
                     return Err(vec![Error::TypeMismatch {
-                        left: t1,
-                        right: t2,
+                        left: (t1, loc1.clone()),
+                        right: (t2, loc2.clone()),
                     }]);
                 }
             }
         }
         (_p1, _p2) => {
             return Err(vec![Error::TypeMismatch {
-                left: t1,
-                right: t2,
+                left: (t1, loc1),
+                right: (t2, loc2),
             }]);
         }
     };
     log::trace!("unified {} and {}:{:?}", t1.to_type(), t2.to_type(), res);
 
     Ok(res)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{Error, unify_types};
+    use crate::{
+        types::{PType, Type},
+        utils::metadata::Location,
+    };
+
+    #[test]
+    fn length_mismatch_keeps_both_spans() {
+        let left_span = 10..20;
+        let right_span = 30..40;
+
+        let left_elem = Type::Primitive(PType::Numeric).into_id_with_location(Location::new(
+            left_span.clone(),
+            PathBuf::from("left.mmm"),
+        ));
+        let right_elem = Type::Primitive(PType::Numeric).into_id_with_location(Location::new(
+            right_span.clone(),
+            PathBuf::from("right.mmm"),
+        ));
+
+        let left = Type::Tuple(vec![left_elem]).into_id_with_location(Location::new(
+            left_span.clone(),
+            PathBuf::from("left.mmm"),
+        ));
+        let right = Type::Tuple(vec![right_elem, right_elem]).into_id_with_location(Location::new(
+            right_span.clone(),
+            PathBuf::from("right.mmm"),
+        ));
+
+        let err = unify_types(left, right).expect_err("expected tuple length mismatch");
+        let Some(Error::LengthMismatch {
+            left: (_, lspan),
+            right: (_, rspan),
+        }) = err.first()
+        else {
+            panic!("unexpected error variant");
+        };
+
+        assert_eq!(lspan, &left_span);
+        assert_eq!(rspan, &right_span);
+    }
 }
