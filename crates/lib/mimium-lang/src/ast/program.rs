@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -216,6 +216,8 @@ pub struct ModuleInfo {
     pub type_declarations: TypeDeclarationMap,
     /// Type aliases for simple type aliases
     pub type_aliases: TypeAliasMap,
+    /// Loaded external modules to avoid duplicate loading when resolving `use` statements
+    pub loaded_external_modules: HashSet<Symbol>,
 }
 
 impl ModuleInfo {
@@ -328,6 +330,13 @@ fn stmts_from_program_with_prefix(
                 )])
             }
             ProgramStatement::GlobalStatement(statement) => {
+                if !module_prefix.is_empty() {
+                    collect_statement_bindings(&statement).into_iter().for_each(|name| {
+                        module_info
+                            .module_context_map
+                            .insert(name, module_prefix.to_vec());
+                    });
+                }
                 Some(vec![(statement, Location::new(span, file_path.clone()))])
             }
             ProgramStatement::Comment(_) | ProgramStatement::DocComment(_) => None,
@@ -348,6 +357,9 @@ fn stmts_from_program_with_prefix(
                 name,
                 body,
             } => {
+                let module_symbol = mangle_qualified_name(module_prefix, name);
+                module_info.loaded_external_modules.insert(module_symbol);
+
                 // Flatten module contents with qualified names
                 let mut new_prefix = module_prefix.to_vec();
                 new_prefix.push(name);
@@ -391,8 +403,35 @@ fn stmts_from_program_with_prefix(
                 path,
                 target,
             } => {
+                let imported_stmts = if let Some(base_module) = path.segments.first().copied() {
+                    let module_symbol = mangle_qualified_name(module_prefix, base_module);
+                    if module_info.loaded_external_modules.contains(&module_symbol) {
+                        vec![]
+                    } else {
+                        module_info.loaded_external_modules.insert(module_symbol);
+                        let mut new_prefix = module_prefix.to_vec();
+                        new_prefix.push(base_module);
+                        let inner_stmts = resolve_external_module(
+                            base_module,
+                            &file_path,
+                            span.clone(),
+                            errs,
+                            &new_prefix,
+                            module_info,
+                        );
+                        let module_loc = Location::new(span.clone(), file_path.clone());
+                        let maindecl = (
+                            Statement::DeclareStage(StageKind::Main),
+                            module_loc.clone(),
+                        );
+                        [vec![maindecl.clone()], inner_stmts, vec![maindecl]].concat()
+                    }
+                } else {
+                    vec![]
+                };
+
                 process_use_statement(&visibility, &path, &target, module_prefix, module_info);
-                None
+                (!imported_stmts.is_empty()).then_some(imported_stmts)
             }
             ProgramStatement::TypeAlias {
                 visibility,
@@ -448,6 +487,33 @@ fn stmts_from_program_with_prefix(
         })
         .flatten()
         .collect()
+}
+
+fn collect_pattern_bindings(pat: &crate::pattern::Pattern, out: &mut Vec<Symbol>) {
+    match pat {
+        crate::pattern::Pattern::Single(name) => out.push(*name),
+        crate::pattern::Pattern::Tuple(items) => {
+            items.iter().for_each(|p| collect_pattern_bindings(p, out));
+        }
+        crate::pattern::Pattern::Record(fields) => {
+            fields
+                .iter()
+                .for_each(|(_, p)| collect_pattern_bindings(p, out));
+        }
+        crate::pattern::Pattern::Placeholder | crate::pattern::Pattern::Error => {}
+    }
+}
+
+fn collect_statement_bindings(stmt: &Statement) -> Vec<Symbol> {
+    match stmt {
+        Statement::Let(typed_pat, _) => {
+            let mut symbols = vec![];
+            collect_pattern_bindings(&typed_pat.pat, &mut symbols);
+            symbols
+        }
+        Statement::LetRec(id, _) => vec![id.id],
+        _ => vec![],
+    }
 }
 
 /// Process a use statement, registering aliases in module_info.

@@ -66,6 +66,23 @@ fn get_parent_dir(current_file: &str) -> Result<PathBuf, Error> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn find_workspace_lib_path(current_file_or_dir: &str, relpath: &std::path::Path) -> Option<PathBuf> {
+    let parent = get_parent_dir(current_file_or_dir).ok()?;
+    parent.ancestors().find_map(|ancestor| {
+        let candidate = ancestor.join("lib").join(relpath);
+        candidate.exists().then(|| candidate.canonicalize().ok()).flatten()
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn find_workspace_lib_path(
+    _current_file_or_dir: &str,
+    _relpath: &std::path::Path,
+) -> Option<PathBuf> {
+    None
+}
+
 /// Used for resolving include.
 /// If the filename is given it searches ~/.mimium/lib first. If not found, tries to find in relative path.
 /// If the relative path is given explicitly, do not find in standard library path.
@@ -81,6 +98,12 @@ pub fn load_mmmlibfile(current_file_or_dir: &str, path: &str) -> Result<(String,
             // if not found in the stdlib, continue to find in a relative path.
         }
     };
+    if search_default_lib
+        && let Some(cpath) = find_workspace_lib_path(current_file_or_dir, path)
+        && let Ok(content) = load(&cpath.to_string_lossy())
+    {
+        return Ok((content, cpath));
+    }
     let cpath = get_canonical_path(current_file_or_dir, &path.to_string_lossy())?;
     if current_file_or_dir == cpath.to_string_lossy() {
         return Err(Error::SelfReference {

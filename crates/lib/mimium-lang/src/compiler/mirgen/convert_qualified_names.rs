@@ -488,6 +488,21 @@ fn convert_var(ctx: &mut ResolveContext, name: Symbol, loc: Location) -> ExprNod
         return Expr::Var(mangled).into_id(loc);
     }
 
+    // Try relative resolution from current module context (for intra-module references)
+    if !ctx.current_module_context.is_empty() {
+        let mut relative_path = ctx.current_module_context.clone();
+        relative_path.push(name);
+        let relative_mangled = relative_path
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("$")
+            .to_symbol();
+        if ctx.name_exists(&relative_mangled) {
+            return Expr::Var(relative_mangled).into_id(loc);
+        }
+    }
+
     // Keep as-is - will be resolved by type checker (local variable or error)
     Expr::Var(name).into_id(loc)
 }
