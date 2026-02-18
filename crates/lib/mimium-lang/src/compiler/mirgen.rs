@@ -410,9 +410,7 @@ impl Context {
                 if lhs_tuple.is_some() || rhs_tuple.is_some() {
                     None
                 } else {
-                    self.make_tuple_arithmetic_binop_leaf(
-                        label, lhs_val, lhs_ty, rhs_val, rhs_ty,
-                    )
+                    self.make_tuple_arithmetic_binop_leaf(label, lhs_val, lhs_ty, rhs_val, rhs_ty)
                 }
             }
         }
@@ -1069,7 +1067,9 @@ impl Context {
     ) -> (VPtr, Vec<StateSkeleton>) {
         match f_to_call.as_ref() {
             Value::Global(v) => match v.as_ref() {
-                Value::Function(idx) => self.emit_fncall(*idx as u64, coerced_args.to_vec(), ret_ty),
+                Value::Function(idx) => {
+                    self.emit_fncall(*idx as u64, coerced_args.to_vec(), ret_ty)
+                }
                 Value::Register(_) => (
                     self.push_inst(Instruction::CallIndirect(
                         v.clone(),
@@ -1128,29 +1128,32 @@ impl Context {
                     .iter()
                     .zip(ret_elems.iter())
                     .enumerate()
-                    .try_fold(vec![], |mut acc_states, (idx, (arg_elem_ty, ret_elem_ty))| {
-                        let arg_elem = self.push_inst(Instruction::GetElement {
-                            value: arg_val.clone(),
-                            ty: arg_ty,
-                            tuple_offset: idx as u64,
-                        });
-                        let (mapped_elem, child_states) = self.make_auto_spread_call_rec(
-                            f_to_call,
-                            arg_elem,
-                            *arg_elem_ty,
-                            param_ty,
-                            *ret_elem_ty,
-                        )?;
-                        acc_states.extend(child_states);
+                    .try_fold(
+                        vec![],
+                        |mut acc_states, (idx, (arg_elem_ty, ret_elem_ty))| {
+                            let arg_elem = self.push_inst(Instruction::GetElement {
+                                value: arg_val.clone(),
+                                ty: arg_ty,
+                                tuple_offset: idx as u64,
+                            });
+                            let (mapped_elem, child_states) = self.make_auto_spread_call_rec(
+                                f_to_call,
+                                arg_elem,
+                                *arg_elem_ty,
+                                param_ty,
+                                *ret_elem_ty,
+                            )?;
+                            acc_states.extend(child_states);
 
-                        let dst = self.push_inst(Instruction::GetElement {
-                            value: tuple_ptr.clone(),
-                            ty: ret_ty,
-                            tuple_offset: idx as u64,
-                        });
-                        self.push_inst(Instruction::Store(dst, mapped_elem, *ret_elem_ty));
-                        Some(acc_states)
-                    })?;
+                            let dst = self.push_inst(Instruction::GetElement {
+                                value: tuple_ptr.clone(),
+                                ty: ret_ty,
+                                tuple_offset: idx as u64,
+                            });
+                            self.push_inst(Instruction::Store(dst, mapped_elem, *ret_elem_ty));
+                            Some(acc_states)
+                        },
+                    )?;
                 Some((tuple_ptr, states))
             }
             (_, Type::Primitive(PType::Numeric)) => {

@@ -120,7 +120,6 @@ impl Context {
             .map_err(|e| JsValue::from_str(&e))
     }
 
-
     fn recompile_inner(&mut self, src: String) {
         let mut ctx = get_default_context();
         let driver = LocalBufferDriver::new(self.config.buffer_size as usize);
@@ -138,7 +137,6 @@ impl Context {
             }
         }
     }
-
 
     #[wasm_bindgen]
     pub async fn recompile(&mut self, src: String) -> Result<(), JsValue> {

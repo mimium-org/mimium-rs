@@ -291,19 +291,26 @@ impl StageInterpreter {
             (Value::Tuple(lhs_elems), rhs_scalar) => {
                 let mapped = lhs_elems
                     .into_iter()
-                    .map(|l| self.try_auto_spread_binary_apply(ctx, fv.clone(), l, rhs_scalar.clone()))
+                    .map(|l| {
+                        self.try_auto_spread_binary_apply(ctx, fv.clone(), l, rhs_scalar.clone())
+                    })
                     .collect::<Option<Vec<_>>>()?;
                 Some(Value::Tuple(mapped))
             }
             (lhs_scalar, Value::Tuple(rhs_elems)) => {
                 let mapped = rhs_elems
                     .into_iter()
-                    .map(|r| self.try_auto_spread_binary_apply(ctx, fv.clone(), lhs_scalar.clone(), r))
+                    .map(|r| {
+                        self.try_auto_spread_binary_apply(ctx, fv.clone(), lhs_scalar.clone(), r)
+                    })
                     .collect::<Option<Vec<_>>>()?;
                 Some(Value::Tuple(mapped))
             }
             (lhs_scalar, rhs_scalar) => {
-                let args = vec![(lhs_scalar, Type::Unknown.into_id()), (rhs_scalar, Type::Unknown.into_id())];
+                let args = vec![
+                    (lhs_scalar, Type::Unknown.into_id()),
+                    (rhs_scalar, Type::Unknown.into_id()),
+                ];
                 self.apply_closure_or_external(ctx, fv, args)
             }
         }
@@ -452,11 +459,8 @@ impl StageInterpreter {
                     .collect::<Vec<_>>();
 
                 if args.len() == 1
-                    && let Some(spread_res) = self.try_auto_spread_unary_apply(
-                        ctx,
-                        fv.clone(),
-                        args[0].0.clone(),
-                    )
+                    && let Some(spread_res) =
+                        self.try_auto_spread_unary_apply(ctx, fv.clone(), args[0].0.clone())
                 {
                     return spread_res;
                 }

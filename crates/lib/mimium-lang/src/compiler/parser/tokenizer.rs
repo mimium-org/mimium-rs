@@ -195,7 +195,8 @@ fn split_projection_float_tokens(tokens: Vec<Token>, source: &str) -> Vec<Token>
                     return None;
                 }
                 token.text(source).split_once('.').and_then(|(head, tail)| {
-                    let is_digit_only = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+                    let is_digit_only =
+                        |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
                     if is_digit_only(head) && is_digit_only(tail) {
                         Some((head.len(), tail.len()))
                     } else {

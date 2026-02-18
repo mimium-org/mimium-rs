@@ -1126,11 +1126,7 @@ impl InferContext {
                     });
                     valid = false;
                 }
-                if valid {
-                    Some(numeric!())
-                } else {
-                    None
-                }
+                if valid { Some(numeric!()) } else { None }
             }
         }
     }
@@ -1142,12 +1138,7 @@ impl InferContext {
         loc: Location,
     ) -> Result<TypeNodeId, Vec<Error>> {
         let mut errs = vec![];
-        let result_ty = self.infer_tuple_arithmetic_binop_type_rec(
-            lhs_ty,
-            rhs_ty,
-            &loc,
-            &mut errs,
-        );
+        let result_ty = self.infer_tuple_arithmetic_binop_type_rec(lhs_ty, rhs_ty, &loc, &mut errs);
         if !errs.is_empty() {
             return Err(errs);
         }
@@ -2147,9 +2138,7 @@ impl InferContext {
             }
             Expr::Apply(fun, callee) => {
                 let loc_f = fun.to_location();
-                if callee.len() == 2
-                    && self.try_get_tuple_arithmetic_binop_label(*fun).is_some()
-                {
+                if callee.len() == 2 && self.try_get_tuple_arithmetic_binop_label(*fun).is_some() {
                     let lhs_ty = self.infer_type_unwrapping(callee[0]);
                     let rhs_ty = self.infer_type_unwrapping(callee[1]);
                     let lhs_is_tuple = matches!(
@@ -2161,14 +2150,21 @@ impl InferContext {
                         Type::Tuple(_)
                     );
                     if lhs_is_tuple || rhs_is_tuple {
-                        return self.infer_tuple_arithmetic_binop_type(lhs_ty, rhs_ty, loc_f.clone());
+                        return self.infer_tuple_arithmetic_binop_type(
+                            lhs_ty,
+                            rhs_ty,
+                            loc_f.clone(),
+                        );
                     }
                 }
 
                 if callee.len() == 1 {
                     let fnl = self.infer_type_unwrapping(*fun);
                     let arg_ty = self.infer_type_unwrapping(callee[0]);
-                    let arg_is_tuple = matches!(self.resolve_for_tuple_binop(arg_ty).to_type(), Type::Tuple(_));
+                    let arg_is_tuple = matches!(
+                        self.resolve_for_tuple_binop(arg_ty).to_type(),
+                        Type::Tuple(_)
+                    );
                     if arg_is_tuple && self.is_numeric_to_numeric_function_for_auto_spread(fnl) {
                         return self.infer_auto_spread_type(fnl, arg_ty, loc_f.clone());
                     }

@@ -1,21 +1,25 @@
 use std::path::PathBuf;
+use std::process::Stdio;
+use std::time::Duration;
 
 use mimium_lang::interner::Symbol;
 
 use dashmap::DashMap;
 use log::debug;
-use mimium_lang::compiler::mirgen;
-use mimium_lang::compiler::parser;
-use mimium_lang::interner::{ExprNodeId, TypeNodeId};
+use mimium_lang::interner::TypeNodeId;
 use mimium_lang::plugin::Plugin;
-use mimium_lang::utils::error::ReportableError;
 use mimium_lang::{Config, ExecContext};
 use ropey::Rope;
-use crate::semantic_token::{ImCompleteSemanticToken, LEGEND_TYPE, ParseResult, parse};
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
 use tower_lsp::jsonrpc::{Error, ErrorCode, Result};
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
+
+use crate::analysis::{AnalysisRequest, AnalysisResponse, analyze_source};
+use crate::semantic_token::{ImCompleteSemanticToken, LEGEND_TYPE};
 type SrcUri = String;
+const CHANGE_DEBOUNCE_MS: u64 = 200;
 
 /// Construct an [`ExecContext`] with the default set of plugins.
 fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config) -> ExecContext {
@@ -36,8 +40,8 @@ fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config) ->
 
     ctx
 }
-struct MimiumCtx {
-    builtin_types: Vec<(Symbol, TypeNodeId)>,
+pub(crate) struct MimiumCtx {
+    pub(crate) builtin_types: Vec<(Symbol, TypeNodeId)>,
 }
 impl MimiumCtx {
     fn new() -> Self {
@@ -58,18 +62,33 @@ impl std::fmt::Debug for MimiumCtx {
     }
 }
 
+pub(crate) fn get_default_compiler_context() -> MimiumCtx {
+    MimiumCtx::new()
+}
+
 #[derive(Debug)]
 struct Backend {
     client: Client,
-    compiler_ctx: MimiumCtx,
-    ast_map: DashMap<SrcUri, ExprNodeId>,
-    // semantic_map: DashMap<SrcUri, Semantic>,
+    compiler_ctx: Option<MimiumCtx>,
+    analysis_mode: AnalysisMode,
     document_map: DashMap<SrcUri, Rope>,
     semantic_token_map: DashMap<SrcUri, Vec<ImCompleteSemanticToken>>,
-    // Parser state
-    parser_arena_map: DashMap<SrcUri, parser::GreenNodeArena>,
-    parser_root_map: DashMap<SrcUri, parser::GreenNodeId>,
-    parser_tokens_map: DashMap<SrcUri, Vec<parser::Token>>,
+    latest_change_version: DashMap<SrcUri, i32>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AnalysisMode {
+    Worker,
+    InProcess,
+}
+
+impl AnalysisMode {
+    fn from_env() -> Self {
+        match std::env::var("MIMIUM_LS_ANALYSIS_MODE") {
+            Ok(value) if value.eq_ignore_ascii_case("inprocess") => Self::InProcess,
+            _ => Self::Worker,
+        }
+    }
 }
 
 fn server_error(message: &str) -> Error {
@@ -189,6 +208,10 @@ impl LanguageServer for Backend {
     }
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         debug!("file opened");
+        self.latest_change_version.insert(
+            params.text_document.uri.to_string(),
+            params.text_document.version,
+        );
         self.on_change(TextDocumentItem {
             uri: params.text_document.uri,
             text: params.text_document.text,
@@ -198,18 +221,36 @@ impl LanguageServer for Backend {
         .await
     }
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        self.on_change(TextDocumentItem {
+        let uri = params.text_document.uri;
+        let uri_str = uri.to_string();
+        let version = params.text_document.version;
+        self.latest_change_version.insert(uri_str.clone(), version);
+
+        let item = TextDocumentItem {
             text: params.content_changes[0].text.clone(),
-            uri: params.text_document.uri,
-            version: params.text_document.version,
+            uri,
+            version,
             language_id: "mimium".to_string(),
-        })
-        .await
+        };
+
+        tokio::time::sleep(Duration::from_millis(CHANGE_DEBOUNCE_MS)).await;
+
+        let is_latest = self
+            .latest_change_version
+            .get(&uri_str)
+            .map(|latest| *latest == version)
+            .unwrap_or(false);
+
+        if is_latest {
+            self.on_change(item).await;
+        }
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         dbg!(&params.text);
         if let Some(text) = params.text {
+            self.latest_change_version
+                .insert(params.text_document.uri.to_string(), -1);
             let item = TextDocumentItem {
                 uri: params.text_document.uri,
                 text,
@@ -223,12 +264,9 @@ impl LanguageServer for Backend {
     }
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri.to_string();
-        self.ast_map.remove(&uri);
+        self.latest_change_version.remove(&uri);
         self.document_map.remove(&uri);
         self.semantic_token_map.remove(&uri);
-        self.parser_arena_map.remove(&uri);
-        self.parser_root_map.remove(&uri);
-        self.parser_tokens_map.remove(&uri);
         debug!("file closed!");
     }
 
@@ -278,132 +316,144 @@ impl LanguageServer for Backend {
         }]))
     }
 }
-fn diagnostic_from_error(
-    error: Box<dyn ReportableError>,
-    url: Url,
-    rope: &Rope,
-) -> Option<Diagnostic> {
-    let severity = DiagnosticSeverity::ERROR;
-    let main_message = error.get_message();
-    let labels = error.get_labels();
-    let (mainloc, _mainmsg) = labels.first()?;
 
-    let span = &mainloc.span;
-    let start_position = offset_to_position(span.start, rope)?;
-    let end_position = offset_to_position(span.end, rope)?;
-    let related_informations = labels
-        .iter()
-        .filter_map(|(loc, msg)| {
-            let span = &loc.span;
-            let start_position = offset_to_position(span.start, rope)?;
-            let end_position = offset_to_position(span.end, rope)?;
-            let uri = if loc.path.to_string_lossy() != "" {
-                Url::from_file_path(loc.path.clone()).unwrap_or(url.clone())
-            } else {
-                url.clone()
-            };
-            Some(DiagnosticRelatedInformation {
-                location: Location {
-                    uri,
-                    range: Range::new(start_position, end_position),
-                },
-                message: msg.clone(),
-            })
-        })
-        .collect();
-    Some(Diagnostic::new(
-        Range::new(start_position, end_position),
-        Some(severity),
-        None,
-        None,
-        main_message.clone(),
-        Some(related_informations),
-        None,
-    ))
-}
 impl Backend {
-    fn compile(&self, src: &str, url: Url) -> Vec<Diagnostic> {
-        let rope = ropey::Rope::from_str(src);
-
-        // Run parser for IDE features
-        let parser_tokens = parser::tokenize(src);
-        let parser_preparsed = parser::preparse(&parser_tokens);
-        let (parser_root, parser_arena, parser_tokens, _parser_errors) =
-            parser::parse_cst(parser_tokens, &parser_preparsed);
-
-        // Generate semantic tokens from parser by traversing Green Tree
-        let semantic_tokens =
-            crate::semantic_token::tokens_from_green(parser_root, &parser_arena, &parser_tokens);
-        self.semantic_token_map
-            .insert(url.to_string(), semantic_tokens);
-
-        // Store parser results
-        self.parser_tokens_map
-            .insert(url.to_string(), parser_tokens);
-        self.parser_root_map.insert(url.to_string(), parser_root);
-        self.parser_arena_map.insert(url.to_string(), parser_arena);
-
-        // Run existing parser for type checking
-        let ParseResult {
-            ast,
-            errors,
-            semantic_tokens: _, // Ignore semantic tokens from old parser
-            module_info,
-        } = parse(src, url.as_str());
-        // Note: semantic_token_map is already populated above with parser tokens
-        let errs = {
-            let ast = ast.wrap_to_staged_expr();
-            let (_, _, typeerrs) = mirgen::typecheck_with_module_info(
-                ast,
-                &self.compiler_ctx.builtin_types,
-                None,
-                module_info,
-            );
-            errors.into_iter().chain(typeerrs).collect::<Vec<_>>()
-        };
-
-        errs.into_iter()
-            .flat_map(|item| diagnostic_from_error(item, url.clone(), &rope))
-            .collect::<Vec<Diagnostic>>()
+    fn worker_path() -> Option<PathBuf> {
+        if let Some(path) = std::env::var_os("MIMIUM_LS_WORKER") {
+            let candidate = PathBuf::from(path);
+            return candidate.exists().then_some(candidate);
+        }
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| {
+                exe.parent()
+                    .map(|parent| parent.join("mimium-language-server-worker"))
+            })
+            .and_then(|candidate| candidate.exists().then_some(candidate))
     }
+
+    async fn compile_via_worker(
+        &self,
+        src: &str,
+        url: Url,
+    ) -> std::result::Result<AnalysisResponse, String> {
+        let worker_path = Self::worker_path().ok_or_else(|| {
+            "worker binary is not found. set MIMIUM_LS_WORKER or place mimium-language-server-worker next to the language server binary".to_string()
+        })?;
+        let mut child = Command::new(worker_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("failed to spawn worker: {e}"))?;
+
+        let request = AnalysisRequest {
+            uri: url.to_string(),
+            text: src.to_string(),
+        };
+        let payload =
+            serde_json::to_vec(&request).map_err(|e| format!("failed to encode request: {e}"))?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            if stdin.write_all(&payload).await.is_err() {
+                return Err("failed to write request to worker stdin".to_string());
+            }
+        }
+
+        let output = tokio::time::timeout(Duration::from_secs(3), child.wait_with_output())
+            .await
+            .map_err(|_| "worker timed out".to_string())?
+            .map_err(|e| format!("failed waiting worker: {e}"))?;
+
+        if !output.status.success() {
+            return Err(format!(
+                "worker exited with status {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        serde_json::from_slice::<AnalysisResponse>(&output.stdout)
+            .map_err(|e| format!("failed to decode worker response: {e}"))
+    }
+
+    fn compile_in_process(&self, src: &str, url: Url) -> Option<AnalysisResponse> {
+        self.compiler_ctx
+            .as_ref()
+            .map(|compiler_ctx| analyze_source(src, url, &compiler_ctx.builtin_types))
+    }
+
     async fn on_change(&self, params: TextDocumentItem) {
         debug!("{}", &params.version);
         let rope = ropey::Rope::from_str(&params.text);
         self.document_map
             .insert(params.uri.to_string(), rope.clone());
-        let diagnostics = self.compile(&params.text, params.uri.clone());
+
+        let analysis = match self.analysis_mode {
+            AnalysisMode::Worker => match self.compile_via_worker(&params.text, params.uri.clone()).await {
+                Ok(analysis) => analysis,
+                Err(message) => {
+                    self
+                        .client
+                        .log_message(
+                            MessageType::ERROR,
+                            format!(
+                                "mimium-language-server analysis failed in worker mode: {message}. set MIMIUM_LS_ANALYSIS_MODE=inprocess to bypass worker mode"
+                            ),
+                        )
+                        .await;
+                    return;
+                }
+            },
+            AnalysisMode::InProcess => match self.compile_in_process(&params.text, params.uri.clone()) {
+                Some(analysis) => analysis,
+                None => {
+                    self
+                        .client
+                        .log_message(
+                            MessageType::ERROR,
+                            "mimium-language-server analysis failed: inprocess mode is selected but compiler context is unavailable",
+                        )
+                        .await;
+                    return;
+                }
+            },
+        };
+
+        self.semantic_token_map
+            .insert(params.uri.to_string(), analysis.semantic_tokens);
         self.client
-            .publish_diagnostics(params.uri.clone(), diagnostics, Some(params.version))
+            .publish_diagnostics(
+                params.uri.clone(),
+                analysis.diagnostics,
+                Some(params.version),
+            )
             .await;
     }
 }
 
 pub async fn lib_main() {
     env_logger::init();
+    let analysis_mode = AnalysisMode::from_env();
+    let compiler_ctx = match analysis_mode {
+        AnalysisMode::Worker => None,
+        AnalysisMode::InProcess => Some(get_default_compiler_context()),
+    };
 
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
     let (service, socket) = LspService::build(|client| Backend {
         client,
-        compiler_ctx: MimiumCtx::new(),
-        ast_map: DashMap::new(),
+        compiler_ctx,
+        analysis_mode,
         document_map: DashMap::new(),
         semantic_token_map: DashMap::new(),
-        parser_arena_map: DashMap::new(),
-        parser_root_map: DashMap::new(),
-        parser_tokens_map: DashMap::new(),
+        latest_change_version: DashMap::new(),
     })
     .finish();
 
     Server::new(stdin, stdout, socket).serve(service).await;
-}
-
-fn offset_to_position(offset: usize, rope: &Rope) -> Option<Position> {
-    let line = rope.try_char_to_line(offset).ok()?;
-    let first_char_of_line = rope.try_line_to_char(line).ok()?;
-    let column = offset - first_char_of_line;
-    Some(Position::new(line as u32, column as u32))
 }
 
 fn position_to_offset(position: Position, rope: &Rope) -> Option<usize> {
