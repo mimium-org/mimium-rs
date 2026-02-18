@@ -22,11 +22,15 @@ pub fn load_default_runtime() -> Box<dyn driver::Driver<Sample = f64>> {
 }
 
 /// Create a runtime audio driver with user-provided options.
-pub fn load_runtime_with_options(options: &AudioDriverOptions) -> Box<dyn driver::Driver<Sample = f64>> {
+pub fn load_runtime_with_options(
+    options: &AudioDriverOptions,
+) -> Box<dyn driver::Driver<Sample = f64>> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         crate::backends::cpal::native_driver(
-            options.buffer_size.unwrap_or(backends::cpal::DEFAULT_BUFFER_SIZE),
+            options
+                .buffer_size
+                .unwrap_or(backends::cpal::DEFAULT_BUFFER_SIZE),
             options.input_device.clone(),
             options.output_device.clone(),
         )
