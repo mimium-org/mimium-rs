@@ -334,8 +334,17 @@ fn convert_expr(ctx: &mut ResolveContext, e_id: ExprNodeId) -> ExprNodeId {
             Expr::Proj(new_e, idx).into_id(loc)
         }
         Expr::Let(pat, body, then) => {
+            let prev_context = std::mem::take(&mut ctx.current_module_context);
+            if let Some(module_context) = find_pattern_module_context(ctx, &pat.pat) {
+                ctx.current_module_context = module_context;
+            } else {
+                ctx.current_module_context = prev_context.clone();
+            }
+
             let new_body = convert_expr(ctx, body);
             let new_then = then.map(|t| convert_expr(ctx, t));
+
+            ctx.current_module_context = prev_context;
             Expr::Let(pat, new_body, new_then).into_id(loc)
         }
         Expr::Lambda(params, r_type, body) => {
@@ -455,6 +464,22 @@ fn convert_expr(ctx: &mut ResolveContext, e_id: ExprNodeId) -> ExprNodeId {
 
         // Leaf nodes that don't need transformation
         Expr::Literal(_) | Expr::Error => e_id,
+    }
+}
+
+fn find_pattern_module_context(
+    ctx: &ResolveContext,
+    pat: &crate::pattern::Pattern,
+) -> Option<Vec<Symbol>> {
+    match pat {
+        Pattern::Single(name) => ctx.module_info.module_context_map.get(name).cloned(),
+        Pattern::Tuple(items) => items
+            .iter()
+            .find_map(|item| find_pattern_module_context(ctx, item)),
+        Pattern::Record(fields) => fields
+            .iter()
+            .find_map(|(_, item)| find_pattern_module_context(ctx, item)),
+        Pattern::Placeholder | Pattern::Error => None,
     }
 }
 

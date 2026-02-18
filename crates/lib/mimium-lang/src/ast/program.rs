@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::resolve_include::resolve_include;
-use super::statement::Statement;
+use super::statement::{Statement, stmt_from_expr_top};
 use crate::ast::Expr;
 use crate::ast::statement::into_then_expr;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
@@ -512,6 +512,10 @@ fn collect_statement_bindings(stmt: &Statement) -> Vec<Symbol> {
             symbols
         }
         Statement::LetRec(id, _) => vec![id.id],
+        Statement::Single(expr) => stmt_from_expr_top(*expr)
+            .into_iter()
+            .flat_map(|nested| collect_statement_bindings(&nested))
+            .collect(),
         _ => vec![],
     }
 }
