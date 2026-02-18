@@ -221,7 +221,14 @@ impl LanguageServer for Backend {
         }
         debug!("file saved!");
     }
-    async fn did_close(&self, _: DidCloseTextDocumentParams) {
+    async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        let uri = params.text_document.uri.to_string();
+        self.ast_map.remove(&uri);
+        self.document_map.remove(&uri);
+        self.semantic_token_map.remove(&uri);
+        self.parser_arena_map.remove(&uri);
+        self.parser_root_map.remove(&uri);
+        self.parser_tokens_map.remove(&uri);
         debug!("file closed!");
     }
 
