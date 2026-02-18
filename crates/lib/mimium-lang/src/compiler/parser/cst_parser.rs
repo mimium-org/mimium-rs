@@ -244,7 +244,15 @@ impl<'a> Parser<'a> {
         self.builder.start_node(SyntaxKind::Program);
 
         while !self.is_at_end() {
+            let before = self.current;
             self.parse_statement();
+            if self.current == before && !self.is_at_end() {
+                self.add_error(ParserError::invalid_syntax(
+                    self.current_token_index(),
+                    "parser made no progress while parsing statement; skipping token for recovery",
+                ));
+                self.bump();
+            }
         }
 
         let root_id = self.builder.finish_node().unwrap();
@@ -1531,7 +1539,17 @@ impl<'a> Parser<'a> {
             this.expect(TokenKind::BlockBegin);
 
             while !this.check(TokenKind::BlockEnd) && !this.is_at_end() {
+                let before = this.current;
                 this.parse_statement();
+
+                if this.current == before && !this.is_at_end() {
+                    this.add_error(ParserError::invalid_syntax(
+                        this.current_token_index(),
+                        "parser made no progress in block; skipping token for recovery",
+                    ));
+                    this.bump();
+                    continue;
+                }
 
                 // After a statement, if there's trailing linebreak/semicolon,
                 // prepare for next statement. Otherwise, assume statement continues
@@ -1584,7 +1602,18 @@ impl<'a> Parser<'a> {
             // Parse match arms
             this.emit_node(SyntaxKind::MatchArmList, |this| {
                 while !this.check(TokenKind::BlockEnd) && !this.is_at_end() {
+                    let before = this.current;
                     this.parse_match_arm();
+
+                    if this.current == before && !this.is_at_end() {
+                        this.add_error(ParserError::invalid_syntax(
+                            this.current_token_index(),
+                            "parser made no progress in match arm; skipping token for recovery",
+                        ));
+                        this.bump();
+                        continue;
+                    }
+
                     // Arms are separated by linebreaks or commas
                     if this.has_trailing_linebreak() {
                         continue;
