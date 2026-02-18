@@ -1625,9 +1625,12 @@ impl InferContext {
     fn convert_unify_error(&self, e: UnificationError) -> Error {
         let gen_loc = |span| Location::new(span, self.file_path.clone());
         match e {
-            UnificationError::TypeMismatch { left, right } => Error::TypeMismatch {
-                left: (left, gen_loc(left.to_span())),
-                right: (right, gen_loc(right.to_span())),
+            UnificationError::TypeMismatch {
+                left: (left, lspan),
+                right: (right, rspan),
+            } => Error::TypeMismatch {
+                left: (left, gen_loc(lspan)),
+                right: (right, gen_loc(rspan)),
             },
             UnificationError::LengthMismatch {
                 left: (left, lspan),
@@ -2221,13 +2224,16 @@ impl InferContext {
                 },
             ),
             Expr::Escape(e) => {
-                let loc_e = Location::new(e.to_span(), self.file_path.clone());
+                let loc_e = loc.clone();
                 // Decrease stage for escape expression
                 self.stage = self.stage.decrement();
                 log::trace!("Unstaging escape expression, stage => {:?}", self.stage);
                 let res = self.infer_type_unwrapping(*e);
                 // Increase stage back
                 self.stage = self.stage.increment();
+                if matches!(res.get_root().to_type(), Type::Primitive(PType::Unit)) {
+                    return Ok(Type::Primitive(PType::Unit).into_id_with_location(loc_e));
+                }
                 let intermediate = self.gen_intermediate_type_with_location(loc_e.clone());
                 let rel = self.unify_types(
                     res,
@@ -2236,7 +2242,7 @@ impl InferContext {
                 Ok(intermediate)
             }
             Expr::Bracket(e) => {
-                let loc_e = Location::new(e.to_span(), self.file_path.clone());
+                let loc_e = loc.clone();
                 // Increase stage for bracket expression
                 self.stage = self.stage.increment();
                 log::trace!("Staging bracket expression, stage => {:?}", self.stage);
