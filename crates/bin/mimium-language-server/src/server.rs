@@ -5,12 +5,12 @@ use std::time::Duration;
 use mimium_lang::interner::Symbol;
 
 use dashmap::DashMap;
-use log::debug;
+use log::{debug, warn};
 use mimium_lang::interner::TypeNodeId;
 use mimium_lang::plugin::Plugin;
 use mimium_lang::{Config, ExecContext};
 use ropey::Rope;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tower_lsp::jsonrpc::{Error, ErrorCode, Result};
 use tower_lsp::lsp_types::*;
@@ -348,22 +348,57 @@ impl Backend {
             if stdin.write_all(&payload).await.is_err() {
                 return Err("failed to write request to worker stdin".to_string());
             }
+            _ = stdin.shutdown().await;
         }
 
-        let output = tokio::time::timeout(Duration::from_secs(3), child.wait_with_output())
-            .await
-            .map_err(|_| "worker timed out".to_string())?
-            .map_err(|e| format!("failed waiting worker: {e}"))?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "worker stdout is not available".to_string())?;
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "worker stderr is not available".to_string())?;
 
-        if !output.status.success() {
+        let stdout_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = stdout.read_to_end(&mut buf).await;
+            buf
+        });
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = stderr.read_to_end(&mut buf).await;
+            buf
+        });
+
+        let status = match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
+            Ok(wait_result) => wait_result.map_err(|e| format!("failed waiting worker: {e}"))?,
+            Err(_) => {
+                warn!("worker timed out (pid={:?}), killing process", child.id());
+                _ = child.start_kill();
+                _ = child.wait().await;
+                _ = stdout_task.await;
+                _ = stderr_task.await;
+                return Err("worker timed out".to_string());
+            }
+        };
+
+        let stdout = stdout_task
+            .await
+            .map_err(|e| format!("failed to join worker stdout task: {e}"))?;
+        let stderr = stderr_task
+            .await
+            .map_err(|e| format!("failed to join worker stderr task: {e}"))?;
+
+        if !status.success() {
             return Err(format!(
                 "worker exited with status {}: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr)
+                status,
+                String::from_utf8_lossy(&stderr)
             ));
         }
 
-        serde_json::from_slice::<AnalysisResponse>(&output.stdout)
+        serde_json::from_slice::<AnalysisResponse>(&stdout)
             .map_err(|e| format!("failed to decode worker response: {e}"))
     }
 
