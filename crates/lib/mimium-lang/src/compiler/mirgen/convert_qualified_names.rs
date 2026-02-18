@@ -513,6 +513,12 @@ fn convert_var(ctx: &mut ResolveContext, name: Symbol, loc: Location) -> ExprNod
         return Expr::Var(mangled).into_id(loc);
     }
 
+    // If the unqualified name already exists (e.g. local binding or builtin),
+    // keep it as-is and do not force module-relative resolution.
+    if ctx.name_exists(&name) {
+        return Expr::Var(name).into_id(loc);
+    }
+
     // Try relative resolution from current module context (for intra-module references)
     if !ctx.current_module_context.is_empty() {
         let mut relative_path = ctx.current_module_context.clone();

@@ -511,10 +511,28 @@ fn collect_statement_bindings(stmt: &Statement) -> Vec<Symbol> {
             symbols
         }
         Statement::LetRec(id, _) => vec![id.id],
-        Statement::Single(expr) => stmt_from_expr_top(*expr)
-            .into_iter()
-            .flat_map(|nested| collect_statement_bindings(&nested))
-            .collect(),
+        Statement::Single(expr) => collect_expr_bindings(*expr),
+        _ => vec![],
+    }
+}
+
+fn collect_expr_bindings(expr: ExprNodeId) -> Vec<Symbol> {
+    match expr.to_expr() {
+        Expr::Let(typed_pat, _body, then_opt) => {
+            let mut symbols = vec![];
+            collect_pattern_bindings(&typed_pat.pat, &mut symbols);
+            if let Some(then) = then_opt {
+                symbols.extend(collect_expr_bindings(then));
+            }
+            symbols
+        }
+        Expr::LetRec(id, _body, then_opt) => {
+            let mut symbols = vec![id.id];
+            if let Some(then) = then_opt {
+                symbols.extend(collect_expr_bindings(then));
+            }
+            symbols
+        }
         _ => vec![],
     }
 }
