@@ -2718,7 +2718,21 @@ impl WasmGenerator {
                     let expected_vtype = Self::type_to_valtype(&ty.to_type());
                     self.emit_value_load(dst, func);
                     func.instruction(&W::I32WrapI64);
-                    self.emit_value_load_typed(src, expected_vtype, func);
+                    self.emit_value_load_deref(src, expected_vtype, func);
+                    if !matches!(src.as_ref(), mir::Value::Register(r) if self.getelement_registers.contains_key(r)) {
+                        let actual_vtype = self.infer_value_type(src);
+                        if actual_vtype == ValType::F64 && expected_vtype == ValType::I64 {
+                            func.instruction(&W::I64ReinterpretF64);
+                        } else if actual_vtype == ValType::I64 && expected_vtype == ValType::F64 {
+                            func.instruction(&W::I32WrapI64);
+                            let memarg = MemArg {
+                                offset: 0,
+                                align: 3,
+                                memory_index: 0,
+                            };
+                            func.instruction(&W::F64Load(memarg));
+                        }
+                    }
                     let memarg = MemArg {
                         offset: 0,
                         align: 3,
