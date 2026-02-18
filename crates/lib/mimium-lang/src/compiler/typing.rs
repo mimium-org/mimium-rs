@@ -268,10 +268,53 @@ impl ReportableError for Error {
             Error::TypeMismatch {
                 left: (lty, locl),
                 right: (rty, locr),
-            } => vec![
-                (locl.clone(), lty.to_type().to_string_for_error()),
-                (locr.clone(), rty.to_type().to_string_for_error()),
-            ],
+            } => {
+                let expected = lty.get_root().to_type().to_string_for_error();
+                let found = rty.get_root().to_type().to_string_for_error();
+                let is_dummy = |loc: &Location| {
+                    loc.path.as_os_str().is_empty() || (loc.span.start == 0 && loc.span.end == 0)
+                };
+                let normalize_loc = |primary: &Location, fallback: &Location| {
+                    let mut loc = if is_dummy(primary) {
+                        fallback.clone()
+                    } else {
+                        primary.clone()
+                    };
+
+                    if loc.path.as_os_str().is_empty() {
+                        loc.path = if !primary.path.as_os_str().is_empty() {
+                            primary.path.clone()
+                        } else {
+                            fallback.path.clone()
+                        };
+                    }
+
+                    if loc.span.start == 0 && loc.span.end == 0 {
+                        if !(primary.span.start == 0 && primary.span.end == 0) {
+                            loc.span = primary.span.clone();
+                        } else if !(fallback.span.start == 0 && fallback.span.end == 0) {
+                            loc.span = fallback.span.clone();
+                        } else {
+                            loc.span = 0..1;
+                        }
+                    }
+                    loc
+                };
+
+                let left_loc = normalize_loc(locl, locr);
+                let right_loc = normalize_loc(locr, &left_loc);
+                if left_loc == right_loc {
+                    vec![(
+                        left_loc,
+                        format!("expected type: {expected}, found type: {found}"),
+                    )]
+                } else {
+                    vec![
+                        (left_loc, format!("expected type: {expected}")),
+                        (right_loc, format!("found type: {found}")),
+                    ]
+                }
+            }
             Error::PatternMismatch((ty, loct), (pat, locp)) => vec![
                 (loct.clone(), ty.to_type().to_string_for_error()),
                 (locp.clone(), pat.to_string()),
@@ -999,6 +1042,15 @@ impl InferContext {
         Self::substitute_type(resolved_alias)
     }
 
+    fn type_loc_or_expr_loc(&self, ty: TypeNodeId, expr_loc: &Location) -> Location {
+        let ty_loc = ty.to_loc();
+        if ty_loc.path.as_os_str().is_empty() {
+            expr_loc.clone()
+        } else {
+            ty_loc
+        }
+    }
+
     fn is_numeric_scalar_for_tuple_binop(&self, ty: TypeNodeId) -> bool {
         matches!(
             self.resolve_for_tuple_binop(ty).to_type(),
@@ -1064,9 +1116,10 @@ impl InferContext {
                     return None;
                 }
                 if !self.is_numeric_scalar_for_tuple_binop(rhs_ty) {
+                    let rhs_loc = self.type_loc_or_expr_loc(rhs_ty, loc);
                     errs.push(Error::TypeMismatch {
-                        left: (numeric!(), rhs_ty.to_loc()),
-                        right: (rhs_ty, rhs_ty.to_loc()),
+                        left: (numeric!(), rhs_loc.clone()),
+                        right: (rhs_ty, rhs_loc),
                     });
                     return None;
                 }
@@ -1090,9 +1143,10 @@ impl InferContext {
                     return None;
                 }
                 if !self.is_numeric_scalar_for_tuple_binop(lhs_ty) {
+                    let lhs_loc = self.type_loc_or_expr_loc(lhs_ty, loc);
                     errs.push(Error::TypeMismatch {
-                        left: (numeric!(), lhs_ty.to_loc()),
-                        right: (lhs_ty, lhs_ty.to_loc()),
+                        left: (numeric!(), lhs_loc.clone()),
+                        right: (lhs_ty, lhs_loc),
                     });
                     return None;
                 }
@@ -1113,16 +1167,18 @@ impl InferContext {
             _ => {
                 let mut valid = true;
                 if !self.is_numeric_scalar_for_tuple_binop(lhs_ty) {
+                    let lhs_loc = self.type_loc_or_expr_loc(lhs_ty, loc);
                     errs.push(Error::TypeMismatch {
-                        left: (numeric!(), lhs_ty.to_loc()),
-                        right: (lhs_ty, lhs_ty.to_loc()),
+                        left: (numeric!(), lhs_loc.clone()),
+                        right: (lhs_ty, lhs_loc),
                     });
                     valid = false;
                 }
                 if !self.is_numeric_scalar_for_tuple_binop(rhs_ty) {
+                    let rhs_loc = self.type_loc_or_expr_loc(rhs_ty, loc);
                     errs.push(Error::TypeMismatch {
-                        left: (numeric!(), rhs_ty.to_loc()),
-                        right: (rhs_ty, rhs_ty.to_loc()),
+                        left: (numeric!(), rhs_loc.clone()),
+                        right: (rhs_ty, rhs_loc),
                     });
                     valid = false;
                 }
@@ -1209,9 +1265,10 @@ impl InferContext {
                 if self.is_numeric_scalar_for_tuple_binop(arg_ty) {
                     Some(numeric!())
                 } else {
+                    let arg_loc = self.type_loc_or_expr_loc(arg_ty, loc);
                     errs.push(Error::TypeMismatch {
-                        left: (numeric!(), arg_ty.to_loc()),
-                        right: (arg_ty, arg_ty.to_loc()),
+                        left: (numeric!(), arg_loc.clone()),
+                        right: (arg_ty, arg_loc),
                     });
                     None
                 }
@@ -2225,12 +2282,13 @@ impl InferContext {
             ),
             Expr::Escape(e) => {
                 let loc_e = loc.clone();
+                let prev_stage = self.stage;
                 // Decrease stage for escape expression
-                self.stage = self.stage.decrement();
+                self.stage = prev_stage.decrement();
                 log::trace!("Unstaging escape expression, stage => {:?}", self.stage);
                 let res = self.infer_type_unwrapping(*e);
-                // Increase stage back
-                self.stage = self.stage.increment();
+                // Restore previous stage regardless of saturation behavior
+                self.stage = prev_stage;
                 if matches!(res.get_root().to_type(), Type::Primitive(PType::Unit)) {
                     return Ok(Type::Primitive(PType::Unit).into_id_with_location(loc_e));
                 }
@@ -2243,12 +2301,13 @@ impl InferContext {
             }
             Expr::Bracket(e) => {
                 let loc_e = loc.clone();
+                let prev_stage = self.stage;
                 // Increase stage for bracket expression
-                self.stage = self.stage.increment();
+                self.stage = prev_stage.increment();
                 log::trace!("Staging bracket expression, stage => {:?}", self.stage);
                 let res = self.infer_type_unwrapping(*e);
-                // Decrease stage back
-                self.stage = self.stage.decrement();
+                // Restore previous stage regardless of boundary behavior
+                self.stage = prev_stage;
                 Ok(Type::Code(res).into_id_with_location(loc_e))
             }
             Expr::Match(scrutinee, arms) => {

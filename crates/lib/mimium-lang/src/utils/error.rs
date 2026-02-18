@@ -99,7 +99,16 @@ pub fn report(src: &str, path: PathBuf, errs: &[Box<dyn ReportableError + '_>]) 
     let mut colors = ColorGenerator::new();
     for e in errs {
         // let a_span = (src.source(), span);color
-        let rawlabels = e.get_labels();
+        let rawlabels = e
+            .get_labels()
+            .into_iter()
+            .map(|(mut loc, message)| {
+                if loc.path.as_os_str().is_empty() {
+                    loc.path = path.clone();
+                }
+                (loc, message)
+            })
+            .collect::<Vec<_>>();
         if rawlabels.is_empty() {
             continue;
         }
@@ -119,7 +128,19 @@ pub fn report(src: &str, path: PathBuf, errs: &[Box<dyn ReportableError + '_>]) 
             cache
                 .storage
                 .insert(path.clone(), Source::from(src.to_string()));
-            builder.eprint(&mut cache).ok();
+            if let Err(err) = builder.eprint(&mut cache) {
+                eprintln!("Error: {}", e.get_message());
+                eprintln!("  (rich diagnostic rendering failed: {err:?})");
+                for (loc, label) in &rawlabels {
+                    eprintln!(
+                        "  -> {}:{}..{}: {}",
+                        loc.path.display(),
+                        loc.span.start,
+                        loc.span.end,
+                        label
+                    );
+                }
+            }
         }
     }
 }
@@ -168,5 +189,23 @@ mod tests {
         assert_eq!(labels[0].0.path, canonical_included_path);
 
         report(root_src, root_path, &errs);
+    }
+
+    #[test]
+    fn report_falls_back_when_label_path_is_empty() {
+        let path = std::env::current_dir()
+            .unwrap()
+            .join("tmp")
+            .join("report_empty_path.mmm");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let src = "fn dsp(){0.0}\n";
+        fs::write(&path, src).unwrap();
+
+        let err = Box::new(SimpleError {
+            message: "dummy".to_string(),
+            span: Location::default(),
+        }) as Box<dyn ReportableError>;
+
+        report(src, path, &[err]);
     }
 }

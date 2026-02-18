@@ -9,6 +9,7 @@ use itertools::Itertools;
 
 use crate::ast::{Expr, Literal, RecordField};
 use crate::compiler::EvalStage;
+use crate::compiler::mirgen::pattern_destructor::destruct_let_pattern;
 use crate::compiler::typing::ConstructorEnv;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
@@ -609,11 +610,12 @@ impl StageInterpreter {
                 panic!("escape expression cannot be evaluated in stage 0")
             }
             Expr::Bracket(e) => {
-                ctx.stage = EvalStage::Stage(1); // Increase the stage for bracket
+                let prev_stage = ctx.stage;
+                ctx.stage = prev_stage.increment();
                 log::trace!("Bracketting expression, stage => {:?}", ctx.stage);
 
                 let res = Value::Code(self.rebuild(ctx, e));
-                ctx.stage = EvalStage::Stage(0); // Decrease the stage back
+                ctx.stage = prev_stage;
                 res
             }
             Expr::Match(scrutinee, arms) => {
@@ -993,6 +995,7 @@ fn expand_macro_rec(
     ty: TypeNodeId,
 ) -> ExprNodeId {
     if let Type::Code(t) = ty.to_type() {
+        let expr = destruct_let_pattern(expr);
         let res = interpreter.eval_expr(ctx, expr);
         match res {
             Value::Code(e) => {

@@ -12,7 +12,6 @@ pub mod convert_qualified_names;
 pub(crate) mod pattern_destructor;
 pub(crate) mod recursecheck;
 
-// use super::pattern_destructor::destruct_let_pattern;
 use crate::mir::{self, Argument, Instruction, Mir, VPtr, VReg, Value};
 
 use state_tree::tree::StateTreeSkeleton;
@@ -3094,7 +3093,6 @@ pub fn typecheck(
     let (expr, convert_errs) =
         convert_pronoun::convert_pronoun(root_expr_id, file_path.clone().unwrap_or_default());
     let expr = recursecheck::convert_recurse(expr, file_path.clone().unwrap_or_default());
-    // let expr = destruct_let_pattern(expr);
     let infer_ctx = infer_root(
         expr,
         builtin_types,

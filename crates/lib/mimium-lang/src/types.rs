@@ -327,7 +327,13 @@ impl Type {
             Type::Ref(x) => format!("&{}", x.to_type().to_string_for_error()),
             Type::Boxed(x) => format!("boxed({})", x.to_type().to_string_for_error()),
             Type::Code(c) => format!("`({})", c.to_type().to_string_for_error()),
-            Type::Intermediate(_id) => "?".to_string(),
+            Type::Intermediate(cell) => {
+                let tv = cell.read().unwrap();
+                match tv.parent {
+                    Some(parent) => parent.to_type().to_string_for_error(),
+                    None => format!("unresolved type variable ?{}", tv.var.0),
+                }
+            }
             // if no special treatment is needed, forward to the Display implementation
             x => x.to_string(),
         }

@@ -1,4 +1,5 @@
 use crate::utils::metadata::Span;
+use std::collections::HashSet;
 
 use super::*;
 
@@ -30,6 +31,64 @@ pub(crate) enum Error {
         left: (Vec<(Symbol, TypeNodeId)>, Span),
         right: (Vec<(Symbol, TypeNodeId)>, Span),
     },
+}
+
+fn is_dummy_span(span: &Span) -> bool {
+    span.start == 0 && span.end == 0
+}
+
+fn span_from_type_tree(t: TypeNodeId) -> Option<Span> {
+    let mut stack = vec![t];
+    let mut visited = HashSet::new();
+
+    while let Some(current) = stack.pop() {
+        if !visited.insert(current) {
+            continue;
+        }
+
+        let span = current.to_span();
+        if !is_dummy_span(&span) {
+            return Some(span);
+        }
+
+        match current.to_type() {
+            Type::Array(elem) | Type::Ref(elem) | Type::Code(elem) | Type::Boxed(elem) => {
+                stack.push(elem);
+            }
+            Type::Tuple(items) | Type::Union(items) => {
+                stack.extend(items.iter().copied());
+            }
+            Type::Record(fields) => {
+                stack.extend(fields.iter().map(|RecordTypeField { ty, .. }| *ty));
+            }
+            Type::Function { arg, ret } => {
+                stack.push(arg);
+                stack.push(ret);
+            }
+            Type::Intermediate(cell) => {
+                if let Some(parent) = cell.read().ok().and_then(|tv| tv.parent) {
+                    stack.push(parent);
+                }
+            }
+            Type::UserSum { variants, .. } => {
+                stack.extend(variants.iter().filter_map(|(_, payload)| *payload));
+            }
+            Type::Primitive(_)
+            | Type::TypeScheme(_)
+            | Type::TypeAlias(_)
+            | Type::Any
+            | Type::Failure
+            | Type::Unknown => {}
+        }
+    }
+
+    None
+}
+
+fn best_span(primary: TypeNodeId, secondary: TypeNodeId) -> Span {
+    span_from_type_tree(primary)
+        .or_else(|| span_from_type_tree(secondary))
+        .unwrap_or_else(|| primary.to_span())
 }
 
 // return true when the circular loop of intermediate variable exists.
@@ -98,8 +157,8 @@ fn unify_vec(a1: &[TypeNodeId], a2: &[TypeNodeId]) -> Result<Relation, Vec<Error
 }
 fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Error>> {
     log::trace!("unify_args {} and {}", t1.to_type(), t2.to_type());
-    let loc1 = t1.to_span(); //todo file
-    let loc2 = t2.to_span();
+    let loc1 = best_span(t1, t2);
+    let loc2 = best_span(t2, t1);
     let t1r = t1.get_root();
     let t2r = t2.get_root();
     let res = match &(t1r.to_type(), t2r.to_type()) {
@@ -202,8 +261,8 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
 /// Solve type constraints. Though the function arguments are immutable, it modified the content of Intermediate Type.
 /// If the result is `Relation::Subtype`, it means "t1 is subtype of t2".
 pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Error>> {
-    let loc1 = t1.to_span(); //todo file
-    let loc2 = t2.to_span();
+    let loc1 = best_span(t1, t2);
+    let loc2 = best_span(t2, t1);
 
     let t1r = t1.get_root();
     let t2r = t2.get_root();
@@ -402,8 +461,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                     .map(|RecordTypeField { key, ty, .. }| (*key, *ty))
                     .collect::<Vec<_>>();
                 all_errs.push(Error::ImcompatibleRecords {
-                    left: (keys_a, t1.to_span()),
-                    right: (keys_b, t2.to_span()),
+                    left: (keys_a, loc1.clone()),
+                    right: (keys_b, loc2.clone()),
                 });
                 return Err(all_errs);
             } else {
@@ -608,6 +667,35 @@ mod tests {
         };
 
         assert_eq!(lspan, &left_span);
+        assert_eq!(rspan, &right_span);
+    }
+
+    #[test]
+    fn length_mismatch_avoids_dummy_span_when_one_side_has_location() {
+        let right_span = 30..40;
+
+        let left_elem = Type::Primitive(PType::Numeric).into_id();
+        let right_elem = Type::Primitive(PType::Numeric).into_id_with_location(Location::new(
+            right_span.clone(),
+            PathBuf::from("right.mmm"),
+        ));
+
+        let left = Type::Tuple(vec![left_elem]).into_id();
+        let right = Type::Tuple(vec![right_elem, right_elem]).into_id_with_location(Location::new(
+            right_span.clone(),
+            PathBuf::from("right.mmm"),
+        ));
+
+        let err = unify_types(left, right).expect_err("expected tuple length mismatch");
+        let Some(Error::LengthMismatch {
+            left: (_, lspan),
+            right: (_, rspan),
+        }) = err.first()
+        else {
+            panic!("unexpected error variant");
+        };
+
+        assert_eq!(lspan, &right_span);
         assert_eq!(rspan, &right_span);
     }
 }
