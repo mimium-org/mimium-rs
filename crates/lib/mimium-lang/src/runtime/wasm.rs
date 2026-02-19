@@ -290,104 +290,45 @@ impl WasmRuntime {
         }
 
         // Register math functions (from "math" module)
-        linker
-            .func_wrap(
-                "math",
-                "sin",
-                |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.sin() },
-            )
-            .map_err(|e| format!("Failed to register math::sin: {e}"))?;
-        linker
-            .func_wrap(
-                "math",
-                "cos",
-                |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.cos() },
-            )
-            .map_err(|e| format!("Failed to register math::cos: {e}"))?;
-        linker
-            .func_wrap(
-                "math",
-                "tan",
-                |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.tan() },
-            )
-            .map_err(|e| format!("Failed to register math::tan: {e}"))?;
-        linker
-            .func_wrap(
-                "math",
-                "asin",
-                |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.asin() },
-            )
-            .map_err(|e| format!("Failed to register math::asin: {e}"))?;
-        linker
-            .func_wrap(
-                "math",
-                "acos",
-                |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.acos() },
-            )
-            .map_err(|e| format!("Failed to register math::acos: {e}"))?;
-        linker
-            .func_wrap(
-                "math",
-                "atan",
-                |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.atan() },
-            )
-            .map_err(|e| format!("Failed to register math::atan: {e}"))?;
-        linker
-            .func_wrap(
-                "math",
-                "round",
-                |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.round() },
-            )
-            .map_err(|e| format!("Failed to register math::round: {e}"))?;
-        linker
-            .func_wrap(
-                "math",
-                "floor",
-                |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.floor() },
-            )
-            .map_err(|e| format!("Failed to register math::floor: {e}"))?;
-        linker
-            .func_wrap(
-                "math",
-                "ceil",
-                |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.ceil() },
-            )
-            .map_err(|e| format!("Failed to register math::ceil: {e}"))?;
-        linker
-            .func_wrap(
-                "math",
-                "log",
-                |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.ln() },
-            )
-            .map_err(|e| format!("Failed to register math::log: {e}"))?;
-        linker
-            .func_wrap(
-                "math",
-                "atan2",
-                |_caller: Caller<'_, RuntimeState>, y: f64, x: f64| -> f64 { y.atan2(x) },
-            )
-            .map_err(|e| format!("Failed to register math::atan2: {e}"))?;
-        linker
-            .func_wrap(
-                "math",
-                "pow",
-                |_caller: Caller<'_, RuntimeState>, base: f64, exp: f64| -> f64 { base.powf(exp) },
-            )
-            .map_err(|e| format!("Failed to register math::pow: {e}"))?;
-        linker
-            .func_wrap(
-                "math",
-                "min",
-                |_caller: Caller<'_, RuntimeState>, a: f64, b: f64| -> f64 { a.min(b) },
-            )
-            .map_err(|e| format!("Failed to register math::min: {e}"))?;
-        linker
-            .func_wrap(
-                "math",
-                "max",
-                |_caller: Caller<'_, RuntimeState>, a: f64, b: f64| -> f64 { a.max(b) },
-            )
-            .map_err(|e| format!("Failed to register math::max: {e}"))?;
+        macro_rules! register_math_f1 {
+            ($($name:expr => $func:expr),* $(,)?) => {
+                $(
+                    linker
+                        .func_wrap("math", $name, $func)
+                        .map_err(|e| format!("Failed to register math::{}: {}", $name, e))?;
+                )*
+            };
+        }
+
+        macro_rules! register_math_f2 {
+            ($($name:expr => $func:expr),* $(,)?) => {
+                $(
+                    linker
+                        .func_wrap("math", $name, $func)
+                        .map_err(|e| format!("Failed to register math::{}: {}", $name, e))?;
+                )*
+            };
+        }
+
+        register_math_f1! {
+            "sin" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.sin() },
+            "cos" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.cos() },
+            "tan" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.tan() },
+            "asin" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.asin() },
+            "acos" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.acos() },
+            "atan" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.atan() },
+            "round" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.round() },
+            "floor" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.floor() },
+            "ceil" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.ceil() },
+            "log" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.ln() },
+        }
+
+        register_math_f2! {
+            "atan2" => |_caller: Caller<'_, RuntimeState>, y: f64, x: f64| -> f64 { y.atan2(x) },
+            "pow" => |_caller: Caller<'_, RuntimeState>, base: f64, exp: f64| -> f64 { base.powf(exp) },
+            "min" => |_caller: Caller<'_, RuntimeState>, a: f64, b: f64| -> f64 { a.min(b) },
+            "max" => |_caller: Caller<'_, RuntimeState>, a: f64, b: f64| -> f64 { a.max(b) },
+        }
 
         // Register builtin functions (from "builtin" module)
         macro_rules! register_builtin {
