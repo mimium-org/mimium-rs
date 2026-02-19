@@ -404,11 +404,20 @@ fn stmts_from_program_with_prefix(
                 target,
             } => {
                 let imported_stmts = if let Some(base_module) = path.segments.first().copied() {
-                    let module_symbol = mangle_qualified_name(&[], base_module);
-                    if module_info.loaded_external_modules.contains(&module_symbol) {
+                    let local_module_symbol = mangle_qualified_name(module_prefix, base_module);
+                    let absolute_module_symbol = mangle_qualified_name(&[], base_module);
+                    if module_info
+                        .loaded_external_modules
+                        .contains(&local_module_symbol)
+                        || module_info
+                            .loaded_external_modules
+                            .contains(&absolute_module_symbol)
+                    {
                         vec![]
                     } else {
-                        module_info.loaded_external_modules.insert(module_symbol);
+                        module_info
+                            .loaded_external_modules
+                            .insert(absolute_module_symbol);
                         let new_prefix = vec![base_module];
                         let inner_stmts = resolve_external_module(
                             base_module,
@@ -549,25 +558,40 @@ fn process_use_statement(
     module_prefix: &[Symbol],
     module_info: &mut ModuleInfo,
 ) {
-    // Helper to register an alias and optionally mark as public
-    let mut register_alias = |alias_name: Symbol, mangled: Symbol| {
+    let resolve_use_mangled = |segments: &[Symbol], info: &ModuleInfo| {
+        let absolute_mangled = mangle_qualified_path(segments);
+        let (resolved, _) = resolve_qualified_path(segments, absolute_mangled, module_prefix, |name| {
+            info.visibility_map.contains_key(name)
+                || info.use_alias_map.contains_key(name)
+                || info.module_context_map.contains_key(name)
+                || info.type_aliases.contains_key(name)
+                || info.type_declarations.contains_key(name)
+        });
+        resolved
+    };
+
+    fn register_alias(
+        module_info: &mut ModuleInfo,
+        visibility: &Visibility,
+        module_prefix: &[Symbol],
+        alias_name: Symbol,
+        mangled: Symbol,
+    ) {
         module_info.use_alias_map.insert(alias_name, mangled);
 
-        // If pub use, register the re-exported name as public in the current module
         if *visibility == Visibility::Public {
             let exported_name = mangle_qualified_name(module_prefix, alias_name);
             module_info.visibility_map.insert(exported_name, true);
-            // Also add the mangled target as alias for the exported name
             module_info.use_alias_map.insert(exported_name, mangled);
         }
-    };
+    }
 
     match target {
         UseTarget::Single => {
             // use foo::bar creates an alias: bar -> foo$bar
             if let Some(alias_name) = path.segments.last().copied() {
-                let mangled = mangle_qualified_path(&path.segments);
-                register_alias(alias_name, mangled);
+                let mangled = resolve_use_mangled(&path.segments, module_info);
+                register_alias(module_info, visibility, module_prefix, alias_name, mangled);
             }
         }
         UseTarget::Multiple(names) => {
@@ -577,8 +601,8 @@ fn process_use_statement(
             for name in names {
                 let mut full_path = path.segments.clone();
                 full_path.push(*name);
-                let mangled = mangle_qualified_path(&full_path);
-                register_alias(*name, mangled);
+                let mangled = resolve_use_mangled(&full_path, module_info);
+                register_alias(module_info, visibility, module_prefix, *name, mangled);
             }
         }
         UseTarget::Wildcard => {

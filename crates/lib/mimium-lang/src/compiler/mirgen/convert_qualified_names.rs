@@ -19,6 +19,7 @@ use thiserror::Error;
 
 use crate::ast::Expr;
 use crate::ast::program::{ModuleInfo, resolve_qualified_path};
+use crate::compiler::intrinsics;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol};
 use crate::pattern::Pattern;
 use crate::utils::error::ReportableError;
@@ -483,10 +484,45 @@ fn find_pattern_module_context(
     }
 }
 
+fn resolve_alias_chain(module_info: &ModuleInfo, symbol: Symbol) -> Symbol {
+    let mut current = symbol;
+    let mut visited = HashSet::new();
+    while visited.insert(current) {
+        match module_info.use_alias_map.get(&current).copied() {
+            Some(next) if next != current => current = next,
+            _ => break,
+        }
+    }
+    current
+}
+
+fn is_core_intrinsic_name(name: Symbol) -> bool {
+    matches!(
+        name.as_str(),
+        intrinsics::NEG
+            | intrinsics::ADD
+            | intrinsics::SUB
+            | intrinsics::MULT
+            | intrinsics::DIV
+            | intrinsics::EQ
+            | intrinsics::NE
+            | intrinsics::LE
+            | intrinsics::LT
+            | intrinsics::GE
+            | intrinsics::GT
+            | intrinsics::MODULO
+            | intrinsics::POW
+            | intrinsics::AND
+            | intrinsics::OR
+            | intrinsics::TOFLOAT
+    )
+}
+
 /// Convert a simple variable reference, resolving explicit `use` aliases and wildcards.
 fn convert_var(ctx: &mut ResolveContext, name: Symbol, loc: Location) -> ExprNodeId {
     // Check if this is a use alias (explicit `use foo::bar` or `use foo::bar as alias`)
-    if let Some(&mangled_name) = ctx.module_info.use_alias_map.get(&name) {
+    if ctx.module_info.use_alias_map.contains_key(&name) {
+        let mangled_name = resolve_alias_chain(ctx.module_info, name);
         // Check visibility
         if let Some(&is_public) = ctx.module_info.visibility_map.get(&mangled_name)
             && !is_public
@@ -513,25 +549,32 @@ fn convert_var(ctx: &mut ResolveContext, name: Symbol, loc: Location) -> ExprNod
         return Expr::Var(mangled).into_id(loc);
     }
 
-    // If the unqualified name already exists (e.g. local binding or builtin),
-    // keep it as-is and do not force module-relative resolution.
-    if ctx.name_exists(&name) {
+    if ctx.name_exists(&name) && is_core_intrinsic_name(name) {
         return Expr::Var(name).into_id(loc);
     }
 
     // Try relative resolution from current module context (for intra-module references)
+    // and its parent modules.
     if !ctx.current_module_context.is_empty() {
-        let mut relative_path = ctx.current_module_context.clone();
-        relative_path.push(name);
-        let relative_mangled = relative_path
-            .iter()
-            .map(|s| s.as_str())
-            .collect::<Vec<_>>()
-            .join("$")
-            .to_symbol();
-        if ctx.name_exists(&relative_mangled) {
-            return Expr::Var(relative_mangled).into_id(loc);
+        for prefix_len in (1..=ctx.current_module_context.len()).rev() {
+            let mut relative_path = ctx.current_module_context[..prefix_len].to_vec();
+            relative_path.push(name);
+            let relative_mangled = relative_path
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("$")
+                .to_symbol();
+            if ctx.name_exists(&relative_mangled) {
+                return Expr::Var(relative_mangled).into_id(loc);
+            }
         }
+    }
+
+    // If the unqualified name already exists (e.g. local binding or builtin),
+    // keep it as-is.
+    if ctx.name_exists(&name) {
+        return Expr::Var(name).into_id(loc);
     }
 
     // Keep as-is - will be resolved by type checker (local variable or error)
@@ -565,12 +608,7 @@ fn convert_qualified_var(
     );
 
     // Check if it's a re-exported alias
-    let lookup_name = ctx
-        .module_info
-        .use_alias_map
-        .get(&resolved_name)
-        .copied()
-        .unwrap_or(resolved_name);
+    let lookup_name = resolve_alias_chain(ctx.module_info, resolved_name);
 
     // Check visibility for module members
     if resolved_path.len() > 1
