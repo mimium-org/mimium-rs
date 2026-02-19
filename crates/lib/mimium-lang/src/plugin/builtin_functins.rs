@@ -407,6 +407,9 @@ declare_f1f_common!(not, |x: f64| if x == 0.0 { 1.0 } else { 0.0 });
 declare_f1f_common!(sin, f64::sin);
 declare_f1f_common!(cos, f64::cos);
 declare_f1f_common!(tan, f64::tan);
+declare_f1f_common!(sinh, f64::sinh);
+declare_f1f_common!(cosh, f64::cosh);
+declare_f1f_common!(tanh, f64::tanh);
 declare_f1f_common!(asin, f64::asin);
 declare_f1f_common!(acos, f64::acos);
 declare_f1f_common!(atan, f64::atan);
@@ -530,6 +533,9 @@ fn generate_builtin_functions() -> impl ExactSizeIterator<Item = CommonFunction>
         sin::signature(),
         cos::signature(),
         tan::signature(),
+        sinh::signature(),
+        cosh::signature(),
+        tanh::signature(),
         asin::signature(),
         acos::signature(),
         atan::signature(),

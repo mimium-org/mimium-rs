@@ -64,6 +64,9 @@ struct RuntimeFunctionIndices {
     math_sin: u32,
     math_cos: u32,
     math_tan: u32,
+    math_sinh: u32,
+    math_cosh: u32,
+    math_tanh: u32,
     math_asin: u32,
     math_acos: u32,
     math_atan: u32,
@@ -512,7 +515,7 @@ impl WasmGenerator {
         fn_idx
     }
 
-    /// Setup math function imports (sin/cos/tan/asin/acos/atan/round/floor/ceil/atan2/pow/log/min/max)
+    /// Setup math function imports (sin/cos/tan/sinh/cosh/tanh/asin/acos/atan/round/floor/ceil/atan2/pow/log/min/max)
     fn setup_math_imports(&mut self) {
         // Type: (f64) -> f64
         let type_idx_f64_f64 = self.type_section.len();
@@ -522,6 +525,9 @@ impl WasmGenerator {
         self.rt.math_sin = self.add_import_from("math", "sin", type_idx_f64_f64);
         self.rt.math_cos = self.add_import_from("math", "cos", type_idx_f64_f64);
         self.rt.math_tan = self.add_import_from("math", "tan", type_idx_f64_f64);
+        self.rt.math_sinh = self.add_import_from("math", "sinh", type_idx_f64_f64);
+        self.rt.math_cosh = self.add_import_from("math", "cosh", type_idx_f64_f64);
+        self.rt.math_tanh = self.add_import_from("math", "tanh", type_idx_f64_f64);
         self.rt.math_asin = self.add_import_from("math", "asin", type_idx_f64_f64);
         self.rt.math_acos = self.add_import_from("math", "acos", type_idx_f64_f64);
         self.rt.math_atan = self.add_import_from("math", "atan", type_idx_f64_f64);
@@ -3738,6 +3744,9 @@ impl WasmGenerator {
             "sin" => Some(self.rt.math_sin),
             "cos" => Some(self.rt.math_cos),
             "tan" => Some(self.rt.math_tan),
+            "sinh" => Some(self.rt.math_sinh),
+            "cosh" => Some(self.rt.math_cosh),
+            "tanh" => Some(self.rt.math_tanh),
             "asin" => Some(self.rt.math_asin),
             "acos" => Some(self.rt.math_acos),
             "atan" => Some(self.rt.math_atan),
@@ -4340,6 +4349,16 @@ fn dsp() -> float {
 }
 "#;
         compile_and_validate(src, "test_sinewave");
+    }
+
+    #[test]
+    fn test_wasmgen_hyperbolic_functions() {
+        let src = r#"
+fn dsp() -> float {
+    sinh(0.5) + cosh(0.25) + tanh(0.75)
+}
+"#;
+        compile_and_validate(src, "test_hyperbolic_functions");
     }
 
     /// Test global variable (let binding at top level)

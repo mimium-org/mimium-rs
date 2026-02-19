@@ -314,6 +314,9 @@ impl WasmRuntime {
             "sin" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.sin() },
             "cos" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.cos() },
             "tan" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.tan() },
+            "sinh" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.sinh() },
+            "cosh" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.cosh() },
+            "tanh" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.tanh() },
             "asin" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.asin() },
             "acos" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.acos() },
             "atan" => |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.atan() },
@@ -1426,6 +1429,57 @@ mod tests {
 
         assert_eq!(result.len(), 1, "Should return one value");
         assert_eq!(result[0], 42, "Array should contain stored value");
+    }
+
+    #[test]
+    fn test_math_hyperbolic_imports() {
+        let mut runtime = WasmRuntime::new(&[], None).unwrap();
+
+        let wasm_bytes = wat::parse_str(
+            r#"
+            (module
+                (import "math" "sinh" (func $sinh (param f64) (result f64)))
+                (import "math" "cosh" (func $cosh (param f64) (result f64)))
+                (import "math" "tanh" (func $tanh (param f64) (result f64)))
+                (memory (export "memory") 1)
+
+                (func (export "test_sinh") (result f64)
+                    f64.const 0.5
+                    call $sinh)
+
+                (func (export "test_cosh") (result f64)
+                    f64.const 0.5
+                    call $cosh)
+
+                (func (export "test_tanh") (result f64)
+                    f64.const 0.5
+                    call $tanh)
+            )
+            "#,
+        )
+        .expect("Failed to parse WAT");
+
+        let mut module = runtime
+            .load_module(&wasm_bytes)
+            .expect("Failed to load module");
+
+        let sinh_res = module
+            .call_function("test_sinh", &[])
+            .expect("Failed to call test_sinh");
+        let cosh_res = module
+            .call_function("test_cosh", &[])
+            .expect("Failed to call test_cosh");
+        let tanh_res = module
+            .call_function("test_tanh", &[])
+            .expect("Failed to call test_tanh");
+
+        let sinh_val = f64::from_bits(sinh_res[0]);
+        let cosh_val = f64::from_bits(cosh_res[0]);
+        let tanh_val = f64::from_bits(tanh_res[0]);
+
+        assert!((sinh_val - 0.5f64.sinh()).abs() < 1e-12);
+        assert!((cosh_val - 0.5f64.cosh()).abs() < 1e-12);
+        assert!((tanh_val - 0.5f64.tanh()).abs() < 1e-12);
     }
 
     #[test]
