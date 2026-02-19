@@ -15,6 +15,30 @@ struct ConvertResult {
     found_any: bool,
 }
 
+fn convert_lambda_param_defaults<F>(
+    params: Vec<TypedId>,
+    conversion: &F,
+) -> (Vec<TypedId>, bool, Vec<Error>)
+where
+    F: Fn(ExprNodeId) -> (ConvertResult, Vec<Error>),
+{
+    let mut found_any = false;
+    let mut all_errs = vec![];
+    let converted_params = params
+        .into_iter()
+        .map(|mut param| {
+            if let Some(default_expr) = param.default_value {
+                let (res, errs) = conversion(default_expr);
+                found_any |= res.found_any;
+                all_errs.extend(errs);
+                param.default_value = Some(res.expr);
+            }
+            param
+        })
+        .collect();
+    (converted_params, found_any, all_errs)
+}
+
 // This applies conversion() recursively. This is intended to be used in the `_`
 // branch of pattern matching so that particular types of epressions can be
 // caught and treated differently.
@@ -78,11 +102,17 @@ where
             (ConvertResult { expr, found_any }, [errs, errs2].concat())
         }
         Expr::Lambda(params, r_type, body) => {
-            // Note: params and r_type cannot be handled by conversion() because
-            //       these are Type, not Expr.
+            let (params, params_found_any, params_errs) =
+                convert_lambda_param_defaults(params, &conversion);
             let (ConvertResult { expr, found_any }, errs) = conversion(body);
             let expr = Expr::Lambda(params, r_type, expr).into_id(loc);
-            (ConvertResult { expr, found_any }, errs)
+            (
+                ConvertResult {
+                    expr,
+                    found_any: found_any | params_found_any,
+                },
+                [params_errs, errs].concat(),
+            )
         }
         Expr::Apply(fun, callee) => {
             let (fun, errs) = conversion(fun);
@@ -345,6 +375,8 @@ fn convert_self(
             }
         },
         Expr::Lambda(params, r_type, body) => {
+            let (params, params_found_any, params_errs) =
+                convert_lambda_param_defaults(params, &|e| convert_self(e, feedctx, file_path.clone()));
             let nfctx = feedctx.get_next_id();
             let (res, err) = convert_self(body, nfctx, file_path);
             let nbody = if res.found_any {
@@ -356,9 +388,9 @@ fn convert_self(
             (
                 ConvertResult {
                     expr,
-                    found_any: false,
+                    found_any: params_found_any,
                 },
-                err,
+                [params_errs, err].concat(),
             )
         }
         Expr::Feed(_, _) => panic!(
