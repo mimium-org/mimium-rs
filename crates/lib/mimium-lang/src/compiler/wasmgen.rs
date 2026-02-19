@@ -625,12 +625,16 @@ impl WasmGenerator {
             page_size_log2: None,
         });
 
-        // Function table for indirect calls (closures)
-        // Start with 128 slots, max 4096
+        // Function table for indirect calls (closures).
+        // The element section later inserts one entry per MIR function
+        // at offset 0, so the initial table size must be at least that count.
+        let required_table_size = self.mir.functions.len() as u64;
+        let table_min = required_table_size.max(128);
+        let table_max = table_min.max(4096);
         self.table_section.table(TableType {
             element_type: wasm_encoder::RefType::FUNCREF,
-            minimum: 128,
-            maximum: Some(4096),
+            minimum: table_min,
+            maximum: Some(table_max),
             table64: false,
             shared: false,
         });
