@@ -307,10 +307,66 @@ impl WasmRuntime {
         linker
             .func_wrap(
                 "math",
+                "tan",
+                |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.tan() },
+            )
+            .map_err(|e| format!("Failed to register math::tan: {e}"))?;
+        linker
+            .func_wrap(
+                "math",
+                "asin",
+                |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.asin() },
+            )
+            .map_err(|e| format!("Failed to register math::asin: {e}"))?;
+        linker
+            .func_wrap(
+                "math",
+                "acos",
+                |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.acos() },
+            )
+            .map_err(|e| format!("Failed to register math::acos: {e}"))?;
+        linker
+            .func_wrap(
+                "math",
+                "atan",
+                |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.atan() },
+            )
+            .map_err(|e| format!("Failed to register math::atan: {e}"))?;
+        linker
+            .func_wrap(
+                "math",
+                "round",
+                |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.round() },
+            )
+            .map_err(|e| format!("Failed to register math::round: {e}"))?;
+        linker
+            .func_wrap(
+                "math",
+                "floor",
+                |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.floor() },
+            )
+            .map_err(|e| format!("Failed to register math::floor: {e}"))?;
+        linker
+            .func_wrap(
+                "math",
+                "ceil",
+                |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.ceil() },
+            )
+            .map_err(|e| format!("Failed to register math::ceil: {e}"))?;
+        linker
+            .func_wrap(
+                "math",
                 "log",
                 |_caller: Caller<'_, RuntimeState>, x: f64| -> f64 { x.ln() },
             )
             .map_err(|e| format!("Failed to register math::log: {e}"))?;
+        linker
+            .func_wrap(
+                "math",
+                "atan2",
+                |_caller: Caller<'_, RuntimeState>, y: f64, x: f64| -> f64 { y.atan2(x) },
+            )
+            .map_err(|e| format!("Failed to register math::atan2: {e}"))?;
         linker
             .func_wrap(
                 "math",

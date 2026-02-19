@@ -63,6 +63,14 @@ struct RuntimeFunctionIndices {
     // Math function imports (from "math" module)
     math_sin: u32,
     math_cos: u32,
+    math_tan: u32,
+    math_asin: u32,
+    math_acos: u32,
+    math_atan: u32,
+    math_round: u32,
+    math_floor: u32,
+    math_ceil: u32,
+    math_atan2: u32,
     math_pow: u32,
     math_log: u32,
     math_min: u32,
@@ -504,22 +512,30 @@ impl WasmGenerator {
         fn_idx
     }
 
-    /// Setup math function imports (sin, cos, pow, log)
+    /// Setup math function imports (sin/cos/tan/asin/acos/atan/round/floor/ceil/atan2/pow/log/min/max)
     fn setup_math_imports(&mut self) {
-        // Type: (f64) -> f64 for sin, cos, log
+        // Type: (f64) -> f64
         let type_idx_f64_f64 = self.type_section.len();
         self.type_section
             .ty()
             .function(vec![ValType::F64], vec![ValType::F64]);
         self.rt.math_sin = self.add_import_from("math", "sin", type_idx_f64_f64);
         self.rt.math_cos = self.add_import_from("math", "cos", type_idx_f64_f64);
+        self.rt.math_tan = self.add_import_from("math", "tan", type_idx_f64_f64);
+        self.rt.math_asin = self.add_import_from("math", "asin", type_idx_f64_f64);
+        self.rt.math_acos = self.add_import_from("math", "acos", type_idx_f64_f64);
+        self.rt.math_atan = self.add_import_from("math", "atan", type_idx_f64_f64);
+        self.rt.math_round = self.add_import_from("math", "round", type_idx_f64_f64);
+        self.rt.math_floor = self.add_import_from("math", "floor", type_idx_f64_f64);
+        self.rt.math_ceil = self.add_import_from("math", "ceil", type_idx_f64_f64);
         self.rt.math_log = self.add_import_from("math", "log", type_idx_f64_f64);
 
-        // Type: (f64, f64) -> f64 for pow, min, max
+        // Type: (f64, f64) -> f64
         let type_idx_f64_f64_f64 = self.type_section.len();
         self.type_section
             .ty()
             .function(vec![ValType::F64, ValType::F64], vec![ValType::F64]);
+        self.rt.math_atan2 = self.add_import_from("math", "atan2", type_idx_f64_f64_f64);
         self.rt.math_pow = self.add_import_from("math", "pow", type_idx_f64_f64_f64);
         self.rt.math_min = self.add_import_from("math", "min", type_idx_f64_f64_f64);
         self.rt.math_max = self.add_import_from("math", "max", type_idx_f64_f64_f64);
@@ -886,7 +902,7 @@ impl WasmGenerator {
             }
 
             // Translate basic blocks with structured control flow awareness
-            self.emit_function_body(func, &mut wasm_func);
+            self.emit_function_body(func, &mut wasm_func)?;
 
             // Every WASM function body must end with an End instruction
             // (functions are implicit blocks in WASM)
@@ -900,7 +916,11 @@ impl WasmGenerator {
     }
 
     /// Emit a function body handling structured control flow (if/else from JmpIf/Phi)
-    fn emit_function_body(&mut self, func: &mir::Function, wasm_func: &mut Function) {
+    fn emit_function_body(
+        &mut self,
+        func: &mir::Function,
+        wasm_func: &mut Function,
+    ) -> Result<(), String> {
         use mir::Instruction as I;
         use wasm_encoder::Instruction as W;
 
@@ -964,7 +984,7 @@ impl WasmGenerator {
                             phi_info.as_ref().map(|(inputs, _)| &inputs.0),
                             phi_result_type,
                             wasm_func,
-                        );
+                        )?;
 
                         wasm_func.instruction(&W::Else);
 
@@ -976,7 +996,7 @@ impl WasmGenerator {
                             phi_info.as_ref().map(|(inputs, _)| &inputs.1),
                             phi_result_type,
                             wasm_func,
-                        );
+                        )?;
 
                         wasm_func.instruction(&W::End);
 
@@ -987,7 +1007,7 @@ impl WasmGenerator {
                             SkipPhi::from_phi_info(&phi_info),
                             &mut ctx,
                             wasm_func,
-                        );
+                        )?;
                     }
                     I::Switch {
                         scrutinee,
@@ -1004,14 +1024,15 @@ impl WasmGenerator {
                             },
                             &mut ctx,
                             wasm_func,
-                        );
+                        )?;
                     }
                     _ => {
-                        self.translate_instruction_with_dest(dest.as_ref(), instr, wasm_func);
+                        self.translate_instruction_with_dest(dest.as_ref(), instr, wasm_func)?;
                     }
                 }
             }
         }
+        Ok(())
     }
 
     /// Emit a Switch instruction as a nested if/else chain.
@@ -1021,7 +1042,7 @@ impl WasmGenerator {
         switch_ctx: SwitchContext,
         ctx: &mut BlockEmitContext,
         wasm_func: &mut Function,
-    ) {
+    ) -> Result<(), String> {
         use wasm_encoder::Instruction as W;
 
         let merge_idx = switch_ctx.merge_block as usize;
@@ -1061,7 +1082,7 @@ impl WasmGenerator {
 
             // Emit case block with nested control flow support
             ctx.mark_processed(case_idx);
-            self.emit_block_instructions(&ctx.blocks[case_idx], ctx, wasm_func);
+            self.emit_block_instructions(&ctx.blocks[case_idx], ctx, wasm_func)?;
 
             // Push phi input for this case
             if let Some(input) = phi_inputs.get(i) {
@@ -1079,7 +1100,7 @@ impl WasmGenerator {
         if let Some(default_bb) = switch_ctx.default_block {
             let default_idx = default_bb as usize;
             ctx.mark_processed(default_idx);
-            self.emit_block_instructions(&ctx.blocks[default_idx], ctx, wasm_func);
+            self.emit_block_instructions(&ctx.blocks[default_idx], ctx, wasm_func)?;
 
             if let Some(input) = phi_inputs.get(num_cases) {
                 if let Some(expected) = phi_result_type {
@@ -1110,7 +1131,8 @@ impl WasmGenerator {
             SkipPhi::from_phi_switch_info(&phi_switch_info),
             ctx,
             wasm_func,
-        );
+        )?;
+        Ok(())
     }
 
     /// Find the Phi instruction in a merge block.
@@ -1144,7 +1166,7 @@ impl WasmGenerator {
         phi_input: Option<&VPtr>,
         expected_phi_type: Option<ValType>,
         func: &mut Function,
-    ) {
+    ) -> Result<(), String> {
         use mir::Instruction as I;
         use wasm_encoder::Instruction as W;
 
@@ -1188,7 +1210,7 @@ impl WasmGenerator {
                         phi_info.as_ref().map(|(inputs, _)| &inputs.0),
                         inner_phi_type,
                         func,
-                    );
+                    )?;
 
                     func.instruction(&W::Else);
 
@@ -1199,12 +1221,12 @@ impl WasmGenerator {
                         phi_info.as_ref().map(|(inputs, _)| &inputs.1),
                         inner_phi_type,
                         func,
-                    );
+                    )?;
 
                     func.instruction(&W::End);
 
                     ctx.mark_processed(merge_idx);
-                    self.emit_merge_block(merge_idx, SkipPhi::from_phi_info(&phi_info), ctx, func);
+                    self.emit_merge_block(merge_idx, SkipPhi::from_phi_info(&phi_info), ctx, func)?;
                 }
                 I::Switch {
                     scrutinee,
@@ -1221,10 +1243,10 @@ impl WasmGenerator {
                         },
                         ctx,
                         func,
-                    );
+                    )?;
                 }
                 _ => {
-                    self.translate_instruction_with_dest(dest.as_ref(), instr, func);
+                    self.translate_instruction_with_dest(dest.as_ref(), instr, func)?;
                 }
             }
         }
@@ -1236,6 +1258,7 @@ impl WasmGenerator {
                 self.emit_value_load(input, func);
             }
         }
+        Ok(())
     }
 
     /// Emit all instructions in a block, handling nested control flow (JmpIf, Switch).
@@ -1245,7 +1268,7 @@ impl WasmGenerator {
         block: &mir::Block,
         ctx: &mut BlockEmitContext,
         func: &mut Function,
-    ) {
+    ) -> Result<(), String> {
         use mir::Instruction as I;
         use wasm_encoder::Instruction as W;
 
@@ -1289,7 +1312,7 @@ impl WasmGenerator {
                         phi_info.as_ref().map(|(inputs, _)| &inputs.0),
                         inner_phi_type,
                         func,
-                    );
+                    )?;
 
                     func.instruction(&W::Else);
 
@@ -1300,12 +1323,12 @@ impl WasmGenerator {
                         phi_info.as_ref().map(|(inputs, _)| &inputs.1),
                         inner_phi_type,
                         func,
-                    );
+                    )?;
 
                     func.instruction(&W::End);
 
                     ctx.mark_processed(merge_idx);
-                    self.emit_merge_block(merge_idx, SkipPhi::from_phi_info(&phi_info), ctx, func);
+                    self.emit_merge_block(merge_idx, SkipPhi::from_phi_info(&phi_info), ctx, func)?;
                 }
                 I::Switch {
                     scrutinee,
@@ -1322,13 +1345,14 @@ impl WasmGenerator {
                         },
                         ctx,
                         func,
-                    );
+                    )?;
                 }
                 _ => {
-                    self.translate_instruction_with_dest(dest.as_ref(), instr, func);
+                    self.translate_instruction_with_dest(dest.as_ref(), instr, func)?;
                 }
             }
         }
+        Ok(())
     }
 
     /// Emit a merge block, handling the Phi at the top (already on stack from if/else).
@@ -1345,7 +1369,7 @@ impl WasmGenerator {
         skip_phi: SkipPhi,
         ctx: &mut BlockEmitContext,
         func: &mut Function,
-    ) {
+    ) -> Result<(), String> {
         use mir::Instruction as I;
         use wasm_encoder::Instruction as W;
 
@@ -1415,7 +1439,7 @@ impl WasmGenerator {
                     phi_info.as_ref().map(|(inputs, _)| &inputs.0),
                     inner_phi_type,
                     func,
-                );
+                )?;
 
                 func.instruction(&W::Else);
 
@@ -1426,12 +1450,12 @@ impl WasmGenerator {
                     phi_info.as_ref().map(|(inputs, _)| &inputs.1),
                     inner_phi_type,
                     func,
-                );
+                )?;
 
                 func.instruction(&W::End);
 
                 ctx.mark_processed(merge_idx);
-                self.emit_merge_block(merge_idx, SkipPhi::from_phi_info(&phi_info), ctx, func);
+                self.emit_merge_block(merge_idx, SkipPhi::from_phi_info(&phi_info), ctx, func)?;
             } else if let I::Switch {
                 scrutinee,
                 cases,
@@ -1449,11 +1473,12 @@ impl WasmGenerator {
                     },
                     ctx,
                     func,
-                );
+                )?;
             } else {
-                self.translate_instruction_with_dest(dest.as_ref(), instr, func);
+                self.translate_instruction_with_dest(dest.as_ref(), instr, func)?;
             }
         }
+        Ok(())
     }
 
     /// Infer the WASM ValType for function arguments by scanning how they are
@@ -1761,7 +1786,7 @@ impl WasmGenerator {
         dest: &mir::Value,
         instr: &mir::Instruction,
         func: &mut Function,
-    ) {
+    ) -> Result<(), String> {
         use mir::Instruction as I;
         use wasm_encoder::Instruction as W;
 
@@ -1770,7 +1795,7 @@ impl WasmGenerator {
         let is_return = matches!(instr, I::Return(_, _) | I::ReturnFeed(_, _));
 
         // Generate the instruction (pushes result to stack)
-        self.translate_instruction(instr, func);
+        self.translate_instruction(instr, func)?;
 
         // Calls to Unit-returning functions produce no value on the WASM stack
         // (both MIR functions and plugin imports strip Unit return types).
@@ -1811,6 +1836,7 @@ impl WasmGenerator {
                 }
             }
         }
+        Ok(())
     }
 
     /// Returns true if the instruction produces a value on the WASM stack.
@@ -1900,7 +1926,11 @@ impl WasmGenerator {
     }
 
     /// Translate a single MIR instruction to WASM instructions
-    fn translate_instruction(&mut self, instr: &mir::Instruction, func: &mut Function) {
+    fn translate_instruction(
+        &mut self,
+        instr: &mir::Instruction,
+        func: &mut Function,
+    ) -> Result<(), String> {
         use mir::Instruction as I;
         use wasm_encoder::Instruction as W;
 
@@ -2814,11 +2844,10 @@ impl WasmGenerator {
                             func.instruction(&W::I32Const(temp_addr as i32));
                             func.instruction(&W::Call(import_idx));
                         } else {
-                            eprintln!(
-                                "Warning: Unknown ext function (multi-word): {}",
+                            return Err(format!(
+                                "Unknown external function in Call (multi-word return): {}",
                                 name.as_str()
-                            );
-                            // Don't load arguments for unknown functions
+                            ));
                         }
                         // Push temp address as I64 — this is the tuple pointer result
                         func.instruction(&W::I64Const(temp_addr as i64));
@@ -2832,19 +2861,10 @@ impl WasmGenerator {
                             }
                             func.instruction(&W::Call(import_idx));
                         } else {
-                            // Unknown external function - don't load args, just push placeholder
-                            eprintln!(
-                                "Warning: Unknown external function in Call: {}",
+                            return Err(format!(
+                                "Unknown external function in Call: {}",
                                 name.as_str()
-                            );
-                            // Push placeholder value (skip for Unit returns)
-                            if !matches!(ret_ty.to_type(), Type::Primitive(PType::Unit)) {
-                                match Self::type_to_valtype(&ret_ty.to_type()) {
-                                    ValType::F64 => func.instruction(&W::F64Const(0.0)),
-                                    ValType::I64 => func.instruction(&W::I64Const(0)),
-                                    _ => func.instruction(&W::I32Const(0)),
-                                };
-                            }
+                            ));
                         }
                     }
                 } else {
@@ -2893,15 +2913,10 @@ impl WasmGenerator {
                             }
                             func.instruction(&W::Call(import_idx));
                         } else {
-                            // Unknown external function - don't load args, just push placeholder
-                            log::warn!("Warning: Unknown external function: {}", name.as_str());
-                            if !matches!(ret_ty.to_type(), Type::Primitive(PType::Unit)) {
-                                match Self::type_to_valtype(&ret_ty.to_type()) {
-                                    ValType::F64 => func.instruction(&W::F64Const(0.0)),
-                                    ValType::I64 => func.instruction(&W::I64Const(0)),
-                                    _ => func.instruction(&W::I32Const(0)),
-                                };
-                            }
+                            return Err(format!(
+                                "Unknown external function in CallIndirect: {}",
+                                name.as_str()
+                            ));
                         }
                     }
                     _ => {
@@ -3240,11 +3255,10 @@ impl WasmGenerator {
                         if let Some(import_idx) = self.resolve_ext_function(name) {
                             func.instruction(&W::Call(import_idx));
                         } else {
-                            match Self::type_to_valtype(&ret_ty.to_type()) {
-                                ValType::F64 => func.instruction(&W::F64Const(0.0)),
-                                ValType::I64 => func.instruction(&W::I64Const(0)),
-                                _ => func.instruction(&W::I32Const(0)),
-                            };
+                            return Err(format!(
+                                "Unknown external function in CallCls: {}",
+                                name.as_str()
+                            ));
                         }
                     }
                     _ => {
@@ -3413,6 +3427,7 @@ impl WasmGenerator {
                 // Unimplemented instructions - no-op
             }
         }
+        Ok(())
     }
 
     /// Helper: Load a scalar value, dereferencing if the source is a GetElement register.
@@ -3722,6 +3737,14 @@ impl WasmGenerator {
             "split_tail" => Some(self.rt.builtin_split_tail),
             "sin" => Some(self.rt.math_sin),
             "cos" => Some(self.rt.math_cos),
+            "tan" => Some(self.rt.math_tan),
+            "asin" => Some(self.rt.math_asin),
+            "acos" => Some(self.rt.math_acos),
+            "atan" => Some(self.rt.math_atan),
+            "round" => Some(self.rt.math_round),
+            "floor" => Some(self.rt.math_floor),
+            "ceil" => Some(self.rt.math_ceil),
+            "atan2" => Some(self.rt.math_atan2),
             "pow" => Some(self.rt.math_pow),
             "log" => Some(self.rt.math_log),
             "min" => Some(self.rt.math_min),
@@ -3976,6 +3999,7 @@ impl WasmGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::interner::ToSymbol;
     use crate::ExecContext;
 
     /// Helper: Create a path to write WASM output file in tmp directory
@@ -4062,6 +4086,49 @@ mod tests {
             result.is_ok(),
             "WASM validation should pass for simple return function. Error: {:?}",
             result.err()
+        );
+    }
+
+    #[test]
+    fn test_wasmgen_unknown_external_function_errors() {
+        let src = "fn dsp() -> float { probeln(0.0) }";
+        let mir = compile_to_mir(src);
+        let mut mir = (*mir).clone();
+        let unknown_name = "__unknown_ext_for_test".to_symbol();
+
+        let patched = mir
+            .functions
+            .iter_mut()
+            .flat_map(|func| func.body.iter_mut())
+            .flat_map(|block| block.0.iter_mut())
+            .find_map(|(_, instr)| match instr {
+                mir::Instruction::Call(fn_ptr, _, _)
+                | mir::Instruction::CallIndirect(fn_ptr, _, _)
+                | mir::Instruction::CallCls(fn_ptr, _, _) => {
+                    if let mir::Value::ExtFunction(_, fn_ty) = fn_ptr.as_ref() {
+                        *fn_ptr = Arc::new(mir::Value::ExtFunction(unknown_name, *fn_ty));
+                        Some(())
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .is_some();
+
+        assert!(patched, "Failed to patch MIR with unknown external function");
+
+        let mut generator = WasmGenerator::new_without_plugins(Arc::new(mir));
+        let err = generator
+            .generate()
+            .expect_err("WASM generation should fail for unknown external function");
+        assert!(
+            err.contains("Unknown external function"),
+            "Error should mention unknown external function, got: {err}"
+        );
+        assert!(
+            err.contains("__unknown_ext_for_test"),
+            "Error should include unresolved function name, got: {err}"
         );
     }
 
