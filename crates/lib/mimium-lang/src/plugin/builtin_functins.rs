@@ -10,7 +10,7 @@ fn lift_value_to_code(value: crate::interpreter::Value) -> crate::interpreter::V
         Err(err) => panic!("Invalid argument for lift: cannot convert value to code: {err:?}"),
     }
 }
-// Polymorphic version of lift, which can lift any value to code. 
+// Polymorphic version of lift, which can lift any value to code.
 mod lift {
     use super::*;
     use crate::code;

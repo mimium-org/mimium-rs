@@ -832,7 +832,7 @@ impl WasmGenerator {
 
         Ok(())
     }
-    
+
     /// Populate the WASM function table with indirect-call adapters.
     /// Table index i maps to adapter function index for MIR function i.
     fn setup_function_table(&mut self) {
@@ -4259,9 +4259,11 @@ impl WasmGenerator {
 
     fn allows_scalar_inference_override(ty: &Type) -> bool {
         match ty {
-            Type::Unknown | Type::Any | Type::Failure | Type::TypeAlias(_) | Type::TypeScheme(_) => {
-                true
-            }
+            Type::Unknown
+            | Type::Any
+            | Type::Failure
+            | Type::TypeAlias(_)
+            | Type::TypeScheme(_) => true,
             Type::Intermediate(_) => true,
             Type::Tuple(elems) if elems.len() == 1 => {
                 Self::allows_scalar_inference_override(&elems[0].to_type())
