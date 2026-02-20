@@ -1,7 +1,8 @@
 use crate::{
-    interner::ToSymbol,
-    plugin::{CommonFunction, InstantPlugin, MacroInfo, Plugin},
+    interner::{Symbol, ToSymbol, TypeNodeId},
+    plugin::{CommonFunction, ExtClsInfo, InstantPlugin, MacroInfo, Plugin},
 };
+use std::{cell::RefCell, rc::Rc};
 mod lift_f {
     use super::*;
     use crate::ast::{Expr, Literal};
@@ -152,7 +153,7 @@ mod split_tail {
 
         // Get the last element (tail) before we create new arrays
         let tail_offset = ((len - 1) * elem_size) as usize;
-        let tail = array.get_data()[tail_offset];
+        let tail_words = array.get_data()[tail_offset..tail_offset + elem_size as usize].to_vec();
 
         // Create new array for rest (all elements except last)
         let rest_len = len - 1;
@@ -166,12 +167,14 @@ mod split_tail {
         rest_data[..copy_len].copy_from_slice(&src_slice);
 
         // Allocate tuple on stack to return (rest_array, tail)
-        // We need to return 2 values, so we use a tuple representation
-        // Stack layout: [rest_array_idx, tail]
+        // Stack layout: [rest_array_idx, tail_words...]
         machine.set_stack(0, rest_arr_idx);
-        machine.set_stack(1, tail);
+        tail_words
+            .iter()
+            .enumerate()
+            .for_each(|(i, word)| machine.set_stack((i + 1) as i64, *word));
 
-        2 // Return 2 values (tuple)
+        1 + elem_size as i64
     }
 
     fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
@@ -236,7 +239,7 @@ mod split_head {
         let elem_size = array.get_elem_word_size();
 
         // Get the first element (head)
-        let head = array.get_data()[0];
+        let head_words = array.get_data()[0..elem_size as usize].to_vec();
 
         // Create new array for rest (all elements except first)
         let rest_len = len - 1;
@@ -253,11 +256,14 @@ mod split_head {
         rest_data[..copy_len].copy_from_slice(&src_slice);
 
         // Allocate tuple on stack to return (head, rest_array)
-        // Stack layout: [head, rest_array_idx]
-        machine.set_stack(0, head);
-        machine.set_stack(1, rest_arr_idx);
+        // Stack layout: [head_words..., rest_array_idx]
+        head_words
+            .iter()
+            .enumerate()
+            .for_each(|(i, word)| machine.set_stack(i as i64, *word));
+        machine.set_stack(elem_size as i64, rest_arr_idx);
 
-        2 // Return 2 values (tuple)
+        elem_size as i64 + 1
     }
 
     fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
@@ -436,26 +442,26 @@ mod prepend {
     fn machine_function(
         machine: &mut crate::runtime::vm::Machine,
     ) -> crate::runtime::vm::ReturnCode {
-        let elem = machine.get_stack(0);
         let arr_idx = machine.get_stack(1);
         let array = machine.arrays.get_array(arr_idx);
-        let len = array.get_length_array();
-        let elem_size = array.get_elem_word_size();
+        let len = array.get_length_array() as usize;
+        let elem_size = array.get_elem_word_size() as usize;
 
         if elem_size != 1 {
             panic!(
-                "prepend runtime currently supports arrays with elem word size 1, found {elem_size}"
+                "prepend runtime base implementation expects elem word size 1, found {elem_size}. use monomorphized prepend$arityN"
             );
         }
 
-        let new_arr_idx = machine.arrays.alloc_array(len + 1, elem_size);
-        let src = machine.arrays.get_array(arr_idx).get_data().to_vec();
-        let copy_len = (len * elem_size) as usize;
+        let new_arr_idx = machine.arrays.alloc_array((len + 1) as u64, elem_size as u64);
+        let copy_len = len * elem_size;
+        let elem_words = vec![machine.get_stack(0)];
+        let arr_data = machine.arrays.get_array(arr_idx).get_data().to_vec();
 
         {
             let dst = machine.arrays.get_array_mut(new_arr_idx).get_data_mut();
-            dst[0] = elem;
-            dst[1..1 + copy_len].copy_from_slice(&src[..copy_len]);
+            dst[..elem_size].copy_from_slice(&elem_words);
+            dst[elem_size..elem_size + copy_len].copy_from_slice(&arr_data[..copy_len]);
         }
 
         machine.set_stack(0, new_arr_idx);
@@ -488,6 +494,148 @@ mod prepend {
             fun: machine_function,
         }
     }
+}
+
+fn parse_arity_specialized_name(name: Symbol, base: &str) -> Option<usize> {
+    name.as_str()
+        .strip_prefix(base)
+        .and_then(|s| s.strip_prefix("$arity"))
+        .and_then(|n| n.parse::<usize>().ok())
+}
+
+pub(crate) fn try_get_monomorphized_ext_fn_name(
+    fn_name: Symbol,
+    _concrete_arg_ty: TypeNodeId,
+    concrete_ret_ty: TypeNodeId,
+) -> Option<Symbol> {
+    let elem_word_size = match fn_name.as_str() {
+        "prepend" => match concrete_ret_ty.to_type() {
+            crate::types::Type::Array(elem_ty) => elem_ty.word_size(),
+            _ => return None,
+        },
+        "split_head" => match concrete_ret_ty.to_type() {
+            crate::types::Type::Tuple(elems) if elems.len() == 2 => elems[0].word_size(),
+            _ => return None,
+        },
+        "split_tail" => match concrete_ret_ty.to_type() {
+            crate::types::Type::Tuple(elems) if elems.len() == 2 => elems[1].word_size(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+
+    Some(
+        format!("{}$arity{}", fn_name.as_str(), elem_word_size)
+            .to_symbol(),
+    )
+}
+
+pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Option<ExtClsInfo> {
+    let make_prepend = |elem_size: usize| {
+        let f = Rc::new(RefCell::new(
+            move |machine: &mut crate::runtime::vm::Machine| -> crate::runtime::vm::ReturnCode {
+                let arr_idx = machine.get_stack(elem_size as i64);
+                let arr = machine.arrays.get_array(arr_idx);
+                if arr.get_elem_word_size() as usize != elem_size {
+                    panic!(
+                        "prepend$arity{} called with array elem size {}",
+                        elem_size,
+                        arr.get_elem_word_size()
+                    );
+                }
+                let len = arr.get_length_array() as usize;
+                let src = arr.get_data().to_vec();
+                let new_arr_idx = machine.arrays.alloc_array((len + 1) as u64, elem_size as u64);
+                let elem_words = (0..elem_size)
+                    .map(|i| machine.get_stack(i as i64))
+                    .collect::<Vec<_>>();
+                let dst = machine.arrays.get_array_mut(new_arr_idx).get_data_mut();
+                dst[..elem_size].copy_from_slice(&elem_words);
+                dst[elem_size..elem_size + len * elem_size]
+                    .copy_from_slice(&src[..len * elem_size]);
+                machine.set_stack(0, new_arr_idx);
+                1
+            },
+        ));
+        ExtClsInfo::new(name, ty, f)
+    };
+
+    let make_split_head = |elem_size: usize| {
+        let f = Rc::new(RefCell::new(
+            move |machine: &mut crate::runtime::vm::Machine| -> crate::runtime::vm::ReturnCode {
+                let arr_idx = machine.get_stack(0);
+                let arr = machine.arrays.get_array(arr_idx);
+                if arr.get_elem_word_size() as usize != elem_size {
+                    panic!(
+                        "split_head$arity{} called with array elem size {}",
+                        elem_size,
+                        arr.get_elem_word_size()
+                    );
+                }
+                let len = arr.get_length_array() as usize;
+                if len == 0 {
+                    panic!("Cannot split_head on empty array");
+                }
+                let data = arr.get_data().to_vec();
+                let head = data[..elem_size].to_vec();
+                let rest_arr_idx = machine.arrays.alloc_array((len - 1) as u64, elem_size as u64);
+                let rest_copy_len = (len - 1) * elem_size;
+                let rest_src_offset = elem_size;
+                machine.arrays.get_array_mut(rest_arr_idx).get_data_mut()[..rest_copy_len]
+                    .copy_from_slice(&data[rest_src_offset..rest_src_offset + rest_copy_len]);
+                head.iter()
+                    .enumerate()
+                    .for_each(|(i, v)| machine.set_stack(i as i64, *v));
+                machine.set_stack(elem_size as i64, rest_arr_idx);
+                elem_size as i64 + 1
+            },
+        ));
+        ExtClsInfo::new(name, ty, f)
+    };
+
+    let make_split_tail = |elem_size: usize| {
+        let f = Rc::new(RefCell::new(
+            move |machine: &mut crate::runtime::vm::Machine| -> crate::runtime::vm::ReturnCode {
+                let arr_idx = machine.get_stack(0);
+                let arr = machine.arrays.get_array(arr_idx);
+                if arr.get_elem_word_size() as usize != elem_size {
+                    panic!(
+                        "split_tail$arity{} called with array elem size {}",
+                        elem_size,
+                        arr.get_elem_word_size()
+                    );
+                }
+                let len = arr.get_length_array() as usize;
+                if len == 0 {
+                    panic!("Cannot split_tail on empty array");
+                }
+                let data = arr.get_data().to_vec();
+                let tail_offset = (len - 1) * elem_size;
+                let tail = data[tail_offset..tail_offset + elem_size].to_vec();
+                let rest_arr_idx = machine.arrays.alloc_array((len - 1) as u64, elem_size as u64);
+                let rest_copy_len = (len - 1) * elem_size;
+                machine.arrays.get_array_mut(rest_arr_idx).get_data_mut()[..rest_copy_len]
+                    .copy_from_slice(&data[..rest_copy_len]);
+                machine.set_stack(0, rest_arr_idx);
+                tail.iter()
+                    .enumerate()
+                    .for_each(|(i, v)| machine.set_stack((i + 1) as i64, *v));
+                elem_size as i64 + 1
+            },
+        ));
+        ExtClsInfo::new(name, ty, f)
+    };
+
+    if let Some(arity) = parse_arity_specialized_name(name, "prepend") {
+        return Some(make_prepend(arity));
+    }
+    if let Some(arity) = parse_arity_specialized_name(name, "split_head") {
+        return Some(make_split_head(arity));
+    }
+    if let Some(arity) = parse_arity_specialized_name(name, "split_tail") {
+        return Some(make_split_tail(arity));
+    }
+    None
 }
 
 mod map {

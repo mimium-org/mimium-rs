@@ -327,3 +327,30 @@ pub fn get_ext_closures(
         .iter()
         .flat_map(|plugin| plugin.get_ext_closures().into_iter())
 }
+
+pub(crate) type MonomorphizedExtFnNameResolver =
+    fn(Symbol, TypeNodeId, TypeNodeId) -> Option<Symbol>;
+
+const MONOMORPHIZED_EXT_FN_NAME_RESOLVERS: [MonomorphizedExtFnNameResolver; 1] =
+    [builtin_functins::try_get_monomorphized_ext_fn_name];
+
+pub(crate) fn resolve_monomorphized_ext_fn_name(
+    fn_name: Symbol,
+    concrete_arg_ty: TypeNodeId,
+    concrete_ret_ty: TypeNodeId,
+) -> Option<Symbol> {
+    MONOMORPHIZED_EXT_FN_NAME_RESOLVERS
+        .iter()
+        .find_map(|resolver| resolver(fn_name, concrete_arg_ty, concrete_ret_ty))
+}
+
+pub(crate) type SpecializedExtClsResolver = fn(Symbol, TypeNodeId) -> Option<ExtClsInfo>;
+
+const SPECIALIZED_EXTCLS_RESOLVERS: [SpecializedExtClsResolver; 1] =
+    [builtin_functins::try_make_specialized_extcls];
+
+pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Option<ExtClsInfo> {
+    SPECIALIZED_EXTCLS_RESOLVERS
+        .iter()
+        .find_map(|resolver| resolver(name, ty))
+}

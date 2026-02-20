@@ -4,7 +4,7 @@ use super::typing::{InferContext, infer_root};
 use crate::compiler::parser;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
-use crate::plugin::MacroFunction;
+use crate::plugin::{MacroFunction, resolve_monomorphized_ext_fn_name};
 use crate::utils::miniprint::MiniPrint;
 use crate::{function, interpreter, numeric, unit};
 pub mod convert_pronoun;
@@ -1601,13 +1601,20 @@ impl Context {
                                 concrete_ret_ty.to_type()
                             );
 
-                            let mangled_name = format!(
-                                "{}_mono_{}_{}",
-                                fn_name.as_str(),
-                                concrete_arg_ty.to_mangled_string(),
-                                concrete_ret_ty.to_mangled_string()
+                            let mangled_name = resolve_monomorphized_ext_fn_name(
+                                *fn_name,
+                                concrete_arg_ty,
+                                concrete_ret_ty,
                             )
-                            .to_symbol();
+                            .unwrap_or_else(|| {
+                                    format!(
+                                        "{}_mono_{}_{}",
+                                        fn_name.as_str(),
+                                        concrete_arg_ty.to_mangled_string(),
+                                        concrete_ret_ty.to_mangled_string()
+                                    )
+                                    .to_symbol()
+                                });
 
                             let concrete_fn_ty = Type::Function {
                                 arg: concrete_arg_ty,
@@ -1652,6 +1659,19 @@ impl Context {
                     }
                 } else {
                     (f_val.clone(), ty)
+                };
+
+                let f_to_call = match f_to_call.as_ref() {
+                    Value::ExtFunction(fn_name, fn_ty)
+                        if resolve_monomorphized_ext_fn_name(*fn_name, at, monomorphized_rt)
+                            .is_some() =>
+                    {
+                        let specialized_name =
+                            resolve_monomorphized_ext_fn_name(*fn_name, at, monomorphized_rt)
+                                .expect("checked above");
+                        Arc::new(Value::ExtFunction(specialized_name, *fn_ty))
+                    }
+                    _ => f_to_call,
                 };
 
                 // Handle parameter packing/unpacking if needed

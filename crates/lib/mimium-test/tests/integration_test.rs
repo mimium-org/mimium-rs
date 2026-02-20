@@ -74,6 +74,13 @@ fn array_length() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn array_primitives_tuple_runtime() {
+    let res = run_file_test_mono("array_primitives_tuple_runtime.mmm", 1).unwrap();
+    let ans = vec![88.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn generic_id() {
     let res = run_file_test_mono("generic_id.mmm", 1).unwrap();
     let ans = vec![6.0];
