@@ -883,6 +883,34 @@ fn probe_macro() {
     assert_eq!(res, ans);
 }
 
+#[test]
+fn probe_value_macro() {
+    let (_, src) = load_src("probe_value_macro.mmm");
+
+    let mut driver = mimium_audiodriver::backends::local_buffer::LocalBufferDriver::new(1);
+    let audiodriverplug: Box<dyn mimium_lang::plugin::Plugin> = Box::new(driver.get_as_plugin());
+    let mut ctx = mimium_lang::ExecContext::new(
+        [audiodriverplug].into_iter(),
+        None,
+        mimium_lang::Config::default(),
+    );
+
+    ctx.add_system_plugin(mimium_guitools::GuiToolPlugin::default());
+
+    ctx.prepare_machine(&src).unwrap();
+    let _ = ctx.run_main();
+    let runtimedata = {
+        let ctxmut: &mut mimium_lang::ExecContext = &mut ctx;
+        RuntimeData::try_from(ctxmut).unwrap()
+    };
+    driver.init(runtimedata, None);
+    driver.play();
+    let res = driver.get_generated_samples().to_vec();
+
+    let ans = vec![1.5, 1.2]; // ProbeValue should pass through tuple runtime value
+    assert_eq!(res, ans);
+}
+
 #[wasm_bindgen_test(unsupported = test)]
 fn twodelay() {
     let res = run_file_test_stereo("twodelay.mmm", 5).unwrap();

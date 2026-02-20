@@ -1664,6 +1664,7 @@ impl Context {
                     (f_val.clone(), ty)
                 };
 
+                let mut call_arg_ty = at;
                 let f_to_call = match f_to_call.as_ref() {
                     Value::ExtFunction(fn_name, fn_ty)
                         if resolve_monomorphized_ext_fn_name(*fn_name, at, monomorphized_rt)
@@ -1672,7 +1673,16 @@ impl Context {
                         let specialized_name =
                             resolve_monomorphized_ext_fn_name(*fn_name, at, monomorphized_rt)
                                 .expect("checked above");
-                        Arc::new(Value::ExtFunction(specialized_name, *fn_ty))
+                        if let Some((specialized_fn_ty, _stage)) =
+                            self.typeenv.env.lookup(&specialized_name).cloned()
+                        {
+                            if let Type::Function { arg, .. } = specialized_fn_ty.to_type() {
+                                call_arg_ty = arg;
+                            }
+                            Arc::new(Value::ExtFunction(specialized_name, specialized_fn_ty))
+                        } else {
+                            Arc::new(Value::ExtFunction(specialized_name, *fn_ty))
+                        }
                     }
                     _ => f_to_call,
                 };
@@ -1681,7 +1691,7 @@ impl Context {
                 // How can we distinguish when the function takes a single tuple and argument is just a single tuple
                 let (evaluated_args, arg_states) = self.eval_args(args);
 
-                let tuple_map_param_ty = Self::auto_spread_param_endpoint_type(at);
+                let tuple_map_param_ty = Self::auto_spread_param_endpoint_type(call_arg_ty);
                 let tuple_map_applicable = args.len() == 1
                     && !needs_monomorphization
                     && tuple_map_param_ty.is_some()
@@ -1709,18 +1719,55 @@ impl Context {
 
                 let atvvec = if args.len() == 1 {
                     let (arg_val, ty) = evaluated_args.first().unwrap().clone();
-                    if ty.to_type().can_be_unpacked() {
-                        self.unpack_argument(f_val, arg_val, at, ty)
+                    let should_unpack_single_arg = match f_to_call.as_ref() {
+                        Value::Function(_) | Value::ExtFunction(_, _) => true,
+                        Value::Global(v) => {
+                            matches!(v.as_ref(), Value::Function(_) | Value::ExtFunction(_, _))
+                        }
+                        _ => false,
+                    };
+                    let callee_expects_aggregate_fields = match call_arg_ty.to_type() {
+                        Type::Tuple(_) => true,
+                        Type::Record(fields) => {
+                            fields.len() > 1 || matches!(ty.to_type(), Type::Record(_))
+                        }
+                        _ => false,
+                    };
+                    if should_unpack_single_arg
+                        && callee_expects_aggregate_fields
+                        && ty.to_type().can_be_unpacked()
+                    {
+                        self.unpack_argument(f_val, arg_val, call_arg_ty, ty)
                     } else {
                         vec![(arg_val, ty)]
                     }
                 } else {
-                    evaluated_args
+                    let expected_arity = match call_arg_ty.to_type() {
+                        Type::Tuple(ts) => ts.len(),
+                        Type::Record(fields) => fields.len(),
+                        _ => 0,
+                    };
+                    let mut iter = evaluated_args.into_iter();
+                    let mut packed = Vec::new();
+                    if let Some((first_val, first_ty)) = iter.next() {
+                        if expected_arity > args.len() && first_ty.to_type().can_be_unpacked() {
+                            packed.extend(self.unpack_argument(
+                                f_val.clone(),
+                                first_val,
+                                call_arg_ty,
+                                first_ty,
+                            ));
+                        } else {
+                            packed.push((first_val, first_ty));
+                        }
+                    }
+                    packed.extend(iter);
+                    packed
                 };
 
                 // Coerce arguments based on subtype relationships (union wrapping, int->float, etc.)
                 let raw_atvvec = atvvec.clone();
-                let atvvec = self.coerce_args_for_call(atvvec, at);
+                let atvvec = self.coerce_args_for_call(atvvec, call_arg_ty);
 
                 let (res, state) =
                     self.emit_call_to_value(&f_to_call, &raw_atvvec, &atvvec, monomorphized_rt);

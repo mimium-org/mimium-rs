@@ -304,6 +304,13 @@ impl SkipPhi {
 }
 
 impl WasmGenerator {
+    fn ext_function_uses_dest_ptr(name: Symbol) -> bool {
+        name.as_str() == "split_head"
+            || name.as_str() == "split_tail"
+            || name.as_str().starts_with("split_head$arity")
+            || name.as_str().starts_with("split_tail$arity")
+    }
+
     /// Create a new WASM generator for the given MIR.
     ///
     /// `ext_fns` should contain the complete list of external function type
@@ -2984,7 +2991,8 @@ impl WasmGenerator {
                 // and the host writes the result there.
                 if let mir::Value::ExtFunction(name, _fn_ty) = fn_ptr.as_ref() {
                     let ret_words = ret_ty.word_size() as u32;
-                    if ret_words > 1 {
+                    let use_dest_ptr = ret_words > 1 && Self::ext_function_uses_dest_ptr(*name);
+                    if use_dest_ptr {
                         // Multi-word return: dest-pointer convention
                         let temp_addr = self.mem_layout.alloc_offset;
                         self.mem_layout.alloc_offset += ret_words * 8;
@@ -3112,8 +3120,8 @@ impl WasmGenerator {
                         self.emit_value_load(closure_ptr, func);
                         func.instruction(&W::I64Store(memarg));
 
-                        // Push arguments as raw i64 words for indirect-call ABI.
-                        self.emit_call_args_word(args, func);
+                        // Push one raw i64 word per MIR argument for indirect-call ABI.
+                        self.emit_call_args_word_packed(args, func);
 
                         // Load function table index from closure[0]
                         self.emit_value_load(closure_ptr, func);
@@ -3122,14 +3130,7 @@ impl WasmGenerator {
                         func.instruction(&W::I32WrapI64); // table index must be i32
 
                         // Compute call_indirect type from the call site signature
-                        let param_types: Vec<ValType> = args
-                            .iter()
-                            .flat_map(|(_, ty)| {
-                                Self::flatten_type_to_valtypes(&ty.to_type())
-                                    .into_iter()
-                                    .map(|_| ValType::I64)
-                            })
-                            .collect();
+                        let param_types: Vec<ValType> = vec![ValType::I64; args.len()];
                         let return_types: Vec<ValType> = {
                             let ty = ret_ty.to_type();
                             if matches!(ty, Type::Primitive(PType::Unit)) {
@@ -3466,8 +3467,8 @@ impl WasmGenerator {
                         self.emit_value_load(fn_ptr, func);
                         func.instruction(&W::I64Store(memarg));
 
-                        // Push arguments as raw i64 words for indirect-call ABI.
-                        self.emit_call_args_word(args, func);
+                        // Push one raw i64 word per MIR argument for indirect-call ABI.
+                        self.emit_call_args_word_packed(args, func);
 
                         // Load function table index from closure[0]
                         self.emit_value_load(fn_ptr, func);
@@ -3476,14 +3477,7 @@ impl WasmGenerator {
                         func.instruction(&W::I32WrapI64);
 
                         // Compute call_indirect type
-                        let param_types: Vec<ValType> = args
-                            .iter()
-                            .flat_map(|(_, ty)| {
-                                Self::flatten_type_to_valtypes(&ty.to_type())
-                                    .into_iter()
-                                    .map(|_| ValType::I64)
-                            })
-                            .collect();
+                        let param_types: Vec<ValType> = vec![ValType::I64; args.len()];
                         let return_types: Vec<ValType> = {
                             let ty = ret_ty.to_type();
                             if matches!(ty, Type::Primitive(PType::Unit)) {
@@ -3865,6 +3859,27 @@ impl WasmGenerator {
                     };
                     func.instruction(&W::I64Load(load_memarg));
                 }
+            }
+        }
+    }
+
+    /// Emit indirect-call arguments as one raw i64 word per MIR argument.
+    ///
+    /// This avoids flattening tuple/record arguments twice. If a MIR argument
+    /// is aggregate-typed, it is already represented by a pointer word.
+    fn emit_call_args_word_packed(&mut self, args: &[(VPtr, TypeNodeId)], func: &mut Function) {
+        use wasm_encoder::Instruction as W;
+
+        for (arg, ty) in args {
+            if ty.word_size() > 1 {
+                self.emit_value_load(arg, func);
+                continue;
+            }
+
+            let actual = self.infer_value_type(arg);
+            self.emit_value_load(arg, func);
+            if actual == ValType::F64 {
+                func.instruction(&W::I64ReinterpretF64);
             }
         }
     }

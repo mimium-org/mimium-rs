@@ -31,6 +31,7 @@ pub mod plot_window;
 pub struct GuiAudioHandle {
     sliders: Box<[Arc<FloatParameter>]>,
     probes: Box<[HeapProd<f64>]>,
+    probe_pair_second: HashMap<usize, usize>,
 }
 
 unsafe impl Send for GuiAudioHandle {}
@@ -58,6 +59,27 @@ impl GuiAudioHandle {
         }
         value
     }
+
+    /// Probe interception for 2-word values (e.g. `(float, float)` tuples).
+    ///
+    /// Returns the first value so the host trampoline can preserve passthrough
+    /// for remaining words.
+    pub fn probe_intercept_arity2(&mut self, v0: f64, v1: f64, probe_idx: f64) -> f64 {
+        let idx0 = probe_idx as usize;
+        let idx1 = self
+            .probe_pair_second
+            .get(&idx0)
+            .copied()
+            .unwrap_or(idx0 + 1);
+
+        if let Some(prod) = self.probes.get_mut(idx0) {
+            let _ = prod.try_push(v0);
+        }
+        if let Some(prod) = self.probes.get_mut(idx1) {
+            let _ = prod.try_push(v1);
+        }
+        v0
+    }
 }
 
 pub struct GuiToolPlugin {
@@ -66,6 +88,8 @@ pub struct GuiToolPlugin {
     slider_namemap: HashMap<String, usize>,
     probe_instances: Vec<HeapProd<f64>>,
     probe_namemap: HashMap<String, usize>,
+    probe_pair_second: HashMap<usize, usize>,
+    enable_mainloop: bool,
     /// Cached WASM plugin function map, reused across hot-swaps.
     #[cfg(not(target_arch = "wasm32"))]
     wasm_plugin_fns: Option<mimium_lang::runtime::wasm::WasmPluginFnMap>,
@@ -79,6 +103,8 @@ impl Default for GuiToolPlugin {
             slider_namemap: HashMap::default(),
             probe_instances: Vec::new(),
             probe_namemap: HashMap::default(),
+            probe_pair_second: HashMap::default(),
+            enable_mainloop: true,
             #[cfg(not(target_arch = "wasm32"))]
             wasm_plugin_fns: None,
         }
@@ -86,11 +112,41 @@ impl Default for GuiToolPlugin {
 }
 
 impl GuiToolPlugin {
+    pub fn headless() -> Self {
+        Self {
+            enable_mainloop: false,
+            ..Self::default()
+        }
+    }
+
     fn get_closure_type() -> TypeNodeId {
         function!(vec![numeric!()], numeric!())
     }
     pub const GET_SLIDER: &'static str = "__get_slider";
     pub const PROBE_INTERCEPT: &'static str = "__probe_intercept";
+    pub const PROBE_INTERCEPT_ARITY2: &'static str = "__probe_intercept$arity2";
+    pub const PROBE_VALUE_INTERCEPT: &'static str = "__probe_value_intercept";
+    pub const PROBE_VALUE_INTERCEPT_ARITY1: &'static str = "__probe_value_intercept$arity1";
+    pub const PROBE_VALUE_INTERCEPT_ARITY2: &'static str = "__probe_value_intercept$arity2";
+
+    fn ensure_probe_id(&mut self, name: &str) -> Option<usize> {
+        if let Some(&existing_idx) = self.probe_namemap.get(name) {
+            return Some(existing_idx);
+        }
+
+        let Ok(mut window) = self.window.lock() else {
+            log::error!("failed to lock GUI window while creating probe '{name}'");
+            return None;
+        };
+
+        let (prod, cons) = HeapRb::<f64>::new(4096).split();
+        window.add_plot(name, cons);
+        let idx = self.probe_instances.len();
+        self.probe_instances.push(prod);
+        self.probe_namemap.insert(name.to_string(), idx);
+        log::debug!("Created Probe '{name}' with index {idx}");
+        Some(idx)
+    }
 
     pub fn make_slider(&mut self, v: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(v.len(), 4);
@@ -248,8 +304,8 @@ impl GuiToolPlugin {
 
     pub fn make_probe_macro(&mut self, v: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(v.len(), 1);
-        let (name, mut window) = match (v[0].0.clone(), self.window.lock()) {
-            (Value::String(name), Ok(window)) => (name, window),
+        let name = match v[0].0.clone() {
+            Value::String(name) => name,
             _ => {
                 log::error!("invalid argument for Probe macro type {}", v[0].1);
                 return Value::Code(
@@ -265,19 +321,7 @@ impl GuiToolPlugin {
                 );
             }
         };
-        let probeid = if let Some(&existing_idx) = self.probe_namemap.get(name.as_str()) {
-            // Probe with this name already exists, reuse the index
-            existing_idx
-        } else {
-            // New probe - create producer/consumer and register
-            let (prod, cons) = HeapRb::<f64>::new(4096).split();
-            window.add_plot(name.as_str(), cons);
-            let idx = self.probe_instances.len();
-            self.probe_instances.push(prod);
-            self.probe_namemap.insert(name.to_string(), idx);
-            log::info!("Created Probe '{}' with index {}", name, idx);
-            idx
-        };
+        let probeid = self.ensure_probe_id(name.as_str()).unwrap_or(0);
 
         // Generate a lambda that calls probe_intercept with the fixed ID
         Value::Code(
@@ -300,6 +344,46 @@ impl GuiToolPlugin {
             .into_id_without_span(),
         )
     }
+
+    pub fn make_probe_generic(&mut self, values: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(values.len(), 1);
+        let root_name = match &values[0].0 {
+            Value::String(name) => name.as_str(),
+            other => {
+                log::error!("ProbeValue first argument must be String, got: {other:?}");
+                return Value::Code(Expr::Block(None).into_id_without_span());
+            }
+        };
+
+        let probeid = self.ensure_probe_id(&format!("{root_name}.0")).unwrap_or(0);
+        let probeid_second = self
+            .ensure_probe_id(&format!("{root_name}.1"))
+            .unwrap_or(probeid + 1);
+        self.probe_pair_second.insert(probeid, probeid_second);
+        let elem_t = numeric!();
+        Value::Code(
+            Expr::Lambda(
+                vec![
+                    TypedId::new("x0".to_symbol(), elem_t),
+                    TypedId::new("x1".to_symbol(), elem_t),
+                ],
+                None,
+                Expr::Apply(
+                    Expr::Var(Self::PROBE_VALUE_INTERCEPT_ARITY2.to_symbol())
+                        .into_id_without_span(),
+                    vec![
+                        Expr::Var("x0".to_symbol()).into_id_without_span(),
+                        Expr::Var("x1".to_symbol()).into_id_without_span(),
+                        Expr::Literal(Literal::Float(probeid.to_string().to_symbol()))
+                            .into_id_without_span(),
+                    ],
+                )
+                .into_id_without_span(),
+            )
+            .into_id_without_span(),
+        )
+    }
+
     #[mimium_plugin_fn]
     pub fn get_slider(&mut self, slider_idx: f64) -> f64 {
         let idx = slider_idx as usize;
@@ -318,13 +402,44 @@ impl GuiToolPlugin {
         match self.probe_instances.get_mut(idx) {
             Some(prod) => {
                 let _ = prod.try_push(value);
-                log::trace!("Probe {} pushed value: {}", idx, value);
+                log::trace!("Probe {idx} pushed value: {value}");
             }
             None => {
                 log::error!("invalid probe index: {idx}");
             }
         }
         value // passthrough
+    }
+
+    #[mimium_plugin_fn]
+    pub fn probe_intercept_arity2(&mut self, v0: f64, v1: f64, probe_idx: f64) -> (f64, f64) {
+        let idx0 = probe_idx as usize;
+        let idx1 = self
+            .probe_pair_second
+            .get(&idx0)
+            .copied()
+            .unwrap_or(idx0 + 1);
+
+        match self.probe_instances.get_mut(idx0) {
+            Some(prod) => {
+                let _ = prod.try_push(v0);
+                log::trace!("Probe {idx0} pushed value: {v0}");
+            }
+            None => {
+                log::error!("invalid probe index: {idx0}");
+            }
+        }
+
+        match self.probe_instances.get_mut(idx1) {
+            Some(prod) => {
+                let _ = prod.try_push(v1);
+                log::trace!("Probe {idx1} pushed value: {v1}");
+            }
+            None => {
+                log::error!("invalid probe index: {idx1}");
+            }
+        }
+        (v0, v1)
     }
 
     /// Freeze the setup-phase data into a lock-free `GuiAudioHandle`.
@@ -344,6 +459,7 @@ impl GuiToolPlugin {
                 .drain(..)
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
+            probe_pair_second: std::mem::take(&mut self.probe_pair_second),
         }
     }
 }
@@ -359,6 +475,9 @@ impl SystemPlugin for GuiToolPlugin {
     fn try_get_main_loop(&mut self) -> Option<Box<dyn FnOnce()>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
+            if !self.enable_mainloop {
+                return None;
+            }
             use crate::plot_window::AsyncPlotApp;
             let initial_size = self
                 .window
@@ -447,6 +566,19 @@ impl SystemPlugin for GuiToolPlugin {
             ),
         );
 
+        let probe_genericf: SystemPluginMacroType<Self> = Self::make_probe_generic;
+        let probe_value_elem_ty = numeric!();
+        let probe_value_fn_ty = Type::Function {
+            arg: Type::Tuple(vec![probe_value_elem_ty, probe_value_elem_ty]).into_id(),
+            ret: Type::Tuple(vec![probe_value_elem_ty, probe_value_elem_ty]).into_id(),
+        }
+        .into_id();
+        let probe_generic = SysPluginSignature::new_macro(
+            "ProbeValue",
+            probe_genericf,
+            function!(vec![string_t!()], Type::Code(probe_value_fn_ty).into_id()),
+        );
+
         // Runtime functions (Stage 1) — accessed on the audio thread.
         // When registered here, they share the same plugin instance as the
         // macros above (via DynSystemPlugin's RefCell), ensuring the
@@ -465,12 +597,63 @@ impl SystemPlugin for GuiToolPlugin {
             function!(vec![numeric!(), numeric!()], numeric!()),
         );
 
+        let probe_intercept_arity2f: SystemPluginFnType<Self> = Self::probe_intercept_arity2;
+        let probe_intercept_arity2 = SysPluginSignature::new(
+            Self::PROBE_INTERCEPT_ARITY2,
+            probe_intercept_arity2f,
+            function!(
+                vec![numeric!(), numeric!(), numeric!()],
+                Type::Tuple(vec![numeric!(), numeric!()]).into_id()
+            ),
+        );
+
+        let probe_value_interceptf: SystemPluginFnType<Self> = Self::probe_intercept;
+        let probe_value_intercept = SysPluginSignature::new(
+            Self::PROBE_VALUE_INTERCEPT,
+            probe_value_interceptf,
+            function!(
+                vec![
+                    Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id(),
+                    numeric!()
+                ],
+                Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id()
+            ),
+        );
+
+        let probe_value_intercept_arity1f: SystemPluginFnType<Self> = Self::probe_intercept;
+        let probe_value_intercept_arity1 = SysPluginSignature::new(
+            Self::PROBE_VALUE_INTERCEPT_ARITY1,
+            probe_value_intercept_arity1f,
+            function!(
+                vec![
+                    Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id(),
+                    numeric!()
+                ],
+                Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id()
+            ),
+        );
+
+        let probe_value_intercept_arity2f: SystemPluginFnType<Self> = Self::probe_intercept_arity2;
+        let probe_value_intercept_arity2 = SysPluginSignature::new(
+            Self::PROBE_VALUE_INTERCEPT_ARITY2,
+            probe_value_intercept_arity2f,
+            function!(
+                vec![numeric!(), numeric!(), numeric!()],
+                Type::Tuple(vec![numeric!(), numeric!()]).into_id()
+            ),
+        );
+
         vec![
             probe_macro,
+            probe_generic,
             make_slider,
             make_slider_generic,
             get_slider,
             probe_intercept,
+            probe_intercept_arity2,
+            probe_value_intercept,
+            probe_value_intercept_arity1,
+            probe_value_intercept_arity2,
         ]
     }
 }
@@ -516,6 +699,22 @@ impl GuiToolPlugin {
             ),
         )
     }
+
+    /// Returns the signature for the generic `ProbeValue!` macro.
+    pub fn probe_generic_signature() -> SysPluginSignature {
+        let probe_macrof: SystemPluginMacroType<Self> = Self::make_probe_generic;
+        let probe_value_elem_ty = numeric!();
+        let probe_value_fn_ty = Type::Function {
+            arg: Type::Tuple(vec![probe_value_elem_ty, probe_value_elem_ty]).into_id(),
+            ret: Type::Tuple(vec![probe_value_elem_ty, probe_value_elem_ty]).into_id(),
+        }
+        .into_id();
+        SysPluginSignature::new_macro(
+            "ProbeValue",
+            probe_macrof,
+            function!(vec![string_t!()], Type::Code(probe_value_fn_ty).into_id()),
+        )
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -534,24 +733,38 @@ mimium_export_plugin! {
     runtime_functions: [
         ("__get_slider", get_slider),
         ("__probe_intercept", probe_intercept),
+        ("__probe_intercept$arity2", probe_intercept_arity2),
+        ("__probe_value_intercept", probe_intercept),
+        ("__probe_value_intercept$arity1", probe_intercept),
+        ("__probe_value_intercept$arity2", probe_intercept_arity2),
     ],
     macro_functions: [
         ("Slider", make_slider),
         ("SliderValue", make_slider_generic),
         ("Probe", make_probe_macro),
+        ("ProbeValue", make_probe_generic),
     ],
     type_infos: [
         { name: "Slider", sig: GuiToolPlugin::slider_signature(), stage: 0 },
         { name: "SliderValue", sig: GuiToolPlugin::slider_generic_signature(), stage: 0 },
         { name: "Probe", sig: GuiToolPlugin::probe_signature(), stage: 0 },
+        { name: "ProbeValue", sig: GuiToolPlugin::probe_generic_signature(), stage: 0 },
         { name: "__get_slider", ty_expr: function!(vec![numeric!()], numeric!()), stage: 1 },
         { name: "__probe_intercept", ty_expr: function!(vec![numeric!(), numeric!()], numeric!()), stage: 1 },
+        { name: "__probe_intercept$arity2", ty_expr: function!(vec![numeric!(), numeric!(), numeric!()], Type::Tuple(vec![numeric!(), numeric!()]).into_id()), stage: 1 },
+        { name: "__probe_value_intercept", ty_expr: function!(vec![Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id(), numeric!()], Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id()), stage: 1 },
+        { name: "__probe_value_intercept$arity1", ty_expr: function!(vec![Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id(), numeric!()], Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id()), stage: 1 },
+        { name: "__probe_value_intercept$arity2", ty_expr: function!(vec![numeric!(), numeric!(), numeric!()], Type::Tuple(vec![numeric!(), numeric!()]).into_id()), stage: 1 },
     ],
     wasm_audio_handle: {
         handle_type: GuiAudioHandle,
         functions: [
             ("__get_slider", get_slider, 1),
             ("__probe_intercept", probe_intercept, 2),
+            ("__probe_intercept$arity2", probe_intercept_arity2, 3),
+            ("__probe_value_intercept", probe_intercept, 2),
+            ("__probe_value_intercept$arity1", probe_intercept, 2),
+            ("__probe_value_intercept$arity2", probe_intercept_arity2, 3),
         ],
     },
 }

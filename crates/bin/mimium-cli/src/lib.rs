@@ -428,11 +428,12 @@ pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config
 
     ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
 
-    // Add guitools as SystemPlugin when GUI is needed
-    // Note: guitools is ONLY loaded as SystemPlugin (never dynamically loaded)
-    // to ensure mainloop is properly available
+    // Always add guitools as SystemPlugin so Slider/Probe macros are available
+    // on every backend. Use headless mode when GUI is disabled.
     if with_gui {
         ctx.add_system_plugin(mimium_guitools::GuiToolPlugin::default());
+    } else {
+        ctx.add_system_plugin(mimium_guitools::GuiToolPlugin::headless());
     }
 
     ctx

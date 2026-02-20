@@ -524,6 +524,7 @@ pub(crate) fn try_get_monomorphized_ext_fn_name(
     concrete_ret_ty: TypeNodeId,
 ) -> Option<Symbol> {
     let elem_word_size = match fn_name.as_str() {
+        "__probe_value_intercept" => concrete_ret_ty.word_size(),
         "prepend" => match concrete_ret_ty.to_type() {
             crate::types::Type::Array(elem_ty) => elem_ty.word_size(),
             _ => return None,

@@ -547,19 +547,35 @@ impl WasmRuntime {
                                 .collect();
 
                             if let Some(result) = func(&args) {
-                                // Match the Val variant to the declared return type
+                                // Match the Val variant to the declared return type.
+                                // For multi-result signatures, preserve passthrough behavior
+                                // by copying remaining result slots from corresponding params.
                                 results[0] = match &return_vts[0] {
                                     ValType::I64 => wasmtime::Val::I64(result as i64),
                                     ValType::I32 => wasmtime::Val::I32(result as i32),
                                     _ => wasmtime::Val::F64(result.to_bits()),
                                 };
+                                if results.len() > 1 {
+                                    for i in 1..results.len() {
+                                        if let Some(param) = params.get(i) {
+                                            results[i] = *param;
+                                        } else {
+                                            results[i] =
+                                                default_val_for_valtype(return_vts[i].clone());
+                                        }
+                                    }
+                                }
                                 return Ok(());
                             }
                         }
 
                         // Fallback: generic trampoline behavior
                         if is_passthrough && !params.is_empty() {
-                            results[0] = params[0];
+                            for (i, result) in results.iter_mut().enumerate() {
+                                *result = params.get(i).copied().unwrap_or_else(|| {
+                                    default_val_for_valtype(return_vts[i].clone())
+                                });
+                            }
                         } else {
                             for (i, result) in results.iter_mut().enumerate() {
                                 *result = default_val_for_valtype(return_vts[i].clone());

@@ -608,7 +608,7 @@ impl Machine {
     fn call_function<F>(
         &mut self,
         func_pos: u8,
-        _nargs: u8,
+        nargs: u8,
         nret_req: u8,
         mut action: F,
     ) -> ReturnCode
@@ -618,10 +618,28 @@ impl Machine {
         let offset = (func_pos + 1) as u64;
         self.delaysizes_pos_stack.push(0);
         self.base_pointer += offset;
+
+        let snapshot_words = std::cmp::max(nargs as usize, nret_req as usize);
+        let arg_snapshot = (0..snapshot_words)
+            .map(|i| self.get_stack(i as i64))
+            .collect::<Vec<_>>();
+
         let nret = action(self);
 
         if nret_req > nret as u8 {
-            panic!("invalid number of return value {nret_req} required but accepts only {nret}.");
+            if nret == 1 && arg_snapshot.len() >= nret_req as usize {
+                let base = self.base_pointer as usize;
+                let ret_start = base - 1;
+                let required_len = ret_start + nret_req as usize;
+                if self.stack.len() < required_len {
+                    self.stack.resize(required_len, 0);
+                }
+                (1..nret_req as usize).for_each(|i| {
+                    self.stack[ret_start + i] = arg_snapshot[i];
+                });
+            } else {
+                panic!("invalid number of return value {nret_req} required but accepts only {nret}.");
+            }
         }
         // shrink stack so as to match with number of return values
         self.stack
