@@ -20,7 +20,6 @@ mod lift {
         function,
         types::{Type, TypeSchemeId},
     };
-
     fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(args.len(), 1);
         super::lift_value_to_code(args[0].0.clone())
@@ -46,6 +45,10 @@ mod lift_f {
         types::{PType, Type},
     };
 
+    #[deprecated(
+        since = "4.0.0",
+        note = "lift_f will be replaced by polymorphic lift function."
+    )]
     fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(args.len(), 1);
         super::lift_value_to_code(args[0].0.clone())
@@ -71,6 +74,10 @@ mod lift_arrayf {
         types::{PType, Type},
     };
 
+    #[deprecated(
+        since = "4.0.0",
+        note = "lift_arrayf will be replaced by polymorphic lift function."
+    )]
     fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(args.len(), 1);
         super::lift_value_to_code(args[0].0.clone())
