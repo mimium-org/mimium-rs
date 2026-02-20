@@ -167,6 +167,20 @@ impl eframe::App for PlotApp {
                                 let mut value = slider.get();
                                 let mut min = slider.range.start().load(Ordering::Relaxed);
                                 let mut max = slider.range.end().load(Ordering::Relaxed);
+                                let min_id = egui::Id::new(("slider_min", slider.name.as_str()));
+                                let max_id = egui::Id::new(("slider_max", slider.name.as_str()));
+
+                                if let Some(saved_min) =
+                                    ui.ctx().data_mut(|d| d.get_persisted::<f64>(min_id))
+                                {
+                                    min = saved_min;
+                                }
+                                if let Some(saved_max) =
+                                    ui.ctx().data_mut(|d| d.get_persisted::<f64>(max_id))
+                                {
+                                    max = saved_max;
+                                }
+
                                 let label = slider
                                     .name
                                     .rsplit_once('.')
@@ -193,13 +207,23 @@ impl eframe::App for PlotApp {
                                             })
                                             .inner;
 
-                                        let slider_changed = ui
-                                            .add(
-                                                egui::Slider::new(&mut value, min..=max)
-                                                    .clamping(egui::SliderClamping::Always)
-                                                    .show_value(false),
-                                            )
-                                            .changed();
+                                        let is_fine_adjust =
+                                            ui.input(|input| input.modifiers.shift);
+                                        let base_range = (max - min).abs();
+                                        let fine_step = (base_range / 10_000.0).max(1e-9);
+                                        let slider_widget = if is_fine_adjust {
+                                            egui::Slider::new(&mut value, min..=max)
+                                                .clamping(egui::SliderClamping::Always)
+                                                .show_value(false)
+                                                .smart_aim(false)
+                                                .step_by(fine_step)
+                                        } else {
+                                            egui::Slider::new(&mut value, min..=max)
+                                                .clamping(egui::SliderClamping::Always)
+                                                .show_value(false)
+                                        };
+
+                                        let slider_changed = ui.add(slider_widget).changed();
 
                                         max_edited = ui
                                             .scope(|ui| {
@@ -237,6 +261,11 @@ impl eframe::App for PlotApp {
                                     }
                                     slider.set_range(min, max);
                                 }
+
+                                ui.ctx().data_mut(|d| {
+                                    d.insert_persisted(min_id, min);
+                                    d.insert_persisted(max_id, max);
+                                });
 
                                 if slider_changed {
                                     slider.set(value);
