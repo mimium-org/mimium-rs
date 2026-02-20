@@ -45,3 +45,5 @@ The language implements its own virtual machine (VM) and instruction set to exec
 - If you are running on Linux, you need to install `libasound2-dev` from apt to compile codes.
 - Integrated test files are in `crate/lib/mimium-test/integration_test`.
    - You can define new test by adding files in `mmm` directory, and add expected test result in `integration_test.rs`. Test result is the return value sequence of `dsp` function.
+- The language has VM backend and WASM backend. You can run the test with wasm backend by specifying environmental variable `MIMIUM_BACKEND=wasm`.
+- The test may crashes with race condition because we use SessionGlobals, so run the test with `-- --test-threads=1`.
