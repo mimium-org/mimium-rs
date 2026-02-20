@@ -33,6 +33,7 @@ The language implements its own virtual machine (VM) and instruction set to exec
 
 - Use `cargo fmt` before commiting.
 - Fix small warnings by utilizing `cargo clippy`.
+- Do not use magic number. Always name meaningful variable name.
 - Write documentation comments `///`  for public API and `//!` the top of the file as possible.
 - Write comments in English even if you asked in different languages.
 - Do not use much emoji in the comments.

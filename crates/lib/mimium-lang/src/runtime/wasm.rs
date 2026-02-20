@@ -13,6 +13,11 @@ use wasmtime::{
     AsContextMut, Caller, Config, Engine, FuncType, Linker, Module, OptLevel, Store, Val, ValType,
 };
 
+/// Upper bound of `$arityN` builtin specializations exported by the WASM host runtime.
+///
+/// Must match compiler-side import declarations in `compiler/wasmgen.rs`.
+const MAX_SPECIALIZED_BUILTIN_ARITY: usize = 16;
+
 /// WASM-side analogue of [`SystemPluginAudioWorker`](crate::plugin::SystemPluginAudioWorker).
 ///
 /// Plugins that need per-sample processing on the WASM backend implement
@@ -350,6 +355,63 @@ impl WasmRuntime {
             "length_array" => builtin_length_array_host,
             "split_head" => builtin_split_head_host,
             "split_tail" => builtin_split_tail_host,
+        }
+
+        linker
+            .func_new(
+                "builtin",
+                "prepend",
+                FuncType::new(
+                    linker.engine(),
+                    vec![ValType::I64, ValType::I64],
+                    vec![ValType::I64],
+                ),
+                move |caller, params, results| {
+                    builtin_prepend_arity_host(caller, params, results, 1);
+                    Ok(())
+                },
+            )
+            .map_err(|e| format!("Failed to register builtin::prepend: {e}"))?;
+
+        for arity in 1..=MAX_SPECIALIZED_BUILTIN_ARITY {
+            let split_head_name = format!("split_head$arity{arity}");
+            linker
+                .func_wrap(
+                    "builtin",
+                    split_head_name.as_str(),
+                    move |caller: Caller<'_, RuntimeState>, array: i64, dst_ptr: i32| {
+                        builtin_split_head_arity_host(caller, array, dst_ptr, arity)
+                    },
+                )
+                .map_err(|e| format!("Failed to register builtin::split_head$arity{arity}: {e}"))?;
+
+            let split_tail_name = format!("split_tail$arity{arity}");
+            linker
+                .func_wrap(
+                    "builtin",
+                    split_tail_name.as_str(),
+                    move |caller: Caller<'_, RuntimeState>, array: i64, dst_ptr: i32| {
+                        builtin_split_tail_arity_host(caller, array, dst_ptr, arity)
+                    },
+                )
+                .map_err(|e| format!("Failed to register builtin::split_tail$arity{arity}: {e}"))?;
+
+            let prepend_name = format!("prepend$arity{arity}");
+            linker
+                .func_new(
+                    "builtin",
+                    prepend_name.as_str(),
+                    FuncType::new(
+                        linker.engine(),
+                        vec![ValType::I64, ValType::I64],
+                        vec![ValType::I64],
+                    ),
+                    move |caller, params, results| {
+                        builtin_prepend_arity_host(caller, params, results, arity);
+                        Ok(())
+                    },
+                )
+                .map_err(|e| format!("Failed to register builtin::prepend$arity{arity}: {e}"))?;
         }
 
         Ok(())
@@ -1232,22 +1294,35 @@ fn builtin_length_array_host(caller: Caller<'_, RuntimeState>, array: i64) -> f6
     array_data.len() as f64
 }
 
-fn builtin_split_head_host(mut caller: Caller<'_, RuntimeState>, array: i64, dst_ptr: i32) {
-    log::trace!("builtin_split_head_host: array={array}, dst_ptr={dst_ptr}");
+fn builtin_split_head_arity_host(
+    mut caller: Caller<'_, RuntimeState>,
+    array: i64,
+    dst_ptr: i32,
+    elem_words: usize,
+) {
+    log::trace!("builtin_split_head$arity{elem_words}: array={array}, dst_ptr={dst_ptr}");
 
-    let (head, rest_data) = {
+    let (head_words, rest_data) = {
         let state = caller.data();
         let array_data = state
             .arrays
             .get(&(array as Word))
             .expect("split_head: invalid array ID");
-        assert!(!array_data.is_empty(), "Cannot split_head on empty array");
-        let head = f64::from_bits(array_data[0]);
-        let rest_data: Vec<u64> = array_data[1..].to_vec();
-        (head, rest_data)
+        debug_assert!(
+            array_data.len() >= elem_words,
+            "split_head$arity{elem_words}: array shorter than one element"
+        );
+        assert!(
+            array_data.len() % elem_words == 0,
+            "split_head$arity{}: array length {} is not divisible by elem_words",
+            elem_words,
+            array_data.len()
+        );
+        let head_words = array_data[..elem_words].to_vec();
+        let rest_data = array_data[elem_words..].to_vec();
+        (head_words, rest_data)
     };
 
-    // Allocate new array for rest
     let rest_id = {
         let state = caller.data_mut();
         let rest_id = (state.arrays.len() + 1) as Word;
@@ -1255,35 +1330,55 @@ fn builtin_split_head_host(mut caller: Caller<'_, RuntimeState>, array: i64, dst
         rest_id
     };
 
-    // Write result tuple (head: f64, rest: i64) to linear memory at dst_ptr
     let memory = caller.data().memory.expect("Memory not initialized");
-    let head_bytes = head.to_le_bytes();
+    head_words.iter().enumerate().for_each(|(idx, word)| {
+        memory
+            .write(
+                &mut caller,
+                (dst_ptr as usize) + idx * std::mem::size_of::<Word>(),
+                &word.to_le_bytes(),
+            )
+            .expect("split_head: failed to write head word");
+    });
     memory
-        .write(&mut caller, dst_ptr as usize, &head_bytes)
-        .expect("split_head: failed to write head");
-    let rest_bytes = (rest_id as i64).to_le_bytes();
-    memory
-        .write(&mut caller, (dst_ptr + 8) as usize, &rest_bytes)
-        .expect("split_head: failed to write rest");
+        .write(
+            &mut caller,
+            (dst_ptr as usize) + elem_words * std::mem::size_of::<Word>(),
+            &(rest_id as i64).to_le_bytes(),
+        )
+        .expect("split_head: failed to write rest array handle");
 }
 
-fn builtin_split_tail_host(mut caller: Caller<'_, RuntimeState>, array: i64, dst_ptr: i32) {
-    log::trace!("builtin_split_tail_host: array={array}, dst_ptr={dst_ptr}");
+fn builtin_split_tail_arity_host(
+    mut caller: Caller<'_, RuntimeState>,
+    array: i64,
+    dst_ptr: i32,
+    elem_words: usize,
+) {
+    log::trace!("builtin_split_tail$arity{elem_words}: array={array}, dst_ptr={dst_ptr}");
 
-    let (tail, rest_data) = {
+    let (tail_words, rest_data) = {
         let state = caller.data();
         let array_data = state
             .arrays
             .get(&(array as Word))
             .expect("split_tail: invalid array ID");
-        assert!(!array_data.is_empty(), "Cannot split_tail on empty array");
-        let len = array_data.len();
-        let tail = f64::from_bits(array_data[len - 1]);
-        let rest_data: Vec<u64> = array_data[..len - 1].to_vec();
-        (tail, rest_data)
+        debug_assert!(
+            array_data.len() >= elem_words,
+            "split_tail$arity{elem_words}: array shorter than one element"
+        );
+        debug_assert!(
+            array_data.len() % elem_words == 0,
+            "split_tail$arity{}: array length {} is not divisible by elem_words",
+            elem_words,
+            array_data.len()
+        );
+        let tail_start = array_data.len() - elem_words;
+        let tail_words = array_data[tail_start..].to_vec();
+        let rest_data = array_data[..tail_start].to_vec();
+        (tail_words, rest_data)
     };
 
-    // Allocate new array for rest
     let rest_id = {
         let state = caller.data_mut();
         let rest_id = (state.arrays.len() + 1) as Word;
@@ -1291,16 +1386,110 @@ fn builtin_split_tail_host(mut caller: Caller<'_, RuntimeState>, array: i64, dst
         rest_id
     };
 
-    // Write result tuple (rest: i64, tail: f64) to linear memory at dst_ptr
     let memory = caller.data().memory.expect("Memory not initialized");
-    let rest_bytes = (rest_id as i64).to_le_bytes();
     memory
-        .write(&mut caller, dst_ptr as usize, &rest_bytes)
-        .expect("split_tail: failed to write rest");
-    let tail_bytes = tail.to_le_bytes();
-    memory
-        .write(&mut caller, (dst_ptr + 8) as usize, &tail_bytes)
-        .expect("split_tail: failed to write tail");
+        .write(
+            &mut caller,
+            dst_ptr as usize,
+            &(rest_id as i64).to_le_bytes(),
+        )
+        .expect("split_tail: failed to write rest array handle");
+    tail_words.iter().enumerate().for_each(|(idx, word)| {
+        memory
+            .write(
+                &mut caller,
+                (dst_ptr as usize) + (idx + 1) * std::mem::size_of::<Word>(),
+                &word.to_le_bytes(),
+            )
+            .expect("split_tail: failed to write tail word");
+    });
+}
+
+fn builtin_prepend_arity_host(
+    mut caller: Caller<'_, RuntimeState>,
+    params: &[Val],
+    results: &mut [Val],
+    elem_words: usize,
+) {
+    let expected_params = 2;
+    if params.len() != expected_params {
+        panic!(
+            "prepend$arity{} expected {} params, got {}",
+            elem_words,
+            expected_params,
+            params.len()
+        );
+    }
+
+    let elem_or_ptr = match params[0] {
+        Val::I64(i) => i as u64,
+        Val::F64(bits) => bits,
+        ref other => {
+            panic!("prepend$arity{elem_words}: expected first arg as I64/F64, got {other:?}")
+        }
+    };
+
+    let elem_bits = if elem_words == 1 {
+        vec![elem_or_ptr]
+    } else {
+        let mut words = vec![0u64; elem_words];
+        let memory = caller.data().memory.expect("Memory not initialized");
+        let src_ptr = elem_or_ptr as usize;
+        let bytes = unsafe {
+            std::slice::from_raw_parts_mut(
+                words.as_mut_ptr() as *mut u8,
+                elem_words * std::mem::size_of::<Word>(),
+            )
+        };
+        memory
+            .read(&caller, src_ptr, bytes)
+            .expect("prepend$arityN: failed to read element words from memory");
+        words
+    };
+
+    let array_handle = match params[1] {
+        Val::I64(i) => i as Word,
+        Val::F64(bits) => i64::from_le_bytes(bits.to_le_bytes()) as Word,
+        ref other => {
+            panic!("prepend$arity{elem_words}: expected array handle as I64/F64, got {other:?}")
+        }
+    };
+
+    let mut new_array = elem_bits;
+    {
+        let state = caller.data();
+        let old = state
+            .arrays
+            .get(&array_handle)
+            .unwrap_or_else(|| panic!("prepend: invalid array ID {array_handle}"));
+        if old.len() % elem_words != 0 {
+            panic!(
+                "prepend$arity{}: array length {} is not divisible by elem_words",
+                elem_words,
+                old.len()
+            );
+        }
+        new_array.extend_from_slice(old);
+    }
+
+    let new_id = {
+        let state = caller.data_mut();
+        let new_id = (state.arrays.len() + 1) as Word;
+        state.arrays.insert(new_id, new_array);
+        new_id
+    };
+
+    if let Some(slot) = results.get_mut(0) {
+        *slot = Val::I64(new_id as i64);
+    }
+}
+
+fn builtin_split_head_host(caller: Caller<'_, RuntimeState>, array: i64, dst_ptr: i32) {
+    builtin_split_head_arity_host(caller, array, dst_ptr, 1);
+}
+
+fn builtin_split_tail_host(caller: Caller<'_, RuntimeState>, array: i64, dst_ptr: i32) {
+    builtin_split_tail_arity_host(caller, array, dst_ptr, 1);
 }
 
 #[cfg(test)]
