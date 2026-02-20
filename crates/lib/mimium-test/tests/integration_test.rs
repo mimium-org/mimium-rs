@@ -137,6 +137,13 @@ fn lift_arrayf_extended() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn lift_polymorphic() {
+    let res = run_file_test_mono("lift_polymorphic.mmm", 1).unwrap();
+    let ans = vec![11.0]; // 5.0 + 1.0 + 2.0 + 3.0
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn recursion() {
     let res = run_file_test_mono("recursion.mmm", 1).unwrap();
     let ans = vec![5.0];

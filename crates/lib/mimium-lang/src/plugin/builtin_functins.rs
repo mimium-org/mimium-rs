@@ -3,9 +3,41 @@ use crate::{
     plugin::{CommonFunction, ExtClsInfo, InstantPlugin, MacroInfo, Plugin},
 };
 use std::{cell::RefCell, rc::Rc};
+
+fn lift_value_to_code(value: crate::interpreter::Value) -> crate::interpreter::Value {
+    match value.try_into() {
+        Ok(expr) => crate::interpreter::Value::Code(expr),
+        Err(err) => panic!("Invalid argument for lift: cannot convert value to code: {err:?}"),
+    }
+}
+// Polymorphic version of lift, which can lift any value to code. 
+mod lift {
+    use super::*;
+    use crate::code;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::{
+        function,
+        types::{Type, TypeSchemeId},
+    };
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 1);
+        super::lift_value_to_code(args[0].0.clone())
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        let t = Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id();
+        MacroInfo {
+            name: "lift".to_symbol(),
+            ty: function!(vec![t], code!(t)),
+            fun: std::rc::Rc::new(std::cell::RefCell::new(macro_function)),
+        }
+    }
+}
+
 mod lift_f {
     use super::*;
-    use crate::ast::{Expr, Literal};
     use crate::code;
     use crate::interner::TypeNodeId;
     use crate::interpreter::Value;
@@ -16,13 +48,7 @@ mod lift_f {
 
     fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(args.len(), 1);
-        let v = &args[0].0;
-        match v {
-            Value::Number(lhs) => Value::Code(
-                Expr::Literal(Literal::Float(lhs.to_string().to_symbol())).into_id_without_span(),
-            ),
-            _ => panic!("Invalid argument types for function lift_f"),
-        }
+        super::lift_value_to_code(args[0].0.clone())
     }
 
     pub(super) fn signature() -> MacroInfo {
@@ -36,7 +62,6 @@ mod lift_f {
 
 mod lift_arrayf {
     use super::*;
-    use crate::ast::{Expr, Literal};
     use crate::code;
     use crate::interner::TypeNodeId;
     use crate::interpreter::Value;
@@ -48,26 +73,7 @@ mod lift_arrayf {
 
     fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(args.len(), 1);
-        let v = &args[0].0;
-        match v {
-            Value::Array(arr) => {
-                // Convert each element of the array to a code literal
-                let lifted_elements: Vec<_> = arr
-                    .iter()
-                    .map(|elem| match elem {
-                        Value::Number(n) => {
-                            Expr::Literal(Literal::Float(n.to_string().to_symbol()))
-                                .into_id_without_span()
-                        }
-                        _ => panic!("Array elements must be numbers for lift_arrayf"),
-                    })
-                    .collect();
-
-                // Return as code containing an array literal
-                Value::Code(Expr::ArrayLiteral(lifted_elements).into_id_without_span())
-            }
-            _ => panic!("Invalid argument types for function lift_arrayf"),
-        }
+        super::lift_value_to_code(args[0].0.clone())
     }
 
     pub(super) fn signature() -> MacroInfo {
@@ -735,6 +741,7 @@ fn generate_builtin_functions() -> impl ExactSizeIterator<Item = CommonFunction>
 }
 fn generate_default_macros() -> impl ExactSizeIterator<Item = MacroInfo> {
     vec![
+        lift::signature(),
         lift_f::signature(),
         lift_arrayf::signature(),
         map::signature(),
