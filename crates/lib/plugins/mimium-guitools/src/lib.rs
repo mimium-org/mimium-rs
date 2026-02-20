@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use egui::ahash::HashMap;
 use mimium_lang::{
-    ast::{Expr, Literal},
+    ast::{Expr, Literal, RecordField},
     code, function,
     interner::{ToSymbol, TypeNodeId},
     interpreter::Value,
@@ -10,7 +10,7 @@ use mimium_lang::{
     pattern::TypedId,
     plugin::{SysPluginSignature, SystemPlugin, SystemPluginFnType, SystemPluginMacroType},
     string_t,
-    types::{PType, Type},
+    types::{PType, Type, TypeSchemeId},
 };
 use mimium_plugin_macros::{mimium_export_plugin, mimium_plugin_fn};
 use plot_window::PlotApp;
@@ -141,6 +141,111 @@ impl GuiToolPlugin {
         )
     }
 
+    fn build_slider_code_from_name(&mut self, name: &str, init: f64, min: f64, max: f64) -> Value {
+        let idx = if let Some(&existing_idx) = self.slider_namemap.get(name) {
+            if let Some(parameter) = self.slider_instances.get_mut(existing_idx) {
+                parameter.set_range(min, max);
+            }
+            existing_idx
+        } else {
+            let Ok(mut window) = self.window.lock() else {
+                log::error!("failed to lock GUI window while creating slider '{name}'");
+                return Value::Number(init);
+            };
+            let (parameter, idx) = window.add_slider(name, init, min, max);
+            self.slider_instances.push(parameter);
+            self.slider_namemap.insert(name.to_string(), idx);
+            idx
+        };
+
+        Value::Code(
+            Expr::Apply(
+                Expr::Var(Self::GET_SLIDER.to_symbol()).into_id_without_span(),
+                vec![
+                    Expr::Literal(Literal::Float(idx.to_string().to_symbol()))
+                        .into_id_without_span(),
+                ],
+            )
+            .into_id_without_span(),
+        )
+    }
+
+    fn default_slider_range(init: f64) -> (f64, f64) {
+        let span = init.abs().max(1.0);
+        (init - span, init + span)
+    }
+
+    fn join_slider_path(base_path: &str, key: &str) -> String {
+        if base_path.is_empty() {
+            key.to_string()
+        } else {
+            format!("{base_path}.{key}")
+        }
+    }
+
+    fn make_slider_generic_rec(&mut self, value: &Value, current_path: &str) -> Value {
+        match value {
+            Value::Number(init) => {
+                let label = current_path.to_string();
+                let (min, max) = Self::default_slider_range(*init);
+                self.build_slider_code_from_name(&label, *init, min, max)
+            }
+            Value::Record(fields) => {
+                let record_fields = fields
+                    .iter()
+                    .filter_map(|(name, field_value)| {
+                        let child_path = Self::join_slider_path(current_path, name.as_str());
+                        let child_value = self.make_slider_generic_rec(field_value, &child_path);
+                        let child_expr = match child_value {
+                            Value::Code(expr) => Some(expr),
+                            other => other.try_into().ok(),
+                        };
+
+                        child_expr.map(|expr| RecordField { name: *name, expr })
+                    })
+                    .collect::<Vec<_>>();
+
+                Value::Code(Expr::RecordLiteral(record_fields).into_id_without_span())
+            }
+            Value::Tuple(elements) => {
+                let tuple_elements = elements
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, element)| {
+                        let field_name = format!("{index}");
+                        let child_path = Self::join_slider_path(current_path, &field_name);
+                        let child_value = self.make_slider_generic_rec(element, &child_path);
+                        match child_value {
+                            Value::Code(expr) => Some(expr),
+                            other => other.try_into().ok(),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                Value::Code(Expr::Tuple(tuple_elements).into_id_without_span())
+            }
+            other => match other.clone().try_into() {
+                Ok(expr) => Value::Code(expr),
+                Err(_) => {
+                    log::warn!("SliderValue does not support value kind: {other:?}");
+                    Value::Code(Expr::Block(None).into_id_without_span())
+                }
+            },
+        }
+    }
+
+    pub fn make_slider_generic(&mut self, values: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(values.len(), 2);
+        let root_name = match &values[0].0 {
+            Value::String(name) => name.as_str().to_string(),
+            other => {
+                log::error!("SliderValue first argument must be String, got: {other:?}");
+                return Value::Code(Expr::Block(None).into_id_without_span());
+            }
+        };
+        let value = &values[1].0;
+        self.make_slider_generic_rec(value, &root_name)
+    }
+
     pub fn make_probe_macro(&mut self, v: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(v.len(), 1);
         let (name, mut window) = match (v[0].0.clone(), self.window.lock()) {
@@ -255,13 +360,18 @@ impl SystemPlugin for GuiToolPlugin {
         #[cfg(not(target_arch = "wasm32"))]
         {
             use crate::plot_window::AsyncPlotApp;
+            let initial_size = self
+                .window
+                .lock()
+                .map(|window| window.suggested_viewport_size())
+                .unwrap_or([400.0, 300.0]);
             let app = Box::new(AsyncPlotApp {
                 window: self.window.clone(),
             });
             Some(Box::new(move || {
                 let native_options = eframe::NativeOptions {
                     viewport: egui::ViewportBuilder::default()
-                        .with_inner_size([400.0, 300.0])
+                        .with_inner_size(initial_size)
                         .with_min_inner_size([300.0, 220.0])
                         .with_icon(
                             // NOTE: Adding an icon is optional
@@ -316,6 +426,16 @@ impl SystemPlugin for GuiToolPlugin {
             ),
         );
 
+        let slider_genericf: SystemPluginMacroType<Self> = Self::make_slider_generic;
+        let make_slider_generic = SysPluginSignature::new_macro(
+            "SliderValue",
+            slider_genericf,
+            function!(
+                vec![string_t!(), Type::TypeScheme(TypeSchemeId(10)).into_id()],
+                code!(Type::TypeScheme(TypeSchemeId(10)).into_id())
+            ),
+        );
+
         // Replace make_probe function with Probe macro
         let probe_macrof: SystemPluginMacroType<Self> = Self::make_probe_macro;
         let probe_macro = SysPluginSignature::new_macro(
@@ -345,7 +465,13 @@ impl SystemPlugin for GuiToolPlugin {
             function!(vec![numeric!(), numeric!()], numeric!()),
         );
 
-        vec![probe_macro, make_slider, get_slider, probe_intercept]
+        vec![
+            probe_macro,
+            make_slider,
+            make_slider_generic,
+            get_slider,
+            probe_intercept,
+        ]
     }
 }
 
@@ -364,6 +490,17 @@ impl GuiToolPlugin {
                 vec![string_t!(), numeric!(), numeric!(), numeric!()],
                 code!(numeric!())
             ),
+        )
+    }
+
+    /// Returns the signature for the generic `SliderValue!` macro.
+    pub fn slider_generic_signature() -> SysPluginSignature {
+        let sliderf: SystemPluginMacroType<Self> = Self::make_slider_generic;
+        let generic_type = Type::TypeScheme(TypeSchemeId(10)).into_id();
+        SysPluginSignature::new_macro(
+            "SliderValue",
+            sliderf,
+            function!(vec![string_t!(), generic_type], code!(generic_type)),
         )
     }
 
@@ -400,10 +537,12 @@ mimium_export_plugin! {
     ],
     macro_functions: [
         ("Slider", make_slider),
+        ("SliderValue", make_slider_generic),
         ("Probe", make_probe_macro),
     ],
     type_infos: [
         { name: "Slider", sig: GuiToolPlugin::slider_signature(), stage: 0 },
+        { name: "SliderValue", sig: GuiToolPlugin::slider_generic_signature(), stage: 0 },
         { name: "Probe", sig: GuiToolPlugin::probe_signature(), stage: 0 },
         { name: "__get_slider", ty_expr: function!(vec![numeric!()], numeric!()), stage: 1 },
         { name: "__probe_intercept", ty_expr: function!(vec![numeric!(), numeric!()], numeric!()), stage: 1 },

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     ops::RangeInclusive,
     sync::{Arc, Mutex, atomic::Ordering},
 };
@@ -7,7 +8,7 @@ use crate::plot_ui::{self, PlotUi};
 use eframe;
 
 use atomic_float::AtomicF64;
-use egui::Color32;
+use egui::{Color32, RichText, TextStyle};
 use egui_plot::{CoordinatesFormatter, Corner, Legend, Plot};
 use ringbuf::HeapCons;
 
@@ -79,6 +80,20 @@ impl PlotApp {
     pub fn is_empty(&self) -> bool {
         self.plot.is_empty()
     }
+
+    pub fn suggested_viewport_size(&self) -> [f32; 2] {
+        let base_width = 420.0;
+        let top_panel_height = 36.0;
+        let plot_height = if self.plot.is_empty() { 120.0 } else { 220.0 };
+        let slider_header = if self.sliders.is_empty() { 0.0 } else { 24.0 };
+        let slider_rows = self.sliders.len() as f32;
+        let slider_height = slider_rows * 28.0;
+        let margin = 28.0;
+
+        let total_height = top_panel_height + plot_height + slider_header + slider_height + margin;
+
+        [base_width, total_height.clamp(260.0, 960.0)]
+    }
 }
 
 impl eframe::App for PlotApp {
@@ -106,6 +121,7 @@ impl eframe::App for PlotApp {
                 .legend(Legend::default())
                 .show_axes(true)
                 .show_grid(true)
+                .allow_scroll(false)
                 .auto_bounds([true, self.autoscale].into())
                 .coordinates_formatter(Corner::LeftBottom, CoordinatesFormatter::default());
 
@@ -118,30 +134,124 @@ impl eframe::App for PlotApp {
 
             ui.ctx().request_repaint();
         });
-        egui::TopBottomPanel::bottom("parameters").show(ctx, |ui| {
-            if !self.sliders.is_empty() {
-                ui.label("Parameters");
-            }
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for p in &self.sliders {
-                    let mut v = p.get();
-                    if ui
-                        .add(
-                            egui::Slider::new(
-                                &mut v,
-                                p.range.start().load(Ordering::Relaxed)
-                                    ..=p.range.end().load(Ordering::Relaxed),
-                            )
-                            .text(&p.name)
-                            .clamping(egui::SliderClamping::Always),
-                        )
-                        .changed()
-                    {
-                        p.set(v);
-                    }
+        egui::TopBottomPanel::bottom("parameters")
+            .resizable(true)
+            .default_height(220.0)
+            .min_height(120.0)
+            .show(ctx, |ui| {
+                if !self.sliders.is_empty() {
+                    ui.label("Parameters");
                 }
+
+                let grouped_sliders = self.sliders.iter().fold(
+                    BTreeMap::<String, Vec<Arc<FloatParameter>>>::new(),
+                    |mut groups, slider| {
+                        let group_name = slider
+                            .name
+                            .rsplit_once('.')
+                            .map(|(group, _)| group.to_string())
+                            .unwrap_or_default();
+                        groups.entry(group_name).or_default().push(slider.clone());
+                        groups
+                    },
+                );
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    grouped_sliders.iter().for_each(|(group_name, sliders)| {
+                        let draw_group = |ui: &mut egui::Ui| {
+                            const LABEL_WIDTH: f32 = 80.0;
+                            const MINMAX_WIDTH: f32 = 60.0;
+                            const CURRENT_WIDTH: f32 = 60.0;
+
+                            sliders.iter().for_each(|slider| {
+                                let mut value = slider.get();
+                                let mut min = slider.range.start().load(Ordering::Relaxed);
+                                let mut max = slider.range.end().load(Ordering::Relaxed);
+                                let label = slider
+                                    .name
+                                    .rsplit_once('.')
+                                    .map(|(_, leaf)| leaf)
+                                    .unwrap_or(slider.name.as_str());
+
+                                let mut min_edited = false;
+                                let mut max_edited = false;
+                                let slider_changed = ui
+                                    .horizontal(|ui| {
+                                        ui.add_sized([LABEL_WIDTH, 0.0], egui::Label::new(label));
+
+                                        min_edited = ui
+                                            .scope(|ui| {
+                                                ui.style_mut().override_text_style =
+                                                    Some(TextStyle::Small);
+                                                ui.add_sized(
+                                                    [MINMAX_WIDTH, 0.0],
+                                                    egui::DragValue::new(&mut min)
+                                                        .speed(0.1)
+                                                        .max_decimals(6),
+                                                )
+                                                .changed()
+                                            })
+                                            .inner;
+
+                                        let slider_changed = ui
+                                            .add(
+                                                egui::Slider::new(&mut value, min..=max)
+                                                    .clamping(egui::SliderClamping::Always)
+                                                    .show_value(false),
+                                            )
+                                            .changed();
+
+                                        max_edited = ui
+                                            .scope(|ui| {
+                                                ui.style_mut().override_text_style =
+                                                    Some(TextStyle::Small);
+                                                ui.add_sized(
+                                                    [MINMAX_WIDTH, 0.0],
+                                                    egui::DragValue::new(&mut max)
+                                                        .speed(0.1)
+                                                        .max_decimals(6),
+                                                )
+                                                .changed()
+                                            })
+                                            .inner;
+
+                                        ui.add_sized(
+                                            [CURRENT_WIDTH, 0.0],
+                                            egui::Label::new(
+                                                RichText::new(format!("{value:.4}"))
+                                                    .text_style(TextStyle::Small),
+                                            ),
+                                        );
+
+                                        slider_changed
+                                    })
+                                    .inner;
+
+                                if min_edited || max_edited {
+                                    if min > max {
+                                        if min_edited {
+                                            max = min;
+                                        } else {
+                                            min = max;
+                                        }
+                                    }
+                                    slider.set_range(min, max);
+                                }
+
+                                if slider_changed {
+                                    slider.set(value);
+                                }
+                            });
+                        };
+
+                        if group_name.is_empty() {
+                            draw_group(ui);
+                        } else {
+                            ui.collapsing(group_name, draw_group);
+                        }
+                    });
+                });
             });
-        });
     }
 }
 
