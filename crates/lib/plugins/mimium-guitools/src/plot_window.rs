@@ -127,8 +127,13 @@ impl eframe::App for PlotApp {
 
             plot.show(ui, |plot_ui| {
                 self.plot.iter_mut().for_each(|line| {
-                    let (_req_repaint, line) = line.draw_line();
-                    plot_ui.line(line);
+                    // Drain the ring buffer even for hidden channels so
+                    // the producer never blocks.
+                    let (_req_repaint, drawn) = line.draw_line();
+                    // Only display channels that have received data.
+                    if line.has_data() {
+                        plot_ui.line(drawn);
+                    }
                 })
             });
 

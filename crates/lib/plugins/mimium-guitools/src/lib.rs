@@ -148,8 +148,12 @@ impl GuiAudioHandle {
         probe_intercept_arity12(v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11),
         probe_intercept_arity13(v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12),
         probe_intercept_arity14(v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13),
-        probe_intercept_arity15(v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14),
-        probe_intercept_arity16(v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15),
+        probe_intercept_arity15(
+            v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14
+        ),
+        probe_intercept_arity16(
+            v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15
+        ),
     );
 }
 
@@ -228,11 +232,21 @@ impl GuiToolPlugin {
         base
     }
 
+    /// Register a probe group for a `ProbeValue!` expansion.
+    ///
+    /// Eagerly creates all channels up to `PROBE_VALUE_MAX_ARITY`.
+    /// Channels that never receive data are hidden in the GUI by
+    /// `PlotUi::has_data()`.
     fn ensure_probe_group_default(&mut self, root_name: &str) -> usize {
-        let labels = (0..GuiAudioHandle::PROBE_VALUE_MAX_ARITY)
-            .map(|i| format!("{root_name}.{i}"))
-            .collect::<Vec<_>>();
-        self.ensure_probe_group_with_labels(&labels)
+        let mut group = Vec::with_capacity(GuiAudioHandle::PROBE_VALUE_MAX_ARITY);
+        for i in 0..GuiAudioHandle::PROBE_VALUE_MAX_ARITY {
+            if let Some(idx) = self.ensure_probe_id(&format!("{root_name}.{i}")) {
+                group.push(idx);
+            }
+        }
+        let base = group.first().copied().unwrap_or(0);
+        self.probe_groups.insert(base, group);
+        base
     }
 
     fn resolve_probe_index(&self, base_idx: usize, channel: usize) -> usize {

@@ -305,10 +305,13 @@ impl SkipPhi {
 
 impl WasmGenerator {
     fn ext_function_uses_dest_ptr(name: Symbol) -> bool {
-        name.as_str() == "split_head"
-            || name.as_str() == "split_tail"
-            || name.as_str().starts_with("split_head$arity")
-            || name.as_str().starts_with("split_tail$arity")
+        let s = name.as_str();
+        s == "split_head"
+            || s == "split_tail"
+            || s.starts_with("split_head$arity")
+            || s.starts_with("split_tail$arity")
+            || s.starts_with("__probe_intercept$arity")
+            || s.starts_with("__probe_value_intercept$arity")
     }
 
     /// Create a new WASM generator for the given MIR.
@@ -650,21 +653,29 @@ impl WasmGenerator {
             };
 
             // Flatten tuple arguments into separate WASM parameters
-            let param_types: Vec<ValType> = match arg.to_type() {
+            let mut param_types: Vec<ValType> = match arg.to_type() {
                 Type::Tuple(elems) => elems
                     .iter()
                     .map(|t| Self::type_to_valtype(&t.to_type()))
                     .collect(),
                 arg_ty => vec![Self::type_to_valtype(&arg_ty)],
             };
-            // Strip Unit return type to match process_mir_functions behavior:
-            // Unit-returning functions have no WASM return values.
-            let return_types: Vec<ValType> =
-                if matches!(ret.to_type(), Type::Primitive(PType::Unit)) {
-                    vec![]
-                } else {
-                    vec![Self::type_to_valtype(&ret.to_type())]
-                };
+
+            let is_void = matches!(ret.to_type(), Type::Primitive(PType::Unit));
+            let flat_ret_len = Self::flatten_type_to_valtypes(&ret.to_type()).len();
+            let uses_dest_ptr =
+                !is_void && flat_ret_len > 1 && Self::ext_function_uses_dest_ptr(name);
+
+            let return_types: Vec<ValType> = if uses_dest_ptr {
+                // Dest-pointer convention: the host writes the multi-word
+                // result to a caller-provided memory address.
+                param_types.push(ValType::I32); // dst_ptr
+                vec![] // void return
+            } else if is_void {
+                vec![]
+            } else {
+                vec![Self::type_to_valtype(&ret.to_type())]
+            };
 
             let type_idx = self.type_section.len();
             self.type_section
@@ -675,9 +686,10 @@ impl WasmGenerator {
             self.plugin_fns.functions.insert(name, fn_idx);
 
             log::debug!(
-                "Added plugin import: {} ({} params)",
+                "Added plugin import: {} ({} params{})",
                 name.as_str(),
-                param_types.len()
+                param_types.len(),
+                if uses_dest_ptr { " [dest-ptr]" } else { "" },
             );
         }
     }
@@ -2998,11 +3010,10 @@ impl WasmGenerator {
                         self.mem_layout.alloc_offset += ret_words * 8;
 
                         if let Some(import_idx) = self.resolve_ext_function(name) {
-                            // Load normal args
-                            for (arg, ty) in args {
-                                let expected = Self::type_to_valtype(&ty.to_type());
-                                self.emit_value_load_typed(arg, expected, func);
-                            }
+                            // Load normal args with tuple flattening so that
+                            // aggregate values are expanded to match the
+                            // flattened import signature.
+                            self.emit_call_args_flattened(args, func);
                             // Push dest pointer as extra argument
                             func.instruction(&W::I32Const(temp_addr as i32));
                             func.instruction(&W::Call(import_idx));

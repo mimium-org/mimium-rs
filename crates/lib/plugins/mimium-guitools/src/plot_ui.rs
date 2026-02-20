@@ -7,6 +7,8 @@ pub(crate) struct PlotUi {
     buf: HeapCons<f64>,
     local_buf: Vec<f64>,
     update_index: usize,
+    /// Whether this plot has ever received any data from a producer.
+    has_data: bool,
 }
 impl PlotUi {
     pub fn new(label: &str, buf: HeapCons<f64>, color: Color32) -> Self {
@@ -18,6 +20,7 @@ impl PlotUi {
             buf,
             local_buf,
             update_index: 0,
+            has_data: false,
         }
     }
     pub fn new_test(label: &str) -> Self {
@@ -30,12 +33,19 @@ impl PlotUi {
             buf: HeapCons::new(HeapRb::new(10).into()),
             local_buf,
             update_index: 0,
+            has_data: true, // test data is pre-filled
         }
     }
+    /// Returns true if this plot has received data at least once.
+    pub(crate) fn has_data(&self) -> bool {
+        self.has_data
+    }
+
     pub(crate) fn draw_line(&mut self) -> (bool, Line) {
         let mut request_repaint = false;
         while let Some(s) = self.buf.try_pop() {
             request_repaint = true;
+            self.has_data = true;
             self.local_buf[self.update_index] = s;
             self.update_index = (self.update_index + 1) % self.local_buf.len();
         }
