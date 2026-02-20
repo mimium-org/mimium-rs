@@ -211,8 +211,7 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
         let version = params.text_document.version;
         let text = params.text_document.text;
-        self.latest_change_version
-            .insert(uri.to_string(), version);
+        self.latest_change_version.insert(uri.to_string(), version);
         self.document_map
             .insert(uri.to_string(), ropey::Rope::from_str(&text));
         self.on_change(uri, version).await
@@ -243,8 +242,10 @@ impl LanguageServer for Backend {
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         if let Some(text) = params.text {
-            self.document_map
-                .insert(params.text_document.uri.to_string(), ropey::Rope::from_str(&text));
+            self.document_map.insert(
+                params.text_document.uri.to_string(),
+                ropey::Rope::from_str(&text),
+            );
             self.latest_change_version
                 .insert(params.text_document.uri.to_string(), -1);
             self.on_change(params.text_document.uri, -1).await;
@@ -449,11 +450,7 @@ impl Backend {
         self.semantic_token_map
             .insert(uri.to_string(), analysis.semantic_tokens);
         self.client
-            .publish_diagnostics(
-                uri,
-                analysis.diagnostics,
-                Some(version),
-            )
+            .publish_diagnostics(uri, analysis.diagnostics, Some(version))
             .await;
     }
 }

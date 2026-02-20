@@ -2759,7 +2759,8 @@ impl WasmGenerator {
                     self.emit_value_load(dst, func);
                     func.instruction(&W::I32WrapI64);
                     self.emit_value_load_deref(src, expected_vtype, func);
-                    if !matches!(src.as_ref(), mir::Value::Register(r) if self.getelement_registers.contains_key(r)) {
+                    if !matches!(src.as_ref(), mir::Value::Register(r) if self.getelement_registers.contains_key(r))
+                    {
                         let actual_vtype = self.infer_value_type(src);
                         if actual_vtype == ValType::F64 && expected_vtype == ValType::I64 {
                             func.instruction(&W::I64ReinterpretF64);
@@ -4008,8 +4009,8 @@ impl WasmGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interner::ToSymbol;
     use crate::ExecContext;
+    use crate::interner::ToSymbol;
 
     /// Helper: Create a path to write WASM output file in tmp directory
     fn get_wasm_output_path(filename: &str) -> std::path::PathBuf {
@@ -4125,7 +4126,10 @@ mod tests {
             })
             .is_some();
 
-        assert!(patched, "Failed to patch MIR with unknown external function");
+        assert!(
+            patched,
+            "Failed to patch MIR with unknown external function"
+        );
 
         let mut generator = WasmGenerator::new_without_plugins(Arc::new(mir));
         let err = generator

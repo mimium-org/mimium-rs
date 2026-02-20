@@ -67,11 +67,17 @@ fn get_parent_dir(current_file: &str) -> Result<PathBuf, Error> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn find_workspace_lib_path(current_file_or_dir: &str, relpath: &std::path::Path) -> Option<PathBuf> {
+fn find_workspace_lib_path(
+    current_file_or_dir: &str,
+    relpath: &std::path::Path,
+) -> Option<PathBuf> {
     let parent = get_parent_dir(current_file_or_dir).ok()?;
     parent.ancestors().find_map(|ancestor| {
         let candidate = ancestor.join("lib").join(relpath);
-        candidate.exists().then(|| candidate.canonicalize().ok()).flatten()
+        candidate
+            .exists()
+            .then(|| candidate.canonicalize().ok())
+            .flatten()
     })
 }
 

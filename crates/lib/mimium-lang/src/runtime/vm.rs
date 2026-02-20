@@ -1297,34 +1297,30 @@ impl Machine {
             .sum();
         self.global_vals = vec![0; global_mem_size];
         let ext_entries = self.prog.ext_fun_table.clone();
-        ext_entries
-            .iter()
-            .enumerate()
-            .for_each(|(i, (name, ty))| {
-                if let Some((j, _)) = self
-                    .ext_fun_table
-                    .iter()
-                    .enumerate()
-                    .find(|(_j, (fname, _fn))| name == fname.as_str())
-                {
-                    let _ = self.fn_map.insert(i, ExtFnIdx::Fun(j));
-                } else if let Some((j, _)) = self
-                    .ext_cls_table
-                    .iter()
-                    .enumerate()
-                    .find(|(_j, (fname, _fn))| name == fname.as_str())
-                {
-                    let _ = self.fn_map.insert(i, ExtFnIdx::Cls(j));
-                } else if let Some(spec_cls) = crate::plugin::try_make_specialized_extcls(
-                    name.as_str().to_symbol(),
-                    *ty,
-                ) {
-                    let cls_idx = self.install_extern_cls(spec_cls.name, spec_cls.fun);
-                    let _ = self.fn_map.insert(i, ExtFnIdx::Cls(cls_idx));
-                } else {
-                    panic!("external function {name} cannot be found");
-                }
-            });
+        ext_entries.iter().enumerate().for_each(|(i, (name, ty))| {
+            if let Some((j, _)) = self
+                .ext_fun_table
+                .iter()
+                .enumerate()
+                .find(|(_j, (fname, _fn))| name == fname.as_str())
+            {
+                let _ = self.fn_map.insert(i, ExtFnIdx::Fun(j));
+            } else if let Some((j, _)) = self
+                .ext_cls_table
+                .iter()
+                .enumerate()
+                .find(|(_j, (fname, _fn))| name == fname.as_str())
+            {
+                let _ = self.fn_map.insert(i, ExtFnIdx::Cls(j));
+            } else if let Some(spec_cls) =
+                crate::plugin::try_make_specialized_extcls(name.as_str().to_symbol(), *ty)
+            {
+                let cls_idx = self.install_extern_cls(spec_cls.name, spec_cls.fun);
+                let _ = self.fn_map.insert(i, ExtFnIdx::Cls(cls_idx));
+            } else {
+                panic!("external function {name} cannot be found");
+            }
+        });
     }
     pub fn execute_idx(&mut self, idx: usize) -> ReturnCode {
         let (_name, func) = &self.prog.global_fn_table[idx];

@@ -1607,21 +1607,24 @@ impl Context {
                                 concrete_ret_ty,
                             )
                             .unwrap_or_else(|| {
-                                    format!(
-                                        "{}_mono_{}_{}",
-                                        fn_name.as_str(),
-                                        concrete_arg_ty.to_mangled_string(),
-                                        concrete_ret_ty.to_mangled_string()
-                                    )
-                                    .to_symbol()
-                                });
+                                format!(
+                                    "{}_mono_{}_{}",
+                                    fn_name.as_str(),
+                                    concrete_arg_ty.to_mangled_string(),
+                                    concrete_ret_ty.to_mangled_string()
+                                )
+                                .to_symbol()
+                            });
 
                             let concrete_fn_ty = Type::Function {
                                 arg: concrete_arg_ty,
                                 ret: concrete_ret_ty,
                             }
                             .into_id();
-                            (Arc::new(Value::ExtFunction(mangled_name, concrete_fn_ty)), concrete_ret_ty)
+                            (
+                                Arc::new(Value::ExtFunction(mangled_name, concrete_fn_ty)),
+                                concrete_ret_ty,
+                            )
                         }
                         Value::Function(fid) => {
                             let original_fid = FunctionId(*fid as u64);

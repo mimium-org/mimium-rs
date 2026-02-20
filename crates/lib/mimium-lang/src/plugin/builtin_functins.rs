@@ -453,7 +453,9 @@ mod prepend {
             );
         }
 
-        let new_arr_idx = machine.arrays.alloc_array((len + 1) as u64, elem_size as u64);
+        let new_arr_idx = machine
+            .arrays
+            .alloc_array((len + 1) as u64, elem_size as u64);
         let copy_len = len * elem_size;
         let elem_words = vec![machine.get_stack(0)];
         let arr_data = machine.arrays.get_array(arr_idx).get_data().to_vec();
@@ -524,10 +526,7 @@ pub(crate) fn try_get_monomorphized_ext_fn_name(
         _ => return None,
     };
 
-    Some(
-        format!("{}$arity{}", fn_name.as_str(), elem_word_size)
-            .to_symbol(),
-    )
+    Some(format!("{}$arity{}", fn_name.as_str(), elem_word_size).to_symbol())
 }
 
 pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Option<ExtClsInfo> {
@@ -545,7 +544,9 @@ pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Optio
                 }
                 let len = arr.get_length_array() as usize;
                 let src = arr.get_data().to_vec();
-                let new_arr_idx = machine.arrays.alloc_array((len + 1) as u64, elem_size as u64);
+                let new_arr_idx = machine
+                    .arrays
+                    .alloc_array((len + 1) as u64, elem_size as u64);
                 let elem_words = (0..elem_size)
                     .map(|i| machine.get_stack(i as i64))
                     .collect::<Vec<_>>();
@@ -578,7 +579,9 @@ pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Optio
                 }
                 let data = arr.get_data().to_vec();
                 let head = data[..elem_size].to_vec();
-                let rest_arr_idx = machine.arrays.alloc_array((len - 1) as u64, elem_size as u64);
+                let rest_arr_idx = machine
+                    .arrays
+                    .alloc_array((len - 1) as u64, elem_size as u64);
                 let rest_copy_len = (len - 1) * elem_size;
                 let rest_src_offset = elem_size;
                 machine.arrays.get_array_mut(rest_arr_idx).get_data_mut()[..rest_copy_len]
@@ -612,7 +615,9 @@ pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Optio
                 let data = arr.get_data().to_vec();
                 let tail_offset = (len - 1) * elem_size;
                 let tail = data[tail_offset..tail_offset + elem_size].to_vec();
-                let rest_arr_idx = machine.arrays.alloc_array((len - 1) as u64, elem_size as u64);
+                let rest_arr_idx = machine
+                    .arrays
+                    .alloc_array((len - 1) as u64, elem_size as u64);
                 let rest_copy_len = (len - 1) * elem_size;
                 machine.arrays.get_array_mut(rest_arr_idx).get_data_mut()[..rest_copy_len]
                     .copy_from_slice(&data[..rest_copy_len]);

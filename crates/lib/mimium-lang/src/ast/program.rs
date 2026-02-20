@@ -585,13 +585,14 @@ fn process_use_statement(
 ) {
     let resolve_use_mangled = |segments: &[Symbol], info: &ModuleInfo| {
         let absolute_mangled = mangle_qualified_path(segments);
-        let (resolved, _) = resolve_qualified_path(segments, absolute_mangled, module_prefix, |name| {
-            info.visibility_map.contains_key(name)
-                || info.use_alias_map.contains_key(name)
-                || info.module_context_map.contains_key(name)
-                || info.type_aliases.contains_key(name)
-                || info.type_declarations.contains_key(name)
-        });
+        let (resolved, _) =
+            resolve_qualified_path(segments, absolute_mangled, module_prefix, |name| {
+                info.visibility_map.contains_key(name)
+                    || info.use_alias_map.contains_key(name)
+                    || info.module_context_map.contains_key(name)
+                    || info.type_aliases.contains_key(name)
+                    || info.type_declarations.contains_key(name)
+            });
         resolved
     };
 

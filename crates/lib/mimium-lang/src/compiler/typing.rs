@@ -664,10 +664,7 @@ impl InferContext {
         s.len() == 1 && s.as_bytes()[0].is_ascii_lowercase()
     }
 
-    fn collect_explicit_type_params_in_type(
-        ty: TypeNodeId,
-        out: &mut BTreeMap<Symbol, Location>,
-    ) {
+    fn collect_explicit_type_params_in_type(ty: TypeNodeId, out: &mut BTreeMap<Symbol, Location>) {
         match ty.to_type() {
             Type::TypeAlias(name) if Self::is_explicit_type_param_name(name) => {
                 out.entry(name).or_insert_with(|| ty.to_loc());
@@ -1540,9 +1537,9 @@ impl InferContext {
             Type::Unknown => self.gen_intermediate_type_with_location(loc.clone()),
             Type::TypeAlias(name) => {
                 if Self::is_explicit_type_param_name(name) {
-                    return self.lookup_explicit_type_param(name).unwrap_or_else(|| {
-                        self.gen_typescheme(loc.clone())
-                    });
+                    return self
+                        .lookup_explicit_type_param(name)
+                        .unwrap_or_else(|| self.gen_typescheme(loc.clone()));
                 }
                 // Determine if this is a qualified path (contains '$') or a simple name
                 let resolved_name = if name.as_str().contains('$') {
@@ -2126,10 +2123,7 @@ impl InferContext {
                     .map(|id| id.ty)
                     .filter(|ty| ty.to_type() != Type::Unknown)
                     .collect::<Vec<_>>();
-                rtype
-                    .iter()
-                    .copied()
-                    .for_each(|ty| scoped_types.push(ty));
+                rtype.iter().copied().for_each(|ty| scoped_types.push(ty));
                 self.with_explicit_type_param_scope_from_types(&scoped_types, |this| {
                     this.env.extend();
                     let lambda_res = (|| -> Result<TypeNodeId, Vec<Error>> {

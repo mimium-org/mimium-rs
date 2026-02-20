@@ -674,19 +674,15 @@ mod tests {
         let left_span = 10..20;
         let right_span = 30..40;
 
-        let left_elem = Type::Primitive(PType::Numeric).into_id_with_location(Location::new(
-            left_span.clone(),
-            PathBuf::from("left.mmm"),
-        ));
+        let left_elem = Type::Primitive(PType::Numeric)
+            .into_id_with_location(Location::new(left_span.clone(), PathBuf::from("left.mmm")));
         let right_elem = Type::Primitive(PType::Numeric).into_id_with_location(Location::new(
             right_span.clone(),
             PathBuf::from("right.mmm"),
         ));
 
-        let left = Type::Tuple(vec![left_elem]).into_id_with_location(Location::new(
-            left_span.clone(),
-            PathBuf::from("left.mmm"),
-        ));
+        let left = Type::Tuple(vec![left_elem])
+            .into_id_with_location(Location::new(left_span.clone(), PathBuf::from("left.mmm")));
         let right = Type::Tuple(vec![right_elem, right_elem]).into_id_with_location(Location::new(
             right_span.clone(),
             PathBuf::from("right.mmm"),

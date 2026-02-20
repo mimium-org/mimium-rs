@@ -376,7 +376,9 @@ fn convert_self(
         },
         Expr::Lambda(params, r_type, body) => {
             let (params, params_found_any, params_errs) =
-                convert_lambda_param_defaults(params, &|e| convert_self(e, feedctx, file_path.clone()));
+                convert_lambda_param_defaults(params, &|e| {
+                    convert_self(e, feedctx, file_path.clone())
+                });
             let nfctx = feedctx.get_next_id();
             let (res, err) = convert_self(body, nfctx, file_path);
             let nbody = if res.found_any {
