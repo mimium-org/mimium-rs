@@ -834,6 +834,48 @@ impl Context {
         new_fid
     }
 
+    fn infer_concrete_call_arg_type(
+        &mut self,
+        formal_arg_ty: TypeNodeId,
+        args: &[ExprNodeId],
+    ) -> TypeNodeId {
+        if args.len() == 1 {
+            return self.typeenv.infer_type(args[0]).unwrap_or(formal_arg_ty);
+        }
+
+        match formal_arg_ty.to_type() {
+            Type::Record(fields) => {
+                let concrete_fields = fields
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, field)| {
+                        let inferred_ty = args
+                            .get(idx)
+                            .and_then(|arg| self.typeenv.infer_type(*arg).ok())
+                            .unwrap_or(field.ty);
+                        RecordTypeField {
+                            key: field.key,
+                            ty: inferred_ty,
+                            has_default: field.has_default,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                Type::Record(concrete_fields).into_id()
+            }
+            _ => {
+                let concrete_elems = args
+                    .iter()
+                    .map(|arg| {
+                        self.typeenv
+                            .infer_type(*arg)
+                            .unwrap_or(Type::Unknown.into_id())
+                    })
+                    .collect::<Vec<_>>();
+                Type::Tuple(concrete_elems).into_id()
+            }
+        }
+    }
+
     pub fn eval_literal(&mut self, lit: &Literal, _span: &Span) -> VPtr {
         match lit {
             Literal::String(s) => self.push_inst(Instruction::String(*s)),
@@ -1546,47 +1588,67 @@ impl Context {
                 let needs_monomorphization =
                     at.to_type().contains_type_scheme() || rt.to_type().contains_type_scheme();
 
-                // If we have a generic external function (like `map`), we need to monomorphize it
+                // If we have a generic function, monomorphize it at call-site.
                 let (f_to_call, monomorphized_rt) = if needs_monomorphization {
-                    if let Value::ExtFunction(fn_name, _fn_ty) = f_val.as_ref() {
-                        // Infer the concrete types from the arguments and expected return type
-                        // For now, use the types from type inference (ty for return, args types for arguments)
-                        let concrete_arg_ty = self
-                            .typeenv
-                            .infer_type(*args.first().expect("map needs args"))
-                            .unwrap_or(at);
-                        let concrete_ret_ty = ty;
+                    let concrete_arg_ty = self.infer_concrete_call_arg_type(at, args);
+                    let concrete_ret_ty = ty;
+                    match f_val.as_ref() {
+                        Value::ExtFunction(fn_name, _fn_ty) => {
+                            log::debug!(
+                                "Monomorphizing external function '{}' with arg type: {}, ret type: {}",
+                                fn_name,
+                                concrete_arg_ty.to_type(),
+                                concrete_ret_ty.to_type()
+                            );
 
-                        log::debug!(
-                            "Monomorphizing generic function '{}' with arg type: {}, ret type: {}",
-                            fn_name,
-                            concrete_arg_ty.to_type(),
-                            concrete_ret_ty.to_type()
-                        );
+                            let mangled_name = format!(
+                                "{}_mono_{}_{}",
+                                fn_name.as_str(),
+                                concrete_arg_ty.to_mangled_string(),
+                                concrete_ret_ty.to_mangled_string()
+                            )
+                            .to_symbol();
 
-                        // Create a monomorphized version of the external function
-                        let mangled_name = format!(
-                            "{}_mono_{}_{}",
-                            fn_name.as_str(),
-                            concrete_arg_ty.to_mangled_string(),
-                            concrete_ret_ty.to_mangled_string()
-                        )
-                        .to_symbol();
-
-                        let concrete_fn_ty = Type::Function {
-                            arg: concrete_arg_ty,
-                            ret: concrete_ret_ty,
+                            let concrete_fn_ty = Type::Function {
+                                arg: concrete_arg_ty,
+                                ret: concrete_ret_ty,
+                            }
+                            .into_id();
+                            (Arc::new(Value::ExtFunction(mangled_name, concrete_fn_ty)), concrete_ret_ty)
                         }
-                        .into_id();
-
-                        let monomorphized_fn =
-                            Arc::new(Value::ExtFunction(mangled_name, concrete_fn_ty));
-                        (monomorphized_fn, concrete_ret_ty)
-                    } else {
-                        todo!(
-                            "Monomorphization of non-external generic functions not yet implemented"
-                        );
-                        (f_val.clone(), rt)
+                        Value::Function(fid) => {
+                            let original_fid = FunctionId(*fid as u64);
+                            let original_name = self.program.functions[*fid].label;
+                            let specialized_fid = self.get_or_create_monomorphized_function(
+                                original_name,
+                                concrete_arg_ty,
+                                concrete_ret_ty,
+                                original_fid,
+                            );
+                            (
+                                Arc::new(Value::Function(specialized_fid.0 as usize)),
+                                concrete_ret_ty,
+                            )
+                        }
+                        Value::Global(gv) => {
+                            if let Value::Function(fid) = gv.as_ref() {
+                                let original_fid = FunctionId(*fid as u64);
+                                let original_name = self.program.functions[*fid].label;
+                                let specialized_fid = self.get_or_create_monomorphized_function(
+                                    original_name,
+                                    concrete_arg_ty,
+                                    concrete_ret_ty,
+                                    original_fid,
+                                );
+                                (
+                                    Arc::new(Value::Function(specialized_fid.0 as usize)),
+                                    concrete_ret_ty,
+                                )
+                            } else {
+                                (f_val.clone(), concrete_ret_ty)
+                            }
+                        }
+                        _ => (f_val.clone(), concrete_ret_ty),
                     }
                 } else {
                     (f_val.clone(), ty)

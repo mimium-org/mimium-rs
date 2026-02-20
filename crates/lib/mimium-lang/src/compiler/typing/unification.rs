@@ -215,6 +215,13 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
             Relation::Identical
         }
         (Type::Intermediate(i1), _) => {
+            let var1 = i1.read().unwrap().var;
+            if occur_check(var1, t2r) {
+                return Err(vec![Error::CircularType {
+                    left: loc1,
+                    right: loc2,
+                }]);
+            }
             let mut tv1 = i1.write().unwrap();
             tv1.parent = Some(t2r);
             tv1.bound.upper = t2r;
@@ -223,6 +230,13 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
             Relation::Identical
         }
         (_, Type::Intermediate(i2)) => {
+            let var2 = i2.read().unwrap().var;
+            if occur_check(var2, t1r) {
+                return Err(vec![Error::CircularType {
+                    left: loc1,
+                    right: loc2,
+                }]);
+            }
             let mut tv2 = i2.write().unwrap();
             tv2.parent = Some(t1r);
             tv2.bound.upper = t1r;
@@ -311,6 +325,13 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             Relation::Identical
         }
         (Type::Intermediate(i1), _) => {
+            let var1 = i1.read().unwrap().var;
+            if occur_check(var1, t2r) {
+                return Err(vec![Error::CircularType {
+                    left: loc1,
+                    right: loc2,
+                }]);
+            }
             let mut tv1 = i1.write().unwrap();
             tv1.parent = Some(t2r);
             tv1.bound.lower = t2r;
@@ -319,6 +340,13 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             Relation::Identical
         }
         (_, Type::Intermediate(i2)) => {
+            let var2 = i2.read().unwrap().var;
+            if occur_check(var2, t1r) {
+                return Err(vec![Error::CircularType {
+                    left: loc1,
+                    right: loc2,
+                }]);
+            }
             let mut tv2 = i2.write().unwrap();
             tv2.parent = Some(t1r);
             tv2.bound.lower = t1r;
@@ -500,6 +528,13 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             }
         }
         (Type::Primitive(p1), Type::Primitive(p2)) if p1 == p2 => Relation::Identical,
+        (Type::TypeScheme(s1), Type::TypeScheme(s2)) if s1 == s2 => Relation::Identical,
+        (Type::TypeScheme(_), _) | (_, Type::TypeScheme(_)) => {
+            return Err(vec![Error::TypeMismatch {
+                left: (t1, loc1.clone()),
+                right: (t2, loc2.clone()),
+            }]);
+        }
         (Type::Primitive(PType::Unit), Type::Tuple(v))
         | (Type::Tuple(v), Type::Primitive(PType::Unit))
             if v.is_empty() =>

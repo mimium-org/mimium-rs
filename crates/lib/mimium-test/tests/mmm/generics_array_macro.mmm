@@ -4,7 +4,7 @@ fn map(arr:[a],func:(a)->b)->[b]{
         let (head,rest) = split_head(arr)
         prepend(head |> func , map(rest,func))
     }else{
-        [func(arr)]
+        [func(arr[0])]
     }
 }
 

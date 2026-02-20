@@ -429,9 +429,38 @@ declare_f1f_common!(probeln, |x: f64| {
 mod prepend {
     use super::*;
     use crate::interpreter::Value;
-    use crate::plugin::MacroInfo;
+    use crate::plugin::CommonFunction;
     use crate::types::{Type, TypeSchemeId};
     use crate::{function, interner::TypeNodeId};
+
+    fn machine_function(
+        machine: &mut crate::runtime::vm::Machine,
+    ) -> crate::runtime::vm::ReturnCode {
+        let elem = machine.get_stack(0);
+        let arr_idx = machine.get_stack(1);
+        let array = machine.arrays.get_array(arr_idx);
+        let len = array.get_length_array();
+        let elem_size = array.get_elem_word_size();
+
+        if elem_size != 1 {
+            panic!(
+                "prepend runtime currently supports arrays with elem word size 1, found {elem_size}"
+            );
+        }
+
+        let new_arr_idx = machine.arrays.alloc_array(len + 1, elem_size);
+        let src = machine.arrays.get_array(arr_idx).get_data().to_vec();
+        let copy_len = (len * elem_size) as usize;
+
+        {
+            let dst = machine.arrays.get_array_mut(new_arr_idx).get_data_mut();
+            dst[0] = elem;
+            dst[1..1 + copy_len].copy_from_slice(&src[..copy_len]);
+        }
+
+        machine.set_stack(0, new_arr_idx);
+        1
+    }
 
     fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(args.len(), 2);
@@ -447,15 +476,16 @@ mod prepend {
         }
     }
 
-    pub(super) fn signature() -> MacroInfo {
-        let ty_var = Type::TypeScheme(TypeSchemeId(0)).into_id();
-        MacroInfo {
+    pub(super) fn signature() -> CommonFunction {
+        let ty_var = Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id();
+        CommonFunction {
             name: "prepend".to_symbol(),
             ty: function!(
                 vec![ty_var, Type::Array(ty_var).into_id()],
                 Type::Array(ty_var).into_id()
             ),
-            fun: std::rc::Rc::new(std::cell::RefCell::new(macro_function)),
+            macro_fun: macro_function,
+            fun: machine_function,
         }
     }
 }
@@ -542,6 +572,7 @@ fn generate_builtin_functions() -> impl ExactSizeIterator<Item = CommonFunction>
         atan2::signature(),
         pow::signature(),
         length_array::signature(),
+        prepend::signature(),
         split_tail::signature(),
         split_head::signature(),
         probe::signature(),
@@ -552,7 +583,6 @@ fn generate_builtin_functions() -> impl ExactSizeIterator<Item = CommonFunction>
 fn generate_default_macros() -> impl ExactSizeIterator<Item = MacroInfo> {
     vec![
         lift_f::signature(),
-        prepend::signature(),
         lift_arrayf::signature(),
         map::signature(),
     ]

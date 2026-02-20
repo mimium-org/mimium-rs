@@ -74,6 +74,27 @@ fn array_length() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn generic_id() {
+    let res = run_file_test_mono("generic_id.mmm", 1).unwrap();
+    let ans = vec![6.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn generics_array_macro() {
+    let res = run_file_test_mono("generics_array_macro.mmm", 1).unwrap();
+    let ans = vec![24.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn generics_array() {
+    let res = run_file_test_mono("generics_array.mmm", 1).unwrap();
+    let ans = vec![24.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn split_tail() {
     let res = run_file_test_mono("split_tail.mmm", 1).unwrap();
     let ans = vec![24.0]; // (1+2+3)*4 = 6*4 = 24
@@ -530,6 +551,16 @@ fn error_include_itself() {
         "{:?}",
         res[0]
     )
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_param_reserved_name_fail() {
+    let errs = run_error_test("type_param_reserved_name_fail.mmm", false);
+    assert!(!errs.is_empty());
+    assert!(errs.iter().any(|e| {
+        e.get_message()
+            .contains("reserved for explicit type parameters")
+    }));
 }
 
 #[wasm_bindgen_test(unsupported = test)]
