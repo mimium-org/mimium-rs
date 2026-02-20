@@ -638,7 +638,9 @@ impl Machine {
                     self.stack[ret_start + i] = arg_snapshot[i];
                 });
             } else {
-                panic!("invalid number of return value {nret_req} required but accepts only {nret}.");
+                panic!(
+                    "invalid number of return value {nret_req} required but accepts only {nret}."
+                );
             }
         }
         // shrink stack so as to match with number of return values

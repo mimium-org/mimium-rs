@@ -520,11 +520,23 @@ fn parse_arity_specialized_name(name: Symbol, base: &str) -> Option<usize> {
 
 pub(crate) fn try_get_monomorphized_ext_fn_name(
     fn_name: Symbol,
-    _concrete_arg_ty: TypeNodeId,
+    concrete_arg_ty: TypeNodeId,
     concrete_ret_ty: TypeNodeId,
 ) -> Option<Symbol> {
+    // Do not resolve when the types are still generic; let the
+    // monomorphization pass call us again once concrete types are known.
+    if concrete_arg_ty.to_type().contains_unresolved()
+        || concrete_ret_ty.to_type().contains_unresolved()
+    {
+        return None;
+    }
+
     let elem_word_size = match fn_name.as_str() {
-        "__probe_value_intercept" => concrete_ret_ty.word_size(),
+        "__probe_value_intercept" => match concrete_arg_ty.to_type() {
+            crate::types::Type::Tuple(elems) if !elems.is_empty() => elems[0].word_size(),
+            crate::types::Type::Record(fields) if !fields.is_empty() => fields[0].ty.word_size(),
+            _ => concrete_ret_ty.word_size(),
+        },
         "prepend" => match concrete_ret_ty.to_type() {
             crate::types::Type::Array(elem_ty) => elem_ty.word_size(),
             _ => return None,

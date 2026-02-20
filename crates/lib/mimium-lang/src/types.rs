@@ -234,6 +234,28 @@ impl Type {
         }
     }
 
+    /// Returns `true` when the type still contains unresolved components
+    /// (`Unknown`, `TypeScheme`, or unresolved `Intermediate`) that prevent
+    /// concrete monomorphization.
+    pub fn contains_unresolved(&self) -> bool {
+        match self {
+            Type::Unknown | Type::TypeScheme(_) => true,
+            Type::Intermediate(_) => true,
+            Type::Array(t) | Type::Ref(t) | Type::Code(t) | Type::Boxed(t) => {
+                t.to_type().contains_unresolved()
+            }
+            Type::Tuple(t) => t.iter().any(|t| t.to_type().contains_unresolved()),
+            Type::Record(t) => t
+                .iter()
+                .any(|RecordTypeField { ty, .. }| ty.to_type().contains_unresolved()),
+            Type::Function { arg, ret } => {
+                arg.to_type().contains_unresolved() || ret.to_type().contains_unresolved()
+            }
+            Type::Union(t) => t.iter().any(|t| t.to_type().contains_unresolved()),
+            _ => false,
+        }
+    }
+
     pub fn is_intermediate(&self) -> Option<Arc<RwLock<TypeVar>>> {
         match self {
             Type::Intermediate(tvar) => Some(tvar.clone()),

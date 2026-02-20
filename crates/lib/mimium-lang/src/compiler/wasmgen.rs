@@ -3078,13 +3078,12 @@ impl WasmGenerator {
                 // Check if this is an external function call or a closure call
                 match closure_ptr.as_ref() {
                     mir::Value::ExtFunction(name, _fn_ty) => {
-                        // External function call - map to runtime imports
+                        // External function call - map to runtime imports.
+                        // Use flattened argument loading so that tuple args are
+                        // expanded into individual WASM values matching the
+                        // import signature produced by setup_plugin_imports.
                         if let Some(import_idx) = self.resolve_ext_function(name) {
-                            // Load arguments first with type coercion
-                            for (arg, ty) in args {
-                                let expected = Self::type_to_valtype(&ty.to_type());
-                                self.emit_value_load_typed(arg, expected, func);
-                            }
+                            self.emit_call_args_flattened(args, func);
                             func.instruction(&W::Call(import_idx));
                         } else {
                             return Err(format!(
