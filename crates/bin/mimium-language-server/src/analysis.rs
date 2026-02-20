@@ -33,7 +33,7 @@ pub fn analyze_source(
         mimium_lang::compiler::parser::parse_cst(parser_tokens, &parser_preparsed);
 
     let semantic_tokens =
-        crate::semantic_token::tokens_from_green(parser_root, &parser_arena, &parser_tokens);
+        crate::semantic_token::tokens_from_green(parser_root, &parser_arena, &parser_tokens, src);
 
     let ParseResult {
         ast,
