@@ -1,0 +1,25 @@
+#stage(macro)
+fn map(arr:[a],func:(a)->b)->[b]{
+    if ((arr |> length_array) > 1){
+        let (head,rest) = split_head(arr)
+        prepend(head |> func , map(rest,func))
+    }else{
+        [func(arr)]
+    }
+}
+
+#stage(main)
+
+fn dsp(){
+    let ans = ${
+    let src = [1,2,3]
+    let double = |x| x*2
+    let doubled = map(src,double)
+    let to_doubler = |x| |y| x*y
+    let doublers = map(src,to_doubler)
+    let doubled2 = map(doublers, |f| f(2))
+    doubled[0]+doubled[1]+doubled[2]
+    +doubled2[0]+doubled[1]+doubled[2] |> lift_f
+    }
+    ans
+}

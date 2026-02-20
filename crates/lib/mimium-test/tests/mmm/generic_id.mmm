@@ -3,5 +3,6 @@ fn id(x){
     x
 }
 fn dsp(){
-    tofloat(id(0)) + id(0.0)
+    let (a,b) = id((1,2))
+    a + b + id(3)
 }
