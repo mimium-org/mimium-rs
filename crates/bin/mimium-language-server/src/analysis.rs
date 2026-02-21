@@ -1,5 +1,7 @@
+use mimium_lang::ast::Expr;
 use mimium_lang::compiler::mirgen;
-use mimium_lang::interner::{Symbol, TypeNodeId};
+use mimium_lang::interner::{ExprNodeId, Symbol, TypeNodeId};
+use mimium_lang::types::Type;
 use mimium_lang::utils::error::ReportableError;
 use ropey::Rope;
 use tower_lsp::lsp_types::{
@@ -14,10 +16,27 @@ pub struct AnalysisRequest {
     pub text: String,
 }
 
+/// Parameter information for signature help.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ParamInfo {
+    pub name: String,
+    pub type_str: String,
+    pub has_default: bool,
+}
+
+/// Signature information for a function definition.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FnSignature {
+    pub name: String,
+    pub params: Vec<ParamInfo>,
+    pub return_type: String,
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct AnalysisResponse {
     pub diagnostics: Vec<Diagnostic>,
     pub semantic_tokens: Vec<ImCompleteSemanticToken>,
+    pub fn_signatures: Vec<FnSignature>,
 }
 
 pub fn analyze_source(
@@ -54,9 +73,77 @@ pub fn analyze_source(
         .flat_map(|item| diagnostic_from_error(item, url.clone(), &rope))
         .collect::<Vec<Diagnostic>>();
 
+    let fn_signatures = collect_fn_signatures(ast);
+
     AnalysisResponse {
         diagnostics,
         semantic_tokens,
+        fn_signatures,
+    }
+}
+
+/// Format a type for display in signature help.
+/// Returns an empty string for unknown types.
+fn format_type_for_display(ty: &Type) -> String {
+    match ty {
+        Type::Unknown => String::new(),
+        other => format!("{other}"),
+    }
+}
+
+/// Walk the AST and collect all function signatures.
+fn collect_fn_signatures(root: ExprNodeId) -> Vec<FnSignature> {
+    let mut sigs = Vec::new();
+    collect_fn_signatures_rec(root, &mut sigs);
+    sigs
+}
+
+/// Recursively walk the AST to find function definitions (LetRec with Lambda).
+fn collect_fn_signatures_rec(expr_id: ExprNodeId, sigs: &mut Vec<FnSignature>) {
+    match expr_id.to_expr() {
+        Expr::LetRec(typed_id, value, next) => {
+            if let Expr::Lambda(params, ret_ty, _body) = value.to_expr() {
+                let name = typed_id.id.as_str().to_string();
+                let params_info = params
+                    .iter()
+                    .map(|p| {
+                        let ty = p.ty.to_type();
+                        ParamInfo {
+                            name: p.id.as_str().to_string(),
+                            type_str: format_type_for_display(&ty),
+                            has_default: p.default_value.is_some(),
+                        }
+                    })
+                    .collect();
+                let return_type = ret_ty
+                    .map(|r| format_type_for_display(&r.to_type()))
+                    .unwrap_or_default();
+                sigs.push(FnSignature {
+                    name,
+                    params: params_info,
+                    return_type,
+                });
+            }
+            if let Some(next) = next {
+                collect_fn_signatures_rec(next, sigs);
+            }
+        }
+        Expr::Let(_pat, _value, Some(next)) => {
+            collect_fn_signatures_rec(next, sigs);
+        }
+        Expr::Then(e1, e2) => {
+            collect_fn_signatures_rec(e1, sigs);
+            if let Some(e2) = e2 {
+                collect_fn_signatures_rec(e2, sigs);
+            }
+        }
+        Expr::Bracket(inner) => {
+            collect_fn_signatures_rec(inner, sigs);
+        }
+        Expr::Escape(inner) => {
+            collect_fn_signatures_rec(inner, sigs);
+        }
+        _ => {}
     }
 }
 

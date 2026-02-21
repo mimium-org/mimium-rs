@@ -16,7 +16,7 @@ use tower_lsp::jsonrpc::{Error, ErrorCode, Result};
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use crate::analysis::{AnalysisRequest, AnalysisResponse, analyze_source};
+use crate::analysis::{AnalysisRequest, AnalysisResponse, FnSignature, analyze_source};
 use crate::semantic_token::{ImCompleteSemanticToken, LEGEND_TYPE};
 type SrcUri = String;
 const CHANGE_DEBOUNCE_MS: u64 = 200;
@@ -73,6 +73,7 @@ struct Backend {
     analysis_mode: AnalysisMode,
     document_map: DashMap<SrcUri, Rope>,
     semantic_token_map: DashMap<SrcUri, Vec<ImCompleteSemanticToken>>,
+    fn_signature_map: DashMap<SrcUri, Vec<FnSignature>>,
     latest_change_version: DashMap<SrcUri, i32>,
 }
 
@@ -147,6 +148,13 @@ impl LanguageServer for Backend {
                     file_operations: None,
                 }),
                 document_formatting_provider: Some(OneOf::Left(true)),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
+                    retrigger_characters: None,
+                    work_done_progress_options: WorkDoneProgressOptions {
+                        work_done_progress: None,
+                    },
+                }),
                 ..ServerCapabilities::default()
             },
             server_info: None,
@@ -258,6 +266,7 @@ impl LanguageServer for Backend {
         self.latest_change_version.remove(&uri);
         self.document_map.remove(&uri);
         self.semantic_token_map.remove(&uri);
+        self.fn_signature_map.remove(&uri);
         debug!("file closed!");
     }
 
@@ -305,6 +314,70 @@ impl LanguageServer for Backend {
             range,
             new_text: formatted,
         }]))
+    }
+
+    async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .to_string();
+        let position = params.text_document_position_params.position;
+
+        let rope = match self.document_map.get(&uri) {
+            Some(rope) => rope.clone(),
+            None => return Ok(None),
+        };
+
+        let offset = match position_to_offset(position, &rope) {
+            Some(o) => o,
+            None => return Ok(None),
+        };
+
+        let text = rope.to_string();
+
+        let (fn_name, active_param) = match find_function_call_context(&text, offset) {
+            Some(ctx) => ctx,
+            None => return Ok(None),
+        };
+
+        let signatures = match self.fn_signature_map.get(&uri) {
+            Some(sigs) => sigs.clone(),
+            None => return Ok(None),
+        };
+
+        let sig = match signatures.iter().find(|s| s.name == fn_name) {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+
+        let label = format_signature_label(sig);
+        let parameters: Vec<ParameterInformation> = sig
+            .params
+            .iter()
+            .map(|p| {
+                let param_label = if p.type_str.is_empty() {
+                    p.name.clone()
+                } else {
+                    format!("{}: {}", p.name, p.type_str)
+                };
+                ParameterInformation {
+                    label: ParameterLabel::Simple(param_label),
+                    documentation: None,
+                }
+            })
+            .collect();
+
+        Ok(Some(SignatureHelp {
+            signatures: vec![SignatureInformation {
+                label,
+                documentation: None,
+                parameters: Some(parameters),
+                active_parameter: Some(active_param as u32),
+            }],
+            active_signature: Some(0),
+            active_parameter: Some(active_param as u32),
+        }))
     }
 }
 
@@ -449,6 +522,8 @@ impl Backend {
 
         self.semantic_token_map
             .insert(uri.to_string(), analysis.semantic_tokens);
+        self.fn_signature_map
+            .insert(uri.to_string(), analysis.fn_signatures);
         self.client
             .publish_diagnostics(uri, analysis.diagnostics, Some(version))
             .await;
@@ -472,6 +547,7 @@ pub async fn lib_main() {
         analysis_mode,
         document_map: DashMap::new(),
         semantic_token_map: DashMap::new(),
+        fn_signature_map: DashMap::new(),
         latest_change_version: DashMap::new(),
     })
     .finish();
@@ -483,4 +559,91 @@ fn position_to_offset(position: Position, rope: &Rope) -> Option<usize> {
     let line_char_offset = rope.try_line_to_char(position.line as usize).ok()?;
     let slice = rope.slice(0..line_char_offset + position.character as usize);
     Some(slice.len_bytes())
+}
+
+/// Find which function is being called at the given byte offset and which
+/// parameter the cursor is on.
+///
+/// Returns `(function_name, active_parameter_index)` or `None` if the cursor
+/// is not inside a function call.
+fn find_function_call_context(text: &str, offset: usize) -> Option<(String, usize)> {
+    let bytes = text.as_bytes();
+    let mut depth: i32 = 0;
+    let mut comma_count: usize = 0;
+    let mut i = offset;
+
+    // Scan backwards from the cursor to find the unmatched opening paren.
+    // Track nesting depth and count commas at depth 0 (the call we care about).
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            b')' => depth += 1,
+            b'(' => {
+                if depth == 0 {
+                    // Found the unmatched opening paren — extract the identifier
+                    // that precedes it (skipping whitespace).
+                    let paren_pos = i;
+                    let end = skip_whitespace_backwards(bytes, paren_pos);
+                    if end == 0 {
+                        return None;
+                    }
+                    let start = find_ident_start(bytes, end);
+                    let name = std::str::from_utf8(&bytes[start..end]).ok()?;
+                    if name.is_empty() {
+                        return None;
+                    }
+                    return Some((name.to_string(), comma_count));
+                }
+                depth -= 1;
+            }
+            b',' if depth == 0 => comma_count += 1,
+            _ => {}
+        }
+    }
+
+    None
+}
+
+/// Skip whitespace backwards and return the position just past the last
+/// non-whitespace character.
+fn skip_whitespace_backwards(bytes: &[u8], mut pos: usize) -> usize {
+    while pos > 0 && bytes[pos - 1].is_ascii_whitespace() {
+        pos -= 1;
+    }
+    pos
+}
+
+/// Walk backwards from `end` (exclusive) to find where an identifier starts.
+fn find_ident_start(bytes: &[u8], end: usize) -> usize {
+    let mut pos = end;
+    while pos > 0 && is_ident_char(bytes[pos - 1]) {
+        pos -= 1;
+    }
+    pos
+}
+
+fn is_ident_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Build a human-readable label string for a function signature.
+fn format_signature_label(sig: &FnSignature) -> String {
+    let params_str = sig
+        .params
+        .iter()
+        .map(|p| {
+            if p.type_str.is_empty() {
+                p.name.clone()
+            } else {
+                format!("{}: {}", p.name, p.type_str)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    if sig.return_type.is_empty() {
+        format!("{}({})", sig.name, params_str)
+    } else {
+        format!("{}({}) -> {}", sig.name, params_str, sig.return_type)
+    }
 }
