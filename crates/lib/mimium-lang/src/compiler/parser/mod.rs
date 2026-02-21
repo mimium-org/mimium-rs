@@ -251,6 +251,9 @@ mod tests {
         }
 
         assert!(!tokens.is_empty());
-        assert!(!errors.is_empty(), "Expected parser errors for malformed input");
+        assert!(
+            !errors.is_empty(),
+            "Expected parser errors for malformed input"
+        );
     }
 }

@@ -595,6 +595,7 @@ pub struct InferContext {
     instantiated_map: BTreeMap<TypeSchemeId, TypeNodeId>, //from type scheme to typevar
     generalize_map: BTreeMap<IntermediateId, TypeSchemeId>,
     result_memo: BTreeMap<ExprKey, TypeNodeId>,
+    explicit_type_param_scopes: Vec<BTreeMap<Symbol, TypeNodeId>>,
     file_path: PathBuf,
     pub env: Environment<(TypeNodeId, EvalStage)>,
     /// Constructor environment for user-defined sum types
@@ -625,6 +626,7 @@ impl InferContext {
             instantiated_map: Default::default(),
             generalize_map: Default::default(),
             result_memo: Default::default(),
+            explicit_type_param_scopes: Default::default(),
             file_path,
             env: Environment::<(TypeNodeId, EvalStage)>::default(),
             constructor_env: Default::default(),
@@ -655,6 +657,59 @@ impl InferContext {
             res.register_type_aliases(type_aliases);
         }
         res
+    }
+
+    fn is_explicit_type_param_name(name: Symbol) -> bool {
+        let s = name.as_str();
+        s.len() == 1 && s.as_bytes()[0].is_ascii_lowercase()
+    }
+
+    fn collect_explicit_type_params_in_type(ty: TypeNodeId, out: &mut BTreeMap<Symbol, Location>) {
+        match ty.to_type() {
+            Type::TypeAlias(name) if Self::is_explicit_type_param_name(name) => {
+                out.entry(name).or_insert_with(|| ty.to_loc());
+            }
+            Type::Array(elem) | Type::Ref(elem) | Type::Code(elem) | Type::Boxed(elem) => {
+                Self::collect_explicit_type_params_in_type(elem, out);
+            }
+            Type::Tuple(elems) | Type::Union(elems) => elems
+                .iter()
+                .for_each(|elem| Self::collect_explicit_type_params_in_type(*elem, out)),
+            Type::Record(fields) => fields
+                .iter()
+                .for_each(|field| Self::collect_explicit_type_params_in_type(field.ty, out)),
+            Type::Function { arg, ret } => {
+                Self::collect_explicit_type_params_in_type(arg, out);
+                Self::collect_explicit_type_params_in_type(ret, out);
+            }
+            _ => {}
+        }
+    }
+
+    fn with_explicit_type_param_scope_from_types<T>(
+        &mut self,
+        types: &[TypeNodeId],
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let mut collected = BTreeMap::<Symbol, Location>::new();
+        types
+            .iter()
+            .for_each(|ty| Self::collect_explicit_type_params_in_type(*ty, &mut collected));
+        let map = collected
+            .into_iter()
+            .map(|(name, loc)| (name, self.gen_typescheme(loc)))
+            .collect::<BTreeMap<_, _>>();
+        self.explicit_type_param_scopes.push(map);
+        let res = f(self);
+        let _ = self.explicit_type_param_scopes.pop();
+        res
+    }
+
+    fn lookup_explicit_type_param(&self, name: Symbol) -> Option<TypeNodeId> {
+        self.explicit_type_param_scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(&name).copied())
     }
 
     /// Register type declarations from ModuleInfo into the constructor environment
@@ -1481,6 +1536,11 @@ impl InferContext {
         match t.to_type() {
             Type::Unknown => self.gen_intermediate_type_with_location(loc.clone()),
             Type::TypeAlias(name) => {
+                if Self::is_explicit_type_param_name(name) {
+                    return self
+                        .lookup_explicit_type_param(name)
+                        .unwrap_or_else(|| self.gen_typescheme(loc.clone()));
+                }
                 // Determine if this is a qualified path (contains '$') or a simple name
                 let resolved_name = if name.as_str().contains('$') {
                     // Already a mangled name from qualified path (e.g., mymath$PrivateNum)
@@ -1788,6 +1848,13 @@ impl InferContext {
         }
     }
 
+    fn instantiate_fresh(&mut self, t: TypeNodeId) -> TypeNodeId {
+        self.instantiated_map.clear();
+        let res = self.instantiate(t);
+        self.instantiated_map.clear();
+        res
+    }
+
     // Note: the third argument `span` is used for the error location in case of
     // type mismatch. This is needed because `t`'s span refers to the location
     // where it originally defined (e.g. the explicit return type of the
@@ -2051,44 +2118,63 @@ impl InferContext {
                 }
             }
             Expr::Lambda(p, rtype, body) => {
-                self.env.extend();
-                let dup = p.iter().duplicates_by(|id| id.id).map(|id| {
-                    let loc = Location::new(id.to_span(), self.file_path.clone());
-                    (id.id, loc)
-                });
-                if dup.clone().count() > 0 {
-                    return Err(vec![Error::DuplicateKeyInParams(dup.collect())]);
-                }
-                let pvec = p
+                let mut scoped_types = p
                     .iter()
-                    .map(|id| {
-                        let ity = self.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
-                        self.env.add_bind(&[(id.id, (ity, self.stage))]);
-                        RecordTypeField {
-                            key: id.id,
-                            ty: ity,
-                            has_default: false,
-                        }
-                    })
+                    .map(|id| id.ty)
+                    .filter(|ty| ty.to_type() != Type::Unknown)
                     .collect::<Vec<_>>();
-                let ptype = if pvec.is_empty() {
-                    Type::Primitive(PType::Unit).into_id_with_location(loc.clone())
-                } else {
-                    Type::Record(pvec).into_id_with_location(loc.clone())
-                };
-                let bty = if let Some(r) = rtype {
-                    let bty = self.infer_type_unwrapping(*body);
-                    let _rel = self.unify_types(*r, bty)?;
-                    bty
-                } else {
-                    self.infer_type_unwrapping(*body)
-                };
-                self.env.to_outer();
-                Ok(Type::Function {
-                    arg: ptype,
-                    ret: bty,
-                }
-                .into_id_with_location(e.to_location()))
+                rtype.iter().copied().for_each(|ty| scoped_types.push(ty));
+                self.with_explicit_type_param_scope_from_types(&scoped_types, |this| {
+                    this.env.extend();
+                    let lambda_res = (|| -> Result<TypeNodeId, Vec<Error>> {
+                        this.instantiated_map.clear();
+                        let dup = p.iter().duplicates_by(|id| id.id).map(|id| {
+                            let loc = Location::new(id.to_span(), this.file_path.clone());
+                            (id.id, loc)
+                        });
+                        if dup.clone().count() > 0 {
+                            return Err(vec![Error::DuplicateKeyInParams(dup.collect())]);
+                        }
+                        let pvec = p
+                            .iter()
+                            .map(|id| {
+                                let annotated_ty =
+                                    this.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
+                                let ity = this.instantiate(annotated_ty);
+                                this.env.add_bind(&[(id.id, (ity, this.stage))]);
+                                RecordTypeField {
+                                    key: id.id,
+                                    ty: ity,
+                                    has_default: false,
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        let ptype = if pvec.is_empty() {
+                            Type::Primitive(PType::Unit).into_id_with_location(loc.clone())
+                        } else {
+                            Type::Record(pvec).into_id_with_location(loc.clone())
+                        };
+                        let bty = if let Some(r) = rtype {
+                            let annotated_ret =
+                                this.convert_unknown_to_intermediate(*r, r.to_loc());
+                            let expected_ret = this.instantiate(annotated_ret);
+                            let bty = this.infer_type_unwrapping(*body);
+                            let _rel = this.unify_types(expected_ret, bty)?;
+                            bty
+                        } else {
+                            this.infer_type_unwrapping(*body)
+                        };
+                        this.instantiated_map.clear();
+                        Ok(Type::Function {
+                            arg: ptype,
+                            ret: bty,
+                        }
+                        .into_id_with_location(e.to_location()))
+                    })();
+                    this.env.to_outer();
+                    this.instantiated_map.clear();
+                    lambda_res
+                })
             }
             Expr::Let(tpat, body, then) => {
                 let bodyt = self.infer_type_levelup(*body);
@@ -2107,7 +2193,9 @@ impl InferContext {
                     self.check_private_type_leak(*name, tpat.ty, loc_p.clone());
                 }
 
-                let pat_t = self.bind_pattern((tpat.clone(), loc_p), (bodyt, loc_b));
+                let pat_t = self.with_explicit_type_param_scope_from_types(&[tpat.ty], |this| {
+                    this.bind_pattern((tpat.clone(), loc_p), (bodyt, loc_b))
+                });
                 let _pat_t = self.unwrap_result(pat_t);
                 match then {
                     Some(e) => self.infer_type(*e),
@@ -2115,16 +2203,18 @@ impl InferContext {
                 }
             }
             Expr::LetRec(id, body, then) => {
-                let idt = self.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
-                self.env.add_bind(&[(id.id, (idt, self.stage))]);
-                //polymorphic inference is not allowed in recursive function.
+                self.with_explicit_type_param_scope_from_types(&[id.ty], |this| {
+                    let idt = this.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
+                    this.env.add_bind(&[(id.id, (idt, this.stage))]);
+                    //polymorphic inference is not allowed in recursive function.
 
-                let bodyt = self.infer_type_levelup(*body);
+                    let bodyt = this.infer_type_levelup(*body);
 
-                let _res = self.unify_types(idt, bodyt);
+                    let _res = this.unify_types(idt, bodyt);
 
-                // Check if public function leaks private type in its declared signature
-                self.check_private_type_leak(id.id, id.ty, loc.clone());
+                    // Check if public function leaks private type in its declared signature
+                    this.check_private_type_leak(id.id, id.ty, loc.clone());
+                });
 
                 match then {
                     Some(e) => self.infer_type(*e),
@@ -2191,7 +2281,7 @@ impl InferContext {
                 }
                 // Aliases and wildcards are already resolved by convert_qualified_names
                 let res = self.unwrap_result(self.lookup(*name, loc).map_err(|e| vec![e]));
-                Ok(self.instantiate(res))
+                Ok(self.instantiate_fresh(res))
             }
             Expr::QualifiedVar(path) => {
                 unreachable!("Qualified Var should be removed in the previous step.")

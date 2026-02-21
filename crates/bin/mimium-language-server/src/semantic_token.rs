@@ -155,23 +155,28 @@ pub fn tokens_from_parser(tokens: &[Token]) -> Vec<ImCompleteSemanticToken> {
 struct SemanticContext<'a> {
     arena: &'a GreenNodeArena,
     tokens: &'a [Token],
+    source: &'a str,
     token_types: &'a mut [Option<usize>],
     function_id: usize,
     namespace_id: usize,
+    type_parameter_id: usize,
 }
 
 impl<'a> SemanticContext<'a> {
     fn new(
         arena: &'a GreenNodeArena,
         tokens: &'a [Token],
+        source: &'a str,
         token_types: &'a mut [Option<usize>],
     ) -> Self {
         Self {
             arena,
             tokens,
+            source,
             token_types,
             function_id: get_token_id(&SemanticTokenType::FUNCTION),
             namespace_id: get_token_id(&SemanticTokenType::NAMESPACE),
+            type_parameter_id: get_token_id(&SemanticTokenType::TYPE_PARAMETER),
         }
     }
 
@@ -308,6 +313,44 @@ impl<'a> SemanticContext<'a> {
             self.token_types[token_index] = Some(self.function_id);
         }
     }
+
+    fn is_explicit_type_param_token(&self, token_index: usize) -> bool {
+        let text = self.tokens[token_index].text(self.source);
+        text.len() == 1 && text.as_bytes()[0].is_ascii_lowercase()
+    }
+
+    fn collect_type_ident_info(
+        &self,
+        node_id: GreenNodeId,
+        ident_tokens: &mut Vec<usize>,
+        has_double_colon: &mut bool,
+    ) {
+        match self.arena.get(node_id) {
+            GreenNode::Token { token_index, .. } => match self.tokens[*token_index].kind {
+                TokenKind::Ident => ident_tokens.push(*token_index),
+                TokenKind::DoubleColon => *has_double_colon = true,
+                _ => {}
+            },
+            GreenNode::Internal { children, .. } => {
+                for child in children {
+                    self.collect_type_ident_info(*child, ident_tokens, has_double_colon);
+                }
+            }
+        }
+    }
+
+    fn mark_type_ident_type_param(&mut self, node_id: GreenNodeId) {
+        let mut ident_tokens = Vec::new();
+        let mut has_double_colon = false;
+        self.collect_type_ident_info(node_id, &mut ident_tokens, &mut has_double_colon);
+
+        if !has_double_colon
+            && ident_tokens.len() == 1
+            && self.is_explicit_type_param_token(ident_tokens[0])
+        {
+            self.token_types[ident_tokens[0]] = Some(self.type_parameter_id);
+        }
+    }
 }
 
 impl SemanticContext<'_> {
@@ -358,6 +401,9 @@ impl SemanticContext<'_> {
                     SyntaxKind::QualifiedPath => {
                         self.mark_qualified_path_namespaces(*child);
                     }
+                    SyntaxKind::TypeIdent => {
+                        self.mark_type_ident_type_param(*child);
+                    }
                     _ => {}
                 }
             }
@@ -370,13 +416,14 @@ pub fn tokens_from_green(
     root: GreenNodeId,
     arena: &GreenNodeArena,
     tokens: &[Token],
+    source: &str,
 ) -> Vec<ImCompleteSemanticToken> {
     let mut token_types: Vec<Option<usize>> = tokens
         .iter()
         .map(|token| token_kind_to_semantic_index(token.kind))
         .collect();
 
-    let mut ctx = SemanticContext::new(arena, tokens, &mut token_types);
+    let mut ctx = SemanticContext::new(arena, tokens, source, &mut token_types);
     ctx.apply(root);
 
     tokens
@@ -390,6 +437,57 @@ pub fn tokens_from_green(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mimium_lang::compiler::parser::{parse_cst, preparse, tokenize};
+    use tower_lsp::lsp_types::SemanticTokenType;
+
+    fn get_token_type_for_ident(src: &str, ident_text: &str) -> Vec<usize> {
+        let tokens = tokenize(src);
+        let preparsed = preparse(&tokens);
+        let (root, arena, tokens, _errors) = parse_cst(tokens, &preparsed);
+        let semantic_tokens = tokens_from_green(root, &arena, &tokens, src);
+
+        tokens
+            .iter()
+            .filter(|token| token.kind == TokenKind::Ident && token.text(src) == ident_text)
+            .filter_map(|token| {
+                semantic_tokens
+                    .iter()
+                    .find(|sem| sem.start == token.start && sem.length == token.length)
+                    .map(|sem| sem.token_type)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn semantic_type_parameter_single_lowercase() {
+        let src = "type alias Id = (a) -> a";
+        let token_types = get_token_type_for_ident(src, "a");
+        let type_param_id = get_token_id(&SemanticTokenType::TYPE_PARAMETER);
+        assert!(!token_types.is_empty());
+        assert!(
+            token_types
+                .iter()
+                .all(|token_type| *token_type == type_param_id)
+        );
+    }
+
+    #[test]
+    fn semantic_type_parameter_rejects_multi_char_lowercase() {
+        let src = "type alias Id = (ab) -> ab";
+        let token_types = get_token_type_for_ident(src, "ab");
+        let type_param_id = get_token_id(&SemanticTokenType::TYPE_PARAMETER);
+        assert!(!token_types.is_empty());
+        assert!(
+            token_types
+                .iter()
+                .all(|token_type| *token_type != type_param_id)
+        );
+    }
 }
 
 pub fn parse(src: &str, uri: &str) -> ParseResult {

@@ -74,6 +74,34 @@ fn array_length() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn array_primitives_tuple_runtime() {
+    let res = run_file_test_mono("array_primitives_tuple_runtime.mmm", 1).unwrap();
+    let ans = vec![88.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn generic_id() {
+    let res = run_file_test_mono("generic_id.mmm", 1).unwrap();
+    let ans = vec![6.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn generics_array_macro() {
+    let res = run_file_test_mono("generics_array_macro.mmm", 1).unwrap();
+    let ans = vec![24.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn generics_array() {
+    let res = run_file_test_mono("generics_array.mmm", 1).unwrap();
+    let ans = vec![24.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn split_tail() {
     let res = run_file_test_mono("split_tail.mmm", 1).unwrap();
     let ans = vec![24.0]; // (1+2+3)*4 = 6*4 = 24
@@ -105,6 +133,13 @@ fn split_head_macro() {
 fn lift_arrayf_extended() {
     let res = run_file_test_mono("lift_arrayf_extended.mmm", 1).unwrap();
     let ans = vec![65.0]; // 5.0 + 10.0 + 20.0 + 30.0
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn lift_polymorphic() {
+    let res = run_file_test_mono("lift_polymorphic.mmm", 1).unwrap();
+    let ans = vec![11.0]; // 5.0 + 1.0 + 2.0 + 3.0
     assert_eq!(res, ans);
 }
 
@@ -533,6 +568,16 @@ fn error_include_itself() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn type_param_reserved_name_fail() {
+    let errs = run_error_test("type_param_reserved_name_fail.mmm", false);
+    assert!(!errs.is_empty());
+    assert!(errs.iter().any(|e| {
+        e.get_message()
+            .contains("reserved for explicit type parameters")
+    }));
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn block_local_scope() {
     let res = run_file_test_mono("block_local_scope.mmm", 1).unwrap();
     let ans = vec![3.0];
@@ -835,6 +880,34 @@ fn probe_macro() {
     let res = driver.get_generated_samples().to_vec();
 
     let ans = vec![42.0]; // Probe should pass through the value
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn probe_value_macro() {
+    let (_, src) = load_src("probe_value_macro.mmm");
+
+    let mut driver = mimium_audiodriver::backends::local_buffer::LocalBufferDriver::new(1);
+    let audiodriverplug: Box<dyn mimium_lang::plugin::Plugin> = Box::new(driver.get_as_plugin());
+    let mut ctx = mimium_lang::ExecContext::new(
+        [audiodriverplug].into_iter(),
+        None,
+        mimium_lang::Config::default(),
+    );
+
+    ctx.add_system_plugin(mimium_guitools::GuiToolPlugin::default());
+
+    ctx.prepare_machine(&src).unwrap();
+    let _ = ctx.run_main();
+    let runtimedata = {
+        let ctxmut: &mut mimium_lang::ExecContext = &mut ctx;
+        RuntimeData::try_from(ctxmut).unwrap()
+    };
+    driver.init(runtimedata, None);
+    driver.play();
+    let res = driver.get_generated_samples().to_vec();
+
+    let ans = vec![1.5, 1.2]; // ProbeValue should pass through tuple runtime value
     assert_eq!(res, ans);
 }
 

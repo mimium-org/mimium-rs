@@ -14,7 +14,7 @@ pub use program::{FuncProto, Program};
 
 use crate::{
     compiler::bytecodegen::ByteCodeGenerator,
-    interner::{Symbol, TypeNodeId},
+    interner::{Symbol, ToSymbol, TypeNodeId},
     plugin::{ExtClsInfo, ExtClsType, ExtFunInfo, ExtFunType, MachineFunction},
     runtime::vm::program::WordSize,
     types::{Type, TypeSize},
@@ -608,7 +608,7 @@ impl Machine {
     fn call_function<F>(
         &mut self,
         func_pos: u8,
-        _nargs: u8,
+        nargs: u8,
         nret_req: u8,
         mut action: F,
     ) -> ReturnCode
@@ -618,10 +618,30 @@ impl Machine {
         let offset = (func_pos + 1) as u64;
         self.delaysizes_pos_stack.push(0);
         self.base_pointer += offset;
+
+        let snapshot_words = std::cmp::max(nargs as usize, nret_req as usize);
+        let arg_snapshot = (0..snapshot_words)
+            .map(|i| self.get_stack(i as i64))
+            .collect::<Vec<_>>();
+
         let nret = action(self);
 
         if nret_req > nret as u8 {
-            panic!("invalid number of return value {nret_req} required but accepts only {nret}.");
+            if nret == 1 && arg_snapshot.len() >= nret_req as usize {
+                let base = self.base_pointer as usize;
+                let ret_start = base - 1;
+                let required_len = ret_start + nret_req as usize;
+                if self.stack.len() < required_len {
+                    self.stack.resize(required_len, 0);
+                }
+                (1..nret_req as usize).for_each(|i| {
+                    self.stack[ret_start + i] = arg_snapshot[i];
+                });
+            } else {
+                panic!(
+                    "invalid number of return value {nret_req} required but accepts only {nret}."
+                );
+            }
         }
         // shrink stack so as to match with number of return values
         self.stack
@@ -1296,29 +1316,31 @@ impl Machine {
             .map(|WordSize(size)| *size as usize)
             .sum();
         self.global_vals = vec![0; global_mem_size];
-        self.prog
-            .ext_fun_table
-            .iter_mut()
-            .enumerate()
-            .for_each(|(i, (name, _ty))| {
-                if let Some((j, _)) = self
-                    .ext_fun_table
-                    .iter()
-                    .enumerate()
-                    .find(|(_j, (fname, _fn))| name == fname.as_str())
-                {
-                    let _ = self.fn_map.insert(i, ExtFnIdx::Fun(j));
-                } else if let Some((j, _)) = self
-                    .ext_cls_table
-                    .iter()
-                    .enumerate()
-                    .find(|(_j, (fname, _fn))| name == fname.as_str())
-                {
-                    let _ = self.fn_map.insert(i, ExtFnIdx::Cls(j));
-                } else {
-                    panic!("external function {name} cannot be found");
-                }
-            });
+        let ext_entries = self.prog.ext_fun_table.clone();
+        ext_entries.iter().enumerate().for_each(|(i, (name, ty))| {
+            if let Some((j, _)) = self
+                .ext_fun_table
+                .iter()
+                .enumerate()
+                .find(|(_j, (fname, _fn))| name == fname.as_str())
+            {
+                let _ = self.fn_map.insert(i, ExtFnIdx::Fun(j));
+            } else if let Some((j, _)) = self
+                .ext_cls_table
+                .iter()
+                .enumerate()
+                .find(|(_j, (fname, _fn))| name == fname.as_str())
+            {
+                let _ = self.fn_map.insert(i, ExtFnIdx::Cls(j));
+            } else if let Some(spec_cls) =
+                crate::plugin::try_make_specialized_extcls(name.as_str().to_symbol(), *ty)
+            {
+                let cls_idx = self.install_extern_cls(spec_cls.name, spec_cls.fun);
+                let _ = self.fn_map.insert(i, ExtFnIdx::Cls(cls_idx));
+            } else {
+                panic!("external function {name} cannot be found");
+            }
+        });
     }
     pub fn execute_idx(&mut self, idx: usize) -> ReturnCode {
         let (_name, func) = &self.prog.global_fn_table[idx];

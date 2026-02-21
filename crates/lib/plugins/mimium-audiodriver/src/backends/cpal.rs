@@ -317,9 +317,7 @@ impl Driver for NativeDriver {
             let mut receiver = NativeAudioReceiver::new(ichannels, prod);
             self.hardware_ichannels = iconfig.channels as usize;
             let h_ichannels = self.hardware_ichannels;
-            self.sr
-                .0
-                .store(iconfig.sample_rate.0, Ordering::Relaxed);
+            self.sr.0.store(iconfig.sample_rate.0, Ordering::Relaxed);
             runtime_data
                 .runtime
                 .set_sample_rate(iconfig.sample_rate.0 as f64);
@@ -352,9 +350,7 @@ impl Driver for NativeDriver {
             let mut oconfig = Self::init_oconfig(&odevice, sample_rate);
             let h_ochannels = oconfig.channels as usize;
             self.hardware_ochannels = h_ochannels;
-            self.sr
-                .0
-                .store(oconfig.sample_rate.0, Ordering::Relaxed);
+            self.sr.0.store(oconfig.sample_rate.0, Ordering::Relaxed);
             runtime_data
                 .runtime
                 .set_sample_rate(oconfig.sample_rate.0 as f64);

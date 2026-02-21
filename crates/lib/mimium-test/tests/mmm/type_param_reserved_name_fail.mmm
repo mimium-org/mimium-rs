@@ -1,0 +1,5 @@
+type alias a = int
+
+fn dsp(){
+    0
+}

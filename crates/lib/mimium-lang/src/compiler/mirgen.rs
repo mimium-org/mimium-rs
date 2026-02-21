@@ -4,7 +4,7 @@ use super::typing::{InferContext, infer_root};
 use crate::compiler::parser;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
-use crate::plugin::MacroFunction;
+use crate::plugin::{MacroFunction, resolve_monomorphized_ext_fn_name};
 use crate::utils::miniprint::MiniPrint;
 use crate::{function, interpreter, numeric, unit};
 pub mod convert_pronoun;
@@ -26,6 +26,7 @@ use crate::utils::error::ReportableError;
 use crate::utils::metadata::{GLOBAL_LABEL, Location, Span};
 
 use crate::ast::{Expr, Literal};
+use std::cell::OnceCell;
 
 // Decision Tree for pattern matching compilation
 // Used to compile multi-scrutinee pattern matching into nested switches
@@ -827,11 +828,211 @@ impl Context {
 
         let mut specialized_fn = original_fn.clone();
         specialized_fn.label = specialized_name;
+        self.specialize_monomorphized_function(&mut specialized_fn, arg_type, ret_type);
 
         self.program.functions.push(specialized_fn);
         self.monomorph_map.insert(key, new_fid);
 
         new_fid
+    }
+
+    /// Specialize a cloned function body for concrete types.
+    ///
+    /// Performs two things generically (without knowledge of specific plugins):
+    /// 1. Substitutes generic `TypeScheme`/`Unknown` types with concrete types.
+    /// 2. Resolves ext function names via `resolve_monomorphized_ext_fn_name`.
+    fn specialize_monomorphized_function(
+        &self,
+        function: &mut mir::Function,
+        arg_type: TypeNodeId,
+        ret_type: TypeNodeId,
+    ) {
+        // Build a type substitution map: generic TypeNodeId → concrete TypeNodeId.
+        // Collect arg types that contain unresolved/generic components.
+        let has_generic_args = function
+            .args
+            .iter()
+            .any(|arg| arg.1.to_type().contains_unresolved());
+
+        // Also check the return type.
+        let has_generic_ret = function
+            .return_type
+            .get()
+            .is_some_and(|r| r.to_type().contains_unresolved());
+
+        // Nothing generic to substitute — skip.
+        if !has_generic_args && !has_generic_ret {
+            return;
+        }
+
+        // Closure to apply the substitution to a single TypeNodeId.
+        // Any leaf type that is still unresolved (TypeScheme/Unknown/Intermediate)
+        // gets replaced with the concrete `arg_type`.
+        let subst = |ty: TypeNodeId| -> TypeNodeId {
+            let t = ty.to_type();
+            match t {
+                Type::TypeScheme(_) | Type::Unknown => arg_type,
+                _ if t.contains_unresolved() => arg_type,
+                _ => ty,
+            }
+        };
+
+        // Recursively substitute inside function types.
+        let subst_fn_ty = |fn_ty: TypeNodeId| -> TypeNodeId {
+            match fn_ty.to_type() {
+                Type::Function { arg, ret } => {
+                    let new_arg = match arg.to_type() {
+                        Type::Tuple(elems) => {
+                            let new_elems: Vec<TypeNodeId> =
+                                elems.iter().map(|e| subst(*e)).collect();
+                            Type::Tuple(new_elems).into_id()
+                        }
+                        _ => subst(arg),
+                    };
+                    let new_ret = subst(ret);
+                    Type::Function {
+                        arg: new_arg,
+                        ret: new_ret,
+                    }
+                    .into_id()
+                }
+                _ => subst(fn_ty),
+            }
+        };
+
+        // Update the function's own arg types and return type.
+        for arg in &mut function.args {
+            arg.1 = subst(arg.1);
+        }
+        let new_return_type = OnceCell::new();
+        let _ = new_return_type.set(ret_type);
+        function.return_type = new_return_type;
+
+        // Walk the body and substitute types + resolve ext function calls.
+        for block in &mut function.body {
+            for (_dst, inst) in &mut block.0 {
+                Self::substitute_types_in_instruction(inst, &subst, &subst_fn_ty, &self.typeenv);
+            }
+        }
+    }
+
+    /// Substitute generic types in a single MIR instruction and resolve
+    /// monomorphized ext function names when applicable.
+    fn substitute_types_in_instruction(
+        inst: &mut Instruction,
+        subst: &dyn Fn(TypeNodeId) -> TypeNodeId,
+        subst_fn_ty: &dyn Fn(TypeNodeId) -> TypeNodeId,
+        typeenv: &InferContext,
+    ) {
+        match inst {
+            Instruction::Call(fn_ptr, args, ret_ty)
+            | Instruction::CallCls(fn_ptr, args, ret_ty)
+            | Instruction::CallIndirect(fn_ptr, args, ret_ty) => {
+                *ret_ty = subst(*ret_ty);
+                for (_, ty) in args.iter_mut() {
+                    *ty = subst(*ty);
+                }
+                // Try to resolve the ext function name for this concrete type.
+                if let Value::ExtFunction(name, fn_ty) = fn_ptr.as_ref() {
+                    let ext_arg_ty = if args.len() == 1 {
+                        args[0].1
+                    } else {
+                        Type::Tuple(args.iter().map(|(_, ty)| *ty).collect()).into_id()
+                    };
+                    let ext_ret_ty = *ret_ty;
+                    if let Some(resolved) =
+                        resolve_monomorphized_ext_fn_name(*name, ext_arg_ty, ext_ret_ty)
+                    {
+                        let concrete_fn_ty = typeenv
+                            .env
+                            .lookup(&resolved)
+                            .map(|(ty, _)| *ty)
+                            .unwrap_or_else(|| subst_fn_ty(*fn_ty));
+                        *fn_ptr = Arc::new(Value::ExtFunction(resolved, concrete_fn_ty));
+                    } else {
+                        *fn_ptr = Arc::new(Value::ExtFunction(*name, subst_fn_ty(*fn_ty)));
+                    }
+                }
+            }
+            Instruction::Load(_, ty)
+            | Instruction::Alloc(ty)
+            | Instruction::GetState(ty)
+            | Instruction::GetGlobal(_, ty)
+            | Instruction::CloseUpValues(_, ty) => {
+                *ty = subst(*ty);
+            }
+            Instruction::Store(_, _, ty) | Instruction::SetGlobal(_, _, ty) => {
+                *ty = subst(*ty);
+            }
+            Instruction::GetElement { ty, .. } => {
+                *ty = subst(*ty);
+            }
+            Instruction::GetUpValue(_, ty) | Instruction::SetUpValue(_, _, ty) => {
+                *ty = subst(*ty);
+            }
+            Instruction::TaggedUnionWrap { union_type, .. } => {
+                *union_type = subst(*union_type);
+            }
+            Instruction::TaggedUnionGetValue(_, ty) => {
+                *ty = subst(*ty);
+            }
+            Instruction::BoxAlloc { inner_type, .. }
+            | Instruction::BoxLoad { inner_type, .. }
+            | Instruction::BoxRelease { inner_type, .. }
+            | Instruction::BoxStore { inner_type, .. } => {
+                *inner_type = subst(*inner_type);
+            }
+            Instruction::CloneUserSum { ty, .. } | Instruction::ReleaseUserSum { ty, .. } => {
+                *ty = subst(*ty);
+            }
+            Instruction::Return(_, ty) | Instruction::ReturnFeed(_, ty) => {
+                *ty = subst(*ty);
+            }
+            // Instructions without TypeNodeId fields — nothing to substitute.
+            _ => {}
+        }
+    }
+
+    fn infer_concrete_call_arg_type(
+        &mut self,
+        formal_arg_ty: TypeNodeId,
+        args: &[ExprNodeId],
+    ) -> TypeNodeId {
+        if args.len() == 1 {
+            return self.typeenv.infer_type(args[0]).unwrap_or(formal_arg_ty);
+        }
+
+        match formal_arg_ty.to_type() {
+            Type::Record(fields) => {
+                let concrete_fields = fields
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, field)| {
+                        let inferred_ty = args
+                            .get(idx)
+                            .and_then(|arg| self.typeenv.infer_type(*arg).ok())
+                            .unwrap_or(field.ty);
+                        RecordTypeField {
+                            key: field.key,
+                            ty: inferred_ty,
+                            has_default: field.has_default,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                Type::Record(concrete_fields).into_id()
+            }
+            _ => {
+                let concrete_elems = args
+                    .iter()
+                    .map(|arg| {
+                        self.typeenv
+                            .infer_type(*arg)
+                            .unwrap_or(Type::Unknown.into_id())
+                    })
+                    .collect::<Vec<_>>();
+                Type::Tuple(concrete_elems).into_id()
+            }
+        }
     }
 
     pub fn eval_literal(&mut self, lit: &Literal, _span: &Span) -> VPtr {
@@ -1542,61 +1743,129 @@ impl Context {
                     panic!("non function type {} {} ", ft.to_type(), ty.to_type());
                 };
 
-                // Check if this is a generic function that needs monomorphization
+                // Check if this is a generic function that needs monomorphization.
+                // Both TypeScheme (explicit generic params) and Unknown (unresolved
+                // types from macro-generated code) trigger monomorphization.
                 let needs_monomorphization =
-                    at.to_type().contains_type_scheme() || rt.to_type().contains_type_scheme();
+                    at.to_type().contains_unresolved() || rt.to_type().contains_unresolved();
 
-                // If we have a generic external function (like `map`), we need to monomorphize it
-                let (f_to_call, monomorphized_rt) = if needs_monomorphization {
-                    if let Value::ExtFunction(fn_name, _fn_ty) = f_val.as_ref() {
-                        // Infer the concrete types from the arguments and expected return type
-                        // For now, use the types from type inference (ty for return, args types for arguments)
-                        let concrete_arg_ty = self
-                            .typeenv
-                            .infer_type(*args.first().expect("map needs args"))
-                            .unwrap_or(at);
-                        let concrete_ret_ty = ty;
+                // If we have a generic function, monomorphize it at call-site.
+                // Returns (f_to_call, monomorphized_ret_ty, concrete_arg_ty).
+                // The concrete arg type is needed so the caller uses the correct
+                // word-size when laying out arguments on the stack.
+                let (f_to_call, monomorphized_rt, monomorphized_at) = if needs_monomorphization {
+                    let concrete_arg_ty = self.infer_concrete_call_arg_type(at, args);
+                    let concrete_ret_ty = ty;
 
-                        log::debug!(
-                            "Monomorphizing generic function '{}' with arg type: {}, ret type: {}",
-                            fn_name,
-                            concrete_arg_ty.to_type(),
-                            concrete_ret_ty.to_type()
-                        );
+                    // If the inferred types are still generic (we are inside a
+                    // generic function body), defer monomorphization until the
+                    // enclosing function is itself monomorphized.
+                    let still_generic = concrete_arg_ty.to_type().contains_unresolved()
+                        || concrete_ret_ty.to_type().contains_unresolved();
 
-                        // Create a monomorphized version of the external function
-                        let mangled_name = format!(
-                            "{}_mono_{}_{}",
-                            fn_name.as_str(),
-                            concrete_arg_ty.to_mangled_string(),
-                            concrete_ret_ty.to_mangled_string()
-                        )
-                        .to_symbol();
+                    match f_val.as_ref() {
+                        Value::ExtFunction(fn_name, _fn_ty) if !still_generic => {
+                            log::debug!(
+                                "Monomorphizing external function '{}' with arg type: {}, ret type: {}",
+                                fn_name,
+                                concrete_arg_ty.to_type(),
+                                concrete_ret_ty.to_type()
+                            );
 
-                        let concrete_fn_ty = Type::Function {
-                            arg: concrete_arg_ty,
-                            ret: concrete_ret_ty,
+                            let mangled_name = resolve_monomorphized_ext_fn_name(
+                                *fn_name,
+                                concrete_arg_ty,
+                                concrete_ret_ty,
+                            )
+                            .unwrap_or_else(|| {
+                                format!(
+                                    "{}_mono_{}_{}",
+                                    fn_name.as_str(),
+                                    concrete_arg_ty.to_mangled_string(),
+                                    concrete_ret_ty.to_mangled_string()
+                                )
+                                .to_symbol()
+                            });
+
+                            let concrete_fn_ty = Type::Function {
+                                arg: concrete_arg_ty,
+                                ret: concrete_ret_ty,
+                            }
+                            .into_id();
+                            (
+                                Arc::new(Value::ExtFunction(mangled_name, concrete_fn_ty)),
+                                concrete_ret_ty,
+                                concrete_arg_ty,
+                            )
                         }
-                        .into_id();
-
-                        let monomorphized_fn =
-                            Arc::new(Value::ExtFunction(mangled_name, concrete_fn_ty));
-                        (monomorphized_fn, concrete_ret_ty)
-                    } else {
-                        todo!(
-                            "Monomorphization of non-external generic functions not yet implemented"
-                        );
-                        (f_val.clone(), rt)
+                        Value::Function(fid) if !still_generic => {
+                            let original_fid = FunctionId(*fid as u64);
+                            let original_name = self.program.functions[*fid].label;
+                            let specialized_fid = self.get_or_create_monomorphized_function(
+                                original_name,
+                                concrete_arg_ty,
+                                concrete_ret_ty,
+                                original_fid,
+                            );
+                            (
+                                Arc::new(Value::Function(specialized_fid.0 as usize)),
+                                concrete_ret_ty,
+                                concrete_arg_ty,
+                            )
+                        }
+                        Value::Global(gv) if !still_generic => {
+                            if let Value::Function(fid) = gv.as_ref() {
+                                let original_fid = FunctionId(*fid as u64);
+                                let original_name = self.program.functions[*fid].label;
+                                let specialized_fid = self.get_or_create_monomorphized_function(
+                                    original_name,
+                                    concrete_arg_ty,
+                                    concrete_ret_ty,
+                                    original_fid,
+                                );
+                                (
+                                    Arc::new(Value::Function(specialized_fid.0 as usize)),
+                                    concrete_ret_ty,
+                                    concrete_arg_ty,
+                                )
+                            } else {
+                                (f_val.clone(), concrete_ret_ty, concrete_arg_ty)
+                            }
+                        }
+                        _ => (f_val.clone(), concrete_ret_ty, concrete_arg_ty),
                     }
                 } else {
-                    (f_val.clone(), ty)
+                    (f_val.clone(), ty, at)
+                };
+
+                let mut call_arg_ty = monomorphized_at;
+                let f_to_call = match f_to_call.as_ref() {
+                    Value::ExtFunction(fn_name, fn_ty)
+                        if resolve_monomorphized_ext_fn_name(*fn_name, at, monomorphized_rt)
+                            .is_some() =>
+                    {
+                        let specialized_name =
+                            resolve_monomorphized_ext_fn_name(*fn_name, at, monomorphized_rt)
+                                .expect("checked above");
+                        if let Some((specialized_fn_ty, _stage)) =
+                            self.typeenv.env.lookup(&specialized_name).cloned()
+                        {
+                            if let Type::Function { arg, .. } = specialized_fn_ty.to_type() {
+                                call_arg_ty = arg;
+                            }
+                            Arc::new(Value::ExtFunction(specialized_name, specialized_fn_ty))
+                        } else {
+                            Arc::new(Value::ExtFunction(specialized_name, *fn_ty))
+                        }
+                    }
+                    _ => f_to_call,
                 };
 
                 // Handle parameter packing/unpacking if needed
                 // How can we distinguish when the function takes a single tuple and argument is just a single tuple
                 let (evaluated_args, arg_states) = self.eval_args(args);
 
-                let tuple_map_param_ty = Self::auto_spread_param_endpoint_type(at);
+                let tuple_map_param_ty = Self::auto_spread_param_endpoint_type(call_arg_ty);
                 let tuple_map_applicable = args.len() == 1
                     && !needs_monomorphization
                     && tuple_map_param_ty.is_some()
@@ -1624,18 +1893,55 @@ impl Context {
 
                 let atvvec = if args.len() == 1 {
                     let (arg_val, ty) = evaluated_args.first().unwrap().clone();
-                    if ty.to_type().can_be_unpacked() {
-                        self.unpack_argument(f_val, arg_val, at, ty)
+                    let should_unpack_single_arg = match f_to_call.as_ref() {
+                        Value::Function(_) | Value::ExtFunction(_, _) => true,
+                        Value::Global(v) => {
+                            matches!(v.as_ref(), Value::Function(_) | Value::ExtFunction(_, _))
+                        }
+                        _ => false,
+                    };
+                    let callee_expects_aggregate_fields = match call_arg_ty.to_type() {
+                        Type::Tuple(_) => true,
+                        Type::Record(fields) => {
+                            fields.len() > 1 || matches!(ty.to_type(), Type::Record(_))
+                        }
+                        _ => false,
+                    };
+                    if should_unpack_single_arg
+                        && callee_expects_aggregate_fields
+                        && ty.to_type().can_be_unpacked()
+                    {
+                        self.unpack_argument(f_val, arg_val, call_arg_ty, ty)
                     } else {
                         vec![(arg_val, ty)]
                     }
                 } else {
-                    evaluated_args
+                    let expected_arity = match call_arg_ty.to_type() {
+                        Type::Tuple(ts) => ts.len(),
+                        Type::Record(fields) => fields.len(),
+                        _ => 0,
+                    };
+                    let mut iter = evaluated_args.into_iter();
+                    let mut packed = Vec::new();
+                    if let Some((first_val, first_ty)) = iter.next() {
+                        if expected_arity > args.len() && first_ty.to_type().can_be_unpacked() {
+                            packed.extend(self.unpack_argument(
+                                f_val.clone(),
+                                first_val,
+                                call_arg_ty,
+                                first_ty,
+                            ));
+                        } else {
+                            packed.push((first_val, first_ty));
+                        }
+                    }
+                    packed.extend(iter);
+                    packed
                 };
 
                 // Coerce arguments based on subtype relationships (union wrapping, int->float, etc.)
                 let raw_atvvec = atvvec.clone();
-                let atvvec = self.coerce_args_for_call(atvvec, at);
+                let atvvec = self.coerce_args_for_call(atvvec, call_arg_ty);
 
                 let (res, state) =
                     self.emit_call_to_value(&f_to_call, &raw_atvvec, &atvvec, monomorphized_rt);

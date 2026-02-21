@@ -13,6 +13,11 @@ use wasmtime::{
     AsContextMut, Caller, Config, Engine, FuncType, Linker, Module, OptLevel, Store, Val, ValType,
 };
 
+/// Upper bound of `$arityN` builtin specializations exported by the WASM host runtime.
+///
+/// Must match compiler-side import declarations in `compiler/wasmgen.rs`.
+const MAX_SPECIALIZED_BUILTIN_ARITY: usize = 16;
+
 /// WASM-side analogue of [`SystemPluginAudioWorker`](crate::plugin::SystemPluginAudioWorker).
 ///
 /// Plugins that need per-sample processing on the WASM backend implement
@@ -352,6 +357,63 @@ impl WasmRuntime {
             "split_tail" => builtin_split_tail_host,
         }
 
+        linker
+            .func_new(
+                "builtin",
+                "prepend",
+                FuncType::new(
+                    linker.engine(),
+                    vec![ValType::I64, ValType::I64],
+                    vec![ValType::I64],
+                ),
+                move |caller, params, results| {
+                    builtin_prepend_arity_host(caller, params, results, 1);
+                    Ok(())
+                },
+            )
+            .map_err(|e| format!("Failed to register builtin::prepend: {e}"))?;
+
+        for arity in 1..=MAX_SPECIALIZED_BUILTIN_ARITY {
+            let split_head_name = format!("split_head$arity{arity}");
+            linker
+                .func_wrap(
+                    "builtin",
+                    split_head_name.as_str(),
+                    move |caller: Caller<'_, RuntimeState>, array: i64, dst_ptr: i32| {
+                        builtin_split_head_arity_host(caller, array, dst_ptr, arity)
+                    },
+                )
+                .map_err(|e| format!("Failed to register builtin::split_head$arity{arity}: {e}"))?;
+
+            let split_tail_name = format!("split_tail$arity{arity}");
+            linker
+                .func_wrap(
+                    "builtin",
+                    split_tail_name.as_str(),
+                    move |caller: Caller<'_, RuntimeState>, array: i64, dst_ptr: i32| {
+                        builtin_split_tail_arity_host(caller, array, dst_ptr, arity)
+                    },
+                )
+                .map_err(|e| format!("Failed to register builtin::split_tail$arity{arity}: {e}"))?;
+
+            let prepend_name = format!("prepend$arity{arity}");
+            linker
+                .func_new(
+                    "builtin",
+                    prepend_name.as_str(),
+                    FuncType::new(
+                        linker.engine(),
+                        vec![ValType::I64, ValType::I64],
+                        vec![ValType::I64],
+                    ),
+                    move |caller, params, results| {
+                        builtin_prepend_arity_host(caller, params, results, arity);
+                        Ok(())
+                    },
+                )
+                .map_err(|e| format!("Failed to register builtin::prepend$arity{arity}: {e}"))?;
+        }
+
         Ok(())
     }
 
@@ -392,7 +454,7 @@ impl WasmRuntime {
 
             // Build wasmtime FuncType matching wasmgen's setup_plugin_imports.
             // Flatten tuple arguments into separate WASM parameters
-            let param_valtypes: Vec<ValType> = match arg.to_type() {
+            let mut param_valtypes: Vec<ValType> = match arg.to_type() {
                 Type::Tuple(elems) => {
                     // Flatten tuple arguments
                     elems
@@ -405,11 +467,17 @@ impl WasmRuntime {
                     vec![mimium_type_to_wasmtime_valtype(&arg_ty)]
                 }
             };
-            // Strip Unit return type to match wasmgen's setup_plugin_imports:
-            // Unit-returning functions have no WASM return values.
+
             let ret_type = ret.to_type();
             let is_void = matches!(ret_type, Type::Primitive(crate::types::PType::Unit));
-            let return_valtypes: Vec<ValType> = if is_void {
+            let flat_ret_count = flat_return_word_count(&ret_type);
+            let uses_dest_ptr =
+                !is_void && flat_ret_count > 1 && plugin_uses_dest_ptr(name.as_str());
+
+            let return_valtypes: Vec<ValType> = if uses_dest_ptr {
+                param_valtypes.push(ValType::I32); // dst_ptr
+                vec![] // void return — result written to memory
+            } else if is_void {
                 vec![]
             } else {
                 vec![mimium_type_to_wasmtime_valtype(&ret_type)]
@@ -417,10 +485,11 @@ impl WasmRuntime {
             let plugin_name = name.as_str().to_string();
 
             log::debug!(
-                "Registering plugin host function: {} ({} params -> {:?})",
+                "Registering plugin host function: {} ({} params -> {:?}{})",
                 plugin_name,
                 param_valtypes.len(),
                 return_valtypes,
+                if uses_dest_ptr { " [dest-ptr]" } else { "" },
             );
 
             let func_type = FuncType::new(
@@ -436,27 +505,108 @@ impl WasmRuntime {
                 .as_ref()
                 .and_then(|map| map.get(name.as_str()).cloned());
 
-            // Determine if this function is a "passthrough" shape (first param
-            // type == return type, name contains "intercept").
-            let is_passthrough = !return_valtypes.is_empty()
-                && param_valtypes.len() >= 2
-                && param_valtypes
-                    .first()
-                    .is_some_and(|first| valtype_eq(first, &return_valtypes[0]))
-                && plugin_name.contains("intercept");
+            if uses_dest_ptr {
+                // Dest-pointer trampoline: the host writes multi-word results
+                // directly into WASM linear memory at a caller-provided address.
+                let ret_words = flat_ret_count;
+                linker
+                    .func_new(
+                        "plugin",
+                        name.as_str(),
+                        func_type,
+                        move |mut caller, params, _results| {
+                            log::trace!(
+                                "Plugin dest-ptr trampoline called: {plugin_name}({params:?})"
+                            );
 
-            linker
-                .func_new(
-                    "plugin",
-                    name.as_str(),
-                    func_type,
-                    move |_caller, params, results| {
-                        log::trace!("Plugin trampoline called: {plugin_name}({params:?})");
+                            // Last parameter is the I32 destination pointer.
+                            let dst_ptr = match params.last() {
+                                Some(wasmtime::Val::I32(p)) => *p as usize,
+                                _ => {
+                                    log::error!(
+                                        "{plugin_name}: missing dest pointer in last param"
+                                    );
+                                    return Ok(());
+                                }
+                            };
 
-                        // If the function returns void (Unit), results is empty.
-                        // Still call the handler for its side effects, but don't
-                        // write any return value.
-                        if results.is_empty() {
+                            // Extract f64 value arguments (everything before dst_ptr).
+                            let value_params = &params[..params.len() - 1];
+                            let args: Vec<f64> = value_params
+                                .iter()
+                                .filter_map(|v| match v {
+                                    wasmtime::Val::F64(f) => Some(f64::from_bits(*f)),
+                                    wasmtime::Val::I64(i) => Some(*i as f64),
+                                    wasmtime::Val::I32(i) => Some(*i as f64),
+                                    _ => None,
+                                })
+                                .collect();
+
+                            // Call the handler for side effects (e.g. push to
+                            // ring buffers).
+                            if let Some(ref func) = handler {
+                                let _ = func(&args);
+                            }
+
+                            // Write passthrough values to the destination in
+                            // WASM linear memory.  The probe intercept pattern
+                            // returns its value arguments unchanged.
+                            let memory = caller
+                                .get_export("memory")
+                                .and_then(|e| e.into_memory())
+                                .expect("WASM module must export 'memory'");
+                            let mem_data = memory.data_mut(&mut caller);
+                            for i in 0..ret_words.min(args.len()) {
+                                let offset = dst_ptr + i * 8;
+                                let end = offset + 8;
+                                if end <= mem_data.len() {
+                                    mem_data[offset..end].copy_from_slice(&args[i].to_le_bytes());
+                                }
+                            }
+
+                            Ok(())
+                        },
+                    )
+                    .map_err(|e| format!("Failed to register plugin '{}': {e}", name.as_str()))?;
+            } else {
+                // Standard trampoline (single-word or void return).
+                // Determine if this function is a "passthrough" shape (first param
+                // type == return type, name contains "intercept").
+                let is_passthrough = !return_valtypes.is_empty()
+                    && param_valtypes.len() >= 2
+                    && param_valtypes
+                        .first()
+                        .is_some_and(|first| valtype_eq(first, &return_valtypes[0]))
+                    && plugin_name.contains("intercept");
+
+                linker
+                    .func_new(
+                        "plugin",
+                        name.as_str(),
+                        func_type,
+                        move |_caller, params, results| {
+                            log::trace!("Plugin trampoline called: {plugin_name}({params:?})");
+
+                            // If the function returns void (Unit), results is empty.
+                            // Still call the handler for its side effects, but don't
+                            // write any return value.
+                            if results.is_empty() {
+                                if let Some(ref func) = handler {
+                                    let args: Vec<f64> = params
+                                        .iter()
+                                        .filter_map(|v| match v {
+                                            wasmtime::Val::F64(f) => Some(f64::from_bits(*f)),
+                                            wasmtime::Val::I64(i) => Some(*i as f64),
+                                            wasmtime::Val::I32(i) => Some(*i as f64),
+                                            _ => None,
+                                        })
+                                        .collect();
+                                    let _ = func(&args);
+                                }
+                                return Ok(());
+                            }
+
+                            // Try the per-function handler registered by the plugin
                             if let Some(ref func) = handler {
                                 let args: Vec<f64> = params
                                     .iter()
@@ -467,46 +617,47 @@ impl WasmRuntime {
                                         _ => None,
                                     })
                                     .collect();
-                                let _ = func(&args);
-                            }
-                            return Ok(());
-                        }
 
-                        // Try the per-function handler registered by the plugin
-                        if let Some(ref func) = handler {
-                            let args: Vec<f64> = params
-                                .iter()
-                                .filter_map(|v| match v {
-                                    wasmtime::Val::F64(f) => Some(f64::from_bits(*f)),
-                                    wasmtime::Val::I64(i) => Some(*i as f64),
-                                    wasmtime::Val::I32(i) => Some(*i as f64),
-                                    _ => None,
-                                })
-                                .collect();
-
-                            if let Some(result) = func(&args) {
-                                // Match the Val variant to the declared return type
-                                results[0] = match &return_vts[0] {
-                                    ValType::I64 => wasmtime::Val::I64(result as i64),
-                                    ValType::I32 => wasmtime::Val::I32(result as i32),
-                                    _ => wasmtime::Val::F64(result.to_bits()),
-                                };
-                                return Ok(());
+                                if let Some(result) = func(&args) {
+                                    // Match the Val variant to the declared return type.
+                                    // For multi-result signatures, preserve passthrough behavior
+                                    // by copying remaining result slots from corresponding params.
+                                    results[0] = match &return_vts[0] {
+                                        ValType::I64 => wasmtime::Val::I64(result as i64),
+                                        ValType::I32 => wasmtime::Val::I32(result as i32),
+                                        _ => wasmtime::Val::F64(result.to_bits()),
+                                    };
+                                    if results.len() > 1 {
+                                        for i in 1..results.len() {
+                                            if let Some(param) = params.get(i) {
+                                                results[i] = *param;
+                                            } else {
+                                                results[i] =
+                                                    default_val_for_valtype(return_vts[i].clone());
+                                            }
+                                        }
+                                    }
+                                    return Ok(());
+                                }
                             }
-                        }
 
-                        // Fallback: generic trampoline behavior
-                        if is_passthrough && !params.is_empty() {
-                            results[0] = params[0];
-                        } else {
-                            for (i, result) in results.iter_mut().enumerate() {
-                                *result = default_val_for_valtype(return_vts[i].clone());
+                            // Fallback: generic trampoline behavior
+                            if is_passthrough && !params.is_empty() {
+                                for (i, result) in results.iter_mut().enumerate() {
+                                    *result = params.get(i).copied().unwrap_or_else(|| {
+                                        default_val_for_valtype(return_vts[i].clone())
+                                    });
+                                }
+                            } else {
+                                for (i, result) in results.iter_mut().enumerate() {
+                                    *result = default_val_for_valtype(return_vts[i].clone());
+                                }
                             }
-                        }
-                        Ok(())
-                    },
-                )
-                .map_err(|e| format!("Failed to register plugin '{}': {e}", name.as_str()))?;
+                            Ok(())
+                        },
+                    )
+                    .map_err(|e| format!("Failed to register plugin '{}': {e}", name.as_str()))?;
+            }
         }
 
         // Return None since plugin loader is managed by ExecContext
@@ -613,6 +764,40 @@ impl WasmModule {
     /// Update the current time in the runtime state.
     pub fn set_current_time(&mut self, time: u64) {
         self.store.data_mut().current_time = time;
+    }
+}
+
+/// Check whether the named external function uses the destination-pointer
+/// calling convention, where the host writes multi-word results directly
+/// into WASM linear memory instead of returning them normally.
+///
+/// This must stay in sync with `WasmGenerator::ext_function_uses_dest_ptr`
+/// in `wasmgen.rs`.
+#[cfg(not(target_arch = "wasm32"))]
+fn plugin_uses_dest_ptr(name: &str) -> bool {
+    name.starts_with("split_head")
+        || name.starts_with("split_tail")
+        || name.starts_with("__probe_intercept$arity")
+        || name.starts_with("__probe_value_intercept$arity")
+}
+
+/// Count how many flat f64 words a mimium type expands to when stored in
+/// WASM linear memory.  Single-word types return 1; tuples/records return
+/// the sum of their element word counts.
+#[cfg(not(target_arch = "wasm32"))]
+fn flat_return_word_count(ty: &crate::types::Type) -> usize {
+    use crate::types::{PType, Type};
+    match ty {
+        Type::Primitive(PType::Unit) => 0,
+        Type::Tuple(elems) => elems
+            .iter()
+            .map(|e| flat_return_word_count(&e.to_type()))
+            .sum(),
+        Type::Record(fields) => fields
+            .iter()
+            .map(|f| flat_return_word_count(&f.ty.to_type()))
+            .sum(),
+        _ => 1,
     }
 }
 
@@ -1232,22 +1417,35 @@ fn builtin_length_array_host(caller: Caller<'_, RuntimeState>, array: i64) -> f6
     array_data.len() as f64
 }
 
-fn builtin_split_head_host(mut caller: Caller<'_, RuntimeState>, array: i64, dst_ptr: i32) {
-    log::trace!("builtin_split_head_host: array={array}, dst_ptr={dst_ptr}");
+fn builtin_split_head_arity_host(
+    mut caller: Caller<'_, RuntimeState>,
+    array: i64,
+    dst_ptr: i32,
+    elem_words: usize,
+) {
+    log::trace!("builtin_split_head$arity{elem_words}: array={array}, dst_ptr={dst_ptr}");
 
-    let (head, rest_data) = {
+    let (head_words, rest_data) = {
         let state = caller.data();
         let array_data = state
             .arrays
             .get(&(array as Word))
             .expect("split_head: invalid array ID");
-        assert!(!array_data.is_empty(), "Cannot split_head on empty array");
-        let head = f64::from_bits(array_data[0]);
-        let rest_data: Vec<u64> = array_data[1..].to_vec();
-        (head, rest_data)
+        debug_assert!(
+            array_data.len() >= elem_words,
+            "split_head$arity{elem_words}: array shorter than one element"
+        );
+        assert!(
+            array_data.len() % elem_words == 0,
+            "split_head$arity{}: array length {} is not divisible by elem_words",
+            elem_words,
+            array_data.len()
+        );
+        let head_words = array_data[..elem_words].to_vec();
+        let rest_data = array_data[elem_words..].to_vec();
+        (head_words, rest_data)
     };
 
-    // Allocate new array for rest
     let rest_id = {
         let state = caller.data_mut();
         let rest_id = (state.arrays.len() + 1) as Word;
@@ -1255,35 +1453,55 @@ fn builtin_split_head_host(mut caller: Caller<'_, RuntimeState>, array: i64, dst
         rest_id
     };
 
-    // Write result tuple (head: f64, rest: i64) to linear memory at dst_ptr
     let memory = caller.data().memory.expect("Memory not initialized");
-    let head_bytes = head.to_le_bytes();
+    head_words.iter().enumerate().for_each(|(idx, word)| {
+        memory
+            .write(
+                &mut caller,
+                (dst_ptr as usize) + idx * std::mem::size_of::<Word>(),
+                &word.to_le_bytes(),
+            )
+            .expect("split_head: failed to write head word");
+    });
     memory
-        .write(&mut caller, dst_ptr as usize, &head_bytes)
-        .expect("split_head: failed to write head");
-    let rest_bytes = (rest_id as i64).to_le_bytes();
-    memory
-        .write(&mut caller, (dst_ptr + 8) as usize, &rest_bytes)
-        .expect("split_head: failed to write rest");
+        .write(
+            &mut caller,
+            (dst_ptr as usize) + elem_words * std::mem::size_of::<Word>(),
+            &(rest_id as i64).to_le_bytes(),
+        )
+        .expect("split_head: failed to write rest array handle");
 }
 
-fn builtin_split_tail_host(mut caller: Caller<'_, RuntimeState>, array: i64, dst_ptr: i32) {
-    log::trace!("builtin_split_tail_host: array={array}, dst_ptr={dst_ptr}");
+fn builtin_split_tail_arity_host(
+    mut caller: Caller<'_, RuntimeState>,
+    array: i64,
+    dst_ptr: i32,
+    elem_words: usize,
+) {
+    log::trace!("builtin_split_tail$arity{elem_words}: array={array}, dst_ptr={dst_ptr}");
 
-    let (tail, rest_data) = {
+    let (tail_words, rest_data) = {
         let state = caller.data();
         let array_data = state
             .arrays
             .get(&(array as Word))
             .expect("split_tail: invalid array ID");
-        assert!(!array_data.is_empty(), "Cannot split_tail on empty array");
-        let len = array_data.len();
-        let tail = f64::from_bits(array_data[len - 1]);
-        let rest_data: Vec<u64> = array_data[..len - 1].to_vec();
-        (tail, rest_data)
+        debug_assert!(
+            array_data.len() >= elem_words,
+            "split_tail$arity{elem_words}: array shorter than one element"
+        );
+        debug_assert!(
+            array_data.len() % elem_words == 0,
+            "split_tail$arity{}: array length {} is not divisible by elem_words",
+            elem_words,
+            array_data.len()
+        );
+        let tail_start = array_data.len() - elem_words;
+        let tail_words = array_data[tail_start..].to_vec();
+        let rest_data = array_data[..tail_start].to_vec();
+        (tail_words, rest_data)
     };
 
-    // Allocate new array for rest
     let rest_id = {
         let state = caller.data_mut();
         let rest_id = (state.arrays.len() + 1) as Word;
@@ -1291,16 +1509,110 @@ fn builtin_split_tail_host(mut caller: Caller<'_, RuntimeState>, array: i64, dst
         rest_id
     };
 
-    // Write result tuple (rest: i64, tail: f64) to linear memory at dst_ptr
     let memory = caller.data().memory.expect("Memory not initialized");
-    let rest_bytes = (rest_id as i64).to_le_bytes();
     memory
-        .write(&mut caller, dst_ptr as usize, &rest_bytes)
-        .expect("split_tail: failed to write rest");
-    let tail_bytes = tail.to_le_bytes();
-    memory
-        .write(&mut caller, (dst_ptr + 8) as usize, &tail_bytes)
-        .expect("split_tail: failed to write tail");
+        .write(
+            &mut caller,
+            dst_ptr as usize,
+            &(rest_id as i64).to_le_bytes(),
+        )
+        .expect("split_tail: failed to write rest array handle");
+    tail_words.iter().enumerate().for_each(|(idx, word)| {
+        memory
+            .write(
+                &mut caller,
+                (dst_ptr as usize) + (idx + 1) * std::mem::size_of::<Word>(),
+                &word.to_le_bytes(),
+            )
+            .expect("split_tail: failed to write tail word");
+    });
+}
+
+fn builtin_prepend_arity_host(
+    mut caller: Caller<'_, RuntimeState>,
+    params: &[Val],
+    results: &mut [Val],
+    elem_words: usize,
+) {
+    let expected_params = 2;
+    if params.len() != expected_params {
+        panic!(
+            "prepend$arity{} expected {} params, got {}",
+            elem_words,
+            expected_params,
+            params.len()
+        );
+    }
+
+    let elem_or_ptr = match params[0] {
+        Val::I64(i) => i as u64,
+        Val::F64(bits) => bits,
+        ref other => {
+            panic!("prepend$arity{elem_words}: expected first arg as I64/F64, got {other:?}")
+        }
+    };
+
+    let elem_bits = if elem_words == 1 {
+        vec![elem_or_ptr]
+    } else {
+        let mut words = vec![0u64; elem_words];
+        let memory = caller.data().memory.expect("Memory not initialized");
+        let src_ptr = elem_or_ptr as usize;
+        let bytes = unsafe {
+            std::slice::from_raw_parts_mut(
+                words.as_mut_ptr() as *mut u8,
+                elem_words * std::mem::size_of::<Word>(),
+            )
+        };
+        memory
+            .read(&caller, src_ptr, bytes)
+            .expect("prepend$arityN: failed to read element words from memory");
+        words
+    };
+
+    let array_handle = match params[1] {
+        Val::I64(i) => i as Word,
+        Val::F64(bits) => i64::from_le_bytes(bits.to_le_bytes()) as Word,
+        ref other => {
+            panic!("prepend$arity{elem_words}: expected array handle as I64/F64, got {other:?}")
+        }
+    };
+
+    let mut new_array = elem_bits;
+    {
+        let state = caller.data();
+        let old = state
+            .arrays
+            .get(&array_handle)
+            .unwrap_or_else(|| panic!("prepend: invalid array ID {array_handle}"));
+        if old.len() % elem_words != 0 {
+            panic!(
+                "prepend$arity{}: array length {} is not divisible by elem_words",
+                elem_words,
+                old.len()
+            );
+        }
+        new_array.extend_from_slice(old);
+    }
+
+    let new_id = {
+        let state = caller.data_mut();
+        let new_id = (state.arrays.len() + 1) as Word;
+        state.arrays.insert(new_id, new_array);
+        new_id
+    };
+
+    if let Some(slot) = results.get_mut(0) {
+        *slot = Val::I64(new_id as i64);
+    }
+}
+
+fn builtin_split_head_host(caller: Caller<'_, RuntimeState>, array: i64, dst_ptr: i32) {
+    builtin_split_head_arity_host(caller, array, dst_ptr, 1);
+}
+
+fn builtin_split_tail_host(caller: Caller<'_, RuntimeState>, array: i64, dst_ptr: i32) {
+    builtin_split_tail_arity_host(caller, array, dst_ptr, 1);
 }
 
 #[cfg(test)]

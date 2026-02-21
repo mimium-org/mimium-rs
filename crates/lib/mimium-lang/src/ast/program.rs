@@ -4,13 +4,13 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::resolve_include::resolve_include;
-use super::statement::{Statement, stmt_from_expr_top};
+use super::statement::Statement;
 use crate::ast::Expr;
 use crate::ast::statement::into_then_expr;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::TypedId;
 use crate::types::{RecordTypeField, Type};
-use crate::utils::error::ReportableError;
+use crate::utils::error::{ReportableError, SimpleError};
 use crate::utils::metadata::{Location, Span};
 
 use super::StageKind;
@@ -149,6 +149,11 @@ fn mangle_qualified_name(prefix: &[Symbol], name: Symbol) -> Symbol {
             .join("$");
         format!("{}${}", path_str, name.as_str()).to_symbol()
     }
+}
+
+fn is_reserved_type_param_name(name: Symbol) -> bool {
+    let s = name.as_str();
+    s.len() == 1 && s.as_bytes()[0].is_ascii_lowercase()
 }
 
 /// Convert a full qualified path (all segments) to a mangled symbol name.
@@ -446,6 +451,16 @@ fn stmts_from_program_with_prefix(
                 name,
                 target_type,
             } => {
+                if is_reserved_type_param_name(name) {
+                    errs.push(Box::new(SimpleError {
+                        message: format!(
+                            "type name '{}' is reserved for explicit type parameters (single lowercase letter)",
+                            name.as_str()
+                        ),
+                        span: Location::new(span.clone(), file_path.clone()),
+                    }));
+                    return None;
+                }
                 // Store type alias for later use in type environment
                 let mangled_name = mangle_qualified_name(module_prefix, name);
                 module_info.type_aliases.insert(mangled_name, target_type);
@@ -467,6 +482,16 @@ fn stmts_from_program_with_prefix(
                 variants,
                 is_recursive,
             } => {
+                if is_reserved_type_param_name(name) {
+                    errs.push(Box::new(SimpleError {
+                        message: format!(
+                            "type name '{}' is reserved for explicit type parameters (single lowercase letter)",
+                            name.as_str()
+                        ),
+                        span: Location::new(span.clone(), file_path.clone()),
+                    }));
+                    return None;
+                }
                 // Store type declaration for later use in type environment
                 let mangled_name = mangle_qualified_name(module_prefix, name);
                 module_info.type_declarations.insert(
@@ -560,13 +585,14 @@ fn process_use_statement(
 ) {
     let resolve_use_mangled = |segments: &[Symbol], info: &ModuleInfo| {
         let absolute_mangled = mangle_qualified_path(segments);
-        let (resolved, _) = resolve_qualified_path(segments, absolute_mangled, module_prefix, |name| {
-            info.visibility_map.contains_key(name)
-                || info.use_alias_map.contains_key(name)
-                || info.module_context_map.contains_key(name)
-                || info.type_aliases.contains_key(name)
-                || info.type_declarations.contains_key(name)
-        });
+        let (resolved, _) =
+            resolve_qualified_path(segments, absolute_mangled, module_prefix, |name| {
+                info.visibility_map.contains_key(name)
+                    || info.use_alias_map.contains_key(name)
+                    || info.module_context_map.contains_key(name)
+                    || info.type_aliases.contains_key(name)
+                    || info.type_declarations.contains_key(name)
+            });
         resolved
     };
 
