@@ -35,12 +35,19 @@ impl FloatParameter {
         self.range.start().store(min, Ordering::Relaxed);
         self.range.end().store(max, Ordering::Relaxed);
     }
+    pub(crate) fn name(&self) -> &str {
+        self.name.as_str()
+    }
 }
 
 #[derive(Default)]
 pub struct PlotApp {
     plot: Vec<plot_ui::PlotUi>,
     pub(crate) sliders: Vec<Arc<FloatParameter>>,
+    #[cfg(feature = "osc")]
+    osc_receiver: Option<crate::osc::OscSliderReceiver>,
+    #[cfg(feature = "osc")]
+    osc_init_attempted: bool,
     hue: f32,
     autoscale: bool,
 }
@@ -51,6 +58,10 @@ impl PlotApp {
         Self {
             plot,
             sliders: Vec::new(),
+            #[cfg(feature = "osc")]
+            osc_receiver: None,
+            #[cfg(feature = "osc")]
+            osc_init_attempted: false,
             hue: 0.0,
             autoscale: false,
         }
@@ -100,6 +111,16 @@ impl eframe::App for PlotApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.plot.is_empty() && self.sliders.is_empty() {
             return;
+        }
+        #[cfg(feature = "osc")]
+        {
+            if !self.osc_init_attempted {
+                self.osc_receiver = crate::osc::OscSliderReceiver::from_env();
+                self.osc_init_attempted = true;
+            }
+            if let Some(receiver) = self.osc_receiver.as_mut() {
+                receiver.poll_and_apply(&self.sliders);
+            }
         }
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
