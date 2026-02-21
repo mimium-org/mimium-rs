@@ -16,7 +16,10 @@ use tower_lsp::jsonrpc::{Error, ErrorCode, Result};
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use crate::analysis::{AnalysisRequest, AnalysisResponse, FnSignature, analyze_source};
+use crate::analysis::{
+    AnalysisRequest, AnalysisResponse, CompletionKind, CompletionSymbol, FnSignature,
+    analyze_source,
+};
 use crate::semantic_token::{ImCompleteSemanticToken, LEGEND_TYPE};
 type SrcUri = String;
 const CHANGE_DEBOUNCE_MS: u64 = 200;
@@ -74,6 +77,7 @@ struct Backend {
     document_map: DashMap<SrcUri, Rope>,
     semantic_token_map: DashMap<SrcUri, Vec<ImCompleteSemanticToken>>,
     fn_signature_map: DashMap<SrcUri, Vec<FnSignature>>,
+    completion_map: DashMap<SrcUri, Vec<CompletionSymbol>>,
     latest_change_version: DashMap<SrcUri, i32>,
 }
 
@@ -154,6 +158,15 @@ impl LanguageServer for Backend {
                     work_done_progress_options: WorkDoneProgressOptions {
                         work_done_progress: None,
                     },
+                }),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec![]),
+                    resolve_provider: Some(false),
+                    all_commit_characters: None,
+                    work_done_progress_options: WorkDoneProgressOptions {
+                        work_done_progress: None,
+                    },
+                    completion_item: None,
                 }),
                 ..ServerCapabilities::default()
             },
@@ -267,6 +280,7 @@ impl LanguageServer for Backend {
         self.document_map.remove(&uri);
         self.semantic_token_map.remove(&uri);
         self.fn_signature_map.remove(&uri);
+        self.completion_map.remove(&uri);
         debug!("file closed!");
     }
 
@@ -316,6 +330,77 @@ impl LanguageServer for Backend {
         }]))
     }
 
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri.to_string();
+
+        let symbols = match self.completion_map.get(&uri) {
+            Some(syms) => syms.clone(),
+            None => return Ok(None),
+        };
+
+        // Optionally filter by prefix typed so far.
+        let prefix = {
+            let position = params.text_document_position.position;
+            let rope = self.document_map.get(&uri);
+            rope.and_then(|r| {
+                let offset = position_to_offset(position, &r)?;
+                let text = r.to_string();
+                let bytes = text.as_bytes();
+                let end = offset.min(bytes.len());
+                let start = find_ident_start(bytes, end);
+                std::str::from_utf8(&bytes[start..end])
+                    .ok()
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default()
+        };
+
+        let items: Vec<CompletionItem> = symbols
+            .iter()
+            .filter_map(|s| {
+                // The last segment of a qualified name (e.g. "pingpong_delay" from
+                // "delay::pingpong_delay") used for prefix matching and insert text.
+                let last_segment = s.name.rsplit("::").next().unwrap_or(s.name.as_str());
+
+                let matches_full = s.name.starts_with(&prefix);
+                let matches_segment = last_segment.starts_with(&prefix);
+                if !matches_full && !matches_segment {
+                    return None;
+                }
+
+                let kind = Some(match s.kind {
+                    CompletionKind::Function => CompletionItemKind::FUNCTION,
+                    CompletionKind::Variable => CompletionItemKind::VARIABLE,
+                });
+                let detail = if s.type_str.is_empty() {
+                    None
+                } else {
+                    Some(s.type_str.clone())
+                };
+                // When match is only via the last segment, insert that segment only
+                // so the editor doesn't double up the module prefix the user already typed.
+                let insert_text = if matches_full {
+                    None
+                } else {
+                    Some(last_segment.to_string())
+                };
+                Some(CompletionItem {
+                    label: s.name.clone(),
+                    kind,
+                    detail,
+                    insert_text,
+                    ..Default::default()
+                })
+            })
+            .collect();
+
+        if items.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(CompletionResponse::Array(items)))
+        }
+    }
+
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
         let uri = params
             .text_document_position_params
@@ -346,7 +431,10 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        let sig = match signatures.iter().find(|s| s.name == fn_name) {
+        let sig = match signatures
+            .iter()
+            .find(|s| s.name == fn_name || s.name.ends_with(&format!("::{fn_name}")))
+        {
             Some(s) => s,
             None => return Ok(None),
         };
@@ -524,6 +612,8 @@ impl Backend {
             .insert(uri.to_string(), analysis.semantic_tokens);
         self.fn_signature_map
             .insert(uri.to_string(), analysis.fn_signatures);
+        self.completion_map
+            .insert(uri.to_string(), analysis.completion_symbols);
         self.client
             .publish_diagnostics(uri, analysis.diagnostics, Some(version))
             .await;
@@ -548,6 +638,7 @@ pub async fn lib_main() {
         document_map: DashMap::new(),
         semantic_token_map: DashMap::new(),
         fn_signature_map: DashMap::new(),
+        completion_map: DashMap::new(),
         latest_change_version: DashMap::new(),
     })
     .finish();
