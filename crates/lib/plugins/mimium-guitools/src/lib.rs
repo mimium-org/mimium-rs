@@ -20,6 +20,8 @@ use ringbuf::{
 };
 
 use crate::plot_window::FloatParameter;
+#[cfg(feature = "osc")]
+pub(crate) mod osc;
 pub(crate) mod plot_ui;
 pub mod plot_window;
 
