@@ -13,7 +13,7 @@ dist = false
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = []
+default = ["osc"]
 dynamic-plugin-abi = []
 osc = ["dep:rosc"]
 
