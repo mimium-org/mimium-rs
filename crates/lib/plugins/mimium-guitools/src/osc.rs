@@ -10,7 +10,10 @@ pub(crate) struct OscSliderReceiver {
 }
 
 impl OscSliderReceiver {
-    const DEFAULT_BIND_ADDRESS: &'static str = "0.0.0.0:9000";
+    /// Largest integer that can be represented exactly by IEEE-754 `f64` (2^53).
+    /// Used to avoid precision-loss updates when converting OSC `Long` values.
+    const MAX_EXACT_INT_IN_F64: i64 = 9_007_199_254_740_992;
+    const DEFAULT_BIND_ADDRESS: &'static str = "127.0.0.1:9000";
     const OSC_BIND_ENV: &'static str = "MIMIUM_GUITOOLS_OSC_BIND";
 
     pub(crate) fn from_env() -> Option<Self> {
@@ -40,11 +43,10 @@ impl OscSliderReceiver {
     pub(crate) fn poll_and_apply(&mut self, sliders: &[Arc<FloatParameter>]) {
         loop {
             match self.socket.recv_from(&mut self.recv_buf) {
-                Ok((size, _)) => {
-                    if let Ok((_, packet)) = decoder::decode_udp(&self.recv_buf[..size]) {
-                        Self::apply_packet(sliders, packet);
-                    }
-                }
+                Ok((size, _)) => match decoder::decode_udp(&self.recv_buf[..size]) {
+                    Ok((_, packet)) => Self::apply_packet(sliders, packet),
+                    Err(err) => mimium_lang::log::warn!("failed to decode OSC packet: {err}"),
+                },
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(err) => {
                     mimium_lang::log::warn!("OSC receiver socket error: {err}");
@@ -70,11 +72,9 @@ impl OscSliderReceiver {
             .first()
             .and_then(Self::osc_numeric_argument_to_f64);
         if let (Some(name), Some(value)) = (slider_name, slider_value) {
-            sliders
-                .iter()
-                .find(|slider| slider.name() == name)
-                .iter()
-                .for_each(|slider| slider.set(value));
+            if let Some(slider) = sliders.iter().find(|slider| slider.name() == name) {
+                slider.set(value);
+            }
         }
     }
 
@@ -92,9 +92,13 @@ impl OscSliderReceiver {
             OscType::Float(value) => Some(*value as f64),
             OscType::Double(value) => Some(*value),
             OscType::Int(value) => Some(*value as f64),
-            OscType::Long(value) => Some(*value as f64),
+            OscType::Long(value) => Self::int64_to_f64(*value),
             _ => None,
         }
+    }
+
+    fn int64_to_f64(value: i64) -> Option<f64> {
+        (value.abs() <= Self::MAX_EXACT_INT_IN_F64).then_some(value as f64)
     }
 }
 
@@ -121,5 +125,19 @@ mod tests {
         OscSliderReceiver::apply_message(&app.sliders, &message);
 
         assert_eq!(slider.get(), 440.0);
+    }
+
+    #[test]
+    fn too_large_integer_argument_is_ignored() {
+        let mut app = crate::plot_window::PlotApp::default();
+        let (slider, _) = app.add_slider("Params.freq", 1.0, -1.0, 1.0);
+        let message = OscMessage {
+            addr: "/Params/freq".to_string(),
+            args: vec![OscType::Long(i64::MAX)],
+        };
+
+        OscSliderReceiver::apply_message(&app.sliders, &message);
+
+        assert_eq!(slider.get(), 1.0);
     }
 }

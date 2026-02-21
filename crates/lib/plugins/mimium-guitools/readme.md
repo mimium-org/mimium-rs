@@ -10,7 +10,7 @@ Enable the `osc` feature to accept OpenSoundControl updates for sliders:
 mimium-guitools = { version = "*", features = ["osc"] }
 ```
 
-When enabled, the GUI listens on `0.0.0.0:9000` by default (override with `MIMIUM_GUITOOLS_OSC_BIND`).
+When enabled, the GUI listens on `127.0.0.1:9000` by default (override with `MIMIUM_GUITOOLS_OSC_BIND`).
 `SliderValue!("Params", {freq=440, phase=0.1})` can then be updated by sending OSC messages such as:
 
 - `/Params/freq 440.0`
