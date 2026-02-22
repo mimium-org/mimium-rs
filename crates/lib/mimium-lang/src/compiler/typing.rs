@@ -697,7 +697,12 @@ impl InferContext {
             .for_each(|ty| Self::collect_explicit_type_params_in_type(*ty, &mut collected));
         let map = collected
             .into_iter()
-            .map(|(name, loc)| (name, self.gen_typescheme(loc)))
+            .map(|(name, loc)| {
+                let ty = self
+                    .lookup_explicit_type_param(name)
+                    .unwrap_or_else(|| self.gen_typescheme(loc));
+                (name, ty)
+            })
             .collect::<BTreeMap<_, _>>();
         self.explicit_type_param_scopes.push(map);
         let res = f(self);
@@ -1869,6 +1874,8 @@ impl InferContext {
     ) -> Result<TypeNodeId, Vec<Error>> {
         let (TypedPattern { pat, ty, .. }, loc_p) = pat;
         let (body_t, loc_b) = body.clone();
+        let should_generalize =
+            !matches!(&pat, Pattern::Single(id) if *id == "record_update_temp".to_symbol());
         let mut bind_item = |pat| {
             let newloc = ty.to_loc();
             let ity = self.gen_intermediate_type_with_location(newloc.clone());
@@ -1920,7 +1927,11 @@ impl InferContext {
             )]),
         }?;
         let rel = self.unify_types(pat_t, body_t)?;
-        Ok(self.generalize(pat_t))
+        if should_generalize {
+            Ok(self.generalize(pat_t))
+        } else {
+            Ok(pat_t)
+        }
     }
 
     pub fn lookup(&self, name: Symbol, loc: Location) -> Result<TypeNodeId, Error> {
@@ -1980,7 +1991,7 @@ impl InferContext {
                 let first = elem_types
                     .first()
                     .copied()
-                    .unwrap_or(Type::Unknown.into_id_with_location(loc.clone()));
+                    .unwrap_or_else(|| self.gen_intermediate_type_with_location(loc.clone()));
                 //todo:collect multiple errors
                 let elem_t = elem_types
                     .iter()
@@ -2072,39 +2083,116 @@ impl InferContext {
             Expr::FieldAccess(expr, field) => {
                 let et = self.infer_type_unwrapping(*expr);
                 log::trace!("field access {} : {}", field, et.to_type());
-                let fields_to_ans = |fields: &[RecordTypeField]| {
-                    fields
-                        .iter()
-                        .find_map(
-                            |RecordTypeField { key, ty, .. }| {
-                                if *key == *field { Some(*ty) } else { None }
-                            },
-                        )
-                        .ok_or_else(|| {
-                            vec![Error::FieldNotExist {
-                                field: *field,
-                                loc: loc.clone(),
-                                et,
-                            }]
-                        })
-                };
-                // we directly inspect if the intermediate type is a record or not.
-                // this is because we can not infer the number of fields in the record from the fields access expression.
-                // This rule will be loosened when structural subtyping is implemented.
-                match et.to_type() {
-                    Type::Record(fields) => fields_to_ans(&fields),
-                    Type::Intermediate(tv) => {
+
+                if let Type::Intermediate(tv) = et.to_type() {
+                    let unresolved = {
                         let tv = tv.read().unwrap();
-                        if let Some(parent) = tv.parent {
-                            match parent.to_type() {
-                                Type::Record(fields) => fields_to_ans(&fields),
-                                _ => Err(vec![Error::FieldForNonRecord(loc, et)]),
+                        let lower = tv.bound.lower;
+                        let lower_is_record_like = match lower.to_type() {
+                            Type::Record(_) => true,
+                            Type::Tuple(elems) => elems.len() == 1,
+                            _ => false,
+                        };
+                        tv.parent.is_none()
+                            && !lower_is_record_like
+                    };
+
+                    if unresolved {
+                        let field_ty = self.gen_intermediate_type_with_location(loc.clone());
+                        let expected_record = Type::Record(vec![RecordTypeField {
+                            key: *field,
+                            ty: field_ty,
+                            has_default: false,
+                        }])
+                        .into_id_with_location(loc.clone());
+                        let _rel = self.unify_types(et, expected_record)?;
+                        return Ok(field_ty);
+                    }
+                }
+
+                let max_depth = 24usize;
+                let mut depth = 0usize;
+                let mut stack = vec![et];
+                let mut record_like = false;
+                let mut found: Option<TypeNodeId> = None;
+
+                while depth < max_depth {
+                    let Some(cur) = stack.pop() else { break };
+                    depth += 1;
+                    let cur = self.resolve_type_alias(cur);
+
+                    match cur.to_type() {
+                        Type::Record(fields) => {
+                            record_like = true;
+                            if let Some(field_ty) = fields
+                                .iter()
+                                .find_map(|RecordTypeField { key, ty, .. }| {
+                                    if *key == *field { Some(*ty) } else { None }
+                                })
+                            {
+                                found = Some(self.resolve_type_alias(field_ty));
+                                break;
                             }
-                        } else {
-                            Err(vec![Error::FieldForNonRecord(loc, et)])
+                            if fields.len() == 1 {
+                                stack.push(fields[0].ty);
+                            }
+                        }
+                        Type::Tuple(elements) if elements.len() == 1 => {
+                            stack.push(elements[0]);
+                        }
+                        Type::Intermediate(tv) => {
+                            let tv = tv.read().unwrap();
+                            if let Some(parent) = tv.parent {
+                                stack.push(parent);
+                            } else {
+                                stack.push(tv.bound.lower);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                if let Some(found) = found {
+                    Ok(found)
+                } else if record_like {
+                    if let Type::Intermediate(tv) = et.to_type() {
+                        let existing_fields = {
+                            let tv = tv.read().unwrap();
+                            match tv.parent.map(|parent| parent.to_type()) {
+                                Some(Type::Record(fields)) => Some(fields),
+                                _ => match tv.bound.lower.to_type() {
+                                    Type::Record(fields) => Some(fields),
+                                    _ => None,
+                                },
+                            }
+                        };
+
+                        if let Some(mut existing_fields) = existing_fields {
+                            let field_ty = self.gen_intermediate_type_with_location(loc.clone());
+                            if existing_fields
+                                .iter()
+                                .all(|record_field| record_field.key != *field)
+                            {
+                                existing_fields.push(RecordTypeField {
+                                    key: *field,
+                                    ty: field_ty,
+                                    has_default: false,
+                                });
+                            }
+
+                            let expected_record =
+                                Type::Record(existing_fields).into_id_with_location(loc.clone());
+                            let _rel = self.unify_types(et, expected_record)?;
+                            return Ok(field_ty);
                         }
                     }
-                    _ => Err(vec![Error::FieldForNonRecord(loc, et)]),
+                    Err(vec![Error::FieldNotExist {
+                        field: *field,
+                        loc: loc.clone(),
+                        et,
+                    }])
+                } else {
+                    Err(vec![Error::FieldForNonRecord(loc, et)])
                 }
             }
             Expr::Feed(id, body) => {
@@ -2238,20 +2326,11 @@ impl InferContext {
                     }
                     Expr::FieldAccess(record, field_name) => {
                         // Handle field assignment: record.field = value
-                        let record_type = self.infer_type_unwrapping(record);
+                        let _record_type = self.infer_type_unwrapping(record);
                         let value_type = self.infer_type_unwrapping(*expr);
-                        let tmptype = Type::Record(vec![RecordTypeField {
-                            key: field_name,
-                            ty: value_type,
-                            has_default: false,
-                        }])
-                        .into_id();
-                        if self.unify_types(record_type, tmptype)? == Relation::Supertype {
-                            unreachable!(
-                                "record field access for an empty record will not likely to happen."
-                            )
-                        };
-                        Ok(value_type)
+                        let field_type = self.infer_type_unwrapping(*assignee);
+                        let _rel = self.unify_types(field_type, value_type)?;
+                        Ok(unit!())
                     }
                     Expr::ArrayAccess(_, _) => {
                         unimplemented!("Assignment to array is not implemented yet.")
@@ -2332,6 +2411,7 @@ impl InferContext {
                     1 => self.infer_type_unwrapping(callee[0]),
                     _ => {
                         let at_vec = self.infer_vec(callee.as_slice())?;
+
                         let span = callee[0].to_span().start..callee.last().unwrap().to_span().end;
                         let loc = Location::new(span, self.file_path.clone());
                         Type::Tuple(at_vec).into_id_with_location(loc)

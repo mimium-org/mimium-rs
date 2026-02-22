@@ -503,7 +503,24 @@ fn convert_operators(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
             //   original
             // }
 
-            let record = convert_operators(record, file_path);
+            let record = convert_operators(record, file_path.clone());
+            let fields = fields
+                .into_iter()
+                .map(|field| RecordField {
+                    name: field.name,
+                    expr: convert_operators(field.expr, file_path.clone()),
+                })
+                .collect::<Vec<_>>();
+
+            if let Expr::Var(base_name) = record.to_expr() {
+                let mk_target = || Expr::Var(base_name).into_id_without_span();
+                let then_chain = fields.into_iter().rev().fold(mk_target(), |e, field| {
+                    let access = Expr::FieldAccess(mk_target(), field.name).into_id_without_span();
+                    let assign = Expr::Assign(access, field.expr).into_id_without_span();
+                    Expr::Then(assign, Some(e)).into_id_without_span()
+                });
+                return Expr::Block(Some(then_chain)).into_id(loc);
+            }
 
             // Generate a unique temporary variable name
             let temp_var_name = "record_update_temp".to_symbol();
@@ -516,11 +533,12 @@ fn convert_operators(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
             };
 
             // Build the chain of assignments and final return
-            let target_expr = Expr::Var(temp_var_name).into_id(loc.clone());
+            let mk_target = || Expr::Var(temp_var_name).into_id_without_span();
+            let target_expr = mk_target();
 
             // Process assignments in reverse order to build the Then chain correctly
             let then_chain = fields.into_iter().rev().fold(target_expr, |e, field| {
-                let access = Expr::FieldAccess(target_expr, field.name).into_id_without_span();
+                let access = Expr::FieldAccess(mk_target(), field.name).into_id_without_span();
                 let assign = Expr::Assign(access, field.expr).into_id_without_span();
                 Expr::Then(assign, Some(e)).into_id_without_span()
             });

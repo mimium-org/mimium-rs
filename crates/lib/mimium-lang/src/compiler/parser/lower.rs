@@ -639,8 +639,22 @@ impl<'a> Lowerer<'a> {
                 Expr::ArrayLiteral(elems).into_id(loc)
             }
             Some(SyntaxKind::RecordExpr) => {
-                let fields = self.lower_record_fields(node);
-                Expr::RecordLiteral(fields).into_id(loc)
+                if self
+                    .find_token(node, |kind| kind == TokenKind::LeftArrow)
+                    .is_some()
+                {
+                    let base = self
+                        .child_exprs(node)
+                        .into_iter()
+                        .next()
+                        .map(|expr_node| self.lower_expr(expr_node))
+                        .unwrap_or_else(|| Expr::Error.into_id(loc.clone()));
+                    let fields = self.lower_record_fields(node);
+                    Expr::RecordUpdate(base, fields).into_id(loc)
+                } else {
+                    let fields = self.lower_record_fields(node);
+                    Expr::RecordLiteral(fields).into_id(loc)
+                }
             }
             Some(SyntaxKind::IfExpr) => {
                 let expr_children = self.child_exprs(node);
@@ -1297,14 +1311,18 @@ impl<'a> Lowerer<'a> {
         let lhs_span = lhs.to_span();
 
         // Find the field name or index token (direct children only)
-        let expr = self
+        let field_token = self
             .arena
             .children(node)
             .into_iter()
             .flatten()
             .filter_map(|&child| self.get_token_index(child))
             .filter_map(|idx| self.tokens.get(idx))
-            .find_map(|tok| match tok.kind {
+            .filter(|tok| matches!(tok.kind, TokenKind::Ident | TokenKind::Int))
+            .next_back();
+
+        let expr = field_token
+            .and_then(|tok| match tok.kind {
                 TokenKind::Ident => Some(Expr::FieldAccess(lhs, tok.text(self.source).to_symbol())),
                 TokenKind::Int => tok
                     .text(self.source)
@@ -1878,6 +1896,22 @@ impl<'a> Lowerer<'a> {
                     .collect::<Vec<_>>();
                 Type::Tuple(elem_types).into_id_with_location(loc)
             }
+            Some(SyntaxKind::ArrayType) => {
+                let elem_type = self
+                    .arena
+                    .children(node)
+                    .into_iter()
+                    .flatten()
+                    .find(|child| {
+                        self.arena
+                            .kind(**child)
+                            .map(Self::is_type_kind)
+                            .unwrap_or(false)
+                    })
+                    .map(|child| self.lower_type(*child))
+                    .unwrap_or_else(|| Type::Unknown.into_id_with_location(loc.clone()));
+                Type::Array(elem_type).into_id_with_location(loc)
+            }
             Some(SyntaxKind::FunctionType) => {
                 // Function type: (T1, T2) -> R
                 let children: Vec<_> = self
@@ -1891,11 +1925,25 @@ impl<'a> Lowerer<'a> {
                             .map(Self::is_type_kind)
                             .unwrap_or(false)
                     })
+                    .copied()
                     .collect();
 
                 if children.len() >= 2 {
-                    let param_type = self.lower_type(*children[0]);
-                    let return_type = self.lower_type(*children[1]);
+                    let lowered = children
+                        .iter()
+                        .map(|child| self.lower_type(*child))
+                        .collect::<Vec<_>>();
+
+                    let return_type = *lowered
+                        .last()
+                        .unwrap_or(&Type::Unknown.into_id_with_location(loc.clone()));
+                    let param_type = if lowered.len() == 2 {
+                        lowered[0]
+                    } else {
+                        Type::Tuple(lowered[..lowered.len() - 1].to_vec())
+                            .into_id_with_location(loc.clone())
+                    };
+
                     Type::Function {
                         arg: param_type,
                         ret: return_type,
