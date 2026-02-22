@@ -34,113 +34,142 @@ fn comb_fb(input,gain,time_samps){
    delay(2000,input+fb,time_samps)
 }
 
-
-#stage(macro)
-fn embed_time(line_time_samps:`float,filter:`(float,float,float)->float){
-    `|input,rev_time| {
-        let time = $line_time_samps
-        let gain = gain_tr60(time, rev_time)
-        (input,gain,time) |> $filter
+mod jcrev{
+    #stage(macro)
+    fn embed_time(line_time_samps:`float,filter:`(float,float,float)->float){
+        `|input,rev_time| {
+            let time = $line_time_samps
+            let gain = gain_tr60(time, rev_time)
+            (input,gain,time) |> $filter
+        }
+    }
+    fn comb_fb_for_rev(line_time_samps:`float)->`(float,float)->float{
+        embed_time(line_time_samps,`comb_fb)
+    }
+    fn allpass_rev(line_time_samps:`float)->`(float,float)->float{
+        embed_time(line_time_samps,`allpass)
+    }
+    fn map(fun,array){
+        let (head,rest) = array |> split_head
+        if ((rest |> length_array) > 0){
+            prepend(fun(head),map(fun,rest))
+        }else{
+            [fun(head)]
+        }
+    }
+    fn foldl(array,init, folder){
+        let (head_f,rest) = array |> split_head
+        if ((rest |> length_array) > 0){
+            let restf = foldl(rest,init,folder)
+            folder(head_f , restf) 
+        }else{
+            folder(head_f,init)
+        }
+    }
+    fn parallel_filters(line_times:[float]){
+        foldl(
+            line_times,
+            `|_input,_time| 0,
+            |head,rest| {
+                let time_samps = `{ $(head / 1000.0|> lift_f) * samplerate  }
+                let head_filter = comb_fb_for_rev(time_samps)
+                `|input,time| ($head_filter)(input,time) + ($rest)(input,time)
+            },
+        )
+    }
+    fn seq_filters(line_times:[float]){
+        foldl(
+            line_times,
+            `|input,_time| {input},
+            |head,rest| {
+                let time_samps = `{ $(head |> lift_f) * samplerate / 1000.0 }
+                let head_filter = allpass_rev(time_samps)
+                `|input,time| ($rest)(($head_filter)(input,time),time)
+            },
+        )
+    }
+    pub fn jcrev_wet(){
+        let comb_times_ms =  [39.85,36.10,33.27,30.15]
+        let allpass_ms = [100,100/3,100/9]
+        let com_par = parallel_filters(comb_times_ms)
+        let all_par = seq_filters(allpass_ms)
+        `|input,rev_time| {
+            let ap_out = (input,rev_time) |> $all_par
+            (ap_out,rev_time) |> $com_par
+        }
+    }
+    #stage(main)
+    pub fn jcrev(input,time,mix){
+        let wet = (input,time) |> jcrev_wet!()
+        input * (1-mix) + wet * mix
     }
 }
-fn comb_fb_for_rev(line_time_samps:`float)->`(float,float)->float{
-    embed_time(line_time_samps,`comb_fb)
-}
-fn allpass_rev(line_time_samps:`float)->`(float,float)->float{
-    embed_time(line_time_samps,`allpass)
-}
-fn map(fun,array){
-    let (head,rest) = array |> split_head
-    if ((rest |> length_array) > 0){
-        prepend(fun(head),map(fun,rest))
-    }else{
-        [fun(head)]
+mod freeverb{
+//need to replicate map and fold to monomorphize
+    #stage(macro)
+    fn map(fun,array){
+        let (head,rest) = array |> split_head
+        if ((rest |> length_array) > 0){
+            prepend(fun(head),map(fun,rest))
+        }else{
+            [fun(head)]
+        }
+    }
+    fn foldl(array,init, folder){
+        let (head_f,rest) = array |> split_head
+        if ((rest |> length_array) > 0){
+            let restf = foldl(rest,init,folder)
+            folder(head_f , restf) 
+        }else{
+            folder(head_f,init)
+        }
+    }
+    let stereo_spread = 23
+    fn gen_lfc_bank(is_right){
+        let delays = [1557,1617,1491,1422,1277,1356,1188,1116]
+        let delays_st = if is_right{
+            map(|x| x+stereo_spread, delays)
+        }else{
+            delays
+        }
+        let filters =  map(|d| `|input,damp,roomsize|{
+            lp_fb_comb(input,$d,damp,roomsize)} ,delays_st)
+        |> foldl(_,`|input,damp,roomsize| 0,|a,b|{
+            `|input,damp,roomsize| ($a)(input,damp,roomsize) + ($b)(input,damp,roomsize)
+        } )
+        filters
+    }
+    pub fn freeverb_mono_wet(is_right){
+        `|input,damp,roomsize|{
+            gen_lfc_bank!(is_right)(input,damp,roomsize)
+                |> allpass(_,0.5,225)
+                |> allpass(_,0.5,556)
+                |> allpass(_,0.5,441)
+                |> allpass(_,0.5,341)
+        }
+    }
+    #stage(main)
+
+    pub fn freeverb_mono(input,damp,roomsize,mix:float)->float{
+        let out = freeverb_mono_wet!(0)(input,damp,roomsize)
+        let r =  input*(1-mix)+out*mix
+        r
+    }
+    fn scalewidth(x){
+        x * 0.5 + 0.5
+    }
+    pub fn freeverb_stereo(input:(float,float),damp,roomsize,width,mix){
+        let (left,right) = input
+        let left_wet = freeverb_mono_wet!(0)(left,damp,roomsize)*mix
+        let right_wet = freeverb_mono_wet!(1)(right,damp,roomsize)*mix
+        let mix_inv = 1-mix
+        let left_out = left*mix_inv + left_wet*scalewidth(width)+right_wet*scalewidth(1-width)
+        let right_out = right*mix_inv + left_wet*scalewidth(width)+right_wet*scalewidth(1-width)
+
+        (left_out,right_out)
     }
 }
-fn foldl(array,init, folder){
-    let (head_f,rest) = array |> split_head
-    if ((rest |> length_array) > 0){
-        let restf = foldl(rest,init,folder)
-        folder(head_f , restf) 
-    }else{
-        folder(head_f,init)
-    }
-}
-type alias Reverb = (float,float)->float
 
-#stage(macro)
-fn parallel_filters(line_times:[float]){
-    foldl(
-        line_times,
-        `|_input,_time| 0,
-        |head,rest| {
-            let time_samps = `{ $(head / 1000.0|> lift_f) * samplerate  }
-            let head_filter = comb_fb_for_rev(time_samps)
-            `|input,time| ($head_filter)(input,time) + ($rest)(input,time)
-        },
-    )
-}
-fn seq_filters(line_times:[float]){
-    foldl(
-        line_times,
-        `|input,_time| {input},
-        |head,rest| {
-            let time_samps = `{ $(head |> lift_f) * samplerate / 1000.0 }
-            let head_filter = allpass_rev(time_samps)
-            `|input,time| ($rest)(($head_filter)(input,time),time)
-        },
-    )
-}
+pub use freeverb::{freeverb_stereo,freeverb_mono}
+pub use jcrev::{jcrev_wet,jcrev}
 
-#stage(main)
-fn lfc_bank(input,damp,roomsize){
-    let comb = |time| lp_fb_comb(input,time,damp,roomsize)
-    lp_fb_comb(input,1557,damp,roomsize) +
-    lp_fb_comb(input,1617,damp,roomsize) + 
-    lp_fb_comb(input,1491,damp,roomsize) + 
-    lp_fb_comb(input,1422,damp,roomsize) + 
-    lp_fb_comb(input,1277,damp,roomsize) + 
-    lp_fb_comb(input,1356,damp,roomsize) + 
-    lp_fb_comb(input,1188,damp,roomsize) +
-    lp_fb_comb(input,1116,damp,roomsize) 
-}
-pub fn freeverb_mono(input,damp,roomsize,mix:float)->float{
-    let out = lfc_bank(input,damp,roomsize)
-            |> allpass(_,0.5,225)
-            |> allpass(_,0.5,556)
-            |> allpass(_,0.5,441)
-            |> allpass(_,0.5,341)
-    let r =  input*(1-mix)+out*mix
-    r
-}
-fn scalewidth(x){
-    x * 0.5 + 0.5
-}
-pub fn freeverb_stereo(input:(float,float),damp,roomsize,width,mix_2){
-    let (left,right) = input
-    let left_wet = freeverb_mono(left,damp,roomsize,1.0)*mix_2
-    let right_wet = freeverb_mono(right,damp,roomsize,1.0)*mix_2
-    let mix_inv = 1-mix_2
-    let left_out = left*mix_inv + left_wet*scalewidth(mix_2)+right_wet*scalewidth(1-mix_2)
-    let right_out = right*mix_inv + left_wet*scalewidth(mix_2)+right_wet*scalewidth(1-mix_2)
-
-    (left_out,right_out)
-}
-
-
-#stage(macro)
-pub fn jcrev_wet(){
-    let comb_times_ms =  [39.85,36.10,33.27,30.15]
-    let allpass_ms = [5.0,1.7]
-    let com_par = parallel_filters(comb_times_ms)
-    let all_par = seq_filters(allpass_ms)
-    `|input,rev_time| {
-        let com_out = (input,rev_time) |> $com_par
-        (com_out,rev_time) |> $all_par
-     }
-}
-#stage(main)
-pub fn jcrev(input,time,mix){
-    let wet = (input,time) |> jcrev_wet!()
-    input * (1-mix) + wet * mix
-}

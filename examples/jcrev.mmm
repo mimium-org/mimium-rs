@@ -9,8 +9,8 @@ fn dsp(){
           * (phasor({freq=7,..})>0.95
           |> |x| adsr({gate= x ,attack = 0.0001,release=0.01,..}))
   let mix = osc01(0.6)
-  // let r  = (src |> jcrev(_,1.0,mix) ) |> |x|(x,x)
-  let r = src*mix |> |x|(x,x) |> freeverb_stereo(_,0.9,0.8,0.9,0.2)
+  // let r  = (src |> jcrev(_,2.0,mix) ) |> |x|(x,x)
+  let r = freeverb_stereo((src,src),0.8,0.6,1,1)
   let (l,r) = r
   (l |> Probe!("L"), r |> Probe!("R"))
 }
