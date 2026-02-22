@@ -25,7 +25,7 @@ use crate::utils::environment::{Environment, LookupRes};
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::{GLOBAL_LABEL, Location, Span};
 
-use crate::ast::{Expr, Literal};
+use crate::ast::{Expr, Literal, RecordField};
 use std::cell::OnceCell;
 
 // Decision Tree for pattern matching compilation
@@ -146,6 +146,50 @@ enum AssignDestination {
     Global(VPtr),
 }
 impl Context {
+    fn canonical_record_type_id(&self, ty: TypeNodeId) -> TypeNodeId {
+        match ty.to_type() {
+            Type::Record(fields) => {
+                let mut normalized_fields = fields
+                    .iter()
+                    .map(|field| RecordTypeField {
+                        key: field.key,
+                        ty: self.canonical_record_type_id(field.ty),
+                        has_default: field.has_default,
+                    })
+                    .collect::<Vec<_>>();
+                normalized_fields.sort_by(|a, b| a.key.as_str().cmp(b.key.as_str()));
+                Type::Record(normalized_fields).into_id_with_location(ty.to_loc())
+            }
+            _ => ty.apply_fn(|t| self.canonical_record_type_id(t)),
+        }
+    }
+
+    fn alloc_record_aggregate(
+        &mut self,
+        fields: &[RecordField],
+        ty: TypeNodeId,
+    ) -> (VPtr, TypeNodeId, Vec<StateSkeleton>) {
+        let alloc_ty = self.canonical_record_type_id(ty);
+        if let Type::Record(type_fields) = alloc_ty.to_type() {
+            let ordered_exprs = type_fields
+                .iter()
+                .filter_map(|tf| {
+                    fields
+                        .iter()
+                        .find(|f| f.name == tf.key)
+                        .map(|f| f.expr)
+                })
+                .collect::<Vec<_>>();
+            if ordered_exprs.len() == fields.len() {
+                return self.alloc_aggregates(&ordered_exprs, alloc_ty);
+            }
+        }
+        self.alloc_aggregates(
+            &fields.iter().map(|f| f.expr).collect::<Vec<_>>(),
+            alloc_ty,
+        )
+    }
+
     pub fn new(typeenv: InferContext, file_path: Option<PathBuf>) -> Self {
         Self {
             typeenv,
@@ -1181,6 +1225,7 @@ impl Context {
                 let base_ptr = self.eval_expr_as_address(expr);
 
                 let record_ty_id = self.typeenv.infer_type(expr).unwrap();
+                let record_ty_id = self.canonical_record_type_id(record_ty_id);
                 let record_ty = record_ty_id.to_type();
 
                 if let Type::Record(fields) = record_ty {
@@ -1627,12 +1672,12 @@ impl Context {
                 (res, elem_ty, states)
             }
             Expr::RecordLiteral(fields) => {
-                self.alloc_aggregates(&fields.iter().map(|f| f.expr).collect::<Vec<_>>(), ty)
+                self.alloc_record_aggregate(fields, ty)
             }
             Expr::ImcompleteRecord(fields) => {
                 // For incomplete records, we also aggregate the available fields
                 // The default values will be handled in the type system and during record construction
-                self.alloc_aggregates(&fields.iter().map(|f| f.expr).collect::<Vec<_>>(), ty)
+                self.alloc_record_aggregate(fields, ty)
             }
             Expr::RecordUpdate(_, _) => {
                 // Record update syntax should be expanded during conversion phase
@@ -1641,6 +1686,7 @@ impl Context {
             }
             Expr::FieldAccess(expr, accesskey) => {
                 let (expr_v, expr_ty, states) = self.eval_expr(*expr);
+                let expr_ty = self.canonical_record_type_id(expr_ty);
                 match expr_ty.to_type() {
                     Type::Record(fields) => {
                         let offset = fields

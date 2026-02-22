@@ -1022,7 +1022,8 @@ impl InferContext {
     pub fn resolve_type_alias(&self, type_id: TypeNodeId) -> TypeNodeId {
         match type_id.to_type() {
             Type::TypeAlias(alias_name) => {
-                if let Some(resolved_type) = self.type_aliases.get(&alias_name) {
+                let resolved_alias_name = self.resolve_type_alias_symbol_fallback(alias_name);
+                if let Some(resolved_type) = self.type_aliases.get(&resolved_alias_name) {
                     // Recursively resolve in case the alias points to another alias
                     self.resolve_type_alias(*resolved_type)
                 } else {
@@ -1537,6 +1538,37 @@ impl InferContext {
         self.interm_idx.0 += 1;
         res
     }
+
+    fn resolve_type_alias_symbol_fallback(&self, name: Symbol) -> Symbol {
+        if name.as_str().contains('$') {
+            return name;
+        }
+
+        if let Some(ref module_info) = self.module_info
+            && let Some(mapped) = module_info.use_alias_map.get(&name)
+        {
+            return *mapped;
+        }
+
+        if self.type_aliases.contains_key(&name) {
+            return name;
+        }
+
+        let suffix = format!("${}", name.as_str());
+        let candidates = self
+            .type_aliases
+            .keys()
+            .copied()
+            .filter(|symbol| symbol.as_str().ends_with(&suffix))
+            .collect::<Vec<_>>();
+
+        if candidates.len() == 1 {
+            candidates[0]
+        } else {
+            name
+        }
+    }
+
     fn convert_unknown_to_intermediate(&mut self, t: TypeNodeId, loc: Location) -> TypeNodeId {
         match t.to_type() {
             Type::Unknown => self.gen_intermediate_type_with_location(loc.clone()),
@@ -1546,21 +1578,7 @@ impl InferContext {
                         .lookup_explicit_type_param(name)
                         .unwrap_or_else(|| self.gen_typescheme(loc.clone()));
                 }
-                // Determine if this is a qualified path (contains '$') or a simple name
-                let resolved_name = if name.as_str().contains('$') {
-                    // Already a mangled name from qualified path (e.g., mymath$PrivateNum)
-                    // Use it directly
-                    name
-                } else if let Some(ref module_info) = self.module_info {
-                    // Simple name - check use_alias_map for resolution
-                    module_info
-                        .use_alias_map
-                        .get(&name)
-                        .copied()
-                        .unwrap_or(name)
-                } else {
-                    name
-                };
+                let resolved_name = self.resolve_type_alias_symbol_fallback(name);
 
                 log::trace!(
                     "Resolving TypeAlias: {} -> {}",
@@ -1622,9 +1640,10 @@ impl InferContext {
 
     /// Check if a symbol is public based on the visibility map
     fn is_public(&self, name: &Symbol) -> bool {
+        let resolved_name = self.resolve_type_alias_symbol_fallback(*name);
         self.module_info
             .as_ref()
-            .and_then(|info| info.visibility_map.get(name))
+            .and_then(|info| info.visibility_map.get(&resolved_name))
             .is_some_and(|vis| *vis)
     }
 
@@ -1655,9 +1674,10 @@ impl InferContext {
         let resolved = Self::substitute_type(ty);
         match resolved.to_type() {
             Type::TypeAlias(name) => {
+                let resolved_name = self.resolve_type_alias_symbol_fallback(name);
                 // Check if this type alias is private
-                if self.is_private(&name) {
-                    return Some(name);
+                if self.is_private(&resolved_name) {
+                    return Some(resolved_name);
                 }
 
                 // If it's a qualified name, extract type name and check visibility
