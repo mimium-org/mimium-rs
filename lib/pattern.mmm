@@ -23,8 +23,8 @@ fn map(arr:[a], f:(a)->b)->[b]{
 }
 pub fn pure(v:float)->Pattern{
     |arc|{
-        let e = {arc={start=0.0,end=1.0},
-                active={start=0.0,end=1.0},
+        let e = {arc=arc,
+                active=arc,
                 val=v}
         [e]
     }
