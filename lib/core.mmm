@@ -8,6 +8,13 @@ pub fn switch(gate,a,b){
     mix(gain,a,b)
 }
 
+pub fn scale(x,imin,imax,omin,omax){
+    let irange = imax-imin
+    let norm = (x - imin)/irange
+    let orange = omax-omin
+    norm*orange + omin
+}
+
 pub fn midi_to_hz(note){
     440.0*(2.0^ ((note-69.0)/12.0) )
 }
