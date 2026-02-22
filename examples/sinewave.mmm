@@ -1,4 +1,4 @@
-include("osc.mmm")
+use osc::sinwave
 fn dsp(){
-  sinwave(440.0,1.0) *0.2 
+  sinwave({freq=440,..}) *0.2 
 } 
