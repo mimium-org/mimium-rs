@@ -470,10 +470,30 @@ impl LanguageServer for Backend {
 }
 
 impl Backend {
+    fn resolve_executable_path(candidate: PathBuf) -> Option<PathBuf> {
+        std::iter::once(candidate.clone())
+            .chain({
+                #[cfg(windows)]
+                {
+                    let exe_candidate = if candidate.extension().is_none() {
+                        candidate.with_extension("exe")
+                    } else {
+                        candidate.clone()
+                    };
+                    std::iter::once(exe_candidate)
+                }
+                #[cfg(not(windows))]
+                {
+                    std::iter::empty()
+                }
+            })
+            .find(|path| path.exists())
+    }
+
     fn worker_path() -> Option<PathBuf> {
         if let Some(path) = std::env::var_os("MIMIUM_LS_WORKER") {
             let candidate = PathBuf::from(path);
-            return candidate.exists().then_some(candidate);
+            return Self::resolve_executable_path(candidate);
         }
         std::env::current_exe()
             .ok()
@@ -481,7 +501,7 @@ impl Backend {
                 exe.parent()
                     .map(|parent| parent.join("mimium-language-server-worker"))
             })
-            .and_then(|candidate| candidate.exists().then_some(candidate))
+            .and_then(Self::resolve_executable_path)
     }
 
     async fn compile_via_worker(
