@@ -1,14 +1,14 @@
-include("math.mmm")
-fn onepole(x, ratio){
+use math::PI
+pub fn onepole(x, ratio){
     x*(1.0-ratio) + self*ratio
 }
 
-fn smooth(x){
+pub fn smooth(x){
     onepole(x, 0.95)
 }
 
 fn gen_hp_coeff(fc,q,fs){
-    let omega = 2.0 * PI* fc / fs
+    let omega = 2.0 * PI()* fc / fs
     let alpha = sin(omega)/(2.0* q)
     let norm = 1.0 + alpha
     let a1 = -2.0 * cos(omega) / norm
@@ -20,7 +20,7 @@ fn gen_hp_coeff(fc,q,fs){
     (a1,a2,b0,b1,b2)
 }
 fn gen_lp_coeff(fc,q,fs){
-    let omega = 2.0 * PI* fc / fs
+    let omega = 2.0 * PI()* fc / fs
     let alpha = sin(omega)/(2.0* q)
     let norm = 1.0 + alpha
     let a1 = -2.0 * cos(omega) / norm
@@ -33,7 +33,7 @@ fn gen_lp_coeff(fc,q,fs){
 }
 
 fn gen_bp_coeff(fc,q,fs){
-    let omega = 2.0 * PI* fc / fs
+    let omega = 2.0 * PI()* fc / fs
     let alpha = sin(omega)/(2.0* q)
     let norm = 1.0 + alpha
     let a1 = -2.0 * cos(omega) / norm
@@ -45,7 +45,7 @@ fn gen_bp_coeff(fc,q,fs){
 }
 
 fn gen_ap_coeff(fc,q,fs){
-    let omega = 2.0 * PI* fc / fs
+    let omega = 2.0 * PI()* fc / fs
     let alpha = sin(omega)/(2.0* q)
     let norm = 1.0 + alpha
     let a1 = -2.0 * cos(omega) / norm
@@ -58,7 +58,7 @@ fn gen_ap_coeff(fc,q,fs){
 
 fn gen_peaking_coeff(fc,gain_db,q,fs){
     let A = 10 ^ (gain_db/40)
-    let omega = 2.0 * PI* fc / fs
+    let omega = 2.0 * PI()* fc / fs
     let alpha = sin(omega)/(2.0* q)
     let norm = 1 + alpha/A
     let b0 = 1.0
