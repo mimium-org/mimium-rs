@@ -1,7 +1,8 @@
-include("noise.mmm")
+use noise::*
+
 #stage(main)
 fn dsp(){
-    let l = unoise!()*2.0-1.0
-    let r = unoise!()*2.0-1.0
-    (l,r)
+    let l = white!()|>Probe!("Test1")
+    let r = white!()|>Probe!("Test2")
+    (l,r)*0.2 
 }
