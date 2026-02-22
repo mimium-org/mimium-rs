@@ -1,4 +1,4 @@
-use math::PI
+use math::*
 pub fn onepole(x, ratio){
     x*(1.0-ratio) + self*ratio
 }
@@ -6,6 +6,16 @@ pub fn onepole(x, ratio){
 pub fn smooth(x){
     onepole(x, 0.95)
 }
+pub fn freq2tau(x){
+    1/(2*PI()*x)
+}
+pub fn tau2pole(x){
+    exp(-1/x*samplerate)
+}
+pub fn lop_tau(input,tau){
+    onepole(input,tau2pole(tau))
+}
+
 
 fn gen_hp_coeff(fc,q,fs){
     let omega = 2.0 * PI()* fc / fs

@@ -21,11 +21,11 @@ pub fn sah(input,trigger){
   if (t) input else last
 }
 use osc::phasor
-pub fn sah_auto(input,freq=20){
+pub fn sah_auto(input,freq=1000){
     let trigger = phasor({freq=freq, ..})
     sah(input,trigger)
 }
-pub fn degrade(input,freq=20,res=8){
+pub fn degrade(input,freq=1000,res=8){
     sah_auto(input,freq)
     |> bitcrush(_,res)
 }

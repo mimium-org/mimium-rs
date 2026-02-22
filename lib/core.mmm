@@ -1,25 +1,25 @@
-include("math.mmm")
+use math::*
 
-fn mix(gain,a,b){
+pub fn mix(gain,a,b){
     gain*a + (1.0-gain)*b
 }
-fn switch(gate,a,b){
+pub fn switch(gate,a,b){
     let gain = if (gate>0.0) 1.0 else 0.0
     mix(gain,a,b)
 }
 
-fn midi_to_hz(note){
+pub fn midi_to_hz(note){
     440.0*(2.0^ ((note-69.0)/12.0) )
 }
 
-fn hz_to_midi(freq){
+pub fn hz_to_midi(freq){
     12.0*log2(freq/440.0) + 69.0
 }
 
-fn dbtolinear(x){
+pub fn dbtolinear(x){
     pow(10.0, x/20.0)
 }
 
-fn linear2db(g) {
+pub fn linear2db(g) {
     20.0*log10(g)
 }

@@ -5,6 +5,7 @@ fn dsp(){
     let src = sinwave({freq=440})
     let gain = phasor({freq=1})>0.5 |> |gate| adsr({gate=gate}) 
     src * gain 
-    |> |x| bitcrush(x,2)
+    // |> saturate
+    |> |x| degrade({input=x,freq=2000})
     |> Probe!("out")
 }

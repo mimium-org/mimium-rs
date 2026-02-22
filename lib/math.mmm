@@ -3,6 +3,12 @@
 pub fn PI() {
     3.14159265359
 }
+pub fn E(){
+    2.71828182846
+}
+pub fn exp(x){
+    pow(E(),x)
+}
 pub fn log2(x){
     log(x)/log(2.0)
 }
