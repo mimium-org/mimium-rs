@@ -540,7 +540,6 @@ impl FileRunner {
     }
     //this api never returns
     pub fn cli_loop(&self) {
-        use notify::event::{EventKind, ModifyKind};
         //watcher instance lives only this context
         let file_watcher = match self.try_new_watcher() {
             Ok(watcher) => watcher,
@@ -552,17 +551,13 @@ impl FileRunner {
 
         loop {
             match file_watcher.rx.recv() {
-                Ok(Ok(Event {
-                    kind: EventKind::Modify(ModifyKind::Data(_)),
-                    ..
-                })) => {
-                    log::info!("File changed, recompiling...");
+                Ok(Ok(event)) => {
+                    log::info!("File event detected ({:?}), recompiling...", event.kind);
                     self.recompile_file();
                 }
                 Ok(Err(e)) => {
                     log::error!("watch error event: {e}");
                 }
-                Ok(_) => {}
                 Err(e) => {
                     log::error!("receiver error: {e}");
                 }
