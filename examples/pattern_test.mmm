@@ -1,0 +1,8 @@
+use core::*
+use pattern::*
+use osc::*
+
+fn dsp(){
+    let freq = run!(seq([60, 62, 64]), 1.0) |> midi_to_hz
+    sinwave(freq, 0.0) |> Probe!("out")
+}   
