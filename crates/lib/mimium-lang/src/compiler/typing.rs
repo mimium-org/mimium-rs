@@ -1024,7 +1024,7 @@ impl InferContext {
                     type_id // Return original if not found (shouldn't happen)
                 }
             }
-            _ => type_id, // Not an alias, return as-is
+            _ => type_id.apply_fn(|t| self.resolve_type_alias(t)),
         }
     }
 }
@@ -1591,6 +1591,9 @@ impl InferContext {
                 // Resolve type alias by looking it up in the environment
                 match self.lookup(resolved_name, loc.clone()) {
                     Ok(resolved_ty) => {
+                        let resolved_ty = self.resolve_type_alias(resolved_ty);
+                        let resolved_ty =
+                            self.convert_unknown_to_intermediate(resolved_ty, loc.clone());
                         log::trace!(
                             "Resolved TypeAlias {} to {}",
                             resolved_name.as_str(),
@@ -2151,8 +2154,11 @@ impl InferContext {
                             .collect::<Vec<_>>();
                         let ptype = if pvec.is_empty() {
                             Type::Primitive(PType::Unit).into_id_with_location(loc.clone())
+                        } else if pvec.len() == 1 {
+                            pvec[0].ty
                         } else {
-                            Type::Record(pvec).into_id_with_location(loc.clone())
+                            Type::Tuple(pvec.iter().map(|f| f.ty).collect())
+                                .into_id_with_location(loc.clone())
                         };
                         let bty = if let Some(r) = rtype {
                             let annotated_ret =

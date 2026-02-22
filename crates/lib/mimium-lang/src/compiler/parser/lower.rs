@@ -378,13 +378,21 @@ impl<'a> Lowerer<'a> {
 
         if variants.is_empty() {
             // This is a type alias - look for a type annotation
-            let type_node = self.find_child(node, |kind| {
-                matches!(
-                    kind,
-                    SyntaxKind::TypeAnnotation | SyntaxKind::PrimitiveType | SyntaxKind::TypeIdent
-                )
-            })?;
-            let target_type = self.lower_type(type_node);
+            let target_type = self
+                .arena
+                .children(node)
+                .and_then(|children| {
+                    children
+                        .iter()
+                        .find(|c| {
+                            self.arena
+                                .kind(**c)
+                                .map(Self::is_type_kind)
+                                .unwrap_or(false)
+                        })
+                        .copied()
+                })
+                .map(|type_node| self.lower_type(type_node))?;
 
             Some(ProgramStatement::TypeAlias {
                 visibility,
@@ -500,9 +508,27 @@ impl<'a> Lowerer<'a> {
             .unwrap_or_else(|| (Vec::new(), self.node_span(node).unwrap_or(0..0)));
 
         // Check for return type annotation
-        let return_type = self
-            .find_child(node, Self::is_type_kind)
-            .map(|type_node| self.lower_type(type_node));
+        let return_type = self.arena.children(node).and_then(|children| {
+            children
+                .iter()
+                .find_map(|child| match self.arena.kind(*child) {
+                    Some(SyntaxKind::TypeAnnotation) => {
+                        self.arena.children(*child).and_then(|type_children| {
+                            type_children
+                                .iter()
+                                .find(|c| {
+                                    self.arena
+                                        .kind(**c)
+                                        .map(Self::is_type_kind)
+                                        .unwrap_or(false)
+                                })
+                                .map(|type_node| self.lower_type(*type_node))
+                        })
+                    }
+                    Some(kind) if Self::is_type_kind(kind) => Some(self.lower_type(*child)),
+                    _ => None,
+                })
+        });
 
         let body_node = self
             .find_child(node, |kind| kind == SyntaxKind::BlockExpr)
@@ -942,12 +968,16 @@ impl<'a> Lowerer<'a> {
             .arena
             .children(node)
             .map(|children| {
-                children.iter().copied().fold(
-                    (Vec::new(), Vec::new()),
-                    |(mut params, mut body_nodes), child| {
+                (0..children.len()).fold(
+                    (Vec::new(), Vec::new(), 0usize),
+                    |(mut params, mut body_nodes, mut next_index), i| {
+                        if i < next_index {
+                            return (params, body_nodes, next_index);
+                        }
+
+                        let child = children[i];
                         match self.arena.kind(child) {
                             None => {
-                                // Check if it's a valid identifier token (not |, commas, etc.)
                                 if let Some(token_index) = self.get_token_index(child)
                                     && let Some(token) = self.tokens.get(token_index)
                                     && matches!(
@@ -955,15 +985,38 @@ impl<'a> Lowerer<'a> {
                                         TokenKind::Ident | TokenKind::IdentParameter
                                     )
                                 {
-                                    let ty = Type::Unknown.into_id_with_location(
-                                        self.location_from_span(
-                                            self.node_span(node).unwrap_or(0..0),
-                                        ),
-                                    );
-                                    params.push(TypedId::new(
-                                        token.text(self.source).to_symbol(),
-                                        ty,
-                                    ));
+                                    let name = token.text(self.source).to_symbol();
+                                    let loc = self.location_from_span(token.start..token.end());
+                                    let mut ty = Type::Unknown.into_id_with_location(loc.clone());
+                                    let mut next = i + 1;
+
+                                    if next < children.len()
+                                        && self.arena.kind(children[next])
+                                            == Some(SyntaxKind::TypeAnnotation)
+                                    {
+                                        ty = self
+                                            .arena
+                                            .children(children[next])
+                                            .and_then(|type_children| {
+                                                type_children
+                                                    .iter()
+                                                    .find(|c| {
+                                                        self.arena
+                                                            .kind(**c)
+                                                            .map(Self::is_type_kind)
+                                                            .unwrap_or(false)
+                                                    })
+                                                    .copied()
+                                            })
+                                            .map(|type_node| self.lower_type(type_node))
+                                            .unwrap_or_else(|| {
+                                                Type::Unknown.into_id_with_location(loc.clone())
+                                            });
+                                        next += 1;
+                                    }
+
+                                    params.push(TypedId::new(name, ty));
+                                    next_index = next;
                                 }
                             }
                             Some(kind) if Self::is_expr_kind(kind) => {
@@ -971,10 +1024,11 @@ impl<'a> Lowerer<'a> {
                             }
                             _ => {}
                         }
-                        (params, body_nodes)
+                        (params, body_nodes, next_index.max(i + 1))
                     },
                 )
             })
+            .map(|(params, body_nodes, _)| (params, body_nodes))
             .unwrap_or_else(|| (Vec::new(), Vec::new()));
 
         let body = self.lower_expr_sequence(&body_nodes);

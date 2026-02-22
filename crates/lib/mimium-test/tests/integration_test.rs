@@ -1099,6 +1099,13 @@ fn type_alias_comprehensive() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn type_alias_function_lambda_param() {
+    let res = run_file_test_mono("type_alias_function_lambda_param.mmm", 1).unwrap();
+    let ans = vec![2.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn stateful_match() {
     // Test basic enum matching without stateful functions first
     // move_player(Up) = 1.0, move_player(Down) = 2.0
