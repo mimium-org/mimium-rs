@@ -84,26 +84,26 @@ fn _biquad_inner (x,a1,a2){
     let w = x - a1*ws - a2*wss
     (w, ws, wss)
 }
-fn biquad(x,coeffs){
+pub fn biquad(x,coeffs){
     let (a1,a2,b0,b1,b2) = coeffs;
 	let (w,ws,wss) = _biquad_inner(x,a1,a2);
 	b0*w + b1*ws + b2*wss
 }
 
-fn lowpass(x,fc,q){
+pub fn lowpass(x,fc,q){
     biquad(x,gen_lp_coeff(fc,q,samplerate))
 }
 
-fn highpass(x,fc,q){
+pub fn highpass(x,fc,q){
     biquad(x,gen_hp_coeff(fc,q,samplerate))
 }
-fn bandpass(x,fc,q){
+pub fn bandpass(x,fc,q){
     biquad(x,gen_bp_coeff(fc,q,samplerate))
 }
-fn allpass(x,fc,q){
+pub fn allpass(x,fc,q){
     biquad(x,gen_ap_coeff(fc,q,samplerate))
 }
 
-fn peakeq(x,fc,gaindb,q){
+pub fn peakeq(x,fc,gaindb,q){
     biquad(x,gen_peaking_coeff(fc,gaindb,q,samplerate))
 }

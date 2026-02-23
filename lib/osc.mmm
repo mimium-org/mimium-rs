@@ -5,7 +5,10 @@ pub fn phasor(freq,phase_shift=0){
 pub fn lfsaw(freq,phase=0){
     phasor(freq,phase) * 2.0 -1.0
 }
-
+//for now
+pub fn saw(freq,phase=0){
+    lfsaw(freq,phase)
+}
 pub fn tri(freq,phase=0){
     let p = phasor(freq,phase);
     let raw = if (p < 0.25) p* -1.0+0.5 else if (p>0.75) p * -1.0+1.50 else p
