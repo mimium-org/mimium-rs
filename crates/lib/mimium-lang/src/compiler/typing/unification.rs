@@ -561,7 +561,6 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
         // Keep single-field records as records in general unification.
         // Collapsing `{k:T}` to `T` here loses structural information and can
         // incorrectly narrow chained accesses like `e.arc.start` into `{arc:{end:_}}`.
-
         (Type::Failure, _t) | (_t, Type::Any) => Relation::Identical,
         (Type::Any, _t) | (_t, Type::Failure) => Relation::Identical,
 
