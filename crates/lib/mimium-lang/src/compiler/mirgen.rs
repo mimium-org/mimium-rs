@@ -173,21 +173,13 @@ impl Context {
         if let Type::Record(type_fields) = alloc_ty.to_type() {
             let ordered_exprs = type_fields
                 .iter()
-                .filter_map(|tf| {
-                    fields
-                        .iter()
-                        .find(|f| f.name == tf.key)
-                        .map(|f| f.expr)
-                })
+                .filter_map(|tf| fields.iter().find(|f| f.name == tf.key).map(|f| f.expr))
                 .collect::<Vec<_>>();
             if ordered_exprs.len() == fields.len() {
                 return self.alloc_aggregates(&ordered_exprs, alloc_ty);
             }
         }
-        self.alloc_aggregates(
-            &fields.iter().map(|f| f.expr).collect::<Vec<_>>(),
-            alloc_ty,
-        )
+        self.alloc_aggregates(&fields.iter().map(|f| f.expr).collect::<Vec<_>>(), alloc_ty)
     }
 
     pub fn new(typeenv: InferContext, file_path: Option<PathBuf>) -> Self {
@@ -1671,9 +1663,7 @@ impl Context {
                 });
                 (res, elem_ty, states)
             }
-            Expr::RecordLiteral(fields) => {
-                self.alloc_record_aggregate(fields, ty)
-            }
+            Expr::RecordLiteral(fields) => self.alloc_record_aggregate(fields, ty),
             Expr::ImcompleteRecord(fields) => {
                 // For incomplete records, we also aggregate the available fields
                 // The default values will be handled in the type system and during record construction

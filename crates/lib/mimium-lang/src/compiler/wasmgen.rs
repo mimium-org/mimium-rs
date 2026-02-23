@@ -314,6 +314,36 @@ impl WasmGenerator {
             || s.starts_with("__probe_value_intercept$arity")
     }
 
+    fn phi_result_type_from_phi_info(&self, phi_info: &Option<((VPtr, VPtr), VPtr)>) -> Option<ValType> {
+        phi_info.as_ref().map(|(inputs, phi_dest)| {
+            if let mir::Value::Register(reg_idx) = phi_dest.as_ref()
+                && let Some(reg_type) = self.register_types.get(reg_idx)
+            {
+                *reg_type
+            } else {
+                self.infer_value_type(&inputs.0)
+            }
+        })
+    }
+
+    fn phi_switch_result_type_from_info(
+        &self,
+        phi_switch_info: &Option<(Vec<VPtr>, VPtr)>,
+    ) -> Option<ValType> {
+        phi_switch_info.as_ref().map(|(inputs, phi_dest)| {
+            if let mir::Value::Register(reg_idx) = phi_dest.as_ref()
+                && let Some(reg_type) = self.register_types.get(reg_idx)
+            {
+                *reg_type
+            } else {
+                inputs
+                    .first()
+                    .map(|input| self.infer_value_type(input))
+                    .unwrap_or(ValType::F64)
+            }
+        })
+    }
+
     /// Create a new WASM generator for the given MIR.
     ///
     /// `ext_fns` should contain the complete list of external function type
@@ -1131,21 +1161,10 @@ impl WasmGenerator {
                         }
 
                         // Determine if block type from Phi presence
-                        let (block_type, phi_result_type) =
-                            if let Some((_, ref phi_dest)) = phi_info {
-                                let reg_type =
-                                    if let mir::Value::Register(reg_idx) = phi_dest.as_ref() {
-                                        self.register_types
-                                            .get(reg_idx)
-                                            .copied()
-                                            .unwrap_or(ValType::F64)
-                                    } else {
-                                        ValType::F64
-                                    };
-                                (wasm_encoder::BlockType::Result(reg_type), Some(reg_type))
-                            } else {
-                                (wasm_encoder::BlockType::Empty, None)
-                            };
+                        let phi_result_type = self.phi_result_type_from_phi_info(&phi_info);
+                        let block_type = phi_result_type
+                            .map(wasm_encoder::BlockType::Result)
+                            .unwrap_or(wasm_encoder::BlockType::Empty);
                         wasm_func.instruction(&W::If(block_type));
 
                         // Emit then-branch block
@@ -1223,19 +1242,10 @@ impl WasmGenerator {
         let phi_switch_info = Self::find_phi_switch_in_block(&ctx.blocks[merge_idx]);
 
         // Determine result type from PhiSwitch
-        let (block_type, phi_result_type) = if let Some((_, ref phi_dest)) = phi_switch_info {
-            let reg_type = if let mir::Value::Register(reg_idx) = phi_dest.as_ref() {
-                self.register_types
-                    .get(reg_idx)
-                    .copied()
-                    .unwrap_or(ValType::F64)
-            } else {
-                ValType::F64
-            };
-            (wasm_encoder::BlockType::Result(reg_type), Some(reg_type))
-        } else {
-            (wasm_encoder::BlockType::Empty, None)
-        };
+        let phi_result_type = self.phi_switch_result_type_from_info(&phi_switch_info);
+        let block_type = phi_result_type
+            .map(wasm_encoder::BlockType::Result)
+            .unwrap_or(wasm_encoder::BlockType::Empty);
 
         let num_cases = switch_ctx.cases.len();
         let phi_inputs = phi_switch_info
@@ -1360,19 +1370,10 @@ impl WasmGenerator {
                         func.instruction(&W::I64GtS);
                     }
 
-                    let (block_type, inner_phi_type) = if let Some((_, ref phi_dest)) = phi_info {
-                        let reg_type = if let mir::Value::Register(reg_idx) = phi_dest.as_ref() {
-                            self.register_types
-                                .get(reg_idx)
-                                .copied()
-                                .unwrap_or(ValType::F64)
-                        } else {
-                            ValType::F64
-                        };
-                        (wasm_encoder::BlockType::Result(reg_type), Some(reg_type))
-                    } else {
-                        (wasm_encoder::BlockType::Empty, None)
-                    };
+                    let inner_phi_type = self.phi_result_type_from_phi_info(&phi_info);
+                    let block_type = inner_phi_type
+                        .map(wasm_encoder::BlockType::Result)
+                        .unwrap_or(wasm_encoder::BlockType::Empty);
                     func.instruction(&W::If(block_type));
 
                     ctx.mark_processed(then_idx);
@@ -1462,19 +1463,10 @@ impl WasmGenerator {
                         func.instruction(&W::I64GtS);
                     }
 
-                    let (block_type, inner_phi_type) = if let Some((_, ref phi_dest)) = phi_info {
-                        let reg_type = if let mir::Value::Register(reg_idx) = phi_dest.as_ref() {
-                            self.register_types
-                                .get(reg_idx)
-                                .copied()
-                                .unwrap_or(ValType::F64)
-                        } else {
-                            ValType::F64
-                        };
-                        (wasm_encoder::BlockType::Result(reg_type), Some(reg_type))
-                    } else {
-                        (wasm_encoder::BlockType::Empty, None)
-                    };
+                    let inner_phi_type = self.phi_result_type_from_phi_info(&phi_info);
+                    let block_type = inner_phi_type
+                        .map(wasm_encoder::BlockType::Result)
+                        .unwrap_or(wasm_encoder::BlockType::Empty);
                     func.instruction(&W::If(block_type));
 
                     ctx.mark_processed(then_idx);
@@ -1558,11 +1550,16 @@ impl WasmGenerator {
             if is_skipped_phi {
                 // Phi value is already on the stack from if/else; store to dest.
                 if let mir::Value::Register(reg_idx) = dest.as_ref() {
-                    let reg_type = self
-                        .register_types
-                        .get(reg_idx)
-                        .copied()
-                        .unwrap_or(ValType::F64);
+                    let reg_type = self.register_types.get(reg_idx).copied().unwrap_or_else(|| {
+                        match instr {
+                            I::Phi(v1, _) => self.infer_value_type(v1),
+                            I::PhiSwitch(inputs) => inputs
+                                .first()
+                                .map(|input| self.infer_value_type(input))
+                                .unwrap_or(ValType::F64),
+                            _ => ValType::F64,
+                        }
+                    });
                     let local_idx = match reg_type {
                         ValType::I64 => self.current_num_args + *reg_idx as u32,
                         ValType::F64 => {
@@ -1589,19 +1586,10 @@ impl WasmGenerator {
                     func.instruction(&W::I64GtS);
                 }
 
-                let (block_type, inner_phi_type) = if let Some((_, ref phi_dest)) = phi_info {
-                    let reg_type = if let mir::Value::Register(reg_idx) = phi_dest.as_ref() {
-                        self.register_types
-                            .get(reg_idx)
-                            .copied()
-                            .unwrap_or(ValType::F64)
-                    } else {
-                        ValType::F64
-                    };
-                    (wasm_encoder::BlockType::Result(reg_type), Some(reg_type))
-                } else {
-                    (wasm_encoder::BlockType::Empty, None)
-                };
+                let inner_phi_type = self.phi_result_type_from_phi_info(&phi_info);
+                let block_type = inner_phi_type
+                    .map(wasm_encoder::BlockType::Result)
+                    .unwrap_or(wasm_encoder::BlockType::Empty);
                 func.instruction(&W::If(block_type));
 
                 ctx.mark_processed(then_idx);
@@ -1861,14 +1849,8 @@ impl WasmGenerator {
                             self.getelement_registers.insert(*reg_idx, element_vtype);
                             ValType::I64
                         }
-                        // Phi inherits type from its inputs
-                        I::Phi(v1, _) => {
-                            if let mir::Value::Register(r) = v1.as_ref() {
-                                self.register_types.get(r).copied().unwrap_or(ValType::F64)
-                            } else {
-                                ValType::F64
-                            }
-                        }
+                        // Phi inherits type from its first input
+                        I::Phi(v1, _) => self.infer_value_type(v1),
                         // Type casts
                         I::CastFtoI(_) | I::CastItoB(_) => ValType::I64,
                         I::CastItoF(_) => ValType::F64,
@@ -1898,17 +1880,10 @@ impl WasmGenerator {
                         I::TaggedUnionGetTag(_) => ValType::I64,
                         I::TaggedUnionGetValue(_, _) => ValType::I64, // produces a pointer (address)
                         // PhiSwitch inherits type from its first input
-                        I::PhiSwitch(inputs) => {
-                            if let Some(first) = inputs.first() {
-                                if let mir::Value::Register(r) = first.as_ref() {
-                                    self.register_types.get(r).copied().unwrap_or(ValType::F64)
-                                } else {
-                                    ValType::F64
-                                }
-                            } else {
-                                ValType::F64
-                            }
-                        }
+                        I::PhiSwitch(inputs) => inputs
+                            .first()
+                            .map(|first| self.infer_value_type(first))
+                            .unwrap_or(ValType::F64),
                         // Switch does not produce a value
                         I::Switch { .. } => ValType::I64,
                         // Array literal produces a pointer

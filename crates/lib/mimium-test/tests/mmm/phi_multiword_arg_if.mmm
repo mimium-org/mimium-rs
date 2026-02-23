@@ -1,0 +1,15 @@
+type alias Pair = (float, float)
+
+fn choose(a: Pair, b: Pair, cond: float) -> Pair {
+    if cond > 0.0 {
+        a
+    } else {
+        b
+    }
+}
+
+fn dsp() {
+    let (a1, a2) = choose((1.0, 2.0), (3.0, 4.0), 1.0)
+    let (b1, b2) = choose((1.0, 2.0), (3.0, 4.0), -1.0)
+    a1 + a2 + b1 + b2
+}

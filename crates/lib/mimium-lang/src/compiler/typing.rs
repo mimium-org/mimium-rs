@@ -2113,8 +2113,7 @@ impl InferContext {
                             Type::Tuple(elems) => elems.len() == 1,
                             _ => false,
                         };
-                        tv.parent.is_none()
-                            && !lower_is_record_like
+                        tv.parent.is_none() && !lower_is_record_like
                     };
 
                     if unresolved {
@@ -2144,9 +2143,8 @@ impl InferContext {
                     match cur.to_type() {
                         Type::Record(fields) => {
                             record_like = true;
-                            if let Some(field_ty) = fields
-                                .iter()
-                                .find_map(|RecordTypeField { key, ty, .. }| {
+                            if let Some(field_ty) =
+                                fields.iter().find_map(|RecordTypeField { key, ty, .. }| {
                                     if *key == *field { Some(*ty) } else { None }
                                 })
                             {
@@ -2175,7 +2173,9 @@ impl InferContext {
                 if let Some(found) = found {
                     Ok(found)
                 } else if record_like {
-                    if let Type::Intermediate(tv) = et.to_type() {
+                    if matches!(et.get_root().to_type(), Type::Intermediate(_))
+                        && let Type::Intermediate(tv) = et.to_type()
+                    {
                         let existing_fields = {
                             let tv = tv.read().unwrap();
                             match tv.parent.map(|parent| parent.to_type()) {
@@ -3003,5 +3003,48 @@ fn dsp() {
 
         // Check for compilation errors
         assert!(result.is_ok(), "MIR generation failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_macro_return_record_missing_field_reports_type_error() {
+        use crate::compiler;
+
+        let src = r#"
+pub type alias Note = {v:float, gate:float}
+
+#stage(macro)
+fn make_note()->`Note{
+    `{v = 60.0, gate = 1.0}
+}
+
+fn dsp(){
+    let note = make_note!()
+    note.val
+}
+"#;
+
+        let empty_ext_fns: Vec<compiler::ExtFunTypeInfo> = vec![];
+        let empty_macros: Vec<Box<dyn crate::plugin::MacroFunction>> = vec![];
+        let ctx = compiler::Context::new(
+            empty_ext_fns,
+            empty_macros,
+            Some(std::path::PathBuf::from("test")),
+            compiler::Config::default(),
+        );
+        let result = ctx.emit_mir(src);
+
+        assert!(
+            result.is_err(),
+            "Compilation should fail for missing record field access"
+        );
+
+        let errors = result.err().unwrap();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.get_message().contains("Field \"val\"")),
+            "Expected missing field error for \"val\", got: {:?}",
+            errors.iter().map(|e| e.get_message()).collect::<Vec<_>>()
+        );
     }
 }
