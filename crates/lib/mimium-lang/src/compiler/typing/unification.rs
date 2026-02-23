@@ -162,23 +162,15 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
     let t1r = t1.get_root();
     let t2r = t2.get_root();
     let res = match &(t1r.to_type(), t2r.to_type()) {
-        (Type::Record(v1), Type::Record(v2)) if v1.len() == 1 && v2.len() == 1 => {
-            unify_types_args(v1.first().unwrap().ty, v2.first().unwrap().ty)?
-        }
-        (Type::Record(v1), Type::Record(_)) if v1.len() == 1 => {
-            unify_types_args(v1.first().unwrap().ty, t2)?
-        }
-        (Type::Record(_), Type::Record(v2)) if v2.len() == 1 => {
-            unify_types_args(t1, v2.first().unwrap().ty)?
-        }
         (Type::Record(_), Type::Record(_)) | (Type::Tuple(_), Type::Tuple(_)) => {
             unify_types(t1, t2)?
         }
+        (Type::Record(v), _t) if v.len() == 1 => unify_types_args(v.first().unwrap().ty, t2)?,
+        (_t, Type::Record(v)) if v.len() == 1 && !v.first().unwrap().has_default => {
+            unify_types_args(t1, v.first().unwrap().ty)?
+        }
         (_t, Type::Tuple(v)) if v.len() == 1 => unify_types_args(t1, *v.first().unwrap())?,
         (Type::Tuple(v), _t) if v.len() == 1 => unify_types_args(*v.first().unwrap(), t2)?,
-
-        (_t, Type::Record(v)) if v.len() == 1 => unify_types_args(t1, v.first().unwrap().ty)?,
-        (Type::Record(v), _t) if v.len() == 1 => unify_types_args(v.first().unwrap().ty, t2)?,
 
         (Type::Intermediate(i1), Type::Intermediate(i2)) => {
             // Read all necessary values first, then release read locks

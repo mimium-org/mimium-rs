@@ -837,28 +837,11 @@ impl ByteCodeGenerator {
                 // Get PhiSwitch destination register
                 let merge_block_mir = &mirfunc.body[merge_block as usize];
                 let (phi_dst, phi_inst) = merge_block_mir.0.first().unwrap();
-
-                // Resolve PhiSwitch sources first to determine multi-word move size.
-                let result_regs: Vec<(Reg, TypeSize)> =
-                    if let mir::Instruction::PhiSwitch(results) = phi_inst {
-                        results
-                            .iter()
-                            .map(|r| {
-                                let MemoryRegion(reg, size) = self
-                                    .vregister
-                                    .get_top()
-                                    .0
-                                    .get(r)
-                                    .copied()
-                                    .unwrap_or_else(|| MemoryRegion(self.find_keep(r), 1));
-                                (reg, size)
-                            })
-                            .collect()
-                    } else {
-                        panic!("Expected PhiSwitch in merge block");
-                    };
-                let phi_size = result_regs.iter().map(|(_, size)| *size).max().unwrap_or(1);
-                let phi_reg = self.get_destination(phi_dst.clone(), phi_size);
+                let phi_inputs = if let mir::Instruction::PhiSwitch(results) = phi_inst {
+                    results.clone()
+                } else {
+                    panic!("Expected PhiSwitch in merge block");
+                };
 
                 // Helper closure to emit instructions for a basic block
                 let mut emit_block = |this: &mut Self, block: &mir::Block| -> Vec<VmInstruction> {
@@ -894,6 +877,24 @@ impl ByteCodeGenerator {
                     vec![]
                 };
                 let has_default = default_block.is_some();
+
+                // Resolve PhiSwitch source registers after case/default blocks are emitted.
+                let result_regs: Vec<(Reg, TypeSize)> = phi_inputs
+                    .iter()
+                    .map(|r| {
+                        let reg = self.find_keep(r);
+                        let size = self
+                            .vregister
+                            .get_top()
+                            .0
+                            .get(r)
+                            .map(|MemoryRegion(_, size)| *size)
+                            .unwrap_or(1);
+                        (reg, size)
+                    })
+                    .collect();
+                let phi_size = result_regs.iter().map(|(_, size)| *size).max().unwrap_or(1);
+                let phi_reg = self.get_destination(phi_dst.clone(), phi_size);
 
                 // Merge block remaining instructions
                 let merge_bytes: Vec<VmInstruction> =
