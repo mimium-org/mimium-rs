@@ -1,13 +1,15 @@
+use drive::sah_auto
+
 #stage(macro)
 let RANDMAX	= 2147483647.0
 fn urand_counter(){
     let x = 10 //global global seed
     | | {
         x = x+1
-        lift_f(x)
+        x
     }
 }
-let global_seed:()->`float = urand_counter()
+let global_seed:()->float = urand_counter()
 #stage(main)
 //linear congruence
 fn gen_rand(seed){
@@ -20,9 +22,36 @@ pub fn noise(){
     gen_noise(1.0)
 }
 #stage(macro)
+//linear congruence
+fn gen_rand(seed){
+     (self*48271.0) % (2.0^31.0 -1.0)+seed
+}
+fn gen_rand_seq(seed){
+    gen_rand(seed)/RANDMAX
+}
+// normalized random
+pub fn nrand(){
+    gen_rand_seq(global_seed())
+}
+pub fn rrand(min,max){
+    nrand()*(max-min)+min
+}
 pub fn unoise(){
-    `(gen_noise($(global_seed())))
+    `(gen_noise($(global_seed()|>lift)))
 }
 pub fn white(){
     `(unoise!() *2 - 1)
+}
+
+//todo pink
+pub fn perlin(order,rate:float)->`float{
+    if (order>1){
+        let n = order |> lift
+        let next = perlin(order-1,rate*order)
+        let ratec = rate * order |> lift
+        `{ sah_auto(white!(),$ratec) / $n + $next }
+    }else{
+        let ratec = rate * order |> lift
+        `{ sah_auto(white!(),$ratec) }
+    }
 }
