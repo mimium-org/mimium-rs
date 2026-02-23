@@ -10,7 +10,7 @@ use crate::types::{PType, RecordTypeField, Type, TypeSize};
 use crate::utils::half_float::HFloat;
 use vm::bytecode::Instruction as VmInstruction;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 struct MemoryRegion(Reg, TypeSize);
 #[derive(Debug, Default)]
 struct VRegister(HashMap<Arc<mir::Value>, MemoryRegion>);
@@ -624,12 +624,36 @@ impl ByteCodeGenerator {
                     });
                 let phiblock = &mirfunc.body[pbb as usize].0;
                 let (phidst, pinst) = phiblock.first().unwrap();
-                let phi = self.vregister.add_newvalue(phidst);
                 if let mir::Instruction::Phi(t, e) = pinst {
+                    let t_size = self
+                        .vregister
+                        .get_top()
+                        .0
+                        .get(t)
+                        .map(|MemoryRegion(_, size)| *size)
+                        .unwrap_or(1);
+                    let e_size = self
+                        .vregister
+                        .get_top()
+                        .0
+                        .get(e)
+                        .map(|MemoryRegion(_, size)| *size)
+                        .unwrap_or(1);
+                    let phi_size = std::cmp::max(t_size, e_size);
+                    let phi = self.get_destination(phidst.clone(), phi_size);
+
                     let t = self.find(t);
-                    then_bytecodes.push(VmInstruction::Move(phi, t));
+                    then_bytecodes.push(if phi_size == 1 {
+                        VmInstruction::Move(phi, t)
+                    } else {
+                        VmInstruction::MoveRange(phi, t, phi_size)
+                    });
                     let e = self.find(e);
-                    else_bytecodes.push(VmInstruction::Move(phi, e));
+                    else_bytecodes.push(if phi_size == 1 {
+                        VmInstruction::Move(phi, e)
+                    } else {
+                        VmInstruction::MoveRange(phi, e, phi_size)
+                    });
                 } else {
                     unreachable!("Unexpected inst: {pinst:?}");
                 }
@@ -813,7 +837,28 @@ impl ByteCodeGenerator {
                 // Get PhiSwitch destination register
                 let merge_block_mir = &mirfunc.body[merge_block as usize];
                 let (phi_dst, phi_inst) = merge_block_mir.0.first().unwrap();
-                let phi_reg = self.vregister.add_newvalue(phi_dst);
+
+                // Resolve PhiSwitch sources first to determine multi-word move size.
+                let result_regs: Vec<(Reg, TypeSize)> =
+                    if let mir::Instruction::PhiSwitch(results) = phi_inst {
+                        results
+                            .iter()
+                            .map(|r| {
+                                let MemoryRegion(reg, size) = self
+                                    .vregister
+                                    .get_top()
+                                    .0
+                                    .get(r)
+                                    .copied()
+                                    .unwrap_or_else(|| MemoryRegion(self.find_keep(r), 1));
+                                (reg, size)
+                            })
+                            .collect()
+                    } else {
+                        panic!("Expected PhiSwitch in merge block");
+                    };
+                let phi_size = result_regs.iter().map(|(_, size)| *size).max().unwrap_or(1);
+                let phi_reg = self.get_destination(phi_dst.clone(), phi_size);
 
                 // Helper closure to emit instructions for a basic block
                 let mut emit_block = |this: &mut Self, block: &mir::Block| -> Vec<VmInstruction> {
@@ -849,14 +894,6 @@ impl ByteCodeGenerator {
                     vec![]
                 };
                 let has_default = default_block.is_some();
-
-                // Now that all blocks are processed, we can find the result registers
-                // Use find_keep since these values come from different blocks and need to remain available
-                let result_regs: Vec<Reg> = if let mir::Instruction::PhiSwitch(results) = phi_inst {
-                    results.iter().map(|r| self.find_keep(r)).collect()
-                } else {
-                    panic!("Expected PhiSwitch in merge block");
-                };
 
                 // Merge block remaining instructions
                 let merge_bytes: Vec<VmInstruction> =
@@ -963,20 +1000,30 @@ impl ByteCodeGenerator {
                                     block_bytes
                                         .iter()
                                         .cloned()
-                                        .chain(std::iter::once(VmInstruction::Move(
-                                            phi_reg,
-                                            result_regs[i],
-                                        )))
+                                        .chain(std::iter::once(if result_regs[i].1 == 1 {
+                                            VmInstruction::Move(phi_reg, result_regs[i].0)
+                                        } else {
+                                            VmInstruction::MoveRange(
+                                                phi_reg,
+                                                result_regs[i].0,
+                                                result_regs[i].1,
+                                            )
+                                        }))
                                         .chain(std::iter::once(VmInstruction::Jmp(
                                             remaining_size as i16,
                                         )))
                                 },
                             ))
                             .chain(default_bytes.iter().cloned())
-                            .chain(std::iter::once(VmInstruction::Move(
-                                phi_reg,
-                                *result_regs.last().unwrap(),
-                            )))
+                            .chain(std::iter::once(if result_regs.last().unwrap().1 == 1 {
+                                VmInstruction::Move(phi_reg, result_regs.last().unwrap().0)
+                            } else {
+                                VmInstruction::MoveRange(
+                                    phi_reg,
+                                    result_regs.last().unwrap().0,
+                                    result_regs.last().unwrap().1,
+                                )
+                            }))
                             .chain(merge_bytes.iter().cloned())
                             .collect()
                     } else {
@@ -990,10 +1037,15 @@ impl ByteCodeGenerator {
                                     block_bytes
                                         .iter()
                                         .cloned()
-                                        .chain(std::iter::once(VmInstruction::Move(
-                                            phi_reg,
-                                            result_regs[i],
-                                        )))
+                                        .chain(std::iter::once(if result_regs[i].1 == 1 {
+                                            VmInstruction::Move(phi_reg, result_regs[i].0)
+                                        } else {
+                                            VmInstruction::MoveRange(
+                                                phi_reg,
+                                                result_regs[i].0,
+                                                result_regs[i].1,
+                                            )
+                                        }))
                                         .chain(if is_last {
                                             // Last case - no Jmp, falls through to merge
                                             None
@@ -1308,5 +1360,76 @@ mod test {
         answer.global_fn_table.push(("dsp".to_string(), main));
         answer.dsp_index = Some(0);
         assert_eq!(res, answer);
+    }
+
+    #[test]
+    fn phi_multiword_emits_moverange_and_two_word_return() {
+        use super::*;
+        use crate::numeric;
+        use crate::types::Type;
+
+        let mut src = mir::Mir::default();
+        let tuple_ty = Type::Tuple(vec![numeric!(), numeric!()]).into_id();
+
+        let mut func = mir::Function::new(0, "dsp".to_symbol(), &[], vec![], None);
+        func.return_type.get_or_init(|| tuple_ty);
+
+        let cond = Arc::new(mir::Value::Register(0));
+        let then_val = Arc::new(mir::Value::Register(1));
+        let else_val = Arc::new(mir::Value::Register(2));
+        let phi_val = Arc::new(mir::Value::Register(3));
+
+        let mut entry = mir::Block::default();
+        entry
+            .0
+            .push((cond.clone(), mir::Instruction::Float(1.0)));
+        entry.0.push((
+            Arc::new(mir::Value::None),
+            mir::Instruction::JmpIf(cond.clone(), 1, 2, 3),
+        ));
+
+        let mut then_block = mir::Block::default();
+        then_block
+            .0
+            .push((then_val.clone(), mir::Instruction::Alloc(tuple_ty)));
+
+        let mut else_block = mir::Block::default();
+        else_block
+            .0
+            .push((else_val.clone(), mir::Instruction::Alloc(tuple_ty)));
+
+        let mut merge_block = mir::Block::default();
+        merge_block.0.push((
+            phi_val.clone(),
+            mir::Instruction::Phi(then_val.clone(), else_val.clone()),
+        ));
+        merge_block.0.push((
+            Arc::new(mir::Value::None),
+            mir::Instruction::Return(phi_val.clone(), tuple_ty),
+        ));
+
+        func.body = vec![entry, then_block, else_block, merge_block];
+        src.functions.push(func);
+
+        let mut generator = ByteCodeGenerator::default();
+        let program = generator.generate(src, Config::default());
+        let proto = &program.global_fn_table[0].1;
+
+        assert!(
+            proto
+                .bytecodes
+                .iter()
+                .any(|inst| matches!(inst, VmInstruction::MoveRange(_, _, 2))),
+            "Expected MoveRange for two-word Phi value, got: {:?}",
+            proto.bytecodes
+        );
+        assert!(
+            proto
+                .bytecodes
+                .iter()
+                .any(|inst| matches!(inst, VmInstruction::Return(_, 2))),
+            "Expected two-word Return for tuple type, got: {:?}",
+            proto.bytecodes
+        );
     }
 }

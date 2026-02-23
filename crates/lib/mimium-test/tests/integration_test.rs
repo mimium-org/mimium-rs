@@ -456,6 +456,13 @@ fn tuple_args() {
     assert_eq!(res, ans);
 }
 
+#[wasm_bindgen_test(unsupported = test)]
+fn phi_multiword_arg_if() {
+    let res = run_file_test_mono("phi_multiword_arg_if.mmm", 1).unwrap();
+    let ans = vec![10.0];
+    assert_eq!(res, ans);
+}
+
 // implement one-sample delay on mimium with `self`
 #[wasm_bindgen_test(unsupported = test)]
 fn fb_mem() {
@@ -1447,6 +1454,14 @@ fn wasm_tuple_pass() {
     // add_tuple(make_tuple(1.0)) = 1.0 + 2.0 + 3.0 = 6.0
     let ans = vec![6.0, 6.0, 6.0];
     assert_eq!(res, ans, "WASM backend: tuple arg flattening at call site");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_phi_multiword_arg_if() {
+    let res = run_file_test_wasm("phi_multiword_arg_if.mmm", 1, false).unwrap();
+    let ans = vec![10.0];
+    assert_eq!(res, ans, "WASM backend: phi with multiword argument values");
 }
 
 #[cfg(not(target_arch = "wasm32"))]
