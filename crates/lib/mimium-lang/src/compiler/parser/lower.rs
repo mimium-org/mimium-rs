@@ -653,7 +653,14 @@ impl<'a> Lowerer<'a> {
                     Expr::RecordUpdate(base, fields).into_id(loc)
                 } else {
                     let fields = self.lower_record_fields(node);
-                    Expr::RecordLiteral(fields).into_id(loc)
+                    if self
+                        .find_token(node, |kind| kind == TokenKind::DoubleDot)
+                        .is_some()
+                    {
+                        Expr::ImcompleteRecord(fields).into_id(loc)
+                    } else {
+                        Expr::RecordLiteral(fields).into_id(loc)
+                    }
                 }
             }
             Some(SyntaxKind::IfExpr) => {
