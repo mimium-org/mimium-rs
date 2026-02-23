@@ -193,17 +193,10 @@ pub fn run_error_test_rich(path: &'static str, stereo: bool) -> Vec<RichError> {
 pub fn load_src(path: &'static str) -> (PathBuf, String) {
     #[cfg(not(target_arch = "wasm32"))]
     let file = {
-        let crate_root = std::env::var("TEST_ROOT").expect(
-            r#"You must set TEST_ROOT environment variable to run test.
-            You should put the line like below to your build.rs.
-            fn main() {
-                println!("cargo:rustc-env=TEST_ROOT={}", env!("CARGO_MANIFEST_DIR"));
-                }
-                "#,
-        );
-        [crate_root.as_str(), "tests/mmm", path]
-            .iter()
-            .collect::<PathBuf>()
+        let crate_root = std::env::var("TEST_ROOT").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
+        PathBuf::from(crate_root)
+            .join("tests/mmm")
+            .join(path)
             .canonicalize()
             .expect("canonicalize failed")
             .to_str()
@@ -211,11 +204,11 @@ pub fn load_src(path: &'static str) -> (PathBuf, String) {
             .to_string()
     };
     #[cfg(target_arch = "wasm32")]
-    let file = format!(
-        "{}/tests/mmm/{}",
-        fileloader::get_env("TEST_ROOT").expect("TEST_ROOT is not set"),
-        path
-    );
+    let file = {
+        let crate_root = fileloader::get_env("TEST_ROOT")
+            .unwrap_or_else(|| env!("CARGO_MANIFEST_DIR").to_string());
+        format!("{}/tests/mmm/{}", crate_root, path)
+    };
 
     println!("{file}");
     let src = fileloader::load(&file).expect("failed to load file");
