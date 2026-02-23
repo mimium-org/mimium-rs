@@ -1,8 +1,10 @@
 use core::*
 use pattern::*
 use osc::*
-
+use env::adsr
 fn dsp(){
-    let freq = run!(seq([60, 62, 64]), 1.0) |> midi_to_hz
-    sinwave(freq, 0.0) |> Probe!("out")
+    let note = run_note!(seq([60, 62, 64, 65, 67]) |> legato(0.1,_), 2.0) 
+    sinwave(note.val |> midi_to_hz, 0.0)
+     * adsr({attack = 0.001,release=0.01,gate=note.gate}) 
+    |> Probe!("out")
 }   
