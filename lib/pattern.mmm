@@ -59,8 +59,22 @@ pub fn cat(pts:[Pattern])->Pattern{
         }
     }
 }
+pub fn slowcat(pts:[Pattern])->Pattern{
+    |arc:Arc|{
+        let n = length_array(pts)
+        if (n > 0.0){
+            cat_inner(pts, 0.0, 1, arc)
+        }else{
+          []         
+        }
+    }
+}
+pub fn alternate(inserted:[Pattern],target:(Pattern)->Pattern)->Pattern{
+    map(inserted,target) |> slowcat
+}
+
 pub fn seq(vals)->Pattern{
-    map(vals,pure) |>cat
+    map(vals,pure) |> cat
 }
 fn reverse_arc(arc:Arc,last_time:float)->Arc{
     {start = last_time - arc.end, end = last_time - arc.start}
