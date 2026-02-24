@@ -21,6 +21,11 @@ fn map(arr:[a], f:(a)->b)->[b]{
        []
     }
 }
+pub fn silence()->Pattern{
+    |arc|{
+        []
+    }
+}
 pub fn pure(v:float)->Pattern{
     |arc|{
         let e = {arc=arc,
@@ -105,7 +110,6 @@ pub fn legato(ratio,target:Pattern)->Pattern{
              val = e.val}
         })
     }
-
 }
 
 #stage(main)
