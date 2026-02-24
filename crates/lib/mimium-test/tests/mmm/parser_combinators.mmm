@@ -1,0 +1,158 @@
+
+use parser::*
+
+#stage(macro)
+fn test_parser_combinators() {
+    // --- char_p ---
+    let r1 = (char_p("a"))("abc")
+    let r1_ok = is_ok(r1)
+    let r1_matched = str_eq(get_matched(r1), "a")
+    let r1_rest = str_eq(get_rest(r1), "bc")
+
+    // --- char_p fail ---
+    let r2 = (char_p("x"))("abc")
+    let r2_fail = is_fail(r2)
+
+    // --- string_p ---
+    let r3 = (string_p("hello"))("hello world")
+    let r3_ok = is_ok(r3)
+    let r3_matched = str_eq(get_matched(r3), "hello")
+    let r3_rest = str_eq(get_rest(r3), " world")
+
+    // --- any_char ---
+    let r4 = (any_char())("xyz")
+    let r4_ok = is_ok(r4)
+    let r4_matched = str_eq(get_matched(r4), "x")
+
+    // --- seq2 ---
+    let r5 = (seq2(char_p("a"), char_p("b")))("abc")
+    let r5_ok = is_ok(r5)
+    let r5_matched = str_eq(get_matched(r5), "ab")
+    let r5_rest = str_eq(get_rest(r5), "c")
+
+    // --- alt ---
+    let r6 = (alt(char_p("x"), char_p("a")))("abc")
+    let r6_ok = is_ok(r6)
+    let r6_matched = str_eq(get_matched(r6), "a")
+
+    // --- many ---
+    let r7 = (many(char_p("a")))("aaab")
+    let r7_ok = is_ok(r7)
+    let r7_matched = str_eq(get_matched(r7), "aaa")
+    let r7_rest = str_eq(get_rest(r7), "b")
+
+    // --- many on empty match ---
+    let r8 = (many(char_p("x")))("abc")
+    let r8_ok = is_ok(r8)
+    let r8_empty = str_eq(get_matched(r8), "")
+
+    // --- many1 success ---
+    let r9 = (many1(char_p("a")))("aaab")
+    let r9_ok = is_ok(r9)
+    let r9_matched = str_eq(get_matched(r9), "aaa")
+
+    // --- many1 fail ---
+    let r10 = (many1(char_p("x")))("abc")
+    let r10_fail = is_fail(r10)
+
+    // --- digits ---
+    let r11 = (digits())("12345abc")
+    let r11_ok = is_ok(r11)
+    let r11_matched = str_eq(get_matched(r11), "12345")
+    let r11_rest = str_eq(get_rest(r11), "abc")
+
+    // --- number with decimal ---
+    let r12 = (number())("-3.14rest")
+    let r12_ok = is_ok(r12)
+    let r12_matched = str_eq(get_matched(r12), "-3.14")
+    let r12_rest = str_eq(get_rest(r12), "rest")
+
+    // --- ident ---
+    let r13 = (ident())("foo_bar 123")
+    let r13_ok = is_ok(r13)
+    let r13_matched = str_eq(get_matched(r13), "foo_bar")
+    let r13_rest = str_eq(get_rest(r13), " 123")
+
+    // --- between ---
+    let r14 = (between(char_p("("), char_p(")"), digits()))("(42)rest")
+    let r14_ok = is_ok(r14)
+    let r14_matched = str_eq(get_matched(r14), "42")
+    let r14_rest = str_eq(get_rest(r14), "rest")
+
+    // --- optional present ---
+    let r15 = (optional(char_p("-")))("-5")
+    let r15_ok = is_ok(r15)
+    let r15_matched = str_eq(get_matched(r15), "-")
+
+    // --- optional absent ---
+    let r16 = (optional(char_p("-")))("5")
+    let r16_ok = is_ok(r16)
+    let r16_empty = str_eq(get_matched(r16), "")
+
+    // --- take_while ---
+    let r17 = (take_while(is_digit))("123abc")
+    let r17_ok = is_ok(r17)
+    let r17_matched = str_eq(get_matched(r17), "123")
+
+    // --- map_p ---
+    let r18 = (map_p(digits(), |s| str_concat("NUM:", s)))("42rest")
+    let r18_ok = is_ok(r18)
+    let r18_matched = str_eq(get_matched(r18), "NUM:42")
+
+    // --- peek ---
+    let r19 = (peek(char_p("a")))("abc")
+    let r19_ok = is_ok(r19)
+    let r19_rest = str_eq(get_rest(r19), "abc")
+
+    // --- not_p ---
+    let r20 = (not_p(char_p("x")))("abc")
+    let r20_ok = is_ok(r20)
+
+    // --- sep_by1 ---
+    let r21 = (sep_by1(digits(), char_p(",")))("1,22,333rest")
+    let r21_ok = is_ok(r21)
+    let r21_matched = str_eq(get_matched(r21), "122333")
+    let r21_rest = str_eq(get_rest(r21), "rest")
+
+    // --- spaces + lexeme ---
+    let r22 = (lexeme(digits()))("   42rest")
+    let r22_ok = is_ok(r22)
+    let r22_matched = str_eq(get_matched(r22), "42")
+
+    // --- symbol ---
+    let r23 = (symbol("let"))("  let x")
+    let r23_ok = is_ok(r23)
+    let r23_rest = str_eq(get_rest(r23), " x")
+
+    // Sum all boolean checks (each is 1.0 if correct).
+    // Total = 52 checks
+    r1_ok + r1_matched + r1_rest
+    + r2_fail
+    + r3_ok + r3_matched + r3_rest
+    + r4_ok + r4_matched
+    + r5_ok + r5_matched + r5_rest
+    + r6_ok + r6_matched
+    + r7_ok + r7_matched + r7_rest
+    + r8_ok + r8_empty
+    + r9_ok + r9_matched
+    + r10_fail
+    + r11_ok + r11_matched + r11_rest
+    + r12_ok + r12_matched + r12_rest
+    + r13_ok + r13_matched + r13_rest
+    + r14_ok + r14_matched + r14_rest
+    + r15_ok + r15_matched
+    + r16_ok + r16_empty
+    + r17_ok + r17_matched
+    + r18_ok + r18_matched
+    + r19_ok + r19_rest
+    + r20_ok
+    + r21_ok + r21_matched + r21_rest
+    + r22_ok + r22_matched
+    + r23_ok + r23_rest
+    |> lift_f
+}
+
+#stage(main)
+fn dsp() {
+    test_parser_combinators!()
+}

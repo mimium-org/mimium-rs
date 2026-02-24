@@ -21,6 +21,11 @@ fn map(arr:[a], f:(a)->b)->[b]{
        []
     }
 }
+pub fn silence()->Pattern{
+    |arc|{
+        []
+    }
+}
 pub fn pure(v:float)->Pattern{
     |arc|{
         let e = {arc=arc,
@@ -105,7 +110,6 @@ pub fn legato(ratio,target:Pattern)->Pattern{
              val = e.val}
         })
     }
-
 }
 
 #stage(main)
@@ -141,13 +145,17 @@ fn note_at_phase(events:[Event], phase:float, current:Event)->Note{
     }
 }
 
-
 #stage(macro)
+fn get_events_len(events:[Event])->float{
+    let (rest,tail) = split_tail(events)
+    tail.arc.end
+}
 /// convert pattern to stream for continous value. so ignore the end of arc. just see the start of arc as event time.
 pub fn run(pt:Pattern, cycle_per_sec:float)->`float{
     let events = pt({start=0.0,end=1.0})
+    let end = events |> get_events_len
     `{
-        let phase = phasor($(cycle_per_sec |> lift), 0.0)
+        let phase = phasor($(cycle_per_sec/end |> lift), 0.0) * $(end|>lift)
         let v = value_at_phase($(events |> lift), phase, 0.0)
         v
     }   
@@ -156,9 +164,10 @@ pub fn run(pt:Pattern, cycle_per_sec:float)->`float{
 pub fn run_note(pt:Pattern, cycle_per_sec:float)->`Note{
     let events = pt({start=0.0,end=1.0})
     let empty_arc:Arc = {start = 0.0, end = 0.0}
+    let end = events |> get_events_len
     let init_event:Event = {arc = empty_arc, active = empty_arc, val = 0.0}
     `{
-        let phase = phasor($(cycle_per_sec |> lift), 0.0)
+        let phase = phasor($(cycle_per_sec/end |> lift), 0.0) * $(end|>lift)
         let v = note_at_phase($(events |> lift), phase, $(init_event |> lift))
         v
     }   

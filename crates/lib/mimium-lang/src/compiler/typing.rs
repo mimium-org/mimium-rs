@@ -1554,13 +1554,31 @@ impl InferContext {
             return name;
         }
 
+        // Also check type_declarations directly (for UserSum types defined without module prefix)
+        if let Some(ref module_info) = self.module_info
+            && module_info.type_declarations.contains_key(&name)
+        {
+            return name;
+        }
+
+        // Search for mangled names ending with $<name> in both type_aliases and type_declarations
         let suffix = format!("${}", name.as_str());
-        let candidates = self
+        let mut candidates: Vec<Symbol> = self
             .type_aliases
             .keys()
             .copied()
             .filter(|symbol| symbol.as_str().ends_with(&suffix))
-            .collect::<Vec<_>>();
+            .collect();
+
+        if let Some(ref module_info) = self.module_info {
+            candidates.extend(
+                module_info
+                    .type_declarations
+                    .keys()
+                    .copied()
+                    .filter(|symbol| symbol.as_str().ends_with(&suffix)),
+            );
+        }
 
         if candidates.len() == 1 {
             candidates[0]

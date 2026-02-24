@@ -716,6 +716,285 @@ mod map {
     }
 }
 
+// ---------------------------------------------------------------------------
+// String primitive functions (Stage 0 / macro-only)
+//
+// These operate on `Value::String(Symbol)` at macro expansion time.
+// Internal encoding follows Rust's UTF-8 `str` – random access is O(N).
+// ---------------------------------------------------------------------------
+
+/// Returns the number of Unicode scalar values (chars) in the string.
+/// Type: `(String) -> Numeric`
+mod str_length {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, numeric, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 1);
+        match &args[0].0 {
+            Value::String(s) => Value::Number(s.as_str().chars().count() as f64),
+            _ => panic!("str_length: expected String argument"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "str_length".to_symbol(),
+            ty: function!(vec![string_t!()], numeric!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
+/// Takes the first N characters from a string.
+/// Type: `(String, Numeric) -> String`
+mod str_take {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, numeric, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 2);
+        match (&args[0].0, &args[1].0) {
+            (Value::String(s), Value::Number(n)) => {
+                let n = *n as usize;
+                let result: String = s.as_str().chars().take(n).collect();
+                Value::String(result.to_symbol())
+            }
+            _ => panic!("str_take: expected (String, Numeric) arguments"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "str_take".to_symbol(),
+            ty: function!(vec![string_t!(), numeric!()], string_t!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
+/// Drops the first N characters from a string.
+/// Type: `(String, Numeric) -> String`
+mod str_drop {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, numeric, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 2);
+        match (&args[0].0, &args[1].0) {
+            (Value::String(s), Value::Number(n)) => {
+                let n = *n as usize;
+                let result: String = s.as_str().chars().skip(n).collect();
+                Value::String(result.to_symbol())
+            }
+            _ => panic!("str_drop: expected (String, Numeric) arguments"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "str_drop".to_symbol(),
+            ty: function!(vec![string_t!(), numeric!()], string_t!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
+/// Concatenates two strings.
+/// Type: `(String, String) -> String`
+mod str_concat {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 2);
+        match (&args[0].0, &args[1].0) {
+            (Value::String(a), Value::String(b)) => {
+                let result = format!("{}{}", a.as_str(), b.as_str());
+                Value::String(result.to_symbol())
+            }
+            _ => panic!("str_concat: expected (String, String) arguments"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "str_concat".to_symbol(),
+            ty: function!(vec![string_t!(), string_t!()], string_t!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
+/// Checks equality of two strings. Returns 1.0 if equal, 0.0 otherwise.
+/// Type: `(String, String) -> Numeric`
+mod str_eq {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, numeric, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 2);
+        match (&args[0].0, &args[1].0) {
+            (Value::String(a), Value::String(b)) => {
+                Value::Number(if a.as_str() == b.as_str() { 1.0 } else { 0.0 })
+            }
+            _ => panic!("str_eq: expected (String, String) arguments"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "str_eq".to_symbol(),
+            ty: function!(vec![string_t!(), string_t!()], numeric!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
+/// Extracts a substring by character index range [start, end).
+/// Type: `(String, Numeric, Numeric) -> String`
+mod str_slice {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, numeric, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 3);
+        match (&args[0].0, &args[1].0, &args[2].0) {
+            (Value::String(s), Value::Number(start), Value::Number(end)) => {
+                let start = *start as usize;
+                let end = *end as usize;
+                let result: String = s
+                    .as_str()
+                    .chars()
+                    .skip(start)
+                    .take(end.saturating_sub(start))
+                    .collect();
+                Value::String(result.to_symbol())
+            }
+            _ => panic!("str_slice: expected (String, Numeric, Numeric) arguments"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "str_slice".to_symbol(),
+            ty: function!(vec![string_t!(), numeric!(), numeric!()], string_t!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
+/// Returns the character at the given index as a single-character string.
+/// Type: `(String, Numeric) -> String`
+mod str_char_at {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, numeric, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 2);
+        match (&args[0].0, &args[1].0) {
+            (Value::String(s), Value::Number(idx)) => {
+                let idx = *idx as usize;
+                match s.as_str().chars().nth(idx) {
+                    Some(c) => Value::String(c.to_string().to_symbol()),
+                    None => panic!(
+                        "str_char_at: index {} out of bounds for string of length {}",
+                        idx,
+                        s.as_str().chars().count()
+                    ),
+                }
+            }
+            _ => panic!("str_char_at: expected (String, Numeric) arguments"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "str_char_at".to_symbol(),
+            ty: function!(vec![string_t!(), numeric!()], string_t!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
+/// Parses a string as a floating-point number. Panics on invalid input.
+/// Type: `(String) -> Numeric`
+mod str_to_number {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, numeric, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 1);
+        match &args[0].0 {
+            Value::String(s) => {
+                let n: f64 = s.as_str().parse().unwrap_or_else(|e| {
+                    panic!("str_to_number: failed to parse \"{}\": {e}", s.as_str())
+                });
+                Value::Number(n)
+            }
+            _ => panic!("str_to_number: expected String argument"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "str_to_number".to_symbol(),
+            ty: function!(vec![string_t!()], numeric!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
+/// Converts a number to its string representation.
+/// Type: `(Numeric) -> String`
+mod number_to_str {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, numeric, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 1);
+        match &args[0].0 {
+            Value::Number(n) => Value::String(n.to_string().to_symbol()),
+            _ => panic!("number_to_str: expected Numeric argument"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "number_to_str".to_symbol(),
+            ty: function!(vec![numeric!()], string_t!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
 /// Main function to expose the definitions of built-in functions.
 fn generate_builtin_functions() -> impl ExactSizeIterator<Item = CommonFunction> {
     [
@@ -765,6 +1044,16 @@ fn generate_default_macros() -> impl ExactSizeIterator<Item = MacroInfo> {
         lift_f::signature(),
         lift_arrayf::signature(),
         map::signature(),
+        // String primitives (Stage 0 only)
+        str_length::signature(),
+        str_take::signature(),
+        str_drop::signature(),
+        str_concat::signature(),
+        str_eq::signature(),
+        str_slice::signature(),
+        str_char_at::signature(),
+        str_to_number::signature(),
+        number_to_str::signature(),
     ]
     .into_iter()
 }

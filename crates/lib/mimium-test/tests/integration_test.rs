@@ -130,6 +130,49 @@ fn split_head_macro() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn string_primitives() {
+    let res = run_file_test_mono("string_primitives.mmm", 1).unwrap();
+    // 5 + 1 + 0 + 42.5 + 3.14 + 1 + 1 + 1 + 1 + 1 = 56.64
+    let ans = vec![56.64];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn parser_combinators() {
+    // Parser module has many deeply nested functions requiring larger stack
+    let result = std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024) // 16 MB
+        .spawn(|| {
+            let res = run_file_test_mono("parser_combinators.mmm", 1).unwrap();
+            let ans = vec![52.0]; // 52 boolean checks, each contributing 1.0
+            assert_eq!(res, ans);
+        })
+        .unwrap()
+        .join();
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn mininotation() {
+    // Mini-notation parser uses parser combinators + pattern library, needs larger stack
+    // Pattern library depends on osc::phasor -> samplerate, so we need audio driver
+    let result = std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024) // 16 MB
+        .spawn(|| {
+            let res = run_file_with_plugins("mininotation.mmm", 1, [].into_iter(), false).unwrap();
+            let ans = vec![22.0]; // 22 boolean checks, each contributing 1.0
+            assert_eq!(res, ans);
+        })
+        .unwrap()
+        .join();
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn lift_arrayf_extended() {
     let res = run_file_test_mono("lift_arrayf_extended.mmm", 1).unwrap();
     let ans = vec![65.0]; // 5.0 + 10.0 + 20.0 + 30.0

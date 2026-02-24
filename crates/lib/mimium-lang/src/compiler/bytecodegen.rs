@@ -1381,9 +1381,7 @@ mod test {
         let phi_val = Arc::new(mir::Value::Register(3));
 
         let mut entry = mir::Block::default();
-        entry
-            .0
-            .push((cond.clone(), mir::Instruction::Float(1.0)));
+        entry.0.push((cond.clone(), mir::Instruction::Float(1.0)));
         entry.0.push((
             Arc::new(mir::Value::None),
             mir::Instruction::JmpIf(cond.clone(), 1, 2, 3),
