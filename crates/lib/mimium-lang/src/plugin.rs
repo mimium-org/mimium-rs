@@ -280,9 +280,17 @@ impl Plugin for InstantPlugin {
     }
 
     fn get_type_infos(&self) -> Vec<ExtFunTypeInfo> {
+        // Collect extcls and commons names to deduplicate against macros.
+        // When both a macro and an extcls share the same name (e.g. `lift_f`),
+        // the extcls (VM combinator) takes precedence.
+        let extcls_names: std::collections::HashSet<crate::interner::Symbol> =
+            self.extcls.iter().map(|e| e.name).collect();
+        let commons_names: std::collections::HashSet<crate::interner::Symbol> =
+            self.commonfns.iter().map(|c| c.name).collect();
         let macros = self
             .macros
             .iter()
+            .filter(|m| !extcls_names.contains(&m.name) && !commons_names.contains(&m.name))
             .map(|m| ExtFunTypeInfo::new(m.name, m.ty, MacroStage::get_stage()));
         let extcls = self
             .extcls

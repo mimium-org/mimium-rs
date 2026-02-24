@@ -111,6 +111,11 @@ impl ArrayStorage {
         let key: ArrayIdx = unsafe { std::mem::transmute_copy::<RawVal, ArrayIdx>(&id) };
         self.data.get(key).expect("Invalid ArrayIdx")
     }
+    /// Try to get an array by its raw ID, returning `None` if the ID is invalid.
+    pub fn try_get_array(&self, id: RawVal) -> Option<&ArrayHeap> {
+        let key: ArrayIdx = unsafe { std::mem::transmute_copy::<RawVal, ArrayIdx>(&id) };
+        self.data.get(key)
+    }
     pub fn get_array_mut(&mut self, id: RawVal) -> &mut ArrayHeap {
         let key: ArrayIdx = unsafe { std::mem::transmute_copy::<RawVal, ArrayIdx>(&id) };
         self.data.get_mut(key).expect("Invalid ArrayIdx")

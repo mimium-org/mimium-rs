@@ -12,10 +12,13 @@ use std::{cell::RefCell, rc::Rc};
 
 use crate::{
     ast::{Expr, Literal, RecordField},
+    integer,
     interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId},
+    numeric,
     pattern::{Pattern, TypedId, TypedPattern},
     plugin::{ExtClsInfo, ExtFunTypeInfo},
     runtime::vm::{Machine, ReturnCode},
+    string_t,
     types::Type,
 };
 
@@ -247,6 +250,38 @@ fn code_let(machine: &mut Machine) -> ReturnCode {
     1
 }
 
+/// `code_let_tuple(names: [string], val_code: Code(a), body_code: Code(b)) -> Code(b)`
+///
+/// Let-binding with a tuple destructuring pattern.
+fn code_let_tuple(machine: &mut Machine) -> ReturnCode {
+    let names_raw = machine.get_stack(0);
+    let val_raw = machine.get_stack(1);
+    let body_raw = machine.get_stack(2);
+
+    let arr = machine.arrays.get_array(names_raw);
+    let len = arr.get_length_array();
+    let data = arr.get_data().to_vec();
+    let sub_pats: Vec<Pattern> = (0..len as usize)
+        .map(|i| {
+            let sym = raw_to_symbol(machine, data[i]);
+            if sym.as_str() == "_" {
+                Pattern::Placeholder
+            } else {
+                Pattern::Single(sym)
+            }
+        })
+        .collect();
+
+    let val_expr = machine.get_code(val_raw);
+    let body_expr = machine.get_code(body_raw);
+
+    let pattern = TypedPattern::new(Pattern::Tuple(sub_pats), Type::Unknown.into_id());
+    let expr = expr_to_id(Expr::Let(pattern, val_expr, Some(body_expr)));
+    let code_val = machine.alloc_code(expr);
+    machine.set_stack(0, code_val);
+    1
+}
+
 /// `code_letrec(name: string, val_code: Code(a), body_code: Code(b)) -> Code(b)`
 fn code_letrec(machine: &mut Machine) -> ReturnCode {
     let name_raw = machine.get_stack(0);
@@ -468,7 +503,7 @@ fn code_samplerate(machine: &mut Machine) -> ReturnCode {
 }
 
 // ---------------------------------------------------------------------------
-// lift combinator (VM version)
+// lift combinators (VM versions)
 // ---------------------------------------------------------------------------
 
 /// `code_lift_f(x: float) -> Code(float)`
@@ -477,6 +512,54 @@ fn code_samplerate(machine: &mut Machine) -> ReturnCode {
 /// Equivalent to `code_lit_f` — packages a runtime float as a code literal.
 fn code_lift_f(machine: &mut Machine) -> ReturnCode {
     code_lit_f(machine)
+}
+
+/// `code_lift_arrayf(arr: [float]) -> Code([float])`
+///
+/// Lift a runtime float array into a code-level array literal.
+/// Each element of the array is converted to a `Literal::Float`, then
+/// wrapped in an `Expr::ArrayLiteral`.
+fn code_lift_arrayf(machine: &mut Machine) -> ReturnCode {
+    let arr_raw = machine.get_stack(0);
+    let arr = machine.arrays.get_array(arr_raw);
+    let len = arr.get_length_array();
+    let data = arr.get_data().to_vec();
+    let elems: Vec<ExprNodeId> = (0..len as usize)
+        .map(|i| {
+            let f = f64::from_bits(data[i]);
+            expr_to_id(Expr::Literal(Literal::Float(format!("{f}").to_symbol())))
+        })
+        .collect();
+    let expr = expr_to_id(Expr::ArrayLiteral(elems));
+    let code_val = machine.alloc_code(expr);
+    machine.set_stack(0, code_val);
+    1
+}
+
+/// `code_lift(x) -> Code(x)` — polymorphic lift.
+///
+/// At runtime, tries to interpret the value as an array first. If the raw
+/// value corresponds to a valid array in `Machine::arrays`, each element is
+/// lifted as a `Literal::Float` and wrapped in `Expr::ArrayLiteral`.
+/// Otherwise the value is treated as a float and lifted via `code_lit_f`.
+fn code_lift(machine: &mut Machine) -> ReturnCode {
+    let val = machine.get_stack(0);
+    if let Some(arr) = machine.arrays.try_get_array(val) {
+        let len = arr.get_length_array();
+        let data = arr.get_data().to_vec();
+        let elems: Vec<ExprNodeId> = (0..len as usize)
+            .map(|i| {
+                let f = f64::from_bits(data[i]);
+                expr_to_id(Expr::Literal(Literal::Float(format!("{f}").to_symbol())))
+            })
+            .collect();
+        let expr = expr_to_id(Expr::ArrayLiteral(elems));
+        let code_val = machine.alloc_code(expr);
+        machine.set_stack(0, code_val);
+    } else {
+        code_lit_f(machine);
+    }
+    1
 }
 
 // ---------------------------------------------------------------------------
@@ -497,41 +580,72 @@ fn mk_cls(name: &str, fun: fn(&mut Machine) -> ReturnCode, ty: TypeNodeId) -> Ex
 ///
 /// These are registered as macro-stage (`Stage(0)`) external closures so that
 /// the `translate_staging` pass can emit calls to them.
+///
+/// Although "code values" are semantically AST fragment handles, at the VM
+/// level they are plain `RawVal` words (indices into `Machine::code_values`).
+/// We use `Float` (`Numeric`) as their compile-time type so that the MIR
+/// generator treats them as single-word values — which matches the actual
+/// representation.
 pub fn codegen_combinator_signatures() -> Vec<ExtClsInfo> {
-    // All combinators operate on opaque Code values, so we use a generic
-    // `Unknown -> Unknown` signature for now.  The type checker validates
-    // staging correctness *before* the translation pass, so we do not need
-    // precise types at the combinator level.
-    let any_ty = Type::Unknown.into_id();
+    use crate::types::{Type, TypeSchemeId};
+
+    // Shorthand type builders
+    let f = numeric!(); // "code value" — 1 word, same footprint as Float
+    let s = string_t!();
+    let i = integer!();
+    let af = Type::Array(f).into_id(); // [Float] — array of code values
+    let as_ = Type::Array(s).into_id(); // [String]
+    // Polymorphic type variable for `lift` — uses a dedicated TypeSchemeId
+    // so the type checker instantiates it fresh at each call site.
+    let ts = Type::TypeScheme(TypeSchemeId(u64::MAX - 1)).into_id();
+
+    /// Helper: build `(args...) -> ret` function type.
+    fn fty(args: Vec<TypeNodeId>, ret: TypeNodeId) -> TypeNodeId {
+        Type::Function {
+            arg: Type::Tuple(args).into_id(),
+            ret,
+        }
+        .into_id()
+    }
 
     vec![
-        mk_cls("code_lit_f", code_lit_f, any_ty),
-        mk_cls("code_lit_i", code_lit_i, any_ty),
-        mk_cls("code_lit_s", code_lit_s, any_ty),
-        mk_cls("code_var", code_var, any_ty),
-        mk_cls("code_app", code_app, any_ty),
-        mk_cls("code_app1", code_app1, any_ty),
-        mk_cls("code_app2", code_app2, any_ty),
-        mk_cls("code_lam1_finish", code_lam1_finish, any_ty),
-        mk_cls("code_lam_finish", code_lam_finish, any_ty),
-        mk_cls("code_let", code_let, any_ty),
-        mk_cls("code_letrec", code_letrec, any_ty),
-        mk_cls("code_if", code_if, any_ty),
-        mk_cls("code_tuple", code_tuple, any_ty),
-        mk_cls("code_proj", code_proj, any_ty),
-        mk_cls("code_array", code_array, any_ty),
-        mk_cls("code_array_access", code_array_access, any_ty),
-        mk_cls("code_then", code_then, any_ty),
-        mk_cls("code_assign", code_assign, any_ty),
-        mk_cls("code_record", code_record, any_ty),
-        mk_cls("code_field_access", code_field_access, any_ty),
-        mk_cls("code_feed", code_feed, any_ty),
-        mk_cls("code_block", code_block, any_ty),
-        mk_cls("code_paren", code_paren, any_ty),
-        mk_cls("code_self", code_self, any_ty),
-        mk_cls("code_now", code_now, any_ty),
-        mk_cls("code_samplerate", code_samplerate, any_ty),
-        mk_cls("code_lift_f", code_lift_f, any_ty),
+        mk_cls("code_lit_f", code_lit_f, fty(vec![f], f)),
+        mk_cls("code_lit_i", code_lit_i, fty(vec![i], f)),
+        mk_cls("code_lit_s", code_lit_s, fty(vec![s], f)),
+        mk_cls("code_var", code_var, fty(vec![s], f)),
+        mk_cls("code_app", code_app, fty(vec![f, af], f)),
+        mk_cls("code_app1", code_app1, fty(vec![f, f], f)),
+        mk_cls("code_app2", code_app2, fty(vec![f, f, f], f)),
+        mk_cls("code_lam1_finish", code_lam1_finish, fty(vec![s, f], f)),
+        mk_cls("code_lam_finish", code_lam_finish, fty(vec![as_, f], f)),
+        mk_cls("code_let", code_let, fty(vec![s, f, f], f)),
+        mk_cls("code_let_tuple", code_let_tuple, fty(vec![as_, f, f], f)),
+        mk_cls("code_letrec", code_letrec, fty(vec![s, f, f], f)),
+        mk_cls("code_if", code_if, fty(vec![f, f, f], f)),
+        mk_cls("code_tuple", code_tuple, fty(vec![af], f)),
+        mk_cls("code_proj", code_proj, fty(vec![f, i], f)),
+        mk_cls("code_array", code_array, fty(vec![af], f)),
+        mk_cls("code_array_access", code_array_access, fty(vec![f, f], f)),
+        mk_cls("code_then", code_then, fty(vec![f, f], f)),
+        mk_cls("code_assign", code_assign, fty(vec![f, f], f)),
+        mk_cls("code_record", code_record, fty(vec![as_, af], f)),
+        mk_cls("code_field_access", code_field_access, fty(vec![f, s], f)),
+        mk_cls("code_feed", code_feed, fty(vec![s, f], f)),
+        mk_cls("code_block", code_block, fty(vec![f], f)),
+        mk_cls("code_paren", code_paren, fty(vec![f], f)),
+        mk_cls("code_self", code_self, fty(vec![], f)),
+        mk_cls("code_now", code_now, fty(vec![], f)),
+        mk_cls("code_samplerate", code_samplerate, fty(vec![], f)),
+        mk_cls("code_lift_f", code_lift_f, fty(vec![f], f)),
+        // lift variants — shadow builtin macro types with VM-compatible types
+        mk_cls("lift_f", code_lift_f, fty(vec![f], f)),
+        mk_cls("lift_arrayf", code_lift_arrayf, fty(vec![af], f)),
+        // Polymorphic lift: (T) -> Numeric where T is instantiated by the type
+        // checker. The return is always a code-value index (Numeric) regardless
+        // of input type. At the VM level, both floats and arrays are 1-word
+        // values, so the calling convention is uniform; the implementation
+        // distinguishes them at runtime via `try_get_array`.
+        mk_cls("lift", code_lift, fty(vec![ts], f)),
     ]
 }
 

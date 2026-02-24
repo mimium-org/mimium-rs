@@ -1,7 +1,7 @@
 use super::intrinsics;
 use super::typing::{InferContext, infer_root};
 
-use crate::compiler::parser;
+use crate::compiler::{bytecodegen, parser, translate_staging};
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::plugin::{MacroFunction, resolve_monomorphized_ext_fn_name};
@@ -147,6 +147,8 @@ enum AssignDestination {
 }
 impl Context {
     fn canonical_record_type_id(&self, ty: TypeNodeId) -> TypeNodeId {
+        // First, resolve any intermediate type variables to their concrete types.
+        let ty = InferContext::substitute_type(ty);
         match ty.to_type() {
             Type::Record(fields) => {
                 let mut normalized_fields = fields
@@ -1547,6 +1549,9 @@ impl Context {
         at: TypeNodeId,
         ty: TypeNodeId,
     ) -> Vec<(VPtr, TypeNodeId)> {
+        // Resolve any remaining intermediate type variables before matching.
+        let at = InferContext::substitute_type(at);
+        let ty = InferContext::substitute_type(ty);
         log::trace!("Unpacking argument {ty} for {at}");
         // Check if the argument is a tuple or record that we need to unpack
         match ty.to_type() {
@@ -1567,7 +1572,32 @@ impl Context {
                     Found(usize),
                     Default,
                 }
-                if let Type::Record(param_types) = at.to_type() {
+                // Extract declared parameter names/types.  When the function
+                // type preserves field names (`at` is Record), use them
+                // directly.  Otherwise (e.g. after VM staging which produces
+                // Tuple-typed function args), recover parameter names from the
+                // MIR function definition.
+                let param_fields: Option<Vec<RecordTypeField>> =
+                    if let Type::Record(param_types) = at.to_type() {
+                        Some(param_types)
+                    } else if let Type::Tuple(tuple_tys) = at.to_type() {
+                        // Try to recover parameter names from the function def.
+                        let names = self.get_function_param_names(&f_val);
+                        names.map(|ns| {
+                            ns.into_iter()
+                                .zip(tuple_tys.iter())
+                                .map(|(name, elem_ty)| RecordTypeField {
+                                    key: name,
+                                    ty: *elem_ty,
+                                    has_default: false,
+                                })
+                                .collect()
+                        })
+                    } else {
+                        None
+                    };
+
+                if let Some(param_types) = param_fields {
                     let search_res = param_types.iter().map(|param| {
                         kvs.iter()
                             .enumerate()
@@ -1606,11 +1636,46 @@ impl Context {
                                                 }
                                             }).collect::<Vec<_>>()
                 } else {
-                    unreachable!("parameter pack failed, possible type inference bug")
+                    // No parameter names available — fall back to positional
+                    // unpacking (same as Tuple case).
+                    kvs.iter()
+                        .enumerate()
+                        .map(|(i, kv)| {
+                            let elem_val = self.push_inst(Instruction::GetElement {
+                                value: arg_val.clone(),
+                                ty,
+                                tuple_offset: i as u64,
+                            });
+                            (elem_val, kv.ty)
+                        })
+                        .collect()
                 }
             }
             _ => vec![(arg_val, ty)],
         }
+    }
+
+    /// Extract parameter names from a function value by looking up the MIR
+    /// function table.  Returns `None` for external functions or closures
+    /// whose parameter names are not available.
+    fn get_function_param_names(&self, f_val: &VPtr) -> Option<Vec<Symbol>> {
+        let fid = match f_val.as_ref() {
+            Value::Function(fid) => Some(*fid),
+            Value::Global(inner) => {
+                if let Value::Function(fid) = inner.as_ref() {
+                    Some(*fid)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        fid.and_then(|fid| {
+            self.program
+                .functions
+                .get(fid)
+                .map(|f| f.args.iter().map(|a| a.0).collect())
+        })
     }
 
     pub fn eval_expr(&mut self, e: ExprNodeId) -> (VPtr, TypeNodeId, Vec<StateSkeleton>) {
@@ -3519,19 +3584,94 @@ pub fn compile_with_module_info(
     file_path: Option<PathBuf>,
     module_info: crate::ast::program::ModuleInfo,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
-    let expr = root_expr_id.wrap_to_staged_expr();
+    // Only wrap non-staging programs in a Bracket when the AST actually
+    // contains staging constructs (Bracket, Escape, MacroExpand).  Plain
+    // programs go straight through the normal MIR pipeline.
+    let needs_staging = root_expr_id.has_staging_constructs();
+    let expr = if needs_staging {
+        root_expr_id.wrap_to_staged_expr()
+    } else {
+        root_expr_id
+    };
     let (expr, mut infer_ctx, errors) =
         typecheck_with_module_info(expr, builtin_types, file_path.clone(), module_info);
     if errors.is_empty() {
         let top_type = infer_ctx.infer_type(expr).unwrap();
-        let expr =
-            interpreter::expand_macro(expr, top_type, macro_env, infer_ctx.constructor_env.clone());
+
+        // ---------- Two-pass compilation via translate_staging ----------
+        //
+        // Phase 1: translate Bracket/Escape → combinator calls (stage-0 code).
+        // Phase 2: compile & execute stage-0 code on the VM to obtain the
+        //          stage-1 AST as an ExprNodeId.
+        // Phase 3: compile the stage-1 AST through the normal MIR pipeline.
+        //
+        // If the top-level type is `Code(T)` we go through the new path;
+        // otherwise the program has no staging and we skip directly to MIR gen.
+        let use_vm_staging = std::env::var("MIMIUM_USE_VM_STAGING").is_ok();
+        let expr = if matches!(top_type.to_type(), Type::Code(_)) {
+            if use_vm_staging {
+                let stage0_expr = translate_staging::translate(expr);
+                log::trace!(
+                    "ast after translate_staging: {:?}",
+                    stage0_expr.to_expr().simple_print()
+                );
+                match compile_and_execute_stage0(
+                    stage0_expr,
+                    builtin_types,
+                    macro_env,
+                    file_path.clone(),
+                ) {
+                    Ok(stage1_ast) => {
+                        log::trace!(
+                            "ast after stage-0 execution: {:?}",
+                            stage1_ast.to_expr().simple_print()
+                        );
+                        stage1_ast
+                    }
+                    Err(e) => {
+                        // Fall back to interpreter on stage-0 compilation failure.
+                        log::warn!(
+                            "stage-0 VM compilation failed, falling back to interpreter: {e:?}"
+                        );
+                        interpreter::expand_macro(
+                            expr,
+                            top_type,
+                            macro_env,
+                            infer_ctx.constructor_env.clone(),
+                        )
+                    }
+                }
+            } else {
+                interpreter::expand_macro(
+                    expr,
+                    top_type,
+                    macro_env,
+                    infer_ctx.constructor_env.clone(),
+                )
+            }
+        } else {
+            // No staging — the expression is already pure stage-1 code.
+            expr
+        };
 
         log::trace!(
             "ast after macro expansion: {:?}",
             expr.to_expr().simple_print()
         );
         let expr = parser::add_global_context(expr, file_path.clone().unwrap_or_default());
+
+        // Re-type-check the (possibly regenerated) AST so that all fresh
+        // ExprNodeIds are populated in `result_memo`.  Without this, code
+        // produced by the VM staging path would contain nodes unknown to the
+        // type checker, leading to unresolved type variables during MIR gen.
+        match infer_ctx.infer_type(expr) {
+            Ok(ty) => {
+                log::debug!("re-type-check succeeded with type: {}", ty.to_type());
+            }
+            Err(errs) => {
+                log::warn!("re-type-check after staging failed: {errs:?}");
+            }
+        }
 
         let mut ctx = Context::new(infer_ctx, file_path.clone());
         let _res = ctx.eval_expr(expr);
@@ -3542,5 +3682,242 @@ pub fn compile_with_module_info(
     }
 }
 
-// #[cfg(test)]
-// mod test;
+// ---------------------------------------------------------------------------
+// Stage-0 compilation & execution
+// ---------------------------------------------------------------------------
+
+/// Compile a stage-0 expression (produced by [`translate_staging::translate`])
+/// to bytecode, execute it on a fresh VM, and return the resulting stage-1 AST.
+///
+/// The stage-0 expression consists entirely of codegen-combinator calls (e.g.
+/// `code_lit_f`, `code_var`, `code_app1`, …).  Executing it on the VM yields a
+/// single `RawVal` that indexes into [`Machine::code_values`], from which we
+/// recover the stage-1 `ExprNodeId`.
+fn compile_and_execute_stage0(
+    stage0_expr: ExprNodeId,
+    builtin_types: &[(Symbol, TypeNodeId)],
+    macro_env: &[Box<dyn MacroFunction>],
+    file_path: Option<PathBuf>,
+) -> Result<ExprNodeId, Vec<Box<dyn ReportableError>>> {
+    use crate::plugin::codegen_combinators::codegen_combinator_signatures;
+    use crate::plugin::{ExtClsInfo, MachineFunction};
+    use crate::runtime::vm;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    // 1. Wrap in the global function expected by the MIR generator.
+    let wrapped = parser::add_global_context(stage0_expr, file_path.clone().unwrap_or_default());
+
+    // 2. Collect all known external function types (builtins + combinator
+    //    signatures) so the type checker and MIR generator can resolve them.
+    let combinator_sigs = codegen_combinator_signatures();
+    let combinator_names: std::collections::HashSet<Symbol> =
+        combinator_sigs.iter().map(|cls| cls.name).collect();
+    let combinator_types: Vec<(Symbol, TypeNodeId)> = combinator_sigs
+        .iter()
+        .map(|cls| (cls.name, cls.ty))
+        .collect();
+    // Filter builtin types: skip entries whose names are overridden by
+    // combinator signatures (e.g. lift_f, lift_arrayf, lift) so that the
+    // combinator types take precedence.
+    let all_types: Vec<(Symbol, TypeNodeId)> = builtin_types
+        .iter()
+        .filter(|(name, _)| !combinator_names.contains(name))
+        .cloned()
+        .chain(combinator_types)
+        .collect();
+
+    // 2b. Build VM closures for all plugin macros not already covered by
+    //     combinator signatures.  This bridges both:
+    //     - Code-returning macros (e.g. Probe, ProbeValue)
+    //     - Value-level macros (e.g. str_length, str_concat)
+    //
+    // Each macro is wrapped in an `ExtClsInfo` closure that converts VM
+    // stack values to `interpreter::Value`, calls the macro function, and
+    // converts the result back.
+    let macro_vm_closures: Vec<ExtClsInfo> = macro_env
+        .iter()
+        .filter(|m| !combinator_names.contains(&m.get_name()))
+        .map(|m| {
+            let name = m.get_name();
+            let macro_fun = m.get_fn();
+            let fn_ty = m.get_type();
+
+            // Extract argument types and return type from the function signature.
+            let (arg_types, ret_ty) = match fn_ty.to_type() {
+                Type::Function { arg, ret } => {
+                    let args = match arg.to_type() {
+                        Type::Tuple(types) => types,
+                        _ => vec![arg],
+                    };
+                    (args, ret)
+                }
+                _ => (vec![], fn_ty),
+            };
+
+            let has_code_return = matches!(ret_ty.to_type(), Type::Code(_));
+            // For the VM: strip Code() from return type so the VM sees a plain Numeric.
+            let vm_ty = if has_code_return {
+                strip_code_from_return_type(fn_ty)
+            } else {
+                fn_ty
+            };
+
+            let vm_fun: crate::plugin::ExtClsType = Rc::new(RefCell::new(
+                move |machine: &mut vm::Machine| -> vm::ReturnCode {
+                    // Convert each argument from VM representation to interpreter Value.
+                    let args: Vec<(crate::interpreter::Value, TypeNodeId)> = arg_types
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &aty)| {
+                            let raw = machine.get_stack(i as i64);
+                            let val = raw_to_interpreter_value(machine, raw, aty);
+                            (val, aty)
+                        })
+                        .collect();
+
+                    let result = macro_fun.borrow()(&args);
+
+                    // Convert result back to VM representation.
+                    let result_raw = interpreter_value_to_raw(machine, result, name);
+                    machine.set_stack(0, result_raw);
+                    1
+                },
+            ));
+            ExtClsInfo {
+                name,
+                ty: vm_ty,
+                fun: vm_fun,
+            }
+        })
+        .collect();
+
+    // Add macro type info to the all_types list.
+    let macro_type_entries: Vec<(Symbol, TypeNodeId)> = macro_vm_closures
+        .iter()
+        .map(|cls| (cls.name, cls.ty))
+        .collect();
+    let all_types: Vec<(Symbol, TypeNodeId)> =
+        all_types.into_iter().chain(macro_type_entries).collect();
+
+    // 3. Type-check the stage-0 expression in a fresh context.
+    let stage0_infer = infer_root(
+        wrapped,
+        &all_types,
+        file_path.clone().unwrap_or_default(),
+        None,
+        None,
+        None,
+    );
+    if !stage0_infer.errors.is_empty() {
+        let errs: Vec<Box<dyn ReportableError>> = stage0_infer
+            .errors
+            .iter()
+            .cloned()
+            .map(|e| Box::new(e) as Box<dyn ReportableError>)
+            .collect();
+        return Err(errs);
+    }
+
+    // 4. Generate MIR.
+    let mut mir_ctx = Context::new(stage0_infer, file_path.clone());
+    let _res = mir_ctx.eval_expr(wrapped);
+    mir_ctx.program.file_path = file_path.clone();
+    let mir = mir_ctx.program.clone();
+
+    // 5. Generate bytecode.
+    let config = bytecodegen::Config::default();
+    let program = bytecodegen::gen_bytecode(mir, config);
+
+    // 6. Create a VM with combinator closures, builtin common function closures
+    //    (e.g. length_array, split_head, prepend), and macro bridge closures.
+    let builtin_plugin = crate::plugin::get_builtin_fns_as_plugins();
+    let builtin_closures = builtin_plugin.get_ext_closures();
+    let ext_closures = combinator_sigs
+        .into_iter()
+        .map(|cls| Box::new(cls) as Box<dyn MachineFunction>)
+        .chain(builtin_closures)
+        .chain(
+            macro_vm_closures
+                .into_iter()
+                .map(|cls| Box::new(cls) as Box<dyn MachineFunction>),
+        );
+    let mut machine = vm::Machine::new(program, [].into_iter(), ext_closures);
+    let retcode = machine.execute_main();
+
+    if retcode <= 0 {
+        return Err(vec![Box::new(crate::utils::error::SimpleError {
+            message: format!("stage-0 VM execution returned error code {retcode}"),
+            span: Location::default(),
+        })]);
+    }
+
+    // 7. The return value is at the top of the stack — a code-value index.
+    let result_raw = machine.get_top_n(1)[0];
+    let result_expr = machine.get_code(result_raw);
+    Ok(result_expr)
+}
+
+/// Strip `Code(T)` wrapper from a function's return type, replacing it with
+/// `Numeric`.  This makes macro function types compatible with the VM stage-0
+/// calling convention where code values are plain numeric indices.
+fn strip_code_from_return_type(fn_ty: TypeNodeId) -> TypeNodeId {
+    match fn_ty.to_type() {
+        Type::Function { arg, ret } => {
+            let new_ret = match ret.to_type() {
+                Type::Code(_) => crate::numeric!(),
+                _ => ret,
+            };
+            Type::Function { arg, ret: new_ret }.into_id()
+        }
+        _ => fn_ty,
+    }
+}
+
+/// Convert a VM `RawVal` to an interpreter `Value` based on the type.
+///
+/// - `String` → look up in the program string table.
+/// - `Code(T)` → retrieve the stored `ExprNodeId` from the machine's code values.
+/// - Everything else → treat as `f64` bit pattern (`Value::Number`).
+fn raw_to_interpreter_value(
+    machine: &crate::runtime::vm::Machine,
+    raw: crate::runtime::vm::RawVal,
+    ty: TypeNodeId,
+) -> crate::interpreter::Value {
+    match ty.to_type() {
+        Type::Primitive(PType::String) => {
+            let idx = raw as usize;
+            let s = machine.prog.strings[idx].clone();
+            crate::interpreter::Value::String(s.to_symbol())
+        }
+        Type::Code(_) => {
+            let expr = machine.get_code(raw);
+            crate::interpreter::Value::Code(expr)
+        }
+        _ => {
+            let f = f64::from_bits(raw);
+            crate::interpreter::Value::Number(f)
+        }
+    }
+}
+
+/// Convert an interpreter `Value` back to a VM `RawVal`.
+///
+/// - `Value::Number` → `f64::to_bits`
+/// - `Value::String` → push to the string table, return the new index.
+/// - `Value::Code` → `machine.alloc_code`, return the code-value index.
+fn interpreter_value_to_raw(
+    machine: &mut crate::runtime::vm::Machine,
+    value: crate::interpreter::Value,
+    name: Symbol,
+) -> crate::runtime::vm::RawVal {
+    match value {
+        crate::interpreter::Value::Number(n) => n.to_bits(),
+        crate::interpreter::Value::String(s) => {
+            machine.prog.strings.push(s.as_str().to_string());
+            (machine.prog.strings.len() - 1) as u64
+        }
+        crate::interpreter::Value::Code(expr) => machine.alloc_code(expr),
+        _ => panic!("unexpected return value type from macro {name}"),
+    }
+}

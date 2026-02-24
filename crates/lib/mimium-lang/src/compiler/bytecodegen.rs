@@ -1229,8 +1229,7 @@ impl ByteCodeGenerator {
             .collect();
         self.program.file_path = mir.file_path.clone();
         self.program.iochannels = mir.get_dsp_iochannels();
-        log::debug!("iochannels: {:?}", self.program.iochannels.unwrap());
-        let _io = self.program.iochannels.unwrap();
+        log::debug!("iochannels: {:?}", self.program.iochannels);
         self.program.dsp_index = self.program.get_fun_index("dsp");
         self.program.clone()
     }

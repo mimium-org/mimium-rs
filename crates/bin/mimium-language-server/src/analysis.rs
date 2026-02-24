@@ -84,7 +84,11 @@ pub fn analyze_source(
     let visibility_map = module_info.visibility_map.clone();
 
     let errs = {
-        let ast = ast.wrap_to_staged_expr();
+        let ast = if ast.has_staging_constructs() {
+            ast.wrap_to_staged_expr()
+        } else {
+            ast
+        };
         let (_, _, typeerrs) =
             mirgen::typecheck_with_module_info(ast, builtin_types, None, module_info);
         errors.into_iter().chain(typeerrs).collect::<Vec<_>>()

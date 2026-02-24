@@ -274,18 +274,10 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
         // -- Let binding ----------------------------------------------------
         Expr::Let(tp, val, then) => {
             let translated_val = translate_code(val);
-            let name_lit = pattern_to_string_literal(&tp.pat);
-            match then {
-                Some(body) => {
-                    let translated_body = translate_code(body);
-                    make_apply("code_let", vec![name_lit, translated_val, translated_body])
-                }
-                None => {
-                    // `let x = val` without continuation: produce `let x = val in x`
-                    let var_ref = make_apply_str("code_var", pattern_to_symbol(&tp.pat));
-                    make_apply("code_let", vec![name_lit, translated_val, var_ref])
-                }
-            }
+            let translated_body = then
+                .map(translate_code)
+                .unwrap_or_else(|| pattern_to_var_code(&tp.pat));
+            translate_let_pattern(&tp.pat, translated_val, translated_body)
         }
 
         // -- LetRec ---------------------------------------------------------
@@ -565,30 +557,144 @@ fn pattern_to_symbol(pat: &Pattern) -> Symbol {
     match pat {
         Pattern::Single(name) => *name,
         Pattern::Placeholder => "_".to_symbol(),
+        Pattern::Tuple(pats) => pats
+            .first()
+            .map(pattern_to_symbol)
+            .unwrap_or_else(|| "_".to_symbol()),
+        Pattern::Record(fields) => fields
+            .first()
+            .map(|(name, _)| *name)
+            .unwrap_or_else(|| "_".to_symbol()),
+        Pattern::Error => "_".to_symbol(),
+    }
+}
+
+/// Generate code combinator calls for a `let` binding with an arbitrary pattern.
+///
+/// For simple patterns (`Single`, `Placeholder`), emits `code_let(name, val, body)`.
+/// For tuple patterns, emits `code_let_tuple(names, val, body)` — but when sub-patterns
+/// are themselves nested tuples, the top level is flattened with temp names and additional
+/// `code_let_tuple` calls are prepended to the body to destructure the nested elements.
+fn translate_let_pattern(
+    pat: &Pattern,
+    translated_val: ExprNodeId,
+    translated_body: ExprNodeId,
+) -> ExprNodeId {
+    match pat {
+        Pattern::Single(name) => {
+            let name_lit = sym_to_string_literal(*name);
+            make_apply("code_let", vec![name_lit, translated_val, translated_body])
+        }
+        Pattern::Placeholder => {
+            // Bind to "_" — the value is ignored but the expression still evaluates.
+            let name_lit = sym_to_string_literal("_".to_symbol());
+            make_apply("code_let", vec![name_lit, translated_val, translated_body])
+        }
+        Pattern::Tuple(pats) => translate_let_tuple_pattern(pats, translated_val, translated_body),
+        Pattern::Record(_) | Pattern::Error => {
+            // Fallback: use the primary symbol.
+            let name_lit = pattern_to_string_literal(pat);
+            make_apply("code_let", vec![name_lit, translated_val, translated_body])
+        }
+    }
+}
+
+// Thread-local counter for generating unique temp variable names.
+thread_local! {
+    static DESUGAR_COUNTER: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+fn fresh_desugar_name() -> Symbol {
+    DESUGAR_COUNTER.with(|c| {
+        let n = c.get();
+        c.set(n + 1);
+        format!("__dt{n}").to_symbol()
+    })
+}
+
+/// Translate a `let` with a tuple pattern into `code_let_tuple` calls.
+///
+/// When all sub-patterns are flat (`Single` or `Placeholder`), a single
+/// `code_let_tuple([names], val, body)` is emitted.  When some sub-patterns
+/// are themselves tuples (nested destructuring), the top-level tuple uses
+/// temp names for those positions, and additional destructuring `let` calls
+/// are inserted between the outer binding and the original body.
+fn translate_let_tuple_pattern(
+    pats: &[Pattern],
+    translated_val: ExprNodeId,
+    translated_body: ExprNodeId,
+) -> ExprNodeId {
+    // Determine the top-level names and collect any nested sub-pattern work.
+    let mut top_names: Vec<ExprNodeId> = Vec::with_capacity(pats.len());
+    // (position, sub_patterns, temp_name) for nested tuples.
+    let mut nested: Vec<(usize, &[Pattern], Symbol)> = Vec::new();
+
+    for (i, pat) in pats.iter().enumerate() {
+        match pat {
+            Pattern::Single(name) => {
+                top_names.push(sym_to_string_literal(*name));
+            }
+            Pattern::Placeholder => {
+                top_names.push(sym_to_string_literal("_".to_symbol()));
+            }
+            Pattern::Tuple(sub_pats) => {
+                let tmp = fresh_desugar_name();
+                top_names.push(sym_to_string_literal(tmp));
+                nested.push((i, sub_pats.as_slice(), tmp));
+            }
+            Pattern::Record(_) | Pattern::Error => {
+                let name = pattern_to_symbol(pat);
+                top_names.push(sym_to_string_literal(name));
+            }
+        }
+    }
+
+    // Build the body chain: innermost is the original translated_body.
+    // For each nested tuple (processed in reverse to build inside-out),
+    // wrap: translate_let_tuple_pattern(sub_pats, code_var(tmp), current_body)
+    let mut body = translated_body;
+    for (_i, sub_pats, tmp) in nested.into_iter().rev() {
+        let tmp_var = make_apply_str("code_var", tmp);
+        body = translate_let_tuple_pattern(sub_pats, tmp_var, body);
+    }
+
+    let names_arr = Expr::ArrayLiteral(top_names).into_id_without_span();
+    make_apply("code_let_tuple", vec![names_arr, translated_val, body])
+}
+
+/// Produce a code value representing the pattern's variables.
+///
+/// For `Single(x)` → `code_var(x)`.  For `Tuple(a, b)` → `code_tuple([code_var(a), code_var(b)])`.
+fn pattern_to_var_code(pat: &Pattern) -> ExprNodeId {
+    match pat {
+        Pattern::Single(name) => make_apply_str("code_var", *name),
+        Pattern::Placeholder => {
+            // Placeholder without body — produce a unit-like value.
+            let zero = Expr::Literal(Literal::Float("0.0".to_symbol())).into_id_without_span();
+            make_apply1("code_lit_f", zero)
+        }
         Pattern::Tuple(pats) => {
-            // For tuple patterns in let bindings inside brackets, use the
-            // first element's name as a representative.  Full tuple pattern
-            // destructuring in code construction would require a dedicated
-            // combinator.
-            log::warn!(
-                "translate_staging: tuple pattern in let-binding inside bracket; \
-                 using first element name"
-            );
-            pats.first()
-                .map(pattern_to_symbol)
-                .unwrap_or_else(|| "_".to_symbol())
+            let var_refs: Vec<ExprNodeId> = pats.iter().map(pattern_to_var_code).collect();
+            let arr = Expr::ArrayLiteral(var_refs).into_id_without_span();
+            make_apply1("code_tuple", arr)
         }
         Pattern::Record(fields) => {
-            log::warn!(
-                "translate_staging: record pattern in let-binding inside bracket; \
-                 using first field name"
-            );
-            fields
-                .first()
-                .map(|(name, _)| *name)
-                .unwrap_or_else(|| "_".to_symbol())
+            let names: Vec<ExprNodeId> = fields
+                .iter()
+                .map(|(name, _)| sym_to_string_literal(*name))
+                .collect();
+            let vals: Vec<ExprNodeId> = fields
+                .iter()
+                .map(|(_, pat)| pattern_to_var_code(pat))
+                .collect();
+            let names_arr = Expr::ArrayLiteral(names).into_id_without_span();
+            let vals_arr = Expr::ArrayLiteral(vals).into_id_without_span();
+            make_apply("code_record", vec![names_arr, vals_arr])
         }
-        Pattern::Error => "_".to_symbol(),
+        Pattern::Error => {
+            let zero = Expr::Literal(Literal::Float("0.0".to_symbol())).into_id_without_span();
+            make_apply1("code_lit_f", zero)
+        }
     }
 }
 
