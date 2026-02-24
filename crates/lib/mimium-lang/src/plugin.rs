@@ -8,6 +8,7 @@
 //! 3. **System Plugin**. If your plugin needs to mutate states of system-wide instance (1 plugin instance per 1 vm), you need to implement `SystemPlugin` traits. System plugin can have callbacks invoked at the important timings of the system like `on_init`, `before_on_sample` & so on. Internal synchronous event scheduler is implemented through this plugins system. `mimium-rand` is also an example of this type of module.
 
 mod builtin_functins;
+pub mod codegen_combinators;
 mod system_plugin;
 
 #[cfg(not(target_arch = "wasm32"))]

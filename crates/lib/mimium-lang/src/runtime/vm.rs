@@ -14,7 +14,7 @@ pub use program::{FuncProto, Program};
 
 use crate::{
     compiler::bytecodegen::ByteCodeGenerator,
-    interner::{Symbol, ToSymbol, TypeNodeId},
+    interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId},
     plugin::{ExtClsInfo, ExtClsType, ExtFunInfo, ExtFunType, MachineFunction},
     runtime::vm::program::WordSize,
     types::{Type, TypeSize},
@@ -220,6 +220,10 @@ pub struct Machine {
     delaysizes_pos_stack: Vec<usize>,
     global_vals: Vec<RawVal>,
     debug_stacktype: Vec<RawValType>,
+    /// Storage for code values (AST fragments) produced by codegen combinators.
+    /// Each entry is an interned `ExprNodeId`; the index into this vec is
+    /// stored as a `RawVal` on the VM stack.
+    code_values: Vec<ExprNodeId>,
 }
 
 macro_rules! binop {
@@ -393,6 +397,7 @@ impl Machine {
             delaysizes_pos_stack: vec![0],
             global_vals: vec![],
             debug_stacktype: vec![RawValType::Int; 255],
+            code_values: vec![],
         };
         extfns.for_each(|ExtFunInfo { name, fun, .. }| {
             let _ = res.install_extern_fn(name, fun);
@@ -421,6 +426,7 @@ impl Machine {
             delaysizes_pos_stack: vec![0],
             global_vals: vec![],
             debug_stacktype: vec![RawValType::Int; 255],
+            code_values: vec![],
         };
         //expect there are no change changes in external function use for now
 
@@ -1305,6 +1311,21 @@ impl Machine {
     pub fn install_extern_cls(&mut self, name: Symbol, f: ExtClsType) -> usize {
         self.ext_cls_table.push((name, f));
         self.ext_cls_table.len() - 1
+    }
+
+    /// Store a code value (AST fragment) and return a `RawVal` index.
+    ///
+    /// The returned value can later be passed to [`get_code`] to recover the
+    /// original `ExprNodeId`.
+    pub fn alloc_code(&mut self, expr: ExprNodeId) -> RawVal {
+        let idx = self.code_values.len();
+        self.code_values.push(expr);
+        idx as RawVal
+    }
+
+    /// Retrieve a previously stored code value by its `RawVal` index.
+    pub fn get_code(&self, val: RawVal) -> ExprNodeId {
+        self.code_values[val as usize]
     }
 
     fn link_functions(&mut self) {

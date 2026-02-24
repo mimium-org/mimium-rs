@@ -1060,10 +1060,11 @@ fn generate_default_macros() -> impl ExactSizeIterator<Item = MacroInfo> {
 pub fn get_builtin_fns_as_plugins() -> Box<dyn Plugin> {
     let commonfns = generate_builtin_functions().collect();
     let macros = generate_default_macros().collect();
+    let extcls = super::codegen_combinators::codegen_combinator_signatures();
 
     Box::new(InstantPlugin {
         macros,
-        extcls: vec![],
+        extcls,
         commonfns,
     })
 }
