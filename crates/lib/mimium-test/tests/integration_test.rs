@@ -138,6 +138,23 @@ fn string_primitives() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn parser_combinators() {
+    // Parser module has many deeply nested functions requiring larger stack
+    let result = std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024) // 16 MB
+        .spawn(|| {
+            let res = run_file_test_mono("parser_combinators.mmm", 1).unwrap();
+            let ans = vec![52.0]; // 52 boolean checks, each contributing 1.0
+            assert_eq!(res, ans);
+        })
+        .unwrap()
+        .join();
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn lift_arrayf_extended() {
     let res = run_file_test_mono("lift_arrayf_extended.mmm", 1).unwrap();
     let ans = vec![65.0]; // 5.0 + 10.0 + 20.0 + 30.0

@@ -339,11 +339,13 @@ fn stmts_from_program_with_prefix(
             }
             ProgramStatement::GlobalStatement(statement) => {
                 if !module_prefix.is_empty() {
-                    collect_statement_bindings(&statement).into_iter().for_each(|name| {
-                        module_info
-                            .module_context_map
-                            .insert(name, module_prefix.to_vec());
-                    });
+                    collect_statement_bindings(&statement)
+                        .into_iter()
+                        .for_each(|name| {
+                            module_info
+                                .module_context_map
+                                .insert(name, module_prefix.to_vec());
+                        });
                 }
                 Some(vec![(statement, Location::new(span, file_path.clone()))])
             }
@@ -439,14 +441,10 @@ fn stmts_from_program_with_prefix(
                             module_info,
                         );
                         let module_loc = Location::new(span.clone(), file_path.clone());
-                        let start_decl = (
-                            Statement::DeclareStage(StageKind::Main),
-                            module_loc.clone(),
-                        );
-                        let restore_decl = (
-                            Statement::DeclareStage(current_stage.clone()),
-                            module_loc,
-                        );
+                        let start_decl =
+                            (Statement::DeclareStage(StageKind::Main), module_loc.clone());
+                        let restore_decl =
+                            (Statement::DeclareStage(current_stage.clone()), module_loc);
                         [vec![start_decl], inner_stmts, vec![restore_decl]].concat()
                     }
                 } else {
@@ -511,11 +509,11 @@ fn stmts_from_program_with_prefix(
                         is_recursive,
                     },
                 );
-                // Track visibility for module members
+                // Track visibility for type declarations
+                module_info
+                    .visibility_map
+                    .insert(mangled_name, visibility == Visibility::Public);
                 if !module_prefix.is_empty() {
-                    module_info
-                        .visibility_map
-                        .insert(mangled_name, visibility == Visibility::Public);
                     // Track module context for relative path resolution
                     module_info
                         .module_context_map

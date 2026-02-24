@@ -1,0 +1,552 @@
+// Parser combinator library for mimium (Stage 0 / macro only).
+//
+// A Parser is a function that takes a string and returns a ParseResult.
+// ParseResult is either Ok(matched, rest) or Fail(message, rest).
+//
+// Basic combinators:
+//   satisfy, char_p, string_p, any_char
+//   map_p, bind_p, seq2, seq3
+//   alt, many, many1, optional
+//   take_while, skip_while, sep_by
+//   between, not_p, peek
+//
+// Usage example:
+//   use parser::*
+//   #stage(macro)
+//   let digit = satisfy(|c| c >= "0" && c <= "9")
+//   let number = many1(digit) |> map_p(|s| str_to_number(s))
+
+// ---------------------------------------------------------------------------
+// Result type
+// ---------------------------------------------------------------------------
+
+pub type ParseResult = Ok(string, string) | Fail(string, string)
+
+pub type alias Parser = (string) -> ParseResult
+
+// ---------------------------------------------------------------------------
+// Result utilities
+// ---------------------------------------------------------------------------
+
+#stage(macro)
+
+pub fn is_ok(result: ParseResult) -> float {
+    match result {
+        Ok(_, _) => 1.0,
+        Fail(_, _) => 0.0
+    }
+}
+
+pub fn is_fail(result: ParseResult) -> float {
+    match result {
+        Ok(_, _) => 0.0,
+        Fail(_, _) => 1.0
+    }
+}
+
+pub fn get_matched(result: ParseResult) -> string {
+    match result {
+        Ok(matched, _) => matched,
+        Fail(msg, _) => ""
+    }
+}
+
+pub fn get_rest(result: ParseResult) -> string {
+    match result {
+        Ok(_, rest) => rest,
+        Fail(_, rest) => rest
+    }
+}
+
+pub fn get_message(result: ParseResult) -> string {
+    match result {
+        Ok(matched, _) => matched,
+        Fail(msg, _) => msg
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Primitive parsers
+// ---------------------------------------------------------------------------
+
+/// Succeeds if the input is non-empty and the first character satisfies
+/// the predicate. Returns the matched character as a one-char string.
+pub fn satisfy(pred: (string) -> float) -> Parser {
+    |input: string| {
+        if (str_length(input) > 0.0) {
+            let c = str_char_at(input, 0)
+            if (pred(c) > 0.0) {
+                Ok(c, str_drop(input, 1))
+            } else {
+                Fail(str_concat("unexpected '", str_concat(c, "'")), input)
+            }
+        } else {
+            Fail("unexpected end of input", input)
+        }
+    }
+}
+
+/// Matches a single specific character.
+pub fn char_p(expected: string) -> Parser {
+    satisfy(|c| str_eq(c, expected))
+}
+
+/// Matches an exact string prefix.
+pub fn string_p(expected: string) -> Parser {
+    |input: string| {
+        let n = str_length(expected)
+        if (str_length(input) >= n) {
+            let head = str_take(input, n)
+            if (str_eq(head, expected) > 0.0) {
+                Ok(head, str_drop(input, n))
+            } else {
+                Fail(str_concat("expected '",
+                     str_concat(expected,
+                     str_concat("', got '",
+                     str_concat(head, "'")))), input)
+            }
+        } else {
+            Fail(str_concat("expected '",
+                 str_concat(expected, "', input too short")), input)
+        }
+    }
+}
+
+/// Matches any single character. Fails only on empty input.
+pub fn any_char() -> Parser {
+    satisfy(|c| 1.0)
+}
+
+/// Always succeeds without consuming input, returning the given value.
+pub fn pure_p(value: string) -> Parser {
+    |input: string| Ok(value, input)
+}
+
+/// Always fails with the given message.
+pub fn fail_p(msg: string) -> Parser {
+    |input: string| Fail(msg, input)
+}
+
+// ---------------------------------------------------------------------------
+// Combinators: mapping and sequencing
+// ---------------------------------------------------------------------------
+
+/// Transforms the matched value of a parser using the given function.
+pub fn map_p(parser: Parser, f: (string) -> string) -> Parser {
+    |input: string| {
+        match parser(input) {
+            Ok(matched, rest) => Ok(f(matched), rest),
+            Fail(msg, rest) => Fail(msg, rest)
+        }
+    }
+}
+
+/// Monadic bind: runs the first parser, then feeds the matched value
+/// to a function that returns the next parser.
+pub fn bind_p(parser: Parser, f: (string) -> Parser) -> Parser {
+    |input: string| {
+        match parser(input) {
+            Ok(matched, rest) => f(matched)(rest),
+            Fail(msg, rest) => Fail(msg, rest)
+        }
+    }
+}
+
+/// Sequences two parsers, concatenating their matched strings.
+pub fn seq2(p1: Parser, p2: Parser) -> Parser {
+    |input: string| {
+        match p1(input) {
+            Ok(m1, rest1) => {
+                match p2(rest1) {
+                    Ok(m2, rest2) => Ok(str_concat(m1, m2), rest2),
+                    Fail(msg, rest) => Fail(msg, rest)
+                }
+            }
+            Fail(msg, rest) => Fail(msg, rest)
+        }
+    }
+}
+
+/// Sequences three parsers, concatenating their matched strings.
+pub fn seq3(p1: Parser, p2: Parser, p3: Parser) -> Parser {
+    seq2(seq2(p1, p2), p3)
+}
+
+/// Runs two parsers in sequence, keeping only the left result.
+pub fn seq_left(p1: Parser, p2: Parser) -> Parser {
+    |input: string| {
+        match p1(input) {
+            Ok(m1, rest1) => {
+                match p2(rest1) {
+                    Ok(_, rest2) => Ok(m1, rest2),
+                    Fail(msg, rest) => Fail(msg, rest)
+                }
+            }
+            Fail(msg, rest) => Fail(msg, rest)
+        }
+    }
+}
+
+/// Runs two parsers in sequence, keeping only the right result.
+pub fn seq_right(p1: Parser, p2: Parser) -> Parser {
+    |input: string| {
+        match p1(input) {
+            Ok(_, rest1) => p2(rest1),
+            Fail(msg, rest) => Fail(msg, rest)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Combinators: alternatives
+// ---------------------------------------------------------------------------
+
+/// Tries the first parser; if it fails (without consuming input),
+/// tries the second.
+pub fn alt(p1: Parser, p2: Parser) -> Parser {
+    |input: string| {
+        let r1 = p1(input)
+        match r1 {
+            Ok(m, rest) => Ok(m, rest),
+            Fail(_, _) => p2(input)
+        }
+    }
+}
+
+// Helper: recursively tries parsers from a list.
+fn choice_inner(parsers: [Parser], input: string) -> ParseResult {
+    if (length_array(parsers) > 0.0) {
+        let (head, rest) = parsers |> split_head
+        let r = head(input)
+        match r {
+            Ok(m, remaining) => Ok(m, remaining),
+            Fail(_, _) => choice_inner(rest, input)
+        }
+    } else {
+        Fail("all alternatives failed", input)
+    }
+}
+
+/// Tries a list of parsers in order, returning the first success.
+pub fn choice(parsers: [Parser]) -> Parser {
+    |input: string| {
+        choice_inner(parsers, input)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Combinators: repetition
+// ---------------------------------------------------------------------------
+
+// Helper: recursively applies a parser, accumulating matched strings.
+fn many_inner(parser: Parser, input: string, acc: string) -> ParseResult {
+    match parser(input) {
+        Ok(matched, rest) => many_inner(parser, rest, str_concat(acc, matched)),
+        Fail(_, _) => Ok(acc, input)
+    }
+}
+
+/// Parses zero or more occurrences, concatenating all matched strings.
+pub fn many(parser: Parser) -> Parser {
+    |input: string| {
+        many_inner(parser, input, "")
+    }
+}
+
+/// Parses one or more occurrences, concatenating all matched strings.
+pub fn many1(parser: Parser) -> Parser {
+    |input: string| {
+        match parser(input) {
+            Ok(matched, rest) => {
+                let r = many_inner(parser, rest, matched)
+                r
+            }
+            Fail(msg, rest) => Fail(msg, rest)
+        }
+    }
+}
+
+/// Parses zero or one occurrence. Always succeeds.
+pub fn optional(parser: Parser) -> Parser {
+    |input: string| {
+        match parser(input) {
+            Ok(matched, rest) => Ok(matched, rest),
+            Fail(_, _) => Ok("", input)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Combinators: character-class helpers
+// ---------------------------------------------------------------------------
+
+// Helper: recursively consumes characters while predicate holds.
+fn take_while_inner(
+    pred: (string) -> float,
+    input: string,
+    acc: string
+) -> ParseResult {
+    if (str_length(input) > 0.0) {
+        let c = str_char_at(input, 0)
+        if (pred(c) > 0.0) {
+            take_while_inner(pred, str_drop(input, 1), str_concat(acc, c))
+        } else {
+            Ok(acc, input)
+        }
+    } else {
+        Ok(acc, input)
+    }
+}
+
+/// Consumes characters while the predicate holds (zero or more).
+pub fn take_while(pred: (string) -> float) -> Parser {
+    |input: string| {
+        take_while_inner(pred, input, "")
+    }
+}
+
+/// Consumes characters while the predicate holds (one or more).
+pub fn take_while1(pred: (string) -> float) -> Parser {
+    |input: string| {
+        match (take_while(pred))(input) {
+            Ok(matched, rest) => {
+                if (str_length(matched) > 0.0) {
+                    Ok(matched, rest)
+                } else {
+                    Fail("take_while1: no characters matched", input)
+                }
+            }
+            Fail(msg, rest) => Fail(msg, rest)
+        }
+    }
+}
+
+/// Skips characters while the predicate holds, matched value is "".
+pub fn skip_while(pred: (string) -> float) -> Parser {
+    |input: string| {
+        match (take_while(pred))(input) {
+            Ok(_, rest) => Ok("", rest),
+            Fail(msg, rest) => Fail(msg, rest)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Combinators: structure
+// ---------------------------------------------------------------------------
+
+/// Parses `open`, then `content`, then `close`. Returns content's match.
+pub fn between(open: Parser, close: Parser, content: Parser) -> Parser {
+    seq_right(open, seq_left(content, close))
+}
+
+/// Lookahead: succeeds if the parser would succeed, but does not consume.
+pub fn peek(parser: Parser) -> Parser {
+    |input: string| {
+        match parser(input) {
+            Ok(matched, _) => Ok(matched, input),
+            Fail(msg, _) => Fail(msg, input)
+        }
+    }
+}
+
+/// Negative lookahead: succeeds (with "") if the parser would fail.
+pub fn not_p(parser: Parser) -> Parser {
+    |input: string| {
+        match parser(input) {
+            Ok(_, _) => Fail("not_p: unexpected match", input),
+            Fail(_, _) => Ok("", input)
+        }
+    }
+}
+
+// Helper: recursively parses separator-delimited items.
+fn sep_by_rest(
+    item: Parser,
+    sep: Parser,
+    input: string,
+    acc: string
+) -> ParseResult {
+    match sep(input) {
+        Ok(_, after_sep) => {
+            match item(after_sep) {
+                Ok(matched, rest) =>
+                    sep_by_rest(item, sep, rest, str_concat(acc, matched)),
+                Fail(msg, rest) => Fail(msg, rest)
+            }
+        }
+        Fail(_, _) => Ok(acc, input)
+    }
+}
+
+/// Parses one or more occurrences of `item` separated by `sep`.
+/// Returns concatenation of all item matches (separators are discarded).
+pub fn sep_by1(item: Parser, sep: Parser) -> Parser {
+    |input: string| {
+        match item(input) {
+            Ok(first, rest) =>
+                sep_by_rest(item, sep, rest, first),
+            Fail(msg, rest) => Fail(msg, rest)
+        }
+    }
+}
+
+/// Parses zero or more occurrences of `item` separated by `sep`.
+pub fn sep_by(item: Parser, sep: Parser) -> Parser {
+    alt(sep_by1(item, sep), pure_p(""))
+}
+
+/// Replaces the error message of a parser.
+pub fn label(parser: Parser, msg: string) -> Parser {
+    |input: string| {
+        match parser(input) {
+            Ok(m, rest) => Ok(m, rest),
+            Fail(_, rest) => Fail(msg, rest)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Predefined character predicates
+// ---------------------------------------------------------------------------
+
+pub fn is_digit(c: string) -> float {
+    if (str_eq(c, "0") > 0.0) 1.0
+    else if (str_eq(c, "1") > 0.0) 1.0
+    else if (str_eq(c, "2") > 0.0) 1.0
+    else if (str_eq(c, "3") > 0.0) 1.0
+    else if (str_eq(c, "4") > 0.0) 1.0
+    else if (str_eq(c, "5") > 0.0) 1.0
+    else if (str_eq(c, "6") > 0.0) 1.0
+    else if (str_eq(c, "7") > 0.0) 1.0
+    else if (str_eq(c, "8") > 0.0) 1.0
+    else if (str_eq(c, "9") > 0.0) 1.0
+    else 0.0
+}
+
+pub fn is_alpha_lower(c: string) -> float {
+    if (str_eq(c, "a") > 0.0) 1.0
+    else if (str_eq(c, "b") > 0.0) 1.0
+    else if (str_eq(c, "c") > 0.0) 1.0
+    else if (str_eq(c, "d") > 0.0) 1.0
+    else if (str_eq(c, "e") > 0.0) 1.0
+    else if (str_eq(c, "f") > 0.0) 1.0
+    else if (str_eq(c, "g") > 0.0) 1.0
+    else if (str_eq(c, "h") > 0.0) 1.0
+    else if (str_eq(c, "i") > 0.0) 1.0
+    else if (str_eq(c, "j") > 0.0) 1.0
+    else if (str_eq(c, "k") > 0.0) 1.0
+    else if (str_eq(c, "l") > 0.0) 1.0
+    else if (str_eq(c, "m") > 0.0) 1.0
+    else if (str_eq(c, "n") > 0.0) 1.0
+    else if (str_eq(c, "o") > 0.0) 1.0
+    else if (str_eq(c, "p") > 0.0) 1.0
+    else if (str_eq(c, "q") > 0.0) 1.0
+    else if (str_eq(c, "r") > 0.0) 1.0
+    else if (str_eq(c, "s") > 0.0) 1.0
+    else if (str_eq(c, "t") > 0.0) 1.0
+    else if (str_eq(c, "u") > 0.0) 1.0
+    else if (str_eq(c, "v") > 0.0) 1.0
+    else if (str_eq(c, "w") > 0.0) 1.0
+    else if (str_eq(c, "x") > 0.0) 1.0
+    else if (str_eq(c, "y") > 0.0) 1.0
+    else if (str_eq(c, "z") > 0.0) 1.0
+    else 0.0
+}
+
+pub fn is_alpha_upper(c: string) -> float {
+    if (str_eq(c, "A") > 0.0) 1.0
+    else if (str_eq(c, "B") > 0.0) 1.0
+    else if (str_eq(c, "C") > 0.0) 1.0
+    else if (str_eq(c, "D") > 0.0) 1.0
+    else if (str_eq(c, "E") > 0.0) 1.0
+    else if (str_eq(c, "F") > 0.0) 1.0
+    else if (str_eq(c, "G") > 0.0) 1.0
+    else if (str_eq(c, "H") > 0.0) 1.0
+    else if (str_eq(c, "I") > 0.0) 1.0
+    else if (str_eq(c, "J") > 0.0) 1.0
+    else if (str_eq(c, "K") > 0.0) 1.0
+    else if (str_eq(c, "L") > 0.0) 1.0
+    else if (str_eq(c, "M") > 0.0) 1.0
+    else if (str_eq(c, "N") > 0.0) 1.0
+    else if (str_eq(c, "O") > 0.0) 1.0
+    else if (str_eq(c, "P") > 0.0) 1.0
+    else if (str_eq(c, "Q") > 0.0) 1.0
+    else if (str_eq(c, "R") > 0.0) 1.0
+    else if (str_eq(c, "S") > 0.0) 1.0
+    else if (str_eq(c, "T") > 0.0) 1.0
+    else if (str_eq(c, "U") > 0.0) 1.0
+    else if (str_eq(c, "V") > 0.0) 1.0
+    else if (str_eq(c, "W") > 0.0) 1.0
+    else if (str_eq(c, "X") > 0.0) 1.0
+    else if (str_eq(c, "Y") > 0.0) 1.0
+    else if (str_eq(c, "Z") > 0.0) 1.0
+    else 0.0
+}
+
+pub fn is_alpha(c: string) -> float {
+    is_alpha_lower(c) + is_alpha_upper(c) > 0.0
+}
+
+pub fn is_alphanumeric(c: string) -> float {
+    if (is_alpha(c) > 0.0) 1.0
+    else is_digit(c)
+}
+
+pub fn is_whitespace(c: string) -> float {
+    if (str_eq(c, " ") > 0.0) 1.0
+    else if (str_eq(c, "\t") > 0.0) 1.0
+    else if (str_eq(c, "\n") > 0.0) 1.0
+    else if (str_eq(c, "\r") > 0.0) 1.0
+    else 0.0
+}
+
+// ---------------------------------------------------------------------------
+// Predefined token parsers
+// ---------------------------------------------------------------------------
+
+/// One or more digits.
+pub fn digits() -> Parser {
+    take_while1(is_digit) |> label(_, "expected digit")
+}
+
+/// Skip optional whitespace.
+pub fn spaces() -> Parser {
+    skip_while(is_whitespace)
+}
+
+/// Parse an unsigned integer as a string of digits.
+pub fn nat() -> Parser {
+    digits()
+}
+
+/// Parse a (possibly signed, possibly fractional) number string.
+pub fn number() -> Parser {
+    let sign = optional(alt(char_p("-"), char_p("+")))
+    let integer_part = digits()
+    let frac_part = optional(seq2(char_p("."), digits()))
+    seq3(sign, integer_part, frac_part)
+        |> label(_, "expected number")
+}
+
+/// One or more alphabetic characters.
+pub fn alpha() -> Parser {
+    take_while1(is_alpha) |> label(_, "expected alphabetic character")
+}
+
+/// An identifier: letter followed by zero or more alphanumeric / underscore.
+pub fn ident() -> Parser {
+    let head = satisfy(|c| is_alpha(c) + str_eq(c, "_") > 0.0)
+    let tail = take_while(|c| is_alphanumeric(c) + str_eq(c, "_") > 0.0)
+    seq2(head, tail) |> label(_, "expected identifier")
+}
+
+/// Wraps a parser so it skips leading whitespace.
+pub fn lexeme(parser: Parser) -> Parser {
+    seq_right(spaces(), parser)
+}
+
+/// Matches an exact keyword, skipping leading whitespace.
+pub fn symbol(s: string) -> Parser {
+    lexeme(string_p(s))
+}

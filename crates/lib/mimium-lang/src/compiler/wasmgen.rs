@@ -314,7 +314,10 @@ impl WasmGenerator {
             || s.starts_with("__probe_value_intercept$arity")
     }
 
-    fn phi_result_type_from_phi_info(&self, phi_info: &Option<((VPtr, VPtr), VPtr)>) -> Option<ValType> {
+    fn phi_result_type_from_phi_info(
+        &self,
+        phi_info: &Option<((VPtr, VPtr), VPtr)>,
+    ) -> Option<ValType> {
         phi_info.as_ref().map(|(inputs, phi_dest)| {
             if let mir::Value::Register(reg_idx) = phi_dest.as_ref()
                 && let Some(reg_type) = self.register_types.get(reg_idx)
@@ -1550,16 +1553,18 @@ impl WasmGenerator {
             if is_skipped_phi {
                 // Phi value is already on the stack from if/else; store to dest.
                 if let mir::Value::Register(reg_idx) = dest.as_ref() {
-                    let reg_type = self.register_types.get(reg_idx).copied().unwrap_or_else(|| {
-                        match instr {
+                    let reg_type = self
+                        .register_types
+                        .get(reg_idx)
+                        .copied()
+                        .unwrap_or_else(|| match instr {
                             I::Phi(v1, _) => self.infer_value_type(v1),
                             I::PhiSwitch(inputs) => inputs
                                 .first()
                                 .map(|input| self.infer_value_type(input))
                                 .unwrap_or(ValType::F64),
                             _ => ValType::F64,
-                        }
-                    });
+                        });
                     let local_idx = match reg_type {
                         ValType::I64 => self.current_num_args + *reg_idx as u32,
                         ValType::F64 => {
