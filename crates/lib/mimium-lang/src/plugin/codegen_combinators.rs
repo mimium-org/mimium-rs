@@ -184,9 +184,7 @@ fn code_lam1(machine: &mut Machine) -> ReturnCode {
     // constructs: `code_lam1_finish(name, body_code)`.
     //
     // See `code_lam1_finish` below.
-    unreachable!(
-        "code_lam1 with HOAS is not called directly; use code_lam1_finish instead."
-    );
+    unreachable!("code_lam1 with HOAS is not called directly; use code_lam1_finish instead.");
 }
 
 /// `code_lam1_finish(name_str: string, body_code: Code(b)) -> Code(a->b)`

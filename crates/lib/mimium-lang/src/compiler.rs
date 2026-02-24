@@ -2,6 +2,7 @@ pub mod bytecodegen;
 pub(crate) mod intrinsics;
 pub mod mirgen;
 pub mod parser;
+pub mod translate_staging;
 pub mod typing;
 
 #[cfg(not(target_arch = "wasm32"))]
