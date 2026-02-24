@@ -130,6 +130,14 @@ fn split_head_macro() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn string_primitives() {
+    let res = run_file_test_mono("string_primitives.mmm", 1).unwrap();
+    // 5 + 1 + 0 + 42.5 + 3.14 + 1 + 1 + 1 + 1 + 1 = 56.64
+    let ans = vec![56.64];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn lift_arrayf_extended() {
     let res = run_file_test_mono("lift_arrayf_extended.mmm", 1).unwrap();
     let ans = vec![65.0]; // 5.0 + 10.0 + 20.0 + 30.0
