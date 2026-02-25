@@ -176,6 +176,9 @@ impl Type {
                 .any(|RecordTypeField { ty, .. }| ty.to_type().contains_function()),
             Type::Union(t) => t.iter().any(|t| t.to_type().contains_function()),
             Type::Boxed(t) => t.to_type().contains_function(),
+            // TypeAlias may resolve to a function type, so conservatively
+            // return true to ensure proper refcount management.
+            Type::TypeAlias(_) => true,
             _ => false,
         }
     }
@@ -196,6 +199,9 @@ impl Type {
                 // This ensures proper reference counting for all variant types.
                 true
             }
+            // TypeAlias may resolve to a boxed or UserSum type, so conservatively
+            // return true to ensure proper refcount management.
+            Type::TypeAlias(_) => true,
             _ => false,
         }
     }

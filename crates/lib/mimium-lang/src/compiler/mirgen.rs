@@ -540,59 +540,97 @@ impl Context {
         self.valenv.add_bind(&[bind]);
     }
 
-    /// Recursively insert CloseHeapClosure instructions for heap-allocated objects (closures)
-    /// based on type information. This handles nested structures like tuples and records.
-    fn insert_close_recursively(&mut self, v: VPtr, ty: TypeNodeId) {
+    /// Recursively insert CloseHeapClosure instructions for closures found
+    /// inside a value.  This captures upvalues from the stack into the heap
+    /// ("closing" the closure) so that it can safely escape its defining scope.
+    ///
+    /// Unlike `insert_release_recursively`, this does **not** decrement any
+    /// reference counts — it is purely a structural operation on closures.
+    fn insert_close_closures_recursively(&mut self, v: VPtr, ty: TypeNodeId) {
         match ty.to_type() {
-            Type::Function { arg, ret } => {
-                // This is a closure - insert CloseHeapClosure for the closure itself
+            Type::Function { .. } => {
                 self.push_inst(Instruction::CloseHeapClosure(v.clone()));
-
-                // For higher-order functions, we don't need to recurse into arg/ret here
-                // because the closure value itself is a single heap object.
-                // The arguments/return values will be processed when they are actually used.
-            }
-            Type::Boxed(inner) => {
-                // Boxed value going out of scope — decrement its reference count
-                self.push_inst(Instruction::BoxRelease {
-                    ptr: v.clone(),
-                    inner_type: inner,
-                });
-            }
-            Type::UserSum { .. } => {
-                // UserSum value going out of scope - need to release any boxed values within
-                // We emit a ReleaseUserSum instruction that will walk the structure at runtime
-                // and decrement reference counts for any heap-allocated objects
-                self.push_inst(Instruction::ReleaseUserSum {
-                    value: v.clone(),
-                    ty,
-                });
             }
             Type::Tuple(elem_types) => {
-                // Recursively process each element of the tuple
                 for (i, elem_ty) in elem_types.iter().enumerate() {
                     let elem_v = self.push_inst(Instruction::GetElement {
                         value: v.clone(),
                         ty,
                         tuple_offset: i as u64,
                     });
-                    self.insert_close_recursively(elem_v, *elem_ty);
+                    self.insert_close_closures_recursively(elem_v, *elem_ty);
                 }
             }
             Type::Record(fields) => {
-                // Recursively process each field of the record
                 for (i, field) in fields.iter().enumerate() {
                     let field_v = self.push_inst(Instruction::GetElement {
                         value: v.clone(),
                         ty,
                         tuple_offset: i as u64,
                     });
-                    self.insert_close_recursively(field_v, field.ty);
+                    self.insert_close_closures_recursively(field_v, field.ty);
                 }
             }
-            _ => {
-                // Other types (primitives, arrays, etc.) don't need closing
+            Type::TypeAlias(_) => {
+                let resolved = self.typeenv.resolve_type_alias(ty);
+                if resolved != ty {
+                    self.insert_close_closures_recursively(v, resolved);
+                }
             }
+            // Boxed, UserSum, and other types do not contain closures that need
+            // closing at this stage.
+            _ => {}
+        }
+    }
+
+    /// Recursively insert release instructions for all heap-allocated objects
+    /// (closures, boxed values, and UserSum variants) when a value goes out of
+    /// scope.  For closures this also drops the closure if its upvalues were
+    /// never closed.
+    fn insert_release_recursively(&mut self, v: VPtr, ty: TypeNodeId) {
+        match ty.to_type() {
+            Type::Function { .. } => {
+                self.push_inst(Instruction::CloseHeapClosure(v.clone()));
+            }
+            Type::Boxed(inner) => {
+                self.push_inst(Instruction::BoxRelease {
+                    ptr: v.clone(),
+                    inner_type: inner,
+                });
+            }
+            Type::UserSum { .. } => {
+                self.push_inst(Instruction::ReleaseUserSum {
+                    value: v.clone(),
+                    ty,
+                });
+            }
+            Type::Tuple(elem_types) => {
+                for (i, elem_ty) in elem_types.iter().enumerate() {
+                    let elem_v = self.push_inst(Instruction::GetElement {
+                        value: v.clone(),
+                        ty,
+                        tuple_offset: i as u64,
+                    });
+                    self.insert_release_recursively(elem_v, *elem_ty);
+                }
+            }
+            Type::Record(fields) => {
+                for (i, field) in fields.iter().enumerate() {
+                    let field_v = self.push_inst(Instruction::GetElement {
+                        value: v.clone(),
+                        ty,
+                        tuple_offset: i as u64,
+                    });
+                    self.insert_release_recursively(field_v, field.ty);
+                }
+            }
+            Type::TypeAlias(_) => {
+                let resolved = self.typeenv.resolve_type_alias(ty);
+                if resolved != ty {
+                    self.insert_release_recursively(v, resolved);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -637,6 +675,15 @@ impl Context {
                     ty,
                 });
             }
+            Type::TypeAlias(_) => {
+                // Resolve the alias to its underlying type and recurse.
+                // Without this, type-aliased functions (e.g., Pattern = (Arc)->[Event])
+                // would silently skip cloning, causing use-after-free.
+                let resolved = self.typeenv.resolve_type_alias(ty);
+                if resolved != ty {
+                    self.insert_clone_recursively(v, resolved);
+                }
+            }
             _ => {}
         }
     }
@@ -658,7 +705,7 @@ impl Context {
                     let gv = Arc::new(Value::Global(v.clone()));
                     if t.is_function() {
                         //globally allocated closures are immidiately closed, not to be disposed
-                        self.insert_close_recursively(v.clone(), ty);
+                        self.insert_close_closures_recursively(v.clone(), ty);
                     }
                     self.push_inst(Instruction::SetGlobal(gv.clone(), v.clone(), ty));
                     self.add_bind((*id, gv))
@@ -673,6 +720,12 @@ impl Context {
                         ty,
                         tuple_offset: i as u64,
                     });
+                    // Clone refcounted values extracted from the tuple so they
+                    // have their own reference count. Without this, both the
+                    // container's scope-exit release and the extracted
+                    // variable's scope-exit release would decrement the same
+                    // refcount, causing a double-release.
+                    self.insert_clone_recursively(elem_v.clone(), *cty);
                     let tid = Type::Unknown.into_id_with_location(self.get_loc_from_span(&span));
                     let tpat = TypedPattern::new(pat.clone(), tid);
                     self.add_bind_pattern(&tpat, elem_v, *cty, is_global);
@@ -689,10 +742,13 @@ impl Context {
                             ty,
                             tuple_offset: offset as u64,
                         });
+                        let elem_t = kvvec[offset].ty;
+                        // Clone refcounted values extracted from the record
+                        // (same rationale as tuple destructuring above).
+                        self.insert_clone_recursively(elem_v.clone(), elem_t);
                         let tid =
                             Type::Unknown.into_id_with_location(self.get_loc_from_span(&span));
                         let tpat = TypedPattern::new(pat.clone(), tid);
-                        let elem_t = kvvec[offset].ty;
                         self.add_bind_pattern(&tpat, elem_v, elem_t, is_global);
                     };
                 }
@@ -1434,9 +1490,11 @@ impl Context {
                 if t.to_type().contains_function() || t.to_type().contains_boxed() {
                     self.insert_clone_recursively(res.clone(), t);
                 }
-                // Close heap-allocated values after cloning (for higher-order functions and boxed values)
+                // Close closures (capture upvalues) but do NOT release
+                // boxed/UserSum values — the callee receives the same reference,
+                // not a separate one.
                 if t.to_type().contains_function() || t.to_type().contains_boxed() {
-                    self.insert_close_recursively(res.clone(), t);
+                    self.insert_close_closures_recursively(res.clone(), t);
                 }
                 (res, t, s)
             })
@@ -1683,7 +1741,14 @@ impl Context {
         let ty = self
             .typeenv
             .infer_type(e)
-            .expect("type inference failed, should be an error at type checker stage");
+            .unwrap_or_else(|err| {
+                panic!(
+                    "type inference failed for expr '{}' (id={:?}, span={:?}): {err:?}",
+                    e.to_expr().simple_print(),
+                    e.0,
+                    e.to_span()
+                );
+            });
         let ty = InferContext::substitute_type(ty);
         match &e.to_expr() {
             Expr::Literal(lit) => {
@@ -1726,6 +1791,12 @@ impl Context {
                     ty: tup_ty,
                     tuple_offset: i as u64,
                 });
+                // Clone refcounted values extracted from the tuple so the
+                // extracted copy has its own reference count, independent of
+                // the source container.  Without this, both the container's
+                // scope-exit release and the extracted value's scope-exit
+                // release would decrement the same refcount.
+                self.insert_clone_recursively(res.clone(), elem_ty);
                 (res, elem_ty, states)
             }
             Expr::RecordLiteral(fields) => self.alloc_record_aggregate(fields, ty),
@@ -1741,20 +1812,31 @@ impl Context {
             }
             Expr::FieldAccess(expr, accesskey) => {
                 let (expr_v, expr_ty, states) = self.eval_expr(*expr);
+                let before_canonical = InferContext::substitute_type(expr_ty);
                 let expr_ty = self.canonical_record_type_id(expr_ty);
                 match expr_ty.to_type() {
                     Type::Record(fields) => {
+                        let field_keys: Vec<_> = fields.iter().map(|f| f.key.to_string()).collect();
                         let offset = fields
                             .iter()
                             .position(|RecordTypeField { key, .. }| *key == *accesskey)
-                            .expect("field access to non-existing field");
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "field access to non-existing field '.{}' in record with fields {:?} (before_canonical: {:?})",
+                                    accesskey, field_keys, before_canonical.to_type()
+                                )
+                            });
 
+                        let field_ty = fields[offset].ty;
                         let res = self.push_inst(Instruction::GetElement {
                             value: expr_v.clone(),
                             ty: expr_ty,
                             tuple_offset: offset as u64,
                         });
-                        (res, fields[offset].ty, states)
+                        // Clone refcounted values extracted from the record
+                        // (same rationale as Expr::Proj above).
+                        self.insert_clone_recursively(res.clone(), field_ty);
+                        (res, field_ty, states)
                     }
                     _ => panic!("expected record type for field access"),
                 }
@@ -1772,7 +1854,18 @@ impl Context {
                 let (values, tys): (Vec<_>, Vec<_>) = vts.into_iter().unzip();
                 // Assume all array elements have the same type (first element's type)
                 debug_assert!(tys.windows(2).all(|w| w[0] == w[1]));
-                let elem_ty = if !tys.is_empty() { tys[0] } else { numeric!() };
+                let elem_ty = if !tys.is_empty() {
+                    tys[0]
+                } else {
+                    // For empty array literals, extract the element type from the
+                    // inferred array type.  The type checker will have unified `[]`
+                    // with the expected array type (e.g. `[MiniElem]`), so `ty`
+                    // should be `Type::Array(elem_ty)`.
+                    match ty.to_type() {
+                        Type::Array(et) => et,
+                        _ => numeric!(),
+                    }
+                };
                 let reg = self.push_inst(Instruction::Array(values.clone(), elem_ty));
                 (
                     reg,
@@ -2114,14 +2207,14 @@ impl Context {
                                     fn_proto: idx,
                                     size: 64,
                                 });
-                                ctx.insert_close_recursively(cls.clone(), rt);
+                                ctx.insert_close_closures_recursively(cls.clone(), rt);
                                 ctx.insert_clone_recursively(cls.clone(), rt);
                                 let _ = ctx.push_inst(Instruction::Return(cls, rt));
                             }
                             (_, _) => {
                                 if rt.to_type().contains_function() || rt.to_type().contains_boxed()
                                 {
-                                    ctx.insert_close_recursively(res.clone(), rt);
+                                    ctx.insert_close_closures_recursively(res.clone(), rt);
                                     ctx.insert_clone_recursively(res.clone(), rt);
                                     let _ = ctx.push_inst(Instruction::Return(res.clone(), rt));
                                 } else {
@@ -2206,7 +2299,7 @@ impl Context {
                     if ty.to_type().contains_boxed() || ty.to_type().contains_function() {
                         // Load the value and release it
                         let value = self.push_inst(Instruction::Load(ptr, ty));
-                        self.insert_close_recursively(value, ty);
+                        self.insert_release_recursively(value, ty);
                     }
                 }
 
@@ -2631,6 +2724,9 @@ impl Context {
                             ty,
                             tuple_offset: i as u64,
                         });
+                        // Clone refcounted values extracted from the tuple
+                        // (same rationale as add_bind_pattern tuple case).
+                        self.insert_clone_recursively(elem_val.clone(), *elem_ty);
                         // If the element type is Boxed, unbox it before binding
                         let (elem_val, bind_ty) = if let Type::Boxed(inner) = elem_ty.to_type() {
                             let unboxed = self.push_inst(Instruction::BoxLoad {
@@ -2750,6 +2846,11 @@ impl Context {
                 {
                     let bound_val =
                         self.push_inst(Instruction::TaggedUnionGetValue(scrut_val.clone(), vt));
+                    // Clone refcounted values extracted from the tagged union so
+                    // they have their own reference count, preventing
+                    // double-release when both the scrutinee and the extracted
+                    // binding go out of scope.
+                    self.insert_clone_recursively(bound_val.clone(), vt);
                     // Bind the pattern to the extracted value
                     self.bind_pattern(inner_pattern, bound_val, vt);
                 }
@@ -3340,6 +3441,8 @@ impl Context {
                             let enum_val = self.push_inst(Instruction::Load(enum_ptr, enum_val_ty));
                             let payload = self
                                 .push_inst(Instruction::TaggedUnionGetValue(enum_val, payload_ty));
+                            // Clone refcounted values extracted from the tagged union
+                            self.insert_clone_recursively(payload.clone(), payload_ty);
 
                             if let Some(elem_idx) = tuple_index {
                                 let payload_elem = self.push_inst(Instruction::GetElement {
@@ -3347,6 +3450,12 @@ impl Context {
                                     ty: payload_ty,
                                     tuple_offset: elem_idx as u64,
                                 });
+                                // Clone refcounted values from the payload element
+                                let payload_elem_ty = match payload_ty.to_type() {
+                                    Type::Tuple(types) => types[elem_idx],
+                                    _ => payload_ty,
+                                };
+                                self.insert_clone_recursively(payload_elem.clone(), payload_elem_ty);
                                 self.add_bind((binding.var, payload_elem));
                             } else {
                                 self.add_bind((binding.var, payload));
@@ -3359,6 +3468,8 @@ impl Context {
                                 ty: tuple_ty,
                                 tuple_offset: col_idx as u64,
                             });
+                            // Clone refcounted values from the tuple element
+                            self.insert_clone_recursively(elem_val.clone(), elem_types[col_idx]);
                             self.add_bind((binding.var, elem_val));
                         }
                     }
@@ -3593,10 +3704,11 @@ pub fn compile_with_module_info(
     } else {
         root_expr_id
     };
-    // Save type declarations and aliases before module_info is consumed by
-    // type checking, so that the stage-0 compiler can reuse them.
-    let type_decls_for_stage0 = module_info.type_declarations.clone();
-    let type_aliases_for_stage0 = module_info.type_aliases.clone();
+    // Clone module_info before it is consumed by type checking so that the
+    // stage-0 compiler can reuse it for type alias resolution.
+    let module_info_for_stage0 = module_info.clone();
+    // Keep another clone for the stage-1 re-type-check after VM staging.
+    let module_info_for_stage1 = module_info.clone();
     let (expr, mut infer_ctx, errors) =
         typecheck_with_module_info(expr, builtin_types, file_path.clone(), module_info);
     if errors.is_empty() {
@@ -3611,35 +3723,24 @@ pub fn compile_with_module_info(
         //
         // If the top-level type is `Code(T)` we go through the new path;
         // otherwise the program has no staging and we skip directly to MIR gen.
-        let use_vm_staging = std::env::var("MIMIUM_USE_VM_STAGING").is_ok();
         let expr = if matches!(top_type.to_type(), Type::Code(_)) {
-            if use_vm_staging {
-                let stage0_expr = translate_staging::translate(expr);
-                log::trace!(
-                    "ast after translate_staging: {:?}",
-                    stage0_expr.to_expr().simple_print()
-                );
-                let stage1_ast = compile_and_execute_stage0(
-                    stage0_expr,
-                    builtin_types,
-                    macro_env,
-                    file_path.clone(),
-                    &type_decls_for_stage0,
-                    &type_aliases_for_stage0,
-                )?;
-                log::trace!(
-                    "ast after stage-0 execution: {:?}",
-                    stage1_ast.to_expr().simple_print()
-                );
-                stage1_ast
-            } else {
-                interpreter::expand_macro(
-                    expr,
-                    top_type,
-                    macro_env,
-                    infer_ctx.constructor_env.clone(),
-                )
-            }
+            let stage0_expr = translate_staging::translate(expr);
+            log::trace!(
+                "ast after translate_staging: {:?}",
+                stage0_expr.to_expr().simple_print()
+            );
+            let stage1_ast = compile_and_execute_stage0(
+                stage0_expr,
+                builtin_types,
+                macro_env,
+                file_path.clone(),
+                module_info_for_stage0,
+            )?;
+            log::trace!(
+                "ast after stage-0 execution: {:?}",
+                stage1_ast.to_expr().simple_print()
+            );
+            stage1_ast
         } else {
             // No staging — the expression is already pure stage-1 code.
             expr
@@ -3651,18 +3752,27 @@ pub fn compile_with_module_info(
         );
         let expr = parser::add_global_context(expr, file_path.clone().unwrap_or_default());
 
-        // Re-type-check the (possibly regenerated) AST so that all fresh
-        // ExprNodeIds are populated in `result_memo`.  Without this, code
-        // produced by the VM staging path would contain nodes unknown to the
-        // type checker, leading to unresolved type variables during MIR gen.
-        match infer_ctx.infer_type(expr) {
-            Ok(ty) => {
-                log::debug!("re-type-check succeeded with type: {}", ty.to_type());
-            }
-            Err(errs) => {
-                log::warn!("re-type-check after staging failed: {errs:?}");
-            }
-        }
+        // Re-type-check the stage-1 AST using a FRESH type inference
+        // context.  The original `infer_ctx` was used to type-check the
+        // pre-staging program (which contains Bracket/Escape constructs)
+        // and carries stale type variables that conflict with the
+        // regenerated AST.  A fresh context with full module info resolves
+        // type aliases properly (e.g., Event = {arc, active, val}).
+        let infer_ctx = if matches!(top_type.to_type(), Type::Code(_)) {
+            let td = module_info_for_stage1.type_declarations.clone();
+            let ta = module_info_for_stage1.type_aliases.clone();
+            let infer_ctx_fresh = crate::compiler::typing::infer_root(
+                expr,
+                builtin_types,
+                file_path.clone().unwrap_or_default(),
+                Some(&td),
+                Some(&ta),
+                Some(module_info_for_stage1),
+            );
+            infer_ctx_fresh
+        } else {
+            infer_ctx
+        };
 
         let mut ctx = Context::new(infer_ctx, file_path.clone());
         let _res = ctx.eval_expr(expr);
@@ -3689,8 +3799,7 @@ fn compile_and_execute_stage0(
     builtin_types: &[(Symbol, TypeNodeId)],
     macro_env: &[Box<dyn MacroFunction>],
     file_path: Option<PathBuf>,
-    type_declarations: &crate::ast::program::TypeDeclarationMap,
-    type_aliases: &crate::ast::program::TypeAliasMap,
+    module_info: crate::ast::program::ModuleInfo,
 ) -> Result<ExprNodeId, Vec<Box<dyn ReportableError>>> {
     use crate::plugin::codegen_combinators::codegen_combinator_signatures;
     use crate::plugin::{ExtClsInfo, MachineFunction};
@@ -3804,13 +3913,17 @@ fn compile_and_execute_stage0(
     // 3. Type-check the stage-0 expression in a fresh context.
     //    Pass user-defined type declarations and aliases so that enum
     //    constructors and type aliases are available during stage-0.
+    //    module_info is also passed so that resolve_type_alias_symbol_fallback
+    //    can resolve mangled type names from imported modules.
+    let type_declarations = module_info.type_declarations.clone();
+    let type_aliases = module_info.type_aliases.clone();
     let stage0_infer = infer_root(
         wrapped,
         &all_types,
         file_path.clone().unwrap_or_default(),
-        Some(type_declarations),
-        Some(type_aliases),
-        None,
+        Some(&type_declarations),
+        Some(&type_aliases),
+        Some(module_info),
     );
     if !stage0_infer.errors.is_empty() {
         let errs: Vec<Box<dyn ReportableError>> = stage0_infer

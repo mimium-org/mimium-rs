@@ -180,11 +180,13 @@ impl ByteCodeGenerator {
             Some(idx) => *idx as GlobalPos,
             None => {
                 let size = Self::word_size_for_type(ty) as usize;
-                let idx = if size == 0 && self.program.global_vals.is_empty() {
-                    0
-                } else {
-                    self.program.global_vals.len() + size - 1
-                };
+                // The start offset is the sum of all existing global sizes.
+                let idx: usize = self
+                    .program
+                    .global_vals
+                    .iter()
+                    .map(|w| w.0 as usize)
+                    .sum();
                 self.globals.insert(gv.clone(), idx);
                 let size = WordSize(size as _);
                 self.program.global_vals.push(size);
@@ -193,6 +195,9 @@ impl ByteCodeGenerator {
         }
     }
     fn find(&mut self, v: &Arc<mir::Value>) -> Reg {
+        if let mir::Value::Function(idx) = v.as_ref() {
+            return *idx as Reg;
+        }
         self.vregister
             .find(v)
             .or_else(|| self.globals.get(v).map(|&v| v as Reg))
@@ -467,13 +472,19 @@ impl ByteCodeGenerator {
                 }
             }
             mir::Instruction::Closure(idxcell) => {
-                let idx = self.find(&idxcell);
+                let idx = match idxcell.as_ref() {
+                    mir::Value::Function(idx) => *idx as Reg,
+                    _ => self.find(&idxcell),
+                };
                 let dst = self.get_destination(dst, 1);
                 Some(VmInstruction::Closure(dst, idx))
             }
             // New heap-based instructions (Phase 3)
             mir::Instruction::MakeClosure { fn_proto, size } => {
-                let fn_idx = self.find(&fn_proto);
+                let fn_idx = match fn_proto.as_ref() {
+                    mir::Value::Function(idx) => *idx as Reg,
+                    _ => self.find(&fn_proto),
+                };
                 let dst = self.get_destination(dst, 1);
                 Some(VmInstruction::MakeHeapClosure(
                     dst,
@@ -686,20 +697,23 @@ impl ByteCodeGenerator {
                     }
                 }
 
-                phiblock.iter().skip(1).for_each(|(dst, p_inst)| {
+                phiblock.iter().skip(1).fold(vec![], |mut bytes: Vec<VmInstruction>, (dst, p_inst)| {
                     if let Some(inst) = self.emit_instruction(
                         funcproto,
-                        None,
+                        Some(&mut bytes),
                         mirfunc.clone(),
                         dst.clone(),
                         p_inst.clone(),
                         config,
                     ) {
-                        match &mut bytecodes_dst {
-                            Some(dst) => dst.push(inst),
-                            None => funcproto.bytecodes.push(inst),
-                        }
-                    };
+                        bytes.push(inst);
+                    }
+                    bytes
+                }).into_iter().for_each(|inst| {
+                    match &mut bytecodes_dst {
+                        Some(dst) => dst.push(inst),
+                        None => funcproto.bytecodes.push(inst),
+                    }
                 });
                 None
             }

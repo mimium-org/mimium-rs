@@ -229,7 +229,6 @@ pub struct Machine {
     /// Each entry is an interned `ExprNodeId`; the index into this vec is
     /// stored as a `RawVal` on the VM stack.
     code_values: Vec<ExprNodeId>,
-
 }
 
 macro_rules! binop {
@@ -697,8 +696,6 @@ impl Machine {
     /// If the underlying closure has not escaped (`is_closed == false`),
     /// also drops the closure via the normal refcount mechanism.
     fn release_heap_closure(&mut self, heap_idx: heap::HeapIdx) {
-        log::trace!("release_heap_closure: heap_idx={heap_idx:?}");
-
         // Extract the ClosureIdx before we do anything that mutably borrows heap.
         let maybe_closure = self.heap.get(heap_idx).and_then(|obj| {
             (!obj.data.is_empty()).then_some(Self::get_as::<ClosureIdx>(obj.data[0]))
@@ -1051,7 +1048,9 @@ impl Machine {
                     let heap_idx = Self::get_as::<heap::HeapIdx>(heap_addr);
 
                     // Extract the ClosureIdx from the heap object
-                    let heap_obj = self.heap.get(heap_idx).expect("Invalid heap index");
+                    let heap_obj = self.heap.get(heap_idx).unwrap_or_else(|| {
+                        panic!("Invalid heap index: {heap_idx:?} (heap_len={}, func_i={func_i}, pc={pcounter})", self.heap.len());
+                    });
                     let cls_i = Self::get_as::<ClosureIdx>(heap_obj.data[0]);
 
                     let cls = self.get_closure(cls_i);
@@ -1567,19 +1566,12 @@ impl Machine {
                         .get(heap_idx)
                         .map(|obj| obj.refcount <= 1)
                         .unwrap_or(false);
-                    if should_release_inner {
-                        if let Some(inner_ty) = resolved_sum {
-                            let inner_data = heap
-                                .get(heap_idx)
-                                .map(|obj| obj.data.clone())
-                                .unwrap_or_default();
-                            Self::release_usersum_recursive(
-                                &inner_data,
-                                inner_ty,
-                                heap,
-                                type_table,
-                            );
-                        }
+                    if should_release_inner && let Some(inner_ty) = resolved_sum {
+                        let inner_data = heap
+                            .get(heap_idx)
+                            .map(|obj| obj.data.clone())
+                            .unwrap_or_default();
+                        Self::release_usersum_recursive(&inner_data, inner_ty, heap, type_table);
                     }
                     heap::heap_release(heap, heap_idx);
                 }
