@@ -525,28 +525,48 @@ pub(crate) fn try_get_monomorphized_ext_fn_name(
         return None;
     }
 
-    let elem_word_size = match fn_name.as_str() {
+    let base_name = {
+        let name = fn_name.as_str();
+        if name == "__probe_value_intercept" || name.starts_with("__probe_value_intercept$arity")
+        {
+            "__probe_value_intercept"
+        } else if name == "prepend" || name.starts_with("prepend$arity") {
+            "prepend"
+        } else if name == "split_head" || name.starts_with("split_head$arity") {
+            "split_head"
+        } else if name == "split_tail" || name.starts_with("split_tail$arity") {
+            "split_tail"
+        } else {
+            return None;
+        }
+    };
+
+    let elem_word_size = match base_name {
         "__probe_value_intercept" => match concrete_arg_ty.to_type() {
             crate::types::Type::Tuple(elems) if !elems.is_empty() => elems[0].word_size(),
             crate::types::Type::Record(fields) if !fields.is_empty() => fields[0].ty.word_size(),
             _ => concrete_ret_ty.word_size(),
         },
-        "prepend" => match concrete_ret_ty.to_type() {
+        "prepend" => match concrete_arg_ty.to_type() {
+            crate::types::Type::Tuple(args) if args.len() == 2 => match args[1].to_type() {
+                crate::types::Type::Array(elem_ty) => elem_ty.word_size(),
+                _ => return None,
+            },
             crate::types::Type::Array(elem_ty) => elem_ty.word_size(),
             _ => return None,
         },
-        "split_head" => match concrete_ret_ty.to_type() {
-            crate::types::Type::Tuple(elems) if elems.len() == 2 => elems[0].word_size(),
+        "split_head" => match concrete_arg_ty.to_type() {
+            crate::types::Type::Array(elem_ty) => elem_ty.word_size(),
             _ => return None,
         },
-        "split_tail" => match concrete_ret_ty.to_type() {
-            crate::types::Type::Tuple(elems) if elems.len() == 2 => elems[1].word_size(),
+        "split_tail" => match concrete_arg_ty.to_type() {
+            crate::types::Type::Array(elem_ty) => elem_ty.word_size(),
             _ => return None,
         },
         _ => return None,
     };
 
-    Some(format!("{}$arity{}", fn_name.as_str(), elem_word_size).to_symbol())
+    Some(format!("{}$arity{}", base_name, elem_word_size).to_symbol())
 }
 
 pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Option<ExtClsInfo> {

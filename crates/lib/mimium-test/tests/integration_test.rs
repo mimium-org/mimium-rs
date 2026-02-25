@@ -173,6 +173,25 @@ fn mininotation() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn mininotation_alternate_grouping() {
+    // Mini-notation alternation/grouping edge cases based on TidalCycles reference.
+    let result = std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let res =
+                run_file_with_plugins("mininotation_alternate_grouping.mmm", 1, [].into_iter(), false)
+                    .unwrap();
+            let ans = vec![19.0]; // 19 boolean checks
+            assert_eq!(res, ans);
+        })
+        .unwrap()
+        .join();
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn lift_arrayf_extended() {
     let res = run_file_test_mono("lift_arrayf_extended.mmm", 1).unwrap();
     let ans = vec![65.0]; // 5.0 + 10.0 + 20.0 + 30.0

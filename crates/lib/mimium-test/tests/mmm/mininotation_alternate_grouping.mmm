@@ -1,0 +1,62 @@
+use pattern::*
+use mininotation::*
+
+#stage(macro)
+
+fn feq(a: float, b: float) -> float {
+    if (a >= b) {
+        if (b >= a) 1.0 else 0.0
+    } else {
+        0.0
+    }
+}
+
+fn check_values(events: [Event], expected: [float]) -> float {
+    if ((expected |> length_array) > 0.0 && (events |> length_array) > 0.0) {
+        let (v, rest_v) = events |> split_head
+        let (e, rest_e) = expected |> split_head
+        feq(v.val, e) + check_values(rest_v, rest_e)
+    } else {
+        0.0
+    }
+}
+
+fn test_mininotation_alternate_grouping() {
+    let test_arc = {start = 0.0, end = 1.0}
+
+    // Tidal reference: < > alternates complete patterns cycle-by-cycle.
+    // 1) Simple alternation
+    let p1 = mini("<62 72>")
+    let e1 = p1(test_arc)
+    let c = feq(length_array(e1), 2.0)
+    let c = c + check_values(e1, [62.0, 72.0])
+
+    // 2) Alternation where each arm is a grouped pattern.
+    // <[64 [74 72] 65] [65 62]>
+    // => first arm values then second arm values
+    let p2 = mini("<[64 [74 72] 65] [65 62]>")
+    let e2 = p2(test_arc)
+    let c = c + feq(length_array(e2), 6.0)
+    let c = c + check_values(e2, [64.0, 74.0, 72.0, 65.0, 65.0, 62.0])
+
+    // 3) Product-style expansion with two alternations in sequence.
+    // <62 72> <[64 [74 72] 65] [65 62]>
+    let p3 = mini("<62 72> <[64 [74 72] 65] [65 62]>")
+    let e3 = p3(test_arc)
+    let c = c + feq(length_array(e3), 8.0)
+    let c = c + check_values(
+        e3,
+        [
+            62.0, 64.0, 74.0, 72.0, 65.0,
+            72.0, 65.0, 62.0,
+        ],
+    )
+
+    // total checks: 1 + 2 + 1 + 6 + 1 + 8 = 19
+    c |> lift_f
+}
+
+#stage(main)
+fn dsp() {
+    test_mininotation_alternate_grouping!()
+}
