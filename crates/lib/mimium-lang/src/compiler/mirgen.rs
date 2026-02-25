@@ -16,11 +16,11 @@ use crate::mir::{self, Argument, Instruction, Mir, VPtr, VReg, Value};
 
 use state_tree::tree::StateTreeSkeleton;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::types::{PType, RecordTypeField, Type};
+use crate::types::{PType, RecordTypeField, Type, TypeSchemeId};
 use crate::utils::environment::{Environment, LookupRes};
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::{GLOBAL_LABEL, Location, Span};
@@ -921,8 +921,95 @@ impl Context {
         let new_fid = FunctionId(self.program.functions.len() as u64);
 
         let mut specialized_fn = original_fn.clone();
+        specialized_fn.index = new_fid.0 as usize;
         specialized_fn.label = specialized_name;
         self.specialize_monomorphized_function(&mut specialized_fn, arg_type, ret_type);
+
+        // Fix recursive self-references: replace Call(Value::Function(original_fid))
+        // with Call(Value::Function(new_fid)) so the monomorphized function
+        // calls itself rather than the original generic version.
+        for block in &mut specialized_fn.body {
+            let callee_regs: HashSet<u64> = block
+                .0
+                .iter()
+                .filter_map(|(_, inst)| match inst {
+                    Instruction::Call(fn_ptr, _, _)
+                    | Instruction::CallCls(fn_ptr, _, _)
+                    | Instruction::CallIndirect(fn_ptr, _, _) => match fn_ptr.as_ref() {
+                        Value::Register(r) => Some(*r),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect();
+            for (dst, inst) in &mut block.0 {
+                let replace_self_ref = |v: &mut VPtr| {
+                    if let Value::Function(fid) = v.as_ref() {
+                        if *fid == original_fid.0 as usize {
+                            *v = Arc::new(Value::Function(new_fid.0 as usize));
+                        }
+                    } else if let Value::Global(inner) = v.as_ref()
+                        && let Value::Function(fid) = inner.as_ref()
+                        && *fid == original_fid.0 as usize
+                    {
+                        *v = Arc::new(Value::Global(Arc::new(Value::Function(new_fid.0 as usize))));
+                    }
+                };
+                match inst {
+                    Instruction::Call(fn_ptr, _, _)
+                    | Instruction::CallCls(fn_ptr, _, _)
+                    | Instruction::CallIndirect(fn_ptr, _, _) => {
+                        replace_self_ref(fn_ptr);
+                    }
+                    Instruction::GetGlobal(global_ptr, _)
+                    | Instruction::Closure(global_ptr)
+                    | Instruction::CloseHeapClosure(global_ptr)
+                    | Instruction::CloneHeap(global_ptr)
+                    | Instruction::TaggedUnionGetTag(global_ptr)
+                    | Instruction::TaggedUnionGetValue(global_ptr, _)
+                    | Instruction::BoxLoad { ptr: global_ptr, .. }
+                    | Instruction::BoxClone { ptr: global_ptr }
+                    | Instruction::BoxRelease { ptr: global_ptr, .. }
+                    | Instruction::Return(global_ptr, _)
+                    | Instruction::ReturnFeed(global_ptr, _) => {
+                        replace_self_ref(global_ptr);
+                    }
+                    Instruction::SetGlobal(global_ptr, src_ptr, _)
+                    | Instruction::BoxStore {
+                        ptr: global_ptr,
+                        value: src_ptr,
+                        ..
+                    } => {
+                        replace_self_ref(global_ptr);
+                        replace_self_ref(src_ptr);
+                    }
+                    Instruction::SetUpValue(_, global_ptr, _) => {
+                        replace_self_ref(global_ptr);
+                    }
+                    Instruction::MakeClosure { fn_proto, .. }
+                    | Instruction::CloseUpValues(fn_proto, _) => {
+                        replace_self_ref(fn_proto);
+                    }
+                    Instruction::GetElement { value, .. }
+                    | Instruction::CloneUserSum { value, .. }
+                    | Instruction::ReleaseUserSum { value, .. }
+                    | Instruction::BoxAlloc { value, .. } => {
+                        replace_self_ref(value);
+                    }
+                    Instruction::Uinteger(v) => {
+                        if let Value::Register(r) = dst.as_ref()
+                            && callee_regs.contains(r)
+                            && *v == original_fid.0
+                        {
+                            *v = new_fid.0;
+                        }
+                    }
+                    _ => {}
+                }
+                // Also update the destination if it references the function.
+                replace_self_ref(dst);
+            }
+        }
 
         self.program.functions.push(specialized_fn);
         self.monomorph_map.insert(key, new_fid);
@@ -959,16 +1046,119 @@ impl Context {
             return;
         }
 
-        // Closure to apply the substitution to a single TypeNodeId.
-        // Any leaf type that is still unresolved (TypeScheme/Unknown/Intermediate)
-        // gets replaced with the concrete `arg_type`.
-        let subst = |ty: TypeNodeId| -> TypeNodeId {
-            let t = ty.to_type();
-            match t {
-                Type::TypeScheme(_) | Type::Unknown => arg_type,
-                _ if t.contains_unresolved() => arg_type,
-                _ => ty,
+        // Build substitutions for each TypeScheme variable by structurally
+        // matching generic function types against concrete call-site types.
+        let mut scheme_subst = BTreeMap::<TypeSchemeId, TypeNodeId>::new();
+        fn collect_scheme_subst(
+            generic_ty: TypeNodeId,
+            concrete_ty: TypeNodeId,
+            subst_map: &mut BTreeMap<TypeSchemeId, TypeNodeId>,
+        ) {
+            match (generic_ty.to_type(), concrete_ty.to_type()) {
+                (Type::TypeScheme(id), _) => {
+                    subst_map.entry(id).or_insert(concrete_ty);
+                }
+                (Type::Array(g), Type::Array(c))
+                | (Type::Ref(g), Type::Ref(c))
+                | (Type::Code(g), Type::Code(c))
+                | (Type::Boxed(g), Type::Boxed(c)) => {
+                    collect_scheme_subst(g, c, subst_map);
+                }
+                (Type::Tuple(g), Type::Tuple(c)) | (Type::Union(g), Type::Union(c)) => {
+                    if g.len() == c.len() {
+                        g.iter()
+                            .zip(c.iter())
+                            .for_each(|(gt, ct)| collect_scheme_subst(*gt, *ct, subst_map));
+                    }
+                }
+                (Type::Record(g_fields), Type::Record(c_fields)) => {
+                    if g_fields.len() == c_fields.len() {
+                        g_fields.iter().zip(c_fields.iter()).for_each(|(gf, cf)| {
+                            collect_scheme_subst(gf.ty, cf.ty, subst_map)
+                        });
+                    }
+                }
+                (
+                    Type::Function {
+                        arg: g_arg,
+                        ret: g_ret,
+                    },
+                    Type::Function {
+                        arg: c_arg,
+                        ret: c_ret,
+                    },
+                ) => {
+                    collect_scheme_subst(g_arg, c_arg, subst_map);
+                    collect_scheme_subst(g_ret, c_ret, subst_map);
+                }
+                (
+                    Type::UserSum {
+                        variants: g_variants,
+                        ..
+                    },
+                    Type::UserSum {
+                        variants: c_variants,
+                        ..
+                    },
+                ) => {
+                    if g_variants.len() == c_variants.len() {
+                        g_variants
+                            .iter()
+                            .zip(c_variants.iter())
+                            .for_each(|((_, gp), (_, cp))| {
+                                if let (Some(gt), Some(ct)) = (gp, cp) {
+                                    collect_scheme_subst(*gt, *ct, subst_map);
+                                }
+                            });
+                    }
+                }
+                _ => {}
             }
+        }
+
+        let generic_args: Vec<TypeNodeId> = function.args.iter().map(|a| a.1).collect();
+        if generic_args.len() == 1 {
+            collect_scheme_subst(generic_args[0], arg_type, &mut scheme_subst);
+        } else {
+            match arg_type.to_type() {
+                Type::Tuple(concrete_args) if concrete_args.len() == generic_args.len() => {
+                    generic_args
+                        .iter()
+                        .zip(concrete_args.iter())
+                        .for_each(|(generic_arg, concrete_arg)| {
+                            collect_scheme_subst(*generic_arg, *concrete_arg, &mut scheme_subst)
+                        });
+                }
+                Type::Record(concrete_fields) if concrete_fields.len() == generic_args.len() => {
+                    generic_args
+                        .iter()
+                        .zip(concrete_fields.iter().map(|f| f.ty))
+                        .for_each(|(generic_arg, concrete_arg)| {
+                            collect_scheme_subst(*generic_arg, concrete_arg, &mut scheme_subst)
+                        });
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(generic_ret) = function.return_type.get().copied() {
+            collect_scheme_subst(generic_ret, ret_type, &mut scheme_subst);
+        }
+
+        let subst = |ty: TypeNodeId| -> TypeNodeId {
+            fn substitute_by_map(
+                ty: TypeNodeId,
+                subst_map: &BTreeMap<TypeSchemeId, TypeNodeId>,
+            ) -> TypeNodeId {
+                match ty.to_type() {
+                    Type::TypeScheme(id) => subst_map.get(&id).copied().unwrap_or(ty),
+                    _ if ty.to_type().contains_unresolved() => {
+                        ty.apply_fn(|child| substitute_by_map(child, subst_map))
+                    }
+                    _ => ty,
+                }
+            }
+            substitute_by_map(ty, &scheme_subst)
         };
 
         // Recursively substitute inside function types.
@@ -1002,10 +1192,22 @@ impl Context {
         let _ = new_return_type.set(ret_type);
         function.return_type = new_return_type;
 
+        let ret_array_elem_ty = match ret_type.to_type() {
+            Type::Array(elem) => Some(elem),
+            _ => None,
+        };
+
         // Walk the body and substitute types + resolve ext function calls.
         for block in &mut function.body {
             for (_dst, inst) in &mut block.0 {
                 Self::substitute_types_in_instruction(inst, &subst, &subst_fn_ty, &self.typeenv);
+                if let Instruction::Array(values, elem_ty) = inst
+                    && values.is_empty()
+                    && elem_ty.to_type().contains_unresolved()
+                    && let Some(concrete_elem_ty) = ret_array_elem_ty
+                {
+                    *elem_ty = concrete_elem_ty;
+                }
             }
         }
     }
@@ -1081,6 +1283,9 @@ impl Context {
             }
             Instruction::Return(_, ty) | Instruction::ReturnFeed(_, ty) => {
                 *ty = subst(*ty);
+            }
+            Instruction::Array(_, elem_ty) => {
+                *elem_ty = subst(*elem_ty);
             }
             // Instructions without TypeNodeId fields — nothing to substitute.
             _ => {}
@@ -1532,7 +1737,21 @@ impl Context {
         items: &[ExprNodeId],
         ty: TypeNodeId,
     ) -> (VPtr, TypeNodeId, Vec<StateSkeleton>) {
-        log::trace!("alloc_aggregates: items = {items:?}, ty = {ty:?}");
+        let alloc_ty = match ty.to_type() {
+            Type::Failure | Type::Unknown => {
+                let inferred_elems = items
+                    .iter()
+                    .map(|expr| {
+                        self.typeenv
+                            .infer_type(*expr)
+                            .unwrap_or(Type::Unknown.into_id())
+                    })
+                    .collect::<Vec<_>>();
+                Type::Tuple(inferred_elems).into_id()
+            }
+            _ => ty,
+        };
+        log::trace!("alloc_aggregates: items = {items:?}, ty = {alloc_ty:?}");
         let len = items.len();
         if len == 0 {
             return (
@@ -1548,7 +1767,7 @@ impl Context {
             let (v, elem_ty, s) = self.eval_expr(*e);
             let ptr = self.push_inst(Instruction::GetElement {
                 value: dst.clone(),
-                ty, // lazyly set after loops,
+                ty: alloc_ty, // lazyly set after loops,
                 tuple_offset: i as u64,
             });
             states.extend(s);
@@ -1556,11 +1775,11 @@ impl Context {
         }
         self.get_current_basicblock()
             .0
-            .insert(alloc_insert_point, (dst.clone(), Instruction::Alloc(ty)));
+            .insert(alloc_insert_point, (dst.clone(), Instruction::Alloc(alloc_ty)));
 
         // pass only the head of the tuple, and the length can be known
         // from the type information.
-        (dst, ty, states)
+        (dst, alloc_ty, states)
     }
     /// Evaluates an expression as an l-value, returning a pointer to its memory location.
     fn eval_expr_as_address(&mut self, e: ExprNodeId) -> VPtr {
@@ -1626,10 +1845,6 @@ impl Context {
                 })
                 .collect(),
             Type::Record(kvs) => {
-                enum SearchRes {
-                    Found(usize),
-                    Default,
-                }
                 // Extract declared parameter names/types.  When the function
                 // type preserves field names (`at` is Record), use them
                 // directly.  Otherwise (e.g. after VM staging which produces
@@ -1639,60 +1854,61 @@ impl Context {
                     if let Type::Record(param_types) = at.to_type() {
                         Some(param_types)
                     } else if let Type::Tuple(tuple_tys) = at.to_type() {
-                        // Try to recover parameter names from the function def.
-                        let names = self.get_function_param_names(&f_val);
-                        names.map(|ns| {
-                            ns.into_iter()
-                                .zip(tuple_tys.iter())
-                                .map(|(name, elem_ty)| RecordTypeField {
-                                    key: name,
-                                    ty: *elem_ty,
-                                    has_default: false,
-                                })
-                                .collect()
-                        })
+                        self.get_function_param_fields(&f_val, &tuple_tys)
                     } else {
                         None
                     };
 
                 if let Some(param_types) = param_fields {
-                    let search_res = param_types.iter().map(|param| {
-                        kvs.iter()
-                            .enumerate()
-                            .find_map(|(i, kv)| {
-                                (param.key == kv.key).then_some((SearchRes::Found(i), kv))
-                            })
-                            .or(param.has_default.then_some((SearchRes::Default, param)))
-                    });
-                    search_res.map(
-                                            |searchres| match searchres {
-                                                Some((SearchRes::Found(i), kv)) => {
-                                                    log::trace!("non-default argument {} found", kv.key);
+                    let fid_opt = match f_val.as_ref() {
+                        Value::Function(fid) => Some(FunctionId(*fid as u64)),
+                        Value::Global(inner) => match inner.as_ref() {
+                            Value::Function(fid) => Some(FunctionId(*fid as u64)),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
 
-                                                    let field_val = self.push_inst(
-                                                                    Instruction::GetElement {
-                                                                        value: arg_val.clone(),
-                                                                        ty,
-                                                                        tuple_offset: i as u64,
-                                                                    },
-                                                                );
-                                                                (field_val, kv.ty)
-                                                            },
-                                                Some((SearchRes::Default, kv)) => {
-                                                  if let Value::Function(fid) = f_val.as_ref() {
-                                                     let fid=      FunctionId(*fid as u64);
-                                                        log::trace!("searching default argument for {} in function {}", kv.key, self.program.functions[fid.0 as usize].label.as_str());
-                                                        let default_val = self.get_default_arg_call(kv.key, fid).expect(format!("msg: default argument {} not found", kv.key).as_str());
-                                                        (default_val, kv.ty)
-                                                    } else {
-                                                        log::error!("default argument cannot be supported with closure currently");
-                                                        (Arc::new(Value::None), Type::Failure.into_id())
-                                                    }
-                                                }
-                                                None=>{
-                                                    panic!("parameter pack failed, possible type inference bug")
-                                                }
-                                            }).collect::<Vec<_>>()
+                    param_types
+                        .iter()
+                        .enumerate()
+                        .map(|(param_index, param)| {
+                            if let Some((field_index, kv)) = kvs
+                                .iter()
+                                .enumerate()
+                                .find(|(_, kv)| param.key == kv.key)
+                            {
+                                log::trace!("named argument {} found", kv.key);
+                                let field_val = self.push_inst(Instruction::GetElement {
+                                    value: arg_val.clone(),
+                                    ty,
+                                    tuple_offset: field_index as u64,
+                                });
+                                return (field_val, kv.ty);
+                            }
+
+                            if let Some(fid) = fid_opt
+                                && let Some(default_val) = self.get_default_arg_call(param.key, fid)
+                                && !matches!(default_val.as_ref(), Value::None)
+                            {
+                                log::trace!("using default argument {}", param.key);
+                                return (default_val, param.ty);
+                            }
+
+                            if param_index < kvs.len() {
+                                let kv = &kvs[param_index];
+                                log::trace!("fallback positional argument {}", kv.key);
+                                let field_val = self.push_inst(Instruction::GetElement {
+                                    value: arg_val.clone(),
+                                    ty,
+                                    tuple_offset: param_index as u64,
+                                });
+                                return (field_val, kv.ty);
+                            }
+
+                            panic!("parameter pack failed, possible type inference bug")
+                        })
+                        .collect::<Vec<_>>()
                 } else {
                     // No parameter names available — fall back to positional
                     // unpacking (same as Tuple case).
@@ -1713,10 +1929,11 @@ impl Context {
         }
     }
 
-    /// Extract parameter names from a function value by looking up the MIR
-    /// function table.  Returns `None` for external functions or closures
-    /// whose parameter names are not available.
-    fn get_function_param_names(&self, f_val: &VPtr) -> Option<Vec<Symbol>> {
+    fn get_function_param_fields(
+        &self,
+        f_val: &VPtr,
+        tuple_tys: &[TypeNodeId],
+    ) -> Option<Vec<RecordTypeField>> {
         let fid = match f_val.as_ref() {
             Value::Function(fid) => Some(*fid),
             Value::Global(inner) => {
@@ -1729,10 +1946,37 @@ impl Context {
             _ => None,
         };
         fid.and_then(|fid| {
-            self.program
-                .functions
-                .get(fid)
-                .map(|f| f.args.iter().map(|a| a.0).collect())
+            let func = self.program.functions.get(fid)?;
+
+            if let Some((fn_ty, _stage)) = self.typeenv.env.lookup(&func.label).cloned()
+                && let Type::Function { arg, .. } = fn_ty.to_type()
+                && let Type::Record(fields) = arg.to_type()
+                && fields.len() == tuple_tys.len()
+            {
+                return Some(
+                    fields
+                        .iter()
+                        .enumerate()
+                        .map(|(i, field)| RecordTypeField {
+                            key: field.key,
+                            ty: tuple_tys.get(i).copied().unwrap_or(field.ty),
+                            has_default: field.has_default,
+                        })
+                        .collect(),
+                );
+            }
+
+            Some(
+                func.args
+                    .iter()
+                    .zip(tuple_tys.iter())
+                    .map(|(arg, elem_ty)| RecordTypeField {
+                        key: arg.0,
+                        ty: *elem_ty,
+                        has_default: false,
+                    })
+                    .collect(),
+            )
         })
     }
 
@@ -1780,15 +2024,38 @@ impl Context {
             Expr::Proj(tup, idx) => {
                 let i = *idx as usize;
                 let (tup_v, tup_ty, states) = self.eval_expr(*tup);
-                let elem_ty = match tup_ty.to_type() {
+                let projection_ty = ty;
+                let aggregate_ty = match tup_ty.to_type() {
+                    Type::Tuple(_) | Type::Record(_) => tup_ty,
+                    _ => self
+                        .typeenv
+                        .infer_type(*tup)
+                        .map(InferContext::substitute_type)
+                        .ok()
+                        .filter(|inferred| {
+                            matches!(inferred.to_type(), Type::Tuple(_) | Type::Record(_))
+                        })
+                        .unwrap_or_else(|| {
+                            let placeholder = (0..=i)
+                                .map(|j| {
+                                    if j == i {
+                                        projection_ty
+                                    } else {
+                                        Type::Unknown.into_id()
+                                    }
+                                })
+                                .collect::<Vec<_>>();
+                            Type::Tuple(placeholder).into_id()
+                        }),
+                };
+                let elem_ty = match aggregate_ty.to_type() {
                     Type::Tuple(tys) if i < tys.len() => tys[i],
-                    _ => panic!(
-                        "expected tuple type for projection,perhaps type error bugs in the previous stage"
-                    ),
+                    Type::Record(fields) if i < fields.len() => fields[i].ty,
+                    _ => projection_ty,
                 };
                 let res = self.push_inst(Instruction::GetElement {
                     value: tup_v.clone(),
-                    ty: tup_ty,
+                    ty: aggregate_ty,
                     tuple_offset: i as u64,
                 });
                 // Clone refcounted values extracted from the tuple so the
@@ -1863,9 +2130,19 @@ impl Context {
                     // should be `Type::Array(elem_ty)`.
                     match ty.to_type() {
                         Type::Array(et) => et,
-                        _ => numeric!(),
+                        _ => {
+                            numeric!()
+                        }
                     }
                 };
+                // Resolve TypeAlias so that word_size() returns the correct
+                // size for the element type (e.g. Event → {arc,active,val}).
+                let elem_ty = self.typeenv.resolve_type_alias(elem_ty);
+                debug_assert!(
+                    !matches!(elem_ty.to_type(), Type::TypeAlias(_)),
+                    "Array element type should be resolved but got: {:?}",
+                    elem_ty.to_type()
+                );
                 let reg = self.push_inst(Instruction::Array(values.clone(), elem_ty));
                 (
                     reg,
@@ -1940,8 +2217,43 @@ impl Context {
                 // Check if this is a generic function that needs monomorphization.
                 // Both TypeScheme (explicit generic params) and Unknown (unresolved
                 // types from macro-generated code) trigger monomorphization.
-                let needs_monomorphization =
-                    at.to_type().contains_unresolved() || rt.to_type().contains_unresolved();
+                //
+                // Additionally, if the function definition itself has generic
+                // types (its body was compiled with TypeScheme), it also needs
+                // monomorphization even when the call-site types are concrete
+                // (type inference resolves them but the function body bytecode
+                // still uses generic word sizes).
+                let fn_def_is_generic = match f_val.as_ref() {
+                    Value::Function(fid) => self
+                        .program
+                        .functions
+                        .get(*fid)
+                        .is_some_and(|f| {
+                            f.args.iter().any(|a| a.1.to_type().contains_unresolved())
+                                || f.return_type
+                                    .get()
+                                    .is_some_and(|r| r.to_type().contains_unresolved())
+                        }),
+                    Value::Global(inner) => {
+                        if let Value::Function(fid) = inner.as_ref() {
+                            self.program
+                                .functions
+                                .get(*fid)
+                                .is_some_and(|f| {
+                                    f.args.iter().any(|a| a.1.to_type().contains_unresolved())
+                                        || f.return_type
+                                            .get()
+                                            .is_some_and(|r| r.to_type().contains_unresolved())
+                                })
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                };
+                let needs_monomorphization = fn_def_is_generic
+                    || at.to_type().contains_unresolved()
+                    || rt.to_type().contains_unresolved();
 
                 // If we have a generic function, monomorphize it at call-site.
                 // Returns (f_to_call, monomorphized_ret_ty, concrete_arg_ty).
@@ -2033,23 +2345,25 @@ impl Context {
                 };
 
                 let mut call_arg_ty = monomorphized_at;
+                let mut monomorphized_rt = monomorphized_rt;
                 let f_to_call = match f_to_call.as_ref() {
-                    Value::ExtFunction(fn_name, fn_ty)
-                        if resolve_monomorphized_ext_fn_name(*fn_name, at, monomorphized_rt)
-                            .is_some() =>
-                    {
-                        let specialized_name =
-                            resolve_monomorphized_ext_fn_name(*fn_name, at, monomorphized_rt)
-                                .expect("checked above");
-                        if let Some((specialized_fn_ty, _stage)) =
-                            self.typeenv.env.lookup(&specialized_name).cloned()
-                        {
-                            if let Type::Function { arg, .. } = specialized_fn_ty.to_type() {
-                                call_arg_ty = arg;
+                    Value::ExtFunction(fn_name, fn_ty) => {
+                        let resolved =
+                            resolve_monomorphized_ext_fn_name(*fn_name, monomorphized_at, monomorphized_rt);
+                        if let Some(specialized_name) = resolved {
+                            if let Some((specialized_fn_ty, _stage)) =
+                                self.typeenv.env.lookup(&specialized_name).cloned()
+                            {
+                                if let Type::Function { arg, ret } = specialized_fn_ty.to_type() {
+                                    call_arg_ty = arg;
+                                    monomorphized_rt = ret;
+                                }
+                                Arc::new(Value::ExtFunction(specialized_name, specialized_fn_ty))
+                            } else {
+                                Arc::new(Value::ExtFunction(specialized_name, *fn_ty))
                             }
-                            Arc::new(Value::ExtFunction(specialized_name, specialized_fn_ty))
                         } else {
-                            Arc::new(Value::ExtFunction(specialized_name, *fn_ty))
+                            f_to_call
                         }
                     }
                     _ => f_to_call,
@@ -2106,6 +2420,39 @@ impl Context {
                         && ty.to_type().can_be_unpacked()
                     {
                         self.unpack_argument(f_val, arg_val, call_arg_ty, ty)
+                    } else if should_unpack_single_arg
+                        && matches!(call_arg_ty.to_type(), Type::Record(ref fields) if fields.len() > 1)
+                    {
+                        let fields = match call_arg_ty.to_type() {
+                            Type::Record(fields) => fields,
+                            _ => unreachable!(),
+                        };
+                        let fid_opt = match f_to_call.as_ref() {
+                            Value::Function(fid) => Some(FunctionId(*fid as u64)),
+                            Value::Global(inner) => match inner.as_ref() {
+                                Value::Function(fid) => Some(FunctionId(*fid as u64)),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+
+                        let mut packed = vec![(arg_val.clone(), ty.clone())];
+                        let mut ok = true;
+                        for field in fields.iter().skip(1) {
+                            if !field.has_default {
+                                ok = false;
+                                break;
+                            }
+                            let default_val = fid_opt
+                                .and_then(|fid| self.get_default_arg_call(field.key, fid))
+                                .unwrap_or_else(|| Arc::new(Value::None));
+                            if matches!(default_val.as_ref(), Value::None) {
+                                ok = false;
+                                break;
+                            }
+                            packed.push((default_val, field.ty));
+                        }
+                        if ok { packed } else { vec![(arg_val, ty)] }
                     } else {
                         vec![(arg_val, ty)]
                     }

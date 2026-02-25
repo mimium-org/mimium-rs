@@ -1,5 +1,5 @@
 use core::slice;
-use slotmap::{DefaultKey, SlotMap};
+use slotmap::{DefaultKey, Key, KeyData, SlotMap};
 use std::{cell::RefCell, cmp::Ordering, collections::HashMap, ops::Range, rc::Rc};
 pub mod bytecode;
 pub mod heap;
@@ -83,7 +83,11 @@ impl ArrayHeap {
         self.elem_word_size
     }
     pub fn get_data(&self) -> &[RawVal] {
-        &self.data
+        if self.data.is_empty() {
+            &[]
+        } else {
+            &self.data
+        }
     }
     pub fn get_data_mut(&mut self) -> &mut [RawVal] {
         &mut self.data
@@ -105,20 +109,24 @@ impl ArrayStorage {
             std::mem::size_of::<ArrayIdx>() == 8,
             "ArrayIdx size must be 8 bytes"
         );
-        unsafe { std::mem::transmute_copy::<ArrayIdx, RawVal>(&key) }
+        key.data().as_ffi() as RawVal
     }
     pub fn get_array(&self, id: RawVal) -> &ArrayHeap {
-        let key: ArrayIdx = unsafe { std::mem::transmute_copy::<RawVal, ArrayIdx>(&id) };
-        self.data.get(key).expect("Invalid ArrayIdx")
+        let key = ArrayIdx::from(KeyData::from_ffi(id as u64));
+        self.data
+            .get(key)
+            .unwrap_or_else(|| panic!("Invalid ArrayIdx: raw_id={id}"))
     }
     /// Try to get an array by its raw ID, returning `None` if the ID is invalid.
     pub fn try_get_array(&self, id: RawVal) -> Option<&ArrayHeap> {
-        let key: ArrayIdx = unsafe { std::mem::transmute_copy::<RawVal, ArrayIdx>(&id) };
+        let key = ArrayIdx::from(KeyData::from_ffi(id as u64));
         self.data.get(key)
     }
     pub fn get_array_mut(&mut self, id: RawVal) -> &mut ArrayHeap {
-        let key: ArrayIdx = unsafe { std::mem::transmute_copy::<RawVal, ArrayIdx>(&id) };
-        self.data.get_mut(key).expect("Invalid ArrayIdx")
+        let key = ArrayIdx::from(KeyData::from_ffi(id as u64));
+        self.data
+            .get_mut(key)
+            .unwrap_or_else(|| panic!("Invalid ArrayIdx (mut): raw_id={id}"))
     }
 }
 // Upvalues are used with Rc<RefCell<UpValue>> because it maybe shared between multiple closures
@@ -225,6 +233,7 @@ pub struct Machine {
     delaysizes_pos_stack: Vec<usize>,
     global_vals: Vec<RawVal>,
     debug_stacktype: Vec<RawValType>,
+    current_ext_call_nargs: u8,
     /// Storage for code values (AST fragments) produced by codegen combinators.
     /// Each entry is an interned `ExprNodeId`; the index into this vec is
     /// stored as a `RawVal` on the VM stack.
@@ -402,6 +411,7 @@ impl Machine {
             delaysizes_pos_stack: vec![0],
             global_vals: vec![],
             debug_stacktype: vec![RawValType::Int; 255],
+            current_ext_call_nargs: 0,
             code_values: vec![],
         };
         extfns.for_each(|ExtFunInfo { name, fun, .. }| {
@@ -431,6 +441,7 @@ impl Machine {
             delaysizes_pos_stack: vec![0],
             global_vals: vec![],
             debug_stacktype: vec![RawValType::Int; 255],
+            current_ext_call_nargs: 0,
             code_values: vec![],
         };
         //expect there are no change changes in external function use for now
@@ -543,6 +554,11 @@ impl Machine {
     pub fn get_top_n(&self, n: usize) -> &[RawVal] {
         let len = self.stack.len();
         &self.stack[(len - n)..]
+    }
+
+    /// Number of argument words for the currently executing external function call.
+    pub fn get_current_ext_call_nargs(&self) -> u8 {
+        self.current_ext_call_nargs
     }
     /// Extract the [`ClosureIdx`] stored inside a heap-allocated closure object.
     ///
@@ -936,7 +952,9 @@ impl Machine {
                 Instruction::CallExtFun(func, nargs, nret_req) => {
                     let ext_fn_idx = self.get_stack(func as i64) as usize;
                     let fidx = self.fn_map.get(&ext_fn_idx).unwrap();
-                    let nret = match fidx {
+                    let prev_nargs = self.current_ext_call_nargs;
+                    self.current_ext_call_nargs = nargs;
+                    let _nret = match fidx {
                         ExtFnIdx::Fun(fi) => {
                             let f = self.ext_fun_table[*fi].1;
                             self.call_function(func, nargs, nret_req, f)
@@ -949,13 +967,18 @@ impl Machine {
                             })
                         }
                     };
+                    self.current_ext_call_nargs = prev_nargs;
 
-                    // return
+                    // Shift return values one position left so they start at
+                    // register `func` (the slot that held the function ref).
+                    // `call_function` already ensured exactly `nret_req` words
+                    // are on the stack, so use that — not the raw `nret` which
+                    // may exceed the truncated stack length.
                     let base = self.base_pointer as usize;
                     let iret = base + func as usize + 1;
-                    self.stack
-                        .copy_within(iret..(iret + nret as usize), base + func as usize);
-                    self.stack.truncate(base + func as usize + nret as usize);
+                    let n = nret_req as usize;
+                    self.stack.copy_within(iret..(iret + n), base + func as usize);
+                    self.stack.truncate(base + func as usize + n);
                 }
                 Instruction::Closure(dst, fn_index) => {
                     let fn_proto_pos = self.get_stack(fn_index as i64) as usize;
@@ -1226,15 +1249,37 @@ impl Machine {
                     let array = self.get_stack(arr as i64);
                     let index = self.get_stack(idx as i64);
                     let index_val = Self::get_as::<f64>(index);
+                    if !index_val.is_finite() || index_val < 0.0 {
+                        let caller = self
+                            .prog
+                            .global_fn_table
+                            .get(func_i)
+                            .map(|(n, _)| n.as_str())
+                            .unwrap_or("<unknown>");
+                        panic!(
+                            "GetArrayElem invalid index {} in caller {}",
+                            index_val, caller
+                        );
+                    }
                     let adata = self.arrays.get_array(array);
                     let elem_word_size = adata.elem_word_size as usize;
-                    let buffer = unsafe {
-                        let address = adata
-                            .data
-                            .as_ptr()
-                            .wrapping_add(index_val as usize * elem_word_size);
-                        std::slice::from_raw_parts(address, elem_word_size)
-                    };
+                    let index_int = index_val as usize;
+                    let len = adata.get_length_array() as usize;
+                    if index_int >= len {
+                        let caller = self
+                            .prog
+                            .global_fn_table
+                            .get(func_i)
+                            .map(|(n, _)| n.as_str())
+                            .unwrap_or("<unknown>");
+                        panic!(
+                            "GetArrayElem OOB index {} (len {}) in caller {}",
+                            index_int, len, caller
+                        );
+                    }
+                    let start = index_int * elem_word_size;
+                    let end = start + elem_word_size;
+                    let buffer = &adata.data[start..end];
                     set_vec_range(
                         &mut self.stack,
                         (self.base_pointer + dst as u64) as usize,
@@ -1247,18 +1292,40 @@ impl Machine {
                     let array = self.get_stack(arr as i64);
                     let index = self.get_stack(idx as i64);
                     let index_val = Self::get_as::<f64>(index);
+                    if !index_val.is_finite() || index_val < 0.0 {
+                        let caller = self
+                            .prog
+                            .global_fn_table
+                            .get(func_i)
+                            .map(|(n, _)| n.as_str())
+                            .unwrap_or("<unknown>");
+                        panic!(
+                            "SetArrayElem invalid index {} in caller {}",
+                            index_val, caller
+                        );
+                    }
                     let index_int = index_val as usize;
+                    let elem_word_size = self.arrays.get_array(array).elem_word_size as usize;
+                    let len = self.arrays.get_array(array).get_length_array() as usize;
+                    if index_int >= len {
+                        let caller = self
+                            .prog
+                            .global_fn_table
+                            .get(func_i)
+                            .map(|(n, _)| n.as_str())
+                            .unwrap_or("<unknown>");
+                        panic!(
+                            "SetArrayElem OOB index {} (len {}) in caller {}",
+                            index_int, len, caller
+                        );
+                    }
+                    let (_range2, buf_src2) = self.get_stack_range(val as _, elem_word_size as _);
+                    let src_words = buf_src2.to_vec();
                     let adata = self.arrays.get_array_mut(array);
-                    let elem_word_size = adata.elem_word_size as usize;
-                    let buffer = unsafe {
-                        let address = adata
-                            .data
-                            .as_mut_ptr()
-                            .wrapping_add(index_int * elem_word_size);
-                        std::slice::from_raw_parts_mut(address, elem_word_size)
-                    };
-                    let (_range, buf_src) = self.get_stack_range(val as _, elem_word_size as _);
-                    buffer.copy_from_slice(buf_src);
+                    let start = index_int * elem_word_size;
+                    let end = start + elem_word_size;
+                    let buffer = &mut adata.data[start..end];
+                    buffer.copy_from_slice(&src_words);
                 }
                 Instruction::GetState(dst, size) => {
                     //force borrow because state storage and stack never collisions

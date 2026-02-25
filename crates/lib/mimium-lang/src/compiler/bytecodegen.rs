@@ -235,20 +235,60 @@ impl ByteCodeGenerator {
             });
         }
         let faddress = self.find_keep(faddress);
-        // bytecodes_dst.push(VmInstruction::Move())
-        for (adst, src, size) in aoffsets.iter() {
-            let address = adst.checked_add(faddress).and_then(|v| v.checked_add(1)).unwrap_or_else(|| {
-                panic!(
-                    "bytecodegen: address overflow in prepare_function: adst={}, faddress={}",
-                    adst, faddress
-                )
-            });
-            let is_samedst = address == *src;
+        let placements: Vec<(TypeSize, Reg, TypeSize)> = aoffsets
+            .iter()
+            .map(|(adst, src, size)| {
+                let address = adst
+                    .checked_add(faddress)
+                    .and_then(|v| v.checked_add(1))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "bytecodegen: address overflow in prepare_function: adst={}, faddress={}",
+                            adst, faddress
+                        )
+                    });
+                (address, *src, *size)
+            })
+            .collect();
+
+        let ranges_overlap = |a_start: TypeSize, a_size: TypeSize, b_start: TypeSize, b_size: TypeSize| {
+            let a_end = a_start + a_size;
+            let b_end = b_start + b_size;
+            a_start < b_end && b_start < a_end
+        };
+
+        let has_overlap = placements.iter().any(|(dst, _src, dsize)| {
+            placements.iter().any(|(_odst, osrc, osize)| {
+                ranges_overlap(*dst, *dsize, *osrc, *osize) && !(*dst == *osrc && *dsize == *osize)
+            })
+        });
+
+        let staged: Vec<(TypeSize, Reg, TypeSize)> = if has_overlap {
+            placements
+                .iter()
+                .enumerate()
+                .map(|(idx, (dst, src, size))| {
+                    let temp_key = Arc::new(mir::Value::Register(u64::MAX - idx as u64));
+                    let tmp = self.vregister.get_top().add_newvalue_range(&temp_key, *size as u64);
+                    match size {
+                        0 => unreachable!(),
+                        1 => bytecodes_dst.push(VmInstruction::Move(tmp, *src)),
+                        _ => bytecodes_dst.push(VmInstruction::MoveRange(tmp, *src, *size)),
+                    }
+                    (*dst, tmp, *size)
+                })
+                .collect()
+        } else {
+            placements
+        };
+
+        for (dst, src, size) in staged.iter() {
+            let is_samedst = *dst == *src;
             if !is_samedst {
                 match size {
                     0 => unreachable!(),
-                    1 => bytecodes_dst.push(VmInstruction::Move(address as Reg, *src)),
-                    _ => bytecodes_dst.push(VmInstruction::MoveRange(address as Reg, *src, *size)),
+                    1 => bytecodes_dst.push(VmInstruction::Move(*dst as Reg, *src)),
+                    _ => bytecodes_dst.push(VmInstruction::MoveRange(*dst as Reg, *src, *size)),
                 }
             }
         }
@@ -406,9 +446,13 @@ impl ByteCodeGenerator {
             } => {
                 let ptr = self.find_keep(&value) as usize;
                 let ty = ty.to_type();
-                let tvec = ty.get_as_tuple().unwrap();
-                let tsize = Self::word_size_for_type(tvec[tuple_offset as usize]);
-                let t_offset: u64 = tvec[0..(tuple_offset as _)]
+                let elem_tys: Vec<TypeNodeId> = match ty {
+                    Type::Tuple(elems) => elems,
+                    Type::Record(fields) => fields.iter().map(|f| f.ty).collect(),
+                    _ => panic!("GetElement expects tuple or record type, got {:?}", ty),
+                };
+                let tsize = Self::word_size_for_type(elem_tys[tuple_offset as usize]);
+                let t_offset: u64 = elem_tys[0..(tuple_offset as _)]
                     .iter()
                     .map(|t| Self::word_size_for_type(*t) as u64)
                     .sum();

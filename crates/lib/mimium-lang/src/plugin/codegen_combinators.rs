@@ -523,11 +523,26 @@ fn code_lift_arrayf(machine: &mut Machine) -> ReturnCode {
     let arr_raw = machine.get_stack(0);
     let arr = machine.arrays.get_array(arr_raw);
     let len = arr.get_length_array();
+    let elem_word_size = arr.get_elem_word_size() as usize;
     let data = arr.get_data().to_vec();
     let elems: Vec<ExprNodeId> = (0..len as usize)
         .map(|i| {
-            let f = f64::from_bits(data[i]);
-            expr_to_id(Expr::Literal(Literal::Float(format!("{f}").to_symbol())))
+            let start = i * elem_word_size;
+            let end = start + elem_word_size;
+            let words = &data[start..end];
+            if elem_word_size == 1 {
+                let f = f64::from_bits(words[0]);
+                expr_to_id(Expr::Literal(Literal::Float(format!("{f}").to_symbol())))
+            } else {
+                let tuple_elems = words
+                    .iter()
+                    .map(|w| {
+                        let f = f64::from_bits(*w);
+                        expr_to_id(Expr::Literal(Literal::Float(format!("{f}").to_symbol())))
+                    })
+                    .collect::<Vec<_>>();
+                expr_to_id(Expr::Tuple(tuple_elems))
+            }
         })
         .collect();
     let expr = expr_to_id(Expr::ArrayLiteral(elems));
@@ -543,14 +558,43 @@ fn code_lift_arrayf(machine: &mut Machine) -> ReturnCode {
 /// lifted as a `Literal::Float` and wrapped in `Expr::ArrayLiteral`.
 /// Otherwise the value is treated as a float and lifted via `code_lit_f`.
 fn code_lift(machine: &mut Machine) -> ReturnCode {
+    let nargs = machine.get_current_ext_call_nargs() as usize;
+    if nargs > 1 {
+        let elems: Vec<ExprNodeId> = (0..nargs)
+            .map(|i| {
+                let f = f64::from_bits(machine.get_stack(i as i64));
+                expr_to_id(Expr::Literal(Literal::Float(format!("{f}").to_symbol())))
+            })
+            .collect();
+        let expr = expr_to_id(Expr::Tuple(elems));
+        let code_val = machine.alloc_code(expr);
+        machine.set_stack(0, code_val);
+        return 1;
+    }
+
     let val = machine.get_stack(0);
     if let Some(arr) = machine.arrays.try_get_array(val) {
         let len = arr.get_length_array();
+        let elem_word_size = arr.get_elem_word_size() as usize;
         let data = arr.get_data().to_vec();
         let elems: Vec<ExprNodeId> = (0..len as usize)
             .map(|i| {
-                let f = f64::from_bits(data[i]);
-                expr_to_id(Expr::Literal(Literal::Float(format!("{f}").to_symbol())))
+                let start = i * elem_word_size;
+                let end = start + elem_word_size;
+                let words = &data[start..end];
+                if elem_word_size == 1 {
+                    let f = f64::from_bits(words[0]);
+                    expr_to_id(Expr::Literal(Literal::Float(format!("{f}").to_symbol())))
+                } else {
+                    let tuple_elems = words
+                        .iter()
+                        .map(|w| {
+                            let f = f64::from_bits(*w);
+                            expr_to_id(Expr::Literal(Literal::Float(format!("{f}").to_symbol())))
+                        })
+                        .collect::<Vec<_>>();
+                    expr_to_id(Expr::Tuple(tuple_elems))
+                }
             })
             .collect();
         let expr = expr_to_id(Expr::ArrayLiteral(elems));
