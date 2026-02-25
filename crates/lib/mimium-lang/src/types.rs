@@ -162,7 +162,7 @@ impl PartialEq for Type {
 }
 
 // currently, this refers to the number of registers
-pub type TypeSize = u8;
+pub type TypeSize = u16;
 
 impl Type {
     // check if contains any function type in its member.

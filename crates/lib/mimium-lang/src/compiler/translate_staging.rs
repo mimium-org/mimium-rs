@@ -30,8 +30,9 @@
 //!   when hitting `Escape(inner)`, switch back to `translate_stage0(inner)`.
 
 use crate::ast::{Expr, Literal, MatchArm, MatchPattern, RecordField};
-use crate::interner::{ExprNodeId, Symbol, ToSymbol};
-use crate::pattern::Pattern;
+use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
+use crate::pattern::{Pattern, TypedId, TypedPattern};
+use crate::types::Type;
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -47,6 +48,94 @@ pub fn translate(expr: ExprNodeId) -> ExprNodeId {
 // ---------------------------------------------------------------------------
 // Stage-0 walker
 // ---------------------------------------------------------------------------
+
+/// Strip `Code(T)` wrappers from a type.
+///
+/// After staging translation, `Code` values are represented as plain `Numeric`
+/// (float) in the VM.  Type annotations that reference `Code(T)` (e.g.
+/// explicit `` `float `` return types in user source) must be stripped so the
+/// stage-0 type checker sees `Numeric` instead of `Code(Numeric)`.
+/// Recursively strip `Code(T)` wrappers from a type.
+///
+/// After staging translation, `Code` values are represented as plain `Numeric`
+/// (float) in the VM.  Type annotations that reference `Code(T)` — whether at
+/// the top level or nested inside function/tuple/record types — must be
+/// rewritten so the stage-0 type checker sees `Numeric` instead of `Code(T)`.
+fn strip_code_type(ty: TypeNodeId) -> TypeNodeId {
+    use crate::types::{PType, RecordTypeField};
+    match ty.to_type() {
+        Type::Code(_) => crate::numeric!(),
+        Type::Function { arg, ret } => {
+            let new_arg = strip_code_type(arg);
+            let new_ret = strip_code_type(ret);
+            if new_arg == arg && new_ret == ret {
+                ty
+            } else {
+                Type::Function {
+                    arg: new_arg,
+                    ret: new_ret,
+                }
+                .into_id()
+            }
+        }
+        Type::Tuple(elems) => {
+            let new_elems: Vec<TypeNodeId> = elems.iter().map(|e| strip_code_type(*e)).collect();
+            if new_elems == elems {
+                ty
+            } else {
+                Type::Tuple(new_elems).into_id()
+            }
+        }
+        Type::Record(fields) => {
+            let new_fields: Vec<RecordTypeField> = fields
+                .iter()
+                .map(|f| RecordTypeField {
+                    key: f.key,
+                    ty: strip_code_type(f.ty),
+                    has_default: f.has_default,
+                })
+                .collect();
+            Type::Record(new_fields).into_id()
+        }
+        Type::Array(inner) => {
+            let new_inner = strip_code_type(inner);
+            if new_inner == inner {
+                ty
+            } else {
+                Type::Array(new_inner).into_id()
+            }
+        }
+        Type::Ref(inner) => {
+            let new_inner = strip_code_type(inner);
+            if new_inner == inner {
+                ty
+            } else {
+                Type::Ref(new_inner).into_id()
+            }
+        }
+        _ => ty,
+    }
+}
+
+/// Strip `Code` from a `TypedId`'s type annotation.
+fn strip_code_typed_id(id: TypedId) -> TypedId {
+    let new_ty = strip_code_type(id.ty);
+    if new_ty == id.ty {
+        id
+    } else {
+        TypedId { ty: new_ty, ..id }
+    }
+}
+
+/// Strip `Code` from a `TypedPattern`'s type annotation.
+fn strip_code_typed_pattern(tp: TypedPattern) -> TypedPattern {
+    let new_ty = strip_code_type(tp.ty);
+    if new_ty == tp.ty {
+        tp
+    } else {
+        TypedPattern { ty: new_ty, ..tp }
+    }
+}
 
 /// Walk an expression at stage 0, leaving most nodes unchanged but
 /// translating any `Bracket(inner)` into combinator calls via
@@ -65,18 +154,22 @@ fn translate_stage0(expr: ExprNodeId) -> ExprNodeId {
 
         // -- structural recursion for stage-0 nodes -------------------------
         Expr::Let(tp, val, then) => {
+            let new_tp = strip_code_typed_pattern(tp);
             let new_val = translate_stage0(val);
             let new_then = then.map(translate_stage0);
-            Expr::Let(tp, new_val, new_then).into_id_without_span()
+            Expr::Let(new_tp, new_val, new_then).into_id_without_span()
         }
         Expr::LetRec(id, val, then) => {
+            let new_id = strip_code_typed_id(id);
             let new_val = translate_stage0(val);
             let new_then = then.map(translate_stage0);
-            Expr::LetRec(id, new_val, new_then).into_id_without_span()
+            Expr::LetRec(new_id, new_val, new_then).into_id_without_span()
         }
         Expr::Lambda(params, rtype, body) => {
+            let new_params: Vec<TypedId> = params.into_iter().map(strip_code_typed_id).collect();
+            let new_rtype = rtype.map(strip_code_type);
             let new_body = translate_stage0(body);
-            Expr::Lambda(params, rtype, new_body).into_id_without_span()
+            Expr::Lambda(new_params, new_rtype, new_body).into_id_without_span()
         }
         Expr::Apply(f, args) => {
             let new_f = translate_stage0(f);

@@ -3593,6 +3593,10 @@ pub fn compile_with_module_info(
     } else {
         root_expr_id
     };
+    // Save type declarations and aliases before module_info is consumed by
+    // type checking, so that the stage-0 compiler can reuse them.
+    let type_decls_for_stage0 = module_info.type_declarations.clone();
+    let type_aliases_for_stage0 = module_info.type_aliases.clone();
     let (expr, mut infer_ctx, errors) =
         typecheck_with_module_info(expr, builtin_types, file_path.clone(), module_info);
     if errors.is_empty() {
@@ -3615,32 +3619,19 @@ pub fn compile_with_module_info(
                     "ast after translate_staging: {:?}",
                     stage0_expr.to_expr().simple_print()
                 );
-                match compile_and_execute_stage0(
+                let stage1_ast = compile_and_execute_stage0(
                     stage0_expr,
                     builtin_types,
                     macro_env,
                     file_path.clone(),
-                ) {
-                    Ok(stage1_ast) => {
-                        log::trace!(
-                            "ast after stage-0 execution: {:?}",
-                            stage1_ast.to_expr().simple_print()
-                        );
-                        stage1_ast
-                    }
-                    Err(e) => {
-                        // Fall back to interpreter on stage-0 compilation failure.
-                        log::warn!(
-                            "stage-0 VM compilation failed, falling back to interpreter: {e:?}"
-                        );
-                        interpreter::expand_macro(
-                            expr,
-                            top_type,
-                            macro_env,
-                            infer_ctx.constructor_env.clone(),
-                        )
-                    }
-                }
+                    &type_decls_for_stage0,
+                    &type_aliases_for_stage0,
+                )?;
+                log::trace!(
+                    "ast after stage-0 execution: {:?}",
+                    stage1_ast.to_expr().simple_print()
+                );
+                stage1_ast
             } else {
                 interpreter::expand_macro(
                     expr,
@@ -3698,6 +3689,8 @@ fn compile_and_execute_stage0(
     builtin_types: &[(Symbol, TypeNodeId)],
     macro_env: &[Box<dyn MacroFunction>],
     file_path: Option<PathBuf>,
+    type_declarations: &crate::ast::program::TypeDeclarationMap,
+    type_aliases: &crate::ast::program::TypeAliasMap,
 ) -> Result<ExprNodeId, Vec<Box<dyn ReportableError>>> {
     use crate::plugin::codegen_combinators::codegen_combinator_signatures;
     use crate::plugin::{ExtClsInfo, MachineFunction};
@@ -3717,12 +3710,20 @@ fn compile_and_execute_stage0(
         .iter()
         .map(|cls| (cls.name, cls.ty))
         .collect();
+    // Collect macro names so we can filter their original Code-typed entries
+    // out of builtin_types (the stripped versions are added later).
+    let macro_names: std::collections::HashSet<Symbol> = macro_env
+        .iter()
+        .map(|m| m.get_name())
+        .collect();
+
     // Filter builtin types: skip entries whose names are overridden by
-    // combinator signatures (e.g. lift_f, lift_arrayf, lift) so that the
-    // combinator types take precedence.
+    // combinator signatures (e.g. lift_f, lift_arrayf, lift) or by macro
+    // bridge closures (e.g. Probe, Slider) so that the Code()-stripped
+    // types take precedence.
     let all_types: Vec<(Symbol, TypeNodeId)> = builtin_types
         .iter()
-        .filter(|(name, _)| !combinator_names.contains(name))
+        .filter(|(name, _)| !combinator_names.contains(name) && !macro_names.contains(name))
         .cloned()
         .chain(combinator_types)
         .collect();
@@ -3801,12 +3802,14 @@ fn compile_and_execute_stage0(
         all_types.into_iter().chain(macro_type_entries).collect();
 
     // 3. Type-check the stage-0 expression in a fresh context.
+    //    Pass user-defined type declarations and aliases so that enum
+    //    constructors and type aliases are available during stage-0.
     let stage0_infer = infer_root(
         wrapped,
         &all_types,
         file_path.clone().unwrap_or_default(),
-        None,
-        None,
+        Some(type_declarations),
+        Some(type_aliases),
         None,
     );
     if !stage0_infer.errors.is_empty() {

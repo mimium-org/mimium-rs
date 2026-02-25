@@ -217,17 +217,27 @@ impl ByteCodeGenerator {
         args: &[(Arc<mir::Value>, TypeNodeId)],
     ) -> (Reg, TypeSize) {
         let mut aoffsets = vec![];
-        let mut offset = 0;
+        let mut offset: TypeSize = 0;
         for (a, ty) in args.iter() {
             let src = self.find(a);
             let size = Self::word_size_for_type(*ty);
             aoffsets.push((offset, src, size));
-            offset += size;
+            offset = offset.checked_add(size).unwrap_or_else(|| {
+                panic!(
+                    "bytecodegen: offset overflow in prepare_function: offset={}, size={}, type={:?}",
+                    offset, size, ty.to_type()
+                )
+            });
         }
         let faddress = self.find_keep(faddress);
         // bytecodes_dst.push(VmInstruction::Move())
         for (adst, src, size) in aoffsets.iter() {
-            let address = *adst + faddress + 1;
+            let address = adst.checked_add(faddress).and_then(|v| v.checked_add(1)).unwrap_or_else(|| {
+                panic!(
+                    "bytecodegen: address overflow in prepare_function: adst={}, faddress={}",
+                    adst, faddress
+                )
+            });
             let is_samedst = address == *src;
             if !is_samedst {
                 match size {
@@ -414,7 +424,7 @@ impl ByteCodeGenerator {
                         let s = self.find(&v);
                         bytecodes_dst.push(VmInstruction::Move(d, s));
                         let (fadd, argsize) = self.prepare_function(bytecodes_dst, &dst, &args);
-                        Some(VmInstruction::Call(fadd, argsize, rsize))
+                        Some(VmInstruction::Call(fadd, argsize as u8, rsize))
                     }
                     mir::Value::Function(_idx) => {
                         unreachable!();
@@ -423,7 +433,7 @@ impl ByteCodeGenerator {
                         //todo: use btreemap
                         let (dst, argsize, nret) =
                             self.prepare_extfun(funcproto, bytecodes_dst, dst, &args, *label, r_ty);
-                        Some(VmInstruction::CallExtFun(dst, argsize, nret))
+                        Some(VmInstruction::CallExtFun(dst, argsize as u8, nret))
                     }
                     _ => unreachable!(),
                 }
@@ -438,7 +448,7 @@ impl ByteCodeGenerator {
                         let (fadd, argsize) = self.prepare_function(bytecodes_dst, &f, &args);
                         let s = self.find(&f);
                         let d = self.get_destination(dst.clone(), rsize);
-                        bytecodes_dst.push(VmInstruction::CallCls(fadd, argsize, rsize));
+                        bytecodes_dst.push(VmInstruction::CallCls(fadd, argsize as u8, rsize));
                         match rsize {
                             0 => None,
                             1 => Some(VmInstruction::Move(d, s)),
@@ -451,7 +461,7 @@ impl ByteCodeGenerator {
                     mir::Value::ExtFunction(label, _ty) => {
                         let (dst, argsize, nret) =
                             self.prepare_extfun(funcproto, bytecodes_dst, dst, &args, *label, r_ty);
-                        Some(VmInstruction::CallExtFun(dst, argsize, nret))
+                        Some(VmInstruction::CallExtFun(dst, argsize as u8, nret))
                     }
                     _ => unreachable!(),
                 }
@@ -492,7 +502,7 @@ impl ByteCodeGenerator {
                         let (fadd, argsize) = self.prepare_function(bytecodes_dst, &f, &args);
                         let s = self.find(&f);
                         let d = self.get_destination(dst.clone(), rsize);
-                        bytecodes_dst.push(VmInstruction::CallIndirect(fadd, argsize, rsize));
+                        bytecodes_dst.push(VmInstruction::CallIndirect(fadd, argsize as u8, rsize));
                         match rsize {
                             0 => None,
                             1 => Some(VmInstruction::Move(d, s)),
@@ -505,7 +515,7 @@ impl ByteCodeGenerator {
                     mir::Value::ExtFunction(label, _ty) => {
                         let (dst, argsize, nret) =
                             self.prepare_extfun(funcproto, bytecodes_dst, dst, &args, *label, r_ty);
-                        Some(VmInstruction::CallExtFun(dst, argsize, nret))
+                        Some(VmInstruction::CallExtFun(dst, argsize as u8, nret))
                     }
                     _ => unreachable!(),
                 }
@@ -529,7 +539,7 @@ impl ByteCodeGenerator {
             mir::Instruction::GetUpValue(i, ty) => {
                 let upval = &mirfunc.upindexes[i as usize];
                 let v = self.find_upvalue(upval);
-                let size: u8 = Self::word_size_for_type(ty);
+                let size: TypeSize = Self::word_size_for_type(ty);
                 let ouv = mir::OpenUpValue {
                     pos: v as usize,
                     size,
@@ -550,7 +560,7 @@ impl ByteCodeGenerator {
             mir::Instruction::SetUpValue(dst, src, ty) => {
                 let upval = &mirfunc.upindexes[dst as usize];
                 let v = self.find_upvalue(upval);
-                let size: u8 = Self::word_size_for_type(ty);
+                let size: TypeSize = Self::word_size_for_type(ty);
                 let ouv = mir::OpenUpValue {
                     pos: v as usize,
                     size,

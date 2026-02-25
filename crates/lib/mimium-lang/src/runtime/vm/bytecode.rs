@@ -1,6 +1,6 @@
 use crate::{interner::TypeNodeId, types::TypeSize, utils::half_float::HFloat};
 
-pub type Reg = u8; // register position
+pub type Reg = u16; // register position
 pub type ConstPos = u16;
 pub type GlobalPos = u8;
 pub type Offset = i16;
@@ -311,5 +311,5 @@ impl std::fmt::Display for Instruction {
 #[test]
 fn ensure_bytecode_size() {
     let size = std::mem::size_of::<Instruction>();
-    assert_eq!(4, size);
+    assert_eq!(8, size);
 }

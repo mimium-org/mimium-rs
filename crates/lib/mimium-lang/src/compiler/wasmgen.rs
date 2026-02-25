@@ -13,7 +13,7 @@
 use crate::interner::{Symbol, TypeNodeId};
 use crate::mir::{self, Mir, VPtr};
 use crate::runtime::primitives::WordSize;
-use crate::types::{PType, Type};
+use crate::types::{PType, Type, TypeSize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use wasm_encoder::{
@@ -207,7 +207,7 @@ pub struct WasmGenerator {
     /// Registers produced by Alloc instructions, mapped to their content word size.
     /// word_size == 1 means single-word (dereference when capturing),
     /// word_size > 1 means multi-word like tuple (store pointer when capturing).
-    alloc_registers: HashMap<mir::VReg, u8>,
+    alloc_registers: HashMap<mir::VReg, TypeSize>,
     /// Registers produced by GetElement instructions, mapped to the element's ValType.
     /// These registers hold pointers to elements but are often used as values in the MIR.
     getelement_registers: HashMap<mir::VReg, wasm_encoder::ValType>,

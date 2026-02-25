@@ -229,6 +229,7 @@ pub struct Machine {
     /// Each entry is an interned `ExprNodeId`; the index into this vec is
     /// stored as a `RawVal` on the VM stack.
     code_values: Vec<ExprNodeId>,
+
 }
 
 macro_rules! binop {
@@ -618,9 +619,9 @@ impl Machine {
     }
     fn call_function<F>(
         &mut self,
-        func_pos: u8,
+        func_pos: Reg,
         nargs: u8,
-        nret_req: u8,
+        nret_req: TypeSize,
         mut action: F,
     ) -> ReturnCode
     where
@@ -637,7 +638,7 @@ impl Machine {
 
         let nret = action(self);
 
-        if nret_req > nret as u8 {
+        if nret_req > nret as TypeSize {
             if nret == 1 && arg_snapshot.len() >= nret_req as usize {
                 let base = self.base_pointer as usize;
                 let ret_start = base - 1;
@@ -766,7 +767,7 @@ impl Machine {
                 Type::Record(fields) => fields.len(),
                 _ => unreachable!("single argument should be 1 element record"),
             } as u8;
-            let base = nargs as u8;
+            let base = nargs as Reg;
             let nret = ByteCodeGenerator::word_size_for_type(ret);
             wrap_bytecode.push(Instruction::MoveConst(base, 0));
             wrap_bytecode.push(Instruction::MoveRange(base + 1, 0, asize));
