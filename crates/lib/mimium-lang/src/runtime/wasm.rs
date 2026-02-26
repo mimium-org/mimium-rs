@@ -8,7 +8,6 @@ pub mod engine;
 use crate::runtime::primitives::Word;
 use crate::runtime::vm::heap::{self, HeapStorage};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use wasmtime::{
     AsContextMut, Caller, Config, Engine, FuncType, Linker, Module, OptLevel, Store, Val, ValType,
 };
@@ -53,9 +52,6 @@ pub struct WasmRuntime {
     engine: Engine,
     /// Linker for connecting host functions
     linker: Linker<RuntimeState>,
-    /// Plugin loader (for calling plugin functions from host functions)
-    #[cfg(not(target_arch = "wasm32"))]
-    plugin_loader: Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>,
 }
 
 /// State storage for a single execution context (global or per-closure).
@@ -98,9 +94,6 @@ pub struct RuntimeState {
     pub(crate) current_time: u64,
     /// Sample rate (for runtime_get_samplerate)
     pub(crate) sample_rate: f64,
-    /// Plugin loader (for calling plugin functions)
-    #[cfg(not(target_arch = "wasm32"))]
-    plugins: Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>,
 }
 
 impl RuntimeState {
@@ -130,8 +123,6 @@ impl Default for RuntimeState {
             state_stack: Vec::new(),
             current_time: 0,
             sample_rate: 44100.0,
-            #[cfg(not(target_arch = "wasm32"))]
-            plugins: None,
         }
     }
 }
@@ -170,13 +161,9 @@ impl WasmRuntime {
         Self::register_runtime_primitives(&mut linker)?;
 
         // Register plugin functions as host trampolines
-        let plugin_loader = Self::register_plugin_functions(&mut linker, ext_fns, plugin_fns)?;
+        Self::register_plugin_functions(&mut linker, ext_fns, plugin_fns)?;
 
-        Ok(Self {
-            engine,
-            linker,
-            plugin_loader,
-        })
+        Ok(Self { engine, linker })
     }
 
     /// Create a new WASM runtime for wasm32 target (without plugins)
@@ -203,7 +190,7 @@ impl WasmRuntime {
         Self::register_runtime_primitives(&mut linker)?;
 
         // Register plugin functions as host trampolines (no plugin_fns on wasm32)
-        let _plugin_loader = Self::register_plugin_functions(&mut linker, ext_fns, None)?;
+        Self::register_plugin_functions(&mut linker, ext_fns, None)?;
 
         Ok(Self { engine, linker })
     }
@@ -213,13 +200,20 @@ impl WasmRuntime {
         let module = Module::from_binary(&self.engine, wasm_bytes)
             .map_err(|e| format!("Failed to load WASM module: {e:#}"))?;
 
-        let mut runtime_state = RuntimeState::default();
+        self.instantiate_module(module)
+    }
 
-        // Set plugin loader reference in runtime state
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            runtime_state.plugins = self.plugin_loader.clone();
-        }
+    /// Load and instantiate a precompiled/serialized WASM module artifact.
+    pub fn load_precompiled_module(&mut self, serialized_module: &[u8]) -> Result<WasmModule, String> {
+        let module = unsafe { Module::deserialize(&self.engine, serialized_module) }
+            .map_err(|e| format!("Failed to deserialize precompiled WASM module: {e:#}"))?;
+
+        self.instantiate_module(module)
+    }
+
+    fn instantiate_module(&mut self, module: Module) -> Result<WasmModule, String> {
+
+        let mut runtime_state = RuntimeState::default();
 
         let mut store = Store::new(&self.engine, runtime_state);
 
@@ -439,7 +433,7 @@ impl WasmRuntime {
         linker: &mut Linker<RuntimeState>,
         ext_fns: &[crate::plugin::ExtFunTypeInfo],
         plugin_fns: Option<WasmPluginFnMap>,
-    ) -> Result<Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>, String> {
+    ) -> Result<(), String> {
         use crate::types::Type;
 
         // Register trampolines for every runtime-stage external function.
@@ -660,8 +654,7 @@ impl WasmRuntime {
             }
         }
 
-        // Return None since plugin loader is managed by ExecContext
-        Ok(None)
+        Ok(())
     }
 }
 
@@ -682,6 +675,13 @@ pub struct WasmModule {
 }
 
 impl WasmModule {
+    /// Serialize compiled module artifacts for fast later deserialization.
+    pub fn serialize_compiled_module(&self) -> Result<Vec<u8>, String> {
+        self.module
+            .serialize()
+            .map_err(|e| format!("Failed to serialize compiled WASM module: {e:#}"))
+    }
+
     /// Get or cache a function by name
     pub fn get_or_cache_function(&mut self, name: &str) -> Result<wasmtime::Func, String> {
         if let Some(func) = self.function_cache.get(name) {

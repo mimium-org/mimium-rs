@@ -29,6 +29,9 @@ pub enum ProgramPayload {
     #[cfg(not(target_arch = "wasm32"))]
     WasmModule {
         bytes: Vec<u8>,
+        /// Preloaded WASM execution engine prepared on non-RT side.
+        /// RT side swaps this engine in without loading/instantiating the module.
+        prepared_engine: Box<crate::runtime::wasm::engine::WasmEngine>,
         /// State tree skeleton of the DSP function in the new program.
         /// When present, enables state-preserving hot-swap via
         /// `state_tree::update_state_storage`.

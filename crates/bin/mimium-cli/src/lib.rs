@@ -462,15 +462,35 @@ struct FileRunner {
     pub fullpath: PathBuf,
     /// When true, recompilation targets the WASM backend instead of the native VM.
     pub use_wasm: bool,
+    /// Last successfully prepared WASM program metadata.
+    ///
+    /// This is used on the non-RT thread to build deterministic
+    /// state migration plans for the next hot-swap payload.
     #[cfg(not(target_arch = "wasm32"))]
     old_program: Mutex<Option<OldWasmProgram>>,
+    /// Channel receiving old engines retired by the audio thread.
+    ///
+    /// Drained on the file-watcher (non-RT) thread so engine destruction does
+    /// not block the real-time callback.
+    #[cfg(not(target_arch = "wasm32"))]
+    retired_engine_receiver: Option<mpsc::Receiver<mimium_lang::runtime::wasm::engine::WasmEngine>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 struct OldWasmProgram {
+    /// DSP state structure of the previously active program.
     dsp_state_skeleton: Option<StateTreeSkeleton<StateType>>,
+    /// External function signatures required to instantiate/prewarm the next module.
     ext_fns: Vec<ExtFunTypeInfo>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct PreparedWasmSwapData {
+    /// Global state snapshot taken after running `main` on non-RT thread.
+    prewarmed_global_state: Vec<u64>,
+    /// Fully loaded WASM engine prepared on non-RT thread.
+    prepared_engine: Box<mimium_lang::runtime::wasm::engine::WasmEngine>,
 }
 
 struct FileWatcher {
@@ -510,6 +530,9 @@ impl FileRunner {
         prog_tx: Option<mpsc::Sender<ProgramPayload>>,
         use_wasm: bool,
         #[cfg(not(target_arch = "wasm32"))] old_program: Option<OldWasmProgram>,
+        #[cfg(not(target_arch = "wasm32"))] retired_engine_receiver: Option<
+            mpsc::Receiver<mimium_lang::runtime::wasm::engine::WasmEngine>,
+        >,
     ) -> Self {
         let client = async_compiler::start_async_compiler_service(compiler);
         Self {
@@ -520,6 +543,8 @@ impl FileRunner {
             use_wasm,
             #[cfg(not(target_arch = "wasm32"))]
             old_program: Mutex::new(old_program),
+            #[cfg(not(target_arch = "wasm32"))]
+            retired_engine_receiver,
         }
     }
     fn try_new_watcher(&self) -> Result<FileWatcher, notify::Error> {
@@ -557,23 +582,34 @@ impl FileRunner {
     fn try_prewarm_wasm_global_state(
         wasm_bytes: &[u8],
         ext_fns: &[ExtFunTypeInfo],
-    ) -> Result<Vec<u64>, String> {
+    ) -> Result<PreparedWasmSwapData, String> {
         use mimium_lang::runtime::wasm::engine::{WasmDspRuntime, WasmEngine};
 
         let mut engine = WasmEngine::new(ext_fns, None)
             .map_err(|e| format!("failed to create prewarm wasm engine: {e}"))?;
+
         engine
             .load_module(wasm_bytes)
             .map_err(|e| format!("failed to load module for prewarm: {e}"))?;
+
         let mut runtime = WasmDspRuntime::new(engine, None, None);
+
         runtime
             .run_main()
             .map_err(|e| format!("failed to run main for prewarm: {e}"))?;
-        runtime
+
+        let global_state = runtime
             .engine_mut()
             .get_global_state_data()
             .map(|data| data.to_vec())
-            .ok_or_else(|| "missing global state after prewarm".to_string())
+            .ok_or_else(|| "missing global state after prewarm".to_string())?;
+
+        let prepared_engine = runtime.into_engine();
+
+        Ok(PreparedWasmSwapData {
+            prewarmed_global_state: global_state,
+            prepared_engine: Box::new(prepared_engine),
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -593,19 +629,22 @@ impl FileRunner {
             .unwrap_or(&[]);
         let ext_fns = ext_fns.unwrap_or(fallback_ext_fns);
 
-        let prewarmed_global_state = Self::try_prewarm_wasm_global_state(&bytes, ext_fns)?;
+        let prepared_swap_data = Self::try_prewarm_wasm_global_state(&bytes, ext_fns)?;
+
         let state_patch_plan = Self::build_required_state_patch_plan(
             previous_skeleton,
             dsp_state_skeleton.as_ref(),
-            prewarmed_global_state.len(),
+            prepared_swap_data.prewarmed_global_state.len(),
         );
         let payload = ProgramPayload::WasmModule {
             bytes,
+            prepared_engine: prepared_swap_data.prepared_engine,
             dsp_state_skeleton: dsp_state_skeleton.clone(),
             state_patch_plan,
-            prewarmed_global_state,
+            prewarmed_global_state: prepared_swap_data.prewarmed_global_state,
         };
         self.update_old_program(dsp_state_skeleton, ext_fns.to_vec());
+
         Ok(payload)
     }
 
@@ -763,6 +802,23 @@ impl FileRunner {
             }
         }
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn drain_retired_engines(&self) {
+        if let Some(rx) = &self.retired_engine_receiver {
+            let mut dropped_count = 0usize;
+            while let Ok(_engine) = rx.try_recv() {
+                dropped_count += 1;
+            }
+            if dropped_count > 0 {
+                log::info!(
+                    "WASM deferred drop: released {} retired engine(s) on non-RT thread",
+                    dropped_count
+                );
+            }
+        }
+    }
+
     //this api never returns
     pub fn cli_loop(&self) {
         //watcher instance lives only this context
@@ -775,7 +831,13 @@ impl FileRunner {
         };
 
         loop {
-            match file_watcher.rx.recv() {
+            #[cfg(not(target_arch = "wasm32"))]
+            self.drain_retired_engines();
+
+            match file_watcher
+                .rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+            {
                 Ok(Ok(event)) => {
                     if should_recompile_on_event(&event) {
                         log::info!("File event detected ({:?}), recompiling...", event.kind);
@@ -786,6 +848,9 @@ impl FileRunner {
                 }
                 Ok(Err(e)) => {
                     log::error!("watch error event: {e}");
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    continue;
                 }
                 Err(e) => {
                     log::error!("receiver error: {e}");
@@ -944,6 +1009,8 @@ pub fn run_file(
             let mut wasm_runtime =
                 WasmDspRuntime::new(wasm_engine, io_channels, dsp_skeleton.clone());
             wasm_runtime.set_wasm_audioworkers(wasm_workers);
+            let (retire_tx, retire_rx) = mpsc::channel();
+            wasm_runtime.set_engine_retire_sender(retire_tx);
             ctx.run_wasm_on_init(wasm_runtime.engine_mut());
             let _ = wasm_runtime.run_main();
             ctx.run_wasm_after_main(wasm_runtime.engine_mut());
@@ -981,6 +1048,7 @@ pub fn run_file(
                     dsp_state_skeleton: dsp_skeleton,
                     ext_fns,
                 }),
+                Some(retire_rx),
             );
             if with_gui {
                 std::thread::spawn(move || frunner.cli_loop());
@@ -1045,6 +1113,8 @@ pub fn run_file(
             let mut wasm_runtime =
                 WasmDspRuntime::new(wasm_engine, io_channels, dsp_skeleton.clone());
             wasm_runtime.set_wasm_audioworkers(wasm_workers);
+            let (retire_tx, retire_rx) = mpsc::channel();
+            wasm_runtime.set_engine_retire_sender(retire_tx);
             ctx.run_wasm_on_init(wasm_runtime.engine_mut());
             let _ = wasm_runtime.run_main();
             ctx.run_wasm_after_main(wasm_runtime.engine_mut());
@@ -1080,6 +1150,7 @@ pub fn run_file(
                     dsp_state_skeleton: dsp_skeleton,
                     ext_fns,
                 }),
+                Some(retire_rx),
             );
             if with_gui {
                 std::thread::spawn(move || frunner.cli_loop());
@@ -1124,6 +1195,7 @@ pub fn run_file(
                 fullpath.to_path_buf(),
                 driver.get_program_channel(),
                 false,
+                None,
                 None,
             );
             if options.with_gui {
