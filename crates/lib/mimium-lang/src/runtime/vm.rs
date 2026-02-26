@@ -451,8 +451,7 @@ impl Machine {
         new_vm.global_vals = self.global_vals.clone();
         new_vm.arrays = self.arrays.clone();
 
-        let new_state = state_tree::update_state_storage(
-            &self.global_states.rawdata,
+        let patch_plan = state_tree::build_state_storage_patch_plan(
             self.prog
                 .get_dsp_state_skeleton()
                 .cloned()
@@ -463,17 +462,12 @@ impl Machine {
                 .cloned()
                 .expect("dsp function not found"),
         );
-        match new_state {
-            Ok(Some(s)) => {
-                new_vm.global_states.rawdata = s;
-            }
-            Ok(None) => {
-                log::info!("No state structure change detected. Just copies buffer");
-                new_vm.global_states.rawdata = self.global_states.rawdata.clone();
-            }
-            Err(e) => {
-                log::error!("Failed to migrate global state: {e}");
-            }
+        if let Some(plan) = patch_plan {
+            new_vm.global_states.rawdata =
+                state_tree::apply_state_storage_patch_plan(&self.global_states.rawdata, &plan);
+        } else {
+            log::info!("No state structure change detected. Just copies buffer");
+            new_vm.global_states.rawdata = self.global_states.rawdata.clone();
         }
         new_vm.link_functions();
         new_vm.execute_main();

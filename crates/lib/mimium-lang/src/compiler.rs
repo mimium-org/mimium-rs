@@ -220,6 +220,7 @@ impl Context {
             bytes,
             dsp_state_skeleton,
             io_channels,
+            ext_fns,
         })
     }
 }
@@ -233,6 +234,8 @@ pub struct WasmOutput {
     pub dsp_state_skeleton: Option<state_tree::tree::StateTreeSkeleton<crate::mir::StateType>>,
     /// I/O channel info extracted from the DSP function signature.
     pub io_channels: Option<IoChannelInfo>,
+    /// External function type infos required to instantiate the generated module.
+    pub ext_fns: Vec<crate::plugin::ExtFunTypeInfo>,
 }
 
 // pub fn interpret_top(

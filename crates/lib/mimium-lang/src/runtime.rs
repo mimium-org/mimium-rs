@@ -33,6 +33,12 @@ pub enum ProgramPayload {
         /// When present, enables state-preserving hot-swap via
         /// `state_tree::update_state_storage`.
         dsp_state_skeleton: Option<state_tree::tree::StateTreeSkeleton<crate::mir::StateType>>,
+        /// Precomputed patch plan for migrating old state storage into
+        /// the new state layout.
+        state_patch_plan: state_tree::StateStoragePatchPlan,
+        /// Global state snapshot taken after running `main` on a
+        /// prewarmed runtime outside the audio thread.
+        prewarmed_global_state: Vec<u64>,
     },
 }
 

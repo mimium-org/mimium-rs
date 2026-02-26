@@ -285,10 +285,20 @@ impl DspRuntime for WasmDspRuntime {
         WasmDspRuntime::set_sample_rate(self, sample_rate);
     }
 
+    /// Real-time hot-swap stage.
+    ///
+    /// Assumes non-RT `prepare_hot_swap` already computed:
+    /// - validated/instantiable module bytes,
+    /// - prewarmed global state after `main`,
+    /// - state patch plan.
+    ///
+    /// This stage only loads the module and applies state migration.
     fn try_hot_swap(&mut self, new_program: ProgramPayload) -> bool {
         if let ProgramPayload::WasmModule {
             bytes,
             dsp_state_skeleton,
+            state_patch_plan,
+            prewarmed_global_state,
         } = new_program
         {
             // Snapshot the old global state before loading the new module.
@@ -297,38 +307,41 @@ impl DspRuntime for WasmDspRuntime {
 
             match self.engine.load_module(&bytes) {
                 Ok(()) => {
+                    let mut next_global_state = prewarmed_global_state;
+
                     // Attempt state migration when both old and new skeletons exist.
                     if let (Some(old_data), Some(old_skel), Some(new_skel)) = (
                         &old_global_data,
                         &self.current_dsp_skeleton,
                         &dsp_state_skeleton,
                     ) {
-                        match state_tree::update_state_storage(
-                            old_data,
-                            old_skel.clone(),
-                            new_skel.clone(),
-                        ) {
-                            Ok(Some(new_data)) => {
-                                self.engine.set_global_state_data(&new_data);
+                        debug_assert_eq!(
+                            state_patch_plan.total_size,
+                            new_skel.total_size() as usize,
+                            "state_patch_plan.total_size must match new skeleton total size"
+                        );
+                        if old_skel == new_skel && state_patch_plan.patches.is_empty() {
+                            log::info!("No state structure change detected, copying buffer");
+                            next_global_state = old_data.clone();
+                        } else {
+                            if next_global_state.len() != state_patch_plan.total_size {
+                                next_global_state.resize(state_patch_plan.total_size, 0);
                             }
-                            Ok(None) => {
-                                log::info!("No state structure change detected, copying buffer");
-                                self.engine.set_global_state_data(old_data);
-                            }
-                            Err(e) => {
-                                log::error!("Failed to migrate WASM global state: {e}");
-                            }
+                            state_tree::patch::apply_patches(
+                                next_global_state.as_mut_slice(),
+                                old_data,
+                                state_patch_plan.patches.as_slice(),
+                            );
                         }
                     } else if let Some(old_data) = &old_global_data {
                         // No skeletons available; best-effort: copy old data.
-                        self.engine.set_global_state_data(old_data);
+                        next_global_state = old_data.clone();
                     }
+
+                    self.engine.set_global_state_data(&next_global_state);
 
                     // Update stored skeleton for subsequent hot-swaps.
                     self.current_dsp_skeleton = dsp_state_skeleton;
-
-                    // Re-run main after hot-swap.
-                    let _ = self.run_main();
                     true
                 }
                 Err(e) => {

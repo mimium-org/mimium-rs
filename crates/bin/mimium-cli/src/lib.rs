@@ -3,7 +3,8 @@ mod async_compiler;
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    sync::mpsc,
+    process::Command,
+    sync::{Mutex, mpsc},
 };
 
 use crate::async_compiler::{CompileRequest, Errors, Response};
@@ -31,11 +32,23 @@ use mimium_lang::{
         miniprint::MiniPrint,
     },
 };
-use notify::{
-    Event, RecursiveMode, Watcher,
-    event::{AccessKind, EventKind, ModifyKind},
-};
+use notify::{Event, RecursiveMode, Watcher};
+#[cfg(target_os = "macos")]
+use notify::event::{AccessKind, EventKind, ModifyKind};
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+use notify::event::{AccessKind, EventKind, ModifyKind};
 use serde::{Deserialize, Serialize};
+
+#[cfg(not(target_arch = "wasm32"))]
+use mimium_lang::plugin::ExtFunTypeInfo;
+#[cfg(not(target_arch = "wasm32"))]
+use mimium_lang::mir::StateType;
+#[cfg(not(target_arch = "wasm32"))]
+use state_tree::StateStoragePatchPlan;
+#[cfg(not(target_arch = "wasm32"))]
+use state_tree::patch::CopyFromPatch;
+#[cfg(not(target_arch = "wasm32"))]
+use state_tree::tree::StateTreeSkeleton;
 
 #[derive(clap::Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -449,6 +462,15 @@ struct FileRunner {
     pub fullpath: PathBuf,
     /// When true, recompilation targets the WASM backend instead of the native VM.
     pub use_wasm: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    old_program: Mutex<Option<OldWasmProgram>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+struct OldWasmProgram {
+    dsp_state_skeleton: Option<StateTreeSkeleton<StateType>>,
+    ext_fns: Vec<ExtFunTypeInfo>,
 }
 
 struct FileWatcher {
@@ -456,7 +478,17 @@ struct FileWatcher {
     pub watcher: notify::RecommendedWatcher,
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn should_recompile_on_event(event: &Event) -> bool {
+    matches!(
+        event.kind,
+        EventKind::Access(AccessKind::Close(notify::event::AccessMode::Write))
+            | EventKind::Modify(ModifyKind::Data(_))
+            | EventKind::Modify(ModifyKind::Any)
+    )
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn should_recompile_on_event(event: &Event) -> bool {
     matches!(
         event.kind,
@@ -477,6 +509,7 @@ impl FileRunner {
         path: PathBuf,
         prog_tx: Option<mpsc::Sender<ProgramPayload>>,
         use_wasm: bool,
+        #[cfg(not(target_arch = "wasm32"))] old_program: Option<OldWasmProgram>,
     ) -> Self {
         let client = async_compiler::start_async_compiler_service(compiler);
         Self {
@@ -485,6 +518,8 @@ impl FileRunner {
             tx_prog: prog_tx,
             fullpath: path,
             use_wasm,
+            #[cfg(not(target_arch = "wasm32"))]
+            old_program: Mutex::new(old_program),
         }
     }
     fn try_new_watcher(&self) -> Result<FileWatcher, notify::Error> {
@@ -493,15 +528,132 @@ impl FileRunner {
         watcher.watch(Path::new(&self.fullpath), RecursiveMode::NonRecursive)?;
         Ok(FileWatcher { rx, watcher })
     }
-    fn recompile_file(&self) {
-        match fileloader::load(&self.fullpath.to_string_lossy()) {
-            Ok(new_content) => {
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn try_compile_wasm_in_subprocess(&self) -> Result<Vec<u8>, String> {
+        let exe = env::current_exe().map_err(|e| format!("failed to resolve current exe: {e}"))?;
+        let output = Command::new(exe)
+            .arg(self.fullpath.as_os_str())
+            .arg("--backend=wasm")
+            .arg("--emit-wasm")
+            .output()
+            .map_err(|e| format!("failed to spawn compiler subprocess: {e}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            return Err(format!(
+                "subprocess compile failed (status: {:?}): {}",
+                output.status.code(),
+                stderr
+            ));
+        }
+
+        let wasm_path = self.fullpath.with_extension("wasm");
+        fs::read(&wasm_path)
+            .map_err(|e| format!("failed to read generated wasm {}: {e}", wasm_path.display()))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn try_prewarm_wasm_global_state(
+        wasm_bytes: &[u8],
+        ext_fns: &[ExtFunTypeInfo],
+    ) -> Result<Vec<u64>, String> {
+        use mimium_lang::runtime::wasm::engine::{WasmDspRuntime, WasmEngine};
+
+        let mut engine = WasmEngine::new(ext_fns, None)
+            .map_err(|e| format!("failed to create prewarm wasm engine: {e}"))?;
+        engine
+            .load_module(wasm_bytes)
+            .map_err(|e| format!("failed to load module for prewarm: {e}"))?;
+        let mut runtime = WasmDspRuntime::new(engine, None, None);
+        runtime
+            .run_main()
+            .map_err(|e| format!("failed to run main for prewarm: {e}"))?;
+        runtime
+            .engine_mut()
+            .get_global_state_data()
+            .map(|data| data.to_vec())
+            .ok_or_else(|| "missing global state after prewarm".to_string())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn prepare_hot_swap_wasm_payload(
+        &self,
+        bytes: Vec<u8>,
+        dsp_state_skeleton: Option<StateTreeSkeleton<StateType>>,
+        ext_fns: Option<&[ExtFunTypeInfo]>,
+    ) -> Result<ProgramPayload, String> {
+        let old_program = self.old_program.lock().ok().and_then(|guard| (*guard).clone());
+        let previous_skeleton = old_program
+            .as_ref()
+            .and_then(|program| program.dsp_state_skeleton.clone());
+        let fallback_ext_fns: &[ExtFunTypeInfo] = old_program
+            .as_ref()
+            .map(|program| program.ext_fns.as_slice())
+            .unwrap_or(&[]);
+        let ext_fns = ext_fns.unwrap_or(fallback_ext_fns);
+
+        let prewarmed_global_state = Self::try_prewarm_wasm_global_state(&bytes, ext_fns)?;
+        let state_patch_plan = Self::build_required_state_patch_plan(
+            previous_skeleton,
+            dsp_state_skeleton.as_ref(),
+            prewarmed_global_state.len(),
+        );
+        let payload = ProgramPayload::WasmModule {
+            bytes,
+            dsp_state_skeleton: dsp_state_skeleton.clone(),
+            state_patch_plan,
+            prewarmed_global_state,
+        };
+        self.update_old_program(dsp_state_skeleton, ext_fns.to_vec());
+        Ok(payload)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn build_required_state_patch_plan(
+        previous_skeleton: Option<StateTreeSkeleton<StateType>>,
+        new_skeleton: Option<&StateTreeSkeleton<StateType>>,
+        prewarmed_state_size: usize,
+    ) -> StateStoragePatchPlan {
+        if let (Some(old_skeleton), Some(new_skeleton)) = (previous_skeleton, new_skeleton.cloned()) {
+            let maybe_plan = state_tree::build_state_storage_patch_plan(old_skeleton, new_skeleton.clone());
+            if let Some(plan) = maybe_plan {
+                return plan;
+            }
+            let total_size = new_skeleton.total_size() as usize;
+            return StateStoragePatchPlan {
+                total_size,
+                patches: vec![CopyFromPatch {
+                    src_addr: 0,
+                    dst_addr: 0,
+                    size: total_size,
+                }],
+            };
+        }
+
+        StateStoragePatchPlan {
+            total_size: prewarmed_state_size,
+            patches: vec![],
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn update_old_program(
+        &self,
+        dsp_state_skeleton: Option<StateTreeSkeleton<StateType>>,
+        ext_fns: Vec<ExtFunTypeInfo>,
+    ) {
+        if let Ok(mut guard) = self.old_program.lock() {
+            *guard = Some(OldWasmProgram {
+                dsp_state_skeleton,
+                ext_fns,
+            });
+        }
+    }
+
+    fn recompile_file_inprocess(&self, new_content: String) {
                 #[cfg(not(target_arch = "wasm32"))]
-                let mode = if self.use_wasm {
-                    RunMode::WasmAudio
-                } else {
-                    RunMode::EmitByteCode
-                };
+                let mode = RunMode::EmitByteCode;
 
                 #[cfg(target_arch = "wasm32")]
                 let mode = {
@@ -533,10 +685,20 @@ impl FileRunner {
                     Ok(Response::WasmModule(output)) => {
                         log::info!("WASM compiled successfully ({} bytes).", output.bytes.len());
                         if let Some(tx) = &self.tx_prog {
-                            let _ = tx.send(ProgramPayload::WasmModule {
-                                bytes: output.bytes,
-                                dsp_state_skeleton: output.dsp_state_skeleton,
-                            });
+                            match self.prepare_hot_swap_wasm_payload(
+                                output.bytes,
+                                output.dsp_state_skeleton,
+                                Some(&output.ext_fns),
+                            ) {
+                                Ok(payload) => {
+                                    let _ = tx.send(payload);
+                                }
+                                Err(e) => {
+                                    log::error!(
+                                        "WASM prepare_hot_swap failed; skip hot-swap by spec: {e}"
+                                    );
+                                }
+                            }
                         }
                     }
                     Err(errs) => {
@@ -547,6 +709,50 @@ impl FileRunner {
                         report(&new_content, self.fullpath.clone(), &errs);
                     }
                 });
+    }
+
+    fn recompile_file(&self) {
+        match fileloader::load(&self.fullpath.to_string_lossy()) {
+            Ok(new_content) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    if self.use_wasm {
+                        match self.try_compile_wasm_in_subprocess() {
+                            Ok(bytes) => {
+                                log::info!(
+                                    "WASM compiled in subprocess successfully ({} bytes).",
+                                    bytes.len()
+                                );
+                                if let Some(tx) = &self.tx_prog {
+                                    match self.prepare_hot_swap_wasm_payload(
+                                        bytes,
+                                        None,
+                                        None,
+                                    ) {
+                                        Ok(payload) => {
+                                            let _ = tx.send(payload);
+                                        }
+                                        Err(e) => {
+                                            log::error!(
+                                                "WASM prepare_hot_swap failed; skip hot-swap by spec: {e}"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("{e}");
+                            }
+                        }
+                    } else {
+                        self.recompile_file_inprocess(new_content);
+                    }
+                }
+
+                #[cfg(target_arch = "wasm32")]
+                {
+                    self.recompile_file_inprocess(new_content);
+                }
             }
             Err(e) => {
                 log::error!(
@@ -735,7 +941,8 @@ pub fn run_file(
             })?;
 
             // Create WasmDspRuntime and wrap in RuntimeData
-            let mut wasm_runtime = WasmDspRuntime::new(wasm_engine, io_channels, dsp_skeleton);
+            let mut wasm_runtime =
+                WasmDspRuntime::new(wasm_engine, io_channels, dsp_skeleton.clone());
             wasm_runtime.set_wasm_audioworkers(wasm_workers);
             ctx.run_wasm_on_init(wasm_runtime.engine_mut());
             let _ = wasm_runtime.run_main();
@@ -770,6 +977,10 @@ pub fn run_file(
                 fullpath.to_path_buf(),
                 driver.get_program_channel(),
                 true,
+                Some(OldWasmProgram {
+                    dsp_state_skeleton: dsp_skeleton,
+                    ext_fns,
+                }),
             );
             if with_gui {
                 std::thread::spawn(move || frunner.cli_loop());
@@ -831,7 +1042,8 @@ pub fn run_file(
                 }) as Box<dyn ReportableError>]
             })?;
 
-            let mut wasm_runtime = WasmDspRuntime::new(wasm_engine, io_channels, dsp_skeleton);
+            let mut wasm_runtime =
+                WasmDspRuntime::new(wasm_engine, io_channels, dsp_skeleton.clone());
             wasm_runtime.set_wasm_audioworkers(wasm_workers);
             ctx.run_wasm_on_init(wasm_runtime.engine_mut());
             let _ = wasm_runtime.run_main();
@@ -864,6 +1076,10 @@ pub fn run_file(
                 fullpath.to_path_buf(),
                 driver.get_program_channel(),
                 true,
+                Some(OldWasmProgram {
+                    dsp_state_skeleton: dsp_skeleton,
+                    ext_fns,
+                }),
             );
             if with_gui {
                 std::thread::spawn(move || frunner.cli_loop());
@@ -908,6 +1124,7 @@ pub fn run_file(
                 fullpath.to_path_buf(),
                 driver.get_program_channel(),
                 false,
+                None,
             );
             if options.with_gui {
                 std::thread::spawn(move || frunner.cli_loop());
