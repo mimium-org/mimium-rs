@@ -31,7 +31,10 @@ use mimium_lang::{
         miniprint::MiniPrint,
     },
 };
-use notify::{Event, RecursiveMode, Watcher};
+use notify::{
+    Event, RecursiveMode, Watcher,
+    event::{AccessKind, EventKind, ModifyKind},
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(clap::Parser, Debug, Clone)]
@@ -452,6 +455,22 @@ struct FileWatcher {
     pub rx: mpsc::Receiver<notify::Result<Event>>,
     pub watcher: notify::RecommendedWatcher,
 }
+
+#[cfg(not(target_os = "windows"))]
+fn should_recompile_on_event(event: &Event) -> bool {
+    matches!(
+        event.kind,
+        EventKind::Access(AccessKind::Close(notify::event::AccessMode::Write))
+            | EventKind::Modify(ModifyKind::Data(_))
+            | EventKind::Modify(ModifyKind::Any)
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn should_recompile_on_event(_event: &Event) -> bool {
+    true
+}
+
 impl FileRunner {
     pub fn new(
         compiler: compiler::Context,
@@ -552,8 +571,12 @@ impl FileRunner {
         loop {
             match file_watcher.rx.recv() {
                 Ok(Ok(event)) => {
-                    log::info!("File event detected ({:?}), recompiling...", event.kind);
-                    self.recompile_file();
+                    if should_recompile_on_event(&event) {
+                        log::info!("File event detected ({:?}), recompiling...", event.kind);
+                        self.recompile_file();
+                    } else {
+                        log::debug!("Ignored file event: {:?}", event.kind);
+                    }
                 }
                 Ok(Err(e)) => {
                     log::error!("watch error event: {e}");
