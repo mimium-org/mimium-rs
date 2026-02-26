@@ -24,7 +24,6 @@ fn dsp(){{
         }
     }
 }
-
 #[wasm_bindgen_test(unsupported = test)]
 fn simple_arithmetic() {
     // unary
@@ -1590,3 +1589,4 @@ fn wasm_record_default_adsr() {
         );
     }
 }
+

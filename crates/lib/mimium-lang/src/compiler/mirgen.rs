@@ -16,7 +16,7 @@ use crate::mir::{self, Argument, Instruction, Mir, VPtr, VReg, Value};
 
 use state_tree::tree::StateTreeSkeleton;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -1049,32 +1049,39 @@ impl Context {
         // Build substitutions for each TypeScheme variable by structurally
         // matching generic function types against concrete call-site types.
         let mut scheme_subst = BTreeMap::<TypeSchemeId, TypeNodeId>::new();
+        let mut unresolved_subst = HashMap::<TypeNodeId, TypeNodeId>::new();
         fn collect_scheme_subst(
             generic_ty: TypeNodeId,
             concrete_ty: TypeNodeId,
             subst_map: &mut BTreeMap<TypeSchemeId, TypeNodeId>,
+            unresolved_subst: &mut HashMap<TypeNodeId, TypeNodeId>,
         ) {
             match (generic_ty.to_type(), concrete_ty.to_type()) {
                 (Type::TypeScheme(id), _) => {
                     subst_map.entry(id).or_insert(concrete_ty);
                 }
+                (Type::Unknown, _) => {
+                    unresolved_subst.entry(generic_ty).or_insert(concrete_ty);
+                }
                 (Type::Array(g), Type::Array(c))
                 | (Type::Ref(g), Type::Ref(c))
                 | (Type::Code(g), Type::Code(c))
                 | (Type::Boxed(g), Type::Boxed(c)) => {
-                    collect_scheme_subst(g, c, subst_map);
+                    collect_scheme_subst(g, c, subst_map, unresolved_subst);
                 }
                 (Type::Tuple(g), Type::Tuple(c)) | (Type::Union(g), Type::Union(c)) => {
                     if g.len() == c.len() {
                         g.iter()
                             .zip(c.iter())
-                            .for_each(|(gt, ct)| collect_scheme_subst(*gt, *ct, subst_map));
+                            .for_each(|(gt, ct)| {
+                                collect_scheme_subst(*gt, *ct, subst_map, unresolved_subst)
+                            });
                     }
                 }
                 (Type::Record(g_fields), Type::Record(c_fields)) => {
                     if g_fields.len() == c_fields.len() {
                         g_fields.iter().zip(c_fields.iter()).for_each(|(gf, cf)| {
-                            collect_scheme_subst(gf.ty, cf.ty, subst_map)
+                            collect_scheme_subst(gf.ty, cf.ty, subst_map, unresolved_subst)
                         });
                     }
                 }
@@ -1088,8 +1095,8 @@ impl Context {
                         ret: c_ret,
                     },
                 ) => {
-                    collect_scheme_subst(g_arg, c_arg, subst_map);
-                    collect_scheme_subst(g_ret, c_ret, subst_map);
+                    collect_scheme_subst(g_arg, c_arg, subst_map, unresolved_subst);
+                    collect_scheme_subst(g_ret, c_ret, subst_map, unresolved_subst);
                 }
                 (
                     Type::UserSum {
@@ -1107,7 +1114,7 @@ impl Context {
                             .zip(c_variants.iter())
                             .for_each(|((_, gp), (_, cp))| {
                                 if let (Some(gt), Some(ct)) = (gp, cp) {
-                                    collect_scheme_subst(*gt, *ct, subst_map);
+                                    collect_scheme_subst(*gt, *ct, subst_map, unresolved_subst);
                                 }
                             });
                     }
@@ -1118,7 +1125,12 @@ impl Context {
 
         let generic_args: Vec<TypeNodeId> = function.args.iter().map(|a| a.1).collect();
         if generic_args.len() == 1 {
-            collect_scheme_subst(generic_args[0], arg_type, &mut scheme_subst);
+            collect_scheme_subst(
+                generic_args[0],
+                arg_type,
+                &mut scheme_subst,
+                &mut unresolved_subst,
+            );
         } else {
             match arg_type.to_type() {
                 Type::Tuple(concrete_args) if concrete_args.len() == generic_args.len() => {
@@ -1126,7 +1138,12 @@ impl Context {
                         .iter()
                         .zip(concrete_args.iter())
                         .for_each(|(generic_arg, concrete_arg)| {
-                            collect_scheme_subst(*generic_arg, *concrete_arg, &mut scheme_subst)
+                            collect_scheme_subst(
+                                *generic_arg,
+                                *concrete_arg,
+                                &mut scheme_subst,
+                                &mut unresolved_subst,
+                            )
                         });
                 }
                 Type::Record(concrete_fields) if concrete_fields.len() == generic_args.len() => {
@@ -1134,7 +1151,12 @@ impl Context {
                         .iter()
                         .zip(concrete_fields.iter().map(|f| f.ty))
                         .for_each(|(generic_arg, concrete_arg)| {
-                            collect_scheme_subst(*generic_arg, concrete_arg, &mut scheme_subst)
+                            collect_scheme_subst(
+                                *generic_arg,
+                                concrete_arg,
+                                &mut scheme_subst,
+                                &mut unresolved_subst,
+                            )
                         });
                 }
                 _ => {}
@@ -1142,23 +1164,44 @@ impl Context {
         }
 
         if let Some(generic_ret) = function.return_type.get().copied() {
-            collect_scheme_subst(generic_ret, ret_type, &mut scheme_subst);
+            collect_scheme_subst(
+                generic_ret,
+                ret_type,
+                &mut scheme_subst,
+                &mut unresolved_subst,
+            );
         }
 
         let subst = |ty: TypeNodeId| -> TypeNodeId {
             fn substitute_by_map(
                 ty: TypeNodeId,
                 subst_map: &BTreeMap<TypeSchemeId, TypeNodeId>,
+                unresolved_subst: &HashMap<TypeNodeId, TypeNodeId>,
             ) -> TypeNodeId {
+                if let Some(concrete) = unresolved_subst.get(&ty) {
+                    return *concrete;
+                }
                 match ty.to_type() {
+                    Type::Unknown => {
+                        let mut mapped = unresolved_subst.values().copied();
+                        if let Some(first) = mapped.next() {
+                            if mapped.all(|candidate| candidate == first) {
+                                first
+                            } else {
+                                ty
+                            }
+                        } else {
+                            ty
+                        }
+                    }
                     Type::TypeScheme(id) => subst_map.get(&id).copied().unwrap_or(ty),
                     _ if ty.to_type().contains_unresolved() => {
-                        ty.apply_fn(|child| substitute_by_map(child, subst_map))
+                        ty.apply_fn(|child| substitute_by_map(child, subst_map, unresolved_subst))
                     }
                     _ => ty,
                 }
             }
-            substitute_by_map(ty, &scheme_subst)
+            substitute_by_map(ty, &scheme_subst, &unresolved_subst)
         };
 
         // Recursively substitute inside function types.
@@ -1235,7 +1278,26 @@ impl Context {
                     } else {
                         Type::Tuple(args.iter().map(|(_, ty)| *ty).collect()).into_id()
                     };
-                    let ext_ret_ty = *ret_ty;
+                    let is_probe_value = {
+                        let name = name.as_str();
+                        name == "__probe_value_intercept"
+                            || name.starts_with("__probe_value_intercept$arity")
+                    };
+                    let mut ext_ret_ty = *ret_ty;
+                    if is_probe_value
+                        && ext_ret_ty.to_type().contains_unresolved()
+                        && let Some((_, first_arg_ty)) = args.first()
+                    {
+                        ext_ret_ty = *first_arg_ty;
+                        *ret_ty = ext_ret_ty;
+                    }
+
+                    let fallback_fn_ty = Type::Function {
+                        arg: ext_arg_ty,
+                        ret: ext_ret_ty,
+                    }
+                    .into_id();
+
                     if let Some(resolved) =
                         resolve_monomorphized_ext_fn_name(*name, ext_arg_ty, ext_ret_ty)
                     {
@@ -1243,10 +1305,18 @@ impl Context {
                             .env
                             .lookup(&resolved)
                             .map(|(ty, _)| *ty)
-                            .unwrap_or_else(|| subst_fn_ty(*fn_ty));
+                            .unwrap_or(fallback_fn_ty);
                         *fn_ptr = Arc::new(Value::ExtFunction(resolved, concrete_fn_ty));
                     } else {
-                        *fn_ptr = Arc::new(Value::ExtFunction(*name, subst_fn_ty(*fn_ty)));
+                        let concrete_fn_ty = {
+                            let substituted = subst_fn_ty(*fn_ty);
+                            if substituted.to_type().contains_unresolved() {
+                                fallback_fn_ty
+                            } else {
+                                substituted
+                            }
+                        };
+                        *fn_ptr = Arc::new(Value::ExtFunction(*name, concrete_fn_ty));
                     }
                 }
             }

@@ -542,11 +542,12 @@ pub(crate) fn try_get_monomorphized_ext_fn_name(
     };
 
     let elem_word_size = match base_name {
-        "__probe_value_intercept" => match concrete_arg_ty.to_type() {
-            crate::types::Type::Tuple(elems) if !elems.is_empty() => elems[0].word_size(),
-            crate::types::Type::Record(fields) if !fields.is_empty() => fields[0].ty.word_size(),
-            _ => concrete_ret_ty.word_size(),
-        },
+        "__probe_value_intercept" => {
+            // ProbeValue intercept returns the probed value as-is.
+            // Use return word size as arity source so tuple/record passthrough
+            // values resolve to the correct specialized runtime symbol.
+            resolved_word_size(concrete_ret_ty)?
+        }
         "prepend" => match concrete_arg_ty.to_type() {
             crate::types::Type::Tuple(args) if args.len() == 2 => match args[1].to_type() {
                 crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
@@ -1091,4 +1092,47 @@ pub fn get_builtin_fns_as_plugins() -> Box<dyn Plugin> {
         extcls,
         commonfns,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::try_get_monomorphized_ext_fn_name;
+    use crate::{
+        interner::ToSymbol,
+        numeric,
+        types::{PType, Type},
+    };
+
+    #[test]
+    fn probe_value_monomorphized_name_uses_return_word_size() {
+        let arg_ty = Type::Tuple(vec![Type::Unknown.into_id(), numeric!()]).into_id();
+        let ret_ty = Type::Tuple(vec![numeric!(), numeric!()]).into_id();
+
+        let resolved =
+            try_get_monomorphized_ext_fn_name("__probe_value_intercept".to_symbol(), arg_ty, ret_ty);
+
+        assert_eq!(resolved, Some("__probe_value_intercept$arity2".to_symbol()));
+    }
+
+    #[test]
+    fn probe_value_monomorphized_name_none_for_unresolved_return() {
+        let arg_ty = Type::Tuple(vec![numeric!(), numeric!()]).into_id();
+        let ret_ty = Type::Unknown.into_id();
+
+        let resolved =
+            try_get_monomorphized_ext_fn_name("__probe_value_intercept".to_symbol(), arg_ty, ret_ty);
+
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn probe_value_monomorphized_name_one_for_scalar_return() {
+        let arg_ty = Type::Tuple(vec![numeric!(), Type::Primitive(PType::Numeric).into_id()]).into_id();
+        let ret_ty = numeric!();
+
+        let resolved =
+            try_get_monomorphized_ext_fn_name("__probe_value_intercept".to_symbol(), arg_ty, ret_ty);
+
+        assert_eq!(resolved, Some("__probe_value_intercept$arity1".to_symbol()));
+    }
 }
