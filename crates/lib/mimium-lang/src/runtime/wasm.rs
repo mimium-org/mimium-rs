@@ -828,11 +828,11 @@ fn mimium_type_to_wasmtime_valtype(ty: &crate::types::Type) -> ValType {
         Type::Code(_) => ValType::I64,
         Type::Intermediate(cell) => {
             let tv = cell.read().unwrap();
-            tv.parent.as_ref().map_or(ValType::F64, |parent| {
+            tv.parent.as_ref().map_or(ValType::I64, |parent| {
                 mimium_type_to_wasmtime_valtype(&parent.to_type())
             })
         }
-        _ => ValType::F64,
+        _ => ValType::I64,
     }
 }
 

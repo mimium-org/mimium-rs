@@ -342,7 +342,7 @@ impl WasmGenerator {
                 inputs
                     .first()
                     .map(|input| self.infer_value_type(input))
-                    .unwrap_or(ValType::F64)
+                    .unwrap_or(ValType::I64)
             }
         })
     }
@@ -1562,7 +1562,7 @@ impl WasmGenerator {
                             I::PhiSwitch(inputs) => inputs
                                 .first()
                                 .map(|input| self.infer_value_type(input))
-                                .unwrap_or(ValType::F64),
+                                .unwrap_or(ValType::I64),
                             _ => ValType::F64,
                         });
                     let local_idx = match reg_type {
@@ -1674,6 +1674,18 @@ impl WasmGenerator {
                         // Prefer the wider (multi-word) inference
                         if flat.len() > existing.len() {
                             *existing = flat.clone();
+                        } else if flat.len() == existing.len()
+                            && flat.len() == 1
+                            && flat[0] != existing[0]
+                        {
+                            // For scalar conflicts, prefer I64. Pointer-like
+                            // arguments often appear as I64 in address ops
+                            // (GetElement/AddI), while unresolved types may
+                            // otherwise default to F64 and produce invalid
+                            // signatures.
+                            if flat[0] == ValType::I64 || existing[0] == ValType::I64 {
+                                existing[0] = ValType::I64;
+                            }
                         }
                     })
                     .or_insert(flat);
@@ -1745,7 +1757,25 @@ impl WasmGenerator {
                             let flat = Self::flatten_type_to_valtypes(&ty.to_type());
                             record_arg(val, flat);
                         } else {
-                            let expected = Self::type_to_valtype(&ty.to_type());
+                            // Scalar load from an Argument can be either:
+                            // - direct scalar value (single-word argument), or
+                            // - dereference through an aggregate pointer (multi-word argument).
+                            // Use the declared argument shape to distinguish them.
+                            let expected = match val.as_ref() {
+                                V::Argument(idx) => {
+                                    let declared_word_size = func
+                                        .args
+                                        .get(*idx)
+                                        .map(|arg| arg.1.word_size())
+                                        .unwrap_or(1);
+                                    if declared_word_size > 1 {
+                                        ValType::I64
+                                    } else {
+                                        Self::type_to_valtype(&ty.to_type())
+                                    }
+                                }
+                                _ => Self::type_to_valtype(&ty.to_type()),
+                            };
                             record_arg(val, vec![expected]);
                         }
                     }
@@ -1814,10 +1844,21 @@ impl WasmGenerator {
                             Self::type_to_valtype(&ty.to_type())
                         }
                         // Function calls and memory operations
-                        I::Call(_, _, ret_ty)
-                        | I::CallIndirect(_, _, ret_ty)
-                        | I::CallCls(_, _, ret_ty) => {
-                            // Use type_to_valtype for consistent handling
+                        I::Call(fn_ptr, _, ret_ty) => {
+                            let ret = ret_ty.to_type();
+                            if ret.contains_unresolved()
+                                || Self::allows_scalar_inference_override(&ret)
+                            {
+                                self.resolve_mir_fn_idx(fn_ptr.as_ref())
+                                    .and_then(|idx| self.mir.functions.get(idx))
+                                    .and_then(|f| f.return_type.get())
+                                    .map(|ty| Self::type_to_valtype(&ty.to_type()))
+                                    .unwrap_or_else(|| Self::type_to_valtype(&ret))
+                            } else {
+                                Self::type_to_valtype(&ret)
+                            }
+                        }
+                        I::CallIndirect(_, _, ret_ty) | I::CallCls(_, _, ret_ty) => {
                             Self::type_to_valtype(&ret_ty.to_type())
                         }
                         // Memory allocation returns pointers (i64)
@@ -1888,7 +1929,7 @@ impl WasmGenerator {
                         I::PhiSwitch(inputs) => inputs
                             .first()
                             .map(|first| self.infer_value_type(first))
-                            .unwrap_or(ValType::F64),
+                            .unwrap_or(ValType::I64),
                         // Switch does not produce a value
                         I::Switch { .. } => ValType::I64,
                         // Array literal produces a pointer
@@ -1968,7 +2009,7 @@ impl WasmGenerator {
                         .register_types
                         .get(reg_idx)
                         .copied()
-                        .unwrap_or(ValType::F64);
+                        .unwrap_or(ValType::I64);
                     let local_idx = match reg_type {
                         ValType::I64 => self.current_num_args + *reg_idx as u32,
                         ValType::F64 => {
@@ -2822,7 +2863,7 @@ impl WasmGenerator {
                             // Multi-word arg was materialized to a pointer by emit_value_load;
                             // if we're loading a scalar from the tuple, dereference the pointer.
                             if is_scalar {
-                                self.emit_value_load(ptr, func);
+                                self.emit_value_load_typed(ptr, ValType::I64, func);
                                 func.instruction(&W::I32WrapI64);
                                 let memarg = MemArg {
                                     offset: 0,
@@ -2835,7 +2876,7 @@ impl WasmGenerator {
                                 };
                             } else {
                                 // Loading the entire tuple — return the pointer as-is
-                                self.emit_value_load(ptr, func);
+                                self.emit_value_load_typed(ptr, ValType::I64, func);
                             }
                         } else {
                             // Single-word arg: the value is direct
@@ -2846,7 +2887,7 @@ impl WasmGenerator {
                     _ => {
                         if is_scalar {
                             // Scalar: dereference the pointer in linear memory
-                            self.emit_value_load(ptr, func);
+                            self.emit_value_load_typed(ptr, ValType::I64, func);
                             func.instruction(&W::I32WrapI64);
                             let memarg = MemArg {
                                 offset: 0,
@@ -2865,7 +2906,7 @@ impl WasmGenerator {
                         } else {
                             // Multi-word type: the address IS the value (pointer to aggregate).
                             // Don't dereference; GetElement will offset from this address.
-                            self.emit_value_load(ptr, func);
+                            self.emit_value_load_typed(ptr, ValType::I64, func);
                         }
                     }
                 }
@@ -2880,10 +2921,10 @@ impl WasmGenerator {
                     for i in 0..word_size {
                         let byte_offset = (i * 8) as u64;
                         // Push destination address (i32) for the store
-                        self.emit_value_load(dst, func);
+                        self.emit_value_load_typed(dst, ValType::I64, func);
                         func.instruction(&W::I32WrapI64);
                         // Load source word from src address + offset
-                        self.emit_value_load(src, func);
+                        self.emit_value_load_typed(src, ValType::I64, func);
                         func.instruction(&W::I32WrapI64);
                         let load_memarg = MemArg {
                             offset: byte_offset,
@@ -2903,7 +2944,7 @@ impl WasmGenerator {
                     // Single-word store
                     // Stack order for f64.store/i64.store: [i32_addr, value]
                     let expected_vtype = Self::type_to_valtype(&ty.to_type());
-                    self.emit_value_load(dst, func);
+                    self.emit_value_load_typed(dst, ValType::I64, func);
                     func.instruction(&W::I32WrapI64);
                     self.emit_value_load_deref(src, expected_vtype, func);
                     if !matches!(src.as_ref(), mir::Value::Register(r) if self.getelement_registers.contains_key(r))
@@ -2949,7 +2990,7 @@ impl WasmGenerator {
                 // word_size: e.g. a UserSum is 2 words (tag + payload) in
                 // memory even though it flattens to a single I64 pointer
                 // when passed as a function parameter.
-                self.emit_value_load(value, func);
+                self.emit_value_load_typed(value, ValType::I64, func);
                 if *tuple_offset > 0 {
                     let composite_ty = ty.to_type();
                     let offset_bytes = match &composite_ty {
@@ -3037,8 +3078,10 @@ impl WasmGenerator {
                     // Direct calls share the caller's state storage, navigated
                     // by MIR's PushStateOffset/PopStateOffset instructions.
                     // Only closure calls (CallCls/CallIndirect) switch state context.
+                    let mut called_mir_fn_idx: Option<usize> = None;
                     let wasm_fn_idx = match fn_ptr.as_ref() {
                         mir::Value::Function(fn_idx) => {
+                            called_mir_fn_idx = Some(*fn_idx);
                             let wasm_idx = *fn_idx as u32 + self.num_imports;
                             log::debug!("Calling function idx={fn_idx}");
                             wasm_idx
@@ -3046,6 +3089,7 @@ impl WasmGenerator {
                         mir::Value::Register(reg_idx) => {
                             if let Some(const_val) = self.register_constants.get(reg_idx) {
                                 let fn_idx = *const_val as usize;
+                                called_mir_fn_idx = Some(fn_idx);
                                 let wasm_idx = *const_val as u32 + self.num_imports;
                                 log::debug!("Calling function (via register) idx={fn_idx}");
                                 wasm_idx
@@ -3062,6 +3106,45 @@ impl WasmGenerator {
                     // Load arguments with tuple flattening and make the call
                     self.emit_call_args_flattened(args, func);
                     func.instruction(&W::Call(wasm_fn_idx));
+
+                    // Reconcile return stack type when function declaration and
+                    // call-site expectation differ (can happen with unresolved
+                    // MIR types around aggregates/pointers).
+                    let expected_ret_vt = match ret_ty.to_type() {
+                        Type::Primitive(PType::Unit) => None,
+                        other
+                            if other.contains_unresolved()
+                                || Self::allows_scalar_inference_override(&other) =>
+                        {
+                            None
+                        }
+                        other => Some(Self::type_to_valtype(&other)),
+                    };
+                    let actual_ret_vt = called_mir_fn_idx.and_then(|idx| {
+                        self.mir.functions.get(idx).and_then(|f| {
+                            f.return_type.get().and_then(|ty| {
+                                let ty = ty.to_type();
+                                if matches!(ty, Type::Primitive(PType::Unit)) {
+                                    None
+                                } else {
+                                    Some(Self::type_to_valtype(&ty))
+                                }
+                            })
+                        })
+                    });
+                    if let (Some(actual), Some(expected)) = (actual_ret_vt, expected_ret_vt)
+                        && actual != expected
+                    {
+                        match (actual, expected) {
+                            (ValType::F64, ValType::I64) => {
+                                func.instruction(&W::I64ReinterpretF64);
+                            }
+                            (ValType::I64, ValType::F64) => {
+                                func.instruction(&W::F64ReinterpretI64);
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
 
@@ -3668,7 +3751,7 @@ impl WasmGenerator {
                     .register_types
                     .get(reg_idx)
                     .copied()
-                    .unwrap_or(ValType::F64);
+                    .unwrap_or(ValType::I64);
                 let local_idx = match reg_type {
                     ValType::I64 => self.current_num_args + *reg_idx as u32,
                     ValType::F64 => {
@@ -3699,7 +3782,7 @@ impl WasmGenerator {
                                 .current_arg_types
                                 .get(param_idx as usize)
                                 .copied()
-                                .unwrap_or(ValType::F64);
+                                .unwrap_or(ValType::I64);
                             func.instruction(&W::I32Const((temp_addr + i * 8) as i32));
                             func.instruction(&W::LocalGet(param_idx));
                             let memarg = MemArg {
@@ -3894,7 +3977,7 @@ impl WasmGenerator {
                 .register_types
                 .get(reg_idx)
                 .copied()
-                .unwrap_or(ValType::F64),
+                .unwrap_or(ValType::I64),
             mir::Value::Argument(arg_idx) => {
                 // Look up actual argument type from the current function's arg map.
                 // For multi-word args (tuples), the materialized value is a pointer (I64).
@@ -3905,10 +3988,10 @@ impl WasmGenerator {
                         self.current_arg_types
                             .get(param_start as usize)
                             .copied()
-                            .unwrap_or(ValType::F64)
+                            .unwrap_or(ValType::I64)
                     }
                 } else {
-                    ValType::F64
+                    ValType::I64
                 }
             }
             mir::Value::Function(_) | mir::Value::ExtFunction(_, _) => ValType::I64,
@@ -4210,13 +4293,13 @@ impl WasmGenerator {
                 if let Some(parent) = &tv.parent {
                     Self::type_to_valtype(&parent.to_type())
                 } else {
-                    // Unresolved type variable  Edefault to F64 for numeric compatibility
-                    ValType::F64
+                    // Unresolved type variable defaults to pointer-safe word type.
+                    ValType::I64
                 }
             }
             // Unknown/Any/Failure/TypeAlias/TypeScheme: not fully resolved.
-            // Default to F64 for backward compatibility with untyped numeric parameters.
-            _ => ValType::F64,
+            // Default to I64 so unresolved values are treated as word/pointer safely.
+            _ => ValType::I64,
         }
     }
 

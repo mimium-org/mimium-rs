@@ -553,10 +553,7 @@ pub(crate) fn try_get_monomorphized_ext_fn_name(
                 _ => return None,
             },
             crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
-            _ => match concrete_ret_ty.to_type() {
-                crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
-                _ => return None,
-            },
+            _ => return None,
         },
         "split_head" => match concrete_arg_ty.to_type() {
             crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
@@ -564,12 +561,7 @@ pub(crate) fn try_get_monomorphized_ext_fn_name(
                 crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
                 _ => return None,
             },
-            _ => match concrete_ret_ty.to_type() {
-                crate::types::Type::Tuple(elems) if elems.len() == 2 => {
-                    resolved_word_size(elems[0])?
-                }
-                _ => return None,
-            },
+            _ => return None,
         },
         "split_tail" => match concrete_arg_ty.to_type() {
             crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
@@ -577,12 +569,7 @@ pub(crate) fn try_get_monomorphized_ext_fn_name(
                 crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
                 _ => return None,
             },
-            _ => match concrete_ret_ty.to_type() {
-                crate::types::Type::Tuple(elems) if elems.len() == 2 => {
-                    resolved_word_size(elems[1])?
-                }
-                _ => return None,
-            },
+            _ => return None,
         },
         _ => return None,
     };
@@ -622,59 +609,73 @@ pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Optio
         ExtClsInfo::new(name, ty, f)
     };
 
-    let make_split_head = |_elem_size: usize| {
+    let make_split_head = |elem_size: usize| {
         let f = Rc::new(RefCell::new(
             move |machine: &mut crate::runtime::vm::Machine| -> crate::runtime::vm::ReturnCode {
                 let arr_idx = machine.get_stack(0);
                 let arr = machine.arrays.get_array(arr_idx);
                 let actual_elem_size = arr.get_elem_word_size() as usize;
+                if actual_elem_size != elem_size {
+                    panic!(
+                        "split_head$arity{} called with array elem size {}",
+                        elem_size,
+                        actual_elem_size
+                    );
+                }
                 let len = arr.get_length_array() as usize;
                 if len == 0 {
                     panic!("Cannot split_head on empty array");
                 }
                 let data = arr.get_data().to_vec();
-                let head = data[..actual_elem_size].to_vec();
+                let head = data[..elem_size].to_vec();
                 let rest_arr_idx = machine
                     .arrays
-                    .alloc_array((len - 1) as u64, actual_elem_size as u64);
-                let rest_copy_len = (len - 1) * actual_elem_size;
-                let rest_src_offset = actual_elem_size;
+                    .alloc_array((len - 1) as u64, elem_size as u64);
+                let rest_copy_len = (len - 1) * elem_size;
+                let rest_src_offset = elem_size;
                 machine.arrays.get_array_mut(rest_arr_idx).get_data_mut()[..rest_copy_len]
                     .copy_from_slice(&data[rest_src_offset..rest_src_offset + rest_copy_len]);
                 head.iter()
                     .enumerate()
                     .for_each(|(i, v)| machine.set_stack(i as i64, *v));
-                machine.set_stack(actual_elem_size as i64, rest_arr_idx);
-                actual_elem_size as i64 + 1
+                machine.set_stack(elem_size as i64, rest_arr_idx);
+                elem_size as i64 + 1
             },
         ));
         ExtClsInfo::new(name, ty, f)
     };
 
-    let make_split_tail = |_elem_size: usize| {
+    let make_split_tail = |elem_size: usize| {
         let f = Rc::new(RefCell::new(
             move |machine: &mut crate::runtime::vm::Machine| -> crate::runtime::vm::ReturnCode {
                 let arr_idx = machine.get_stack(0);
                 let arr = machine.arrays.get_array(arr_idx);
                 let actual_elem_size = arr.get_elem_word_size() as usize;
+                if actual_elem_size != elem_size {
+                    panic!(
+                        "split_tail$arity{} called with array elem size {}",
+                        elem_size,
+                        actual_elem_size
+                    );
+                }
                 let len = arr.get_length_array() as usize;
                 if len == 0 {
                     panic!("Cannot split_tail on empty array");
                 }
                 let data = arr.get_data().to_vec();
-                let tail_offset = (len - 1) * actual_elem_size;
-                let tail = data[tail_offset..tail_offset + actual_elem_size].to_vec();
+                let tail_offset = (len - 1) * elem_size;
+                let tail = data[tail_offset..tail_offset + elem_size].to_vec();
                 let rest_arr_idx = machine
                     .arrays
-                    .alloc_array((len - 1) as u64, actual_elem_size as u64);
-                let rest_copy_len = (len - 1) * actual_elem_size;
+                    .alloc_array((len - 1) as u64, elem_size as u64);
+                let rest_copy_len = (len - 1) * elem_size;
                 machine.arrays.get_array_mut(rest_arr_idx).get_data_mut()[..rest_copy_len]
                     .copy_from_slice(&data[..rest_copy_len]);
                 machine.set_stack(0, rest_arr_idx);
                 tail.iter()
                     .enumerate()
                     .for_each(|(i, v)| machine.set_stack((i + 1) as i64, *v));
-                actual_elem_size as i64 + 1
+                elem_size as i64 + 1
             },
         ));
         ExtClsInfo::new(name, ty, f)

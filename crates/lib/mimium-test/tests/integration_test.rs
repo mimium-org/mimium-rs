@@ -1571,3 +1571,22 @@ fn wasm_stereo_output() {
         );
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_record_default_adsr() {
+    let res = run_file_test_wasm("wasm_record_default_adsr.mmm", 8, false).unwrap();
+    assert_eq!(res.len(), 8, "WASM backend: output length mismatch");
+    assert!(
+        res.iter().any(|x| x.abs() > 1e-6),
+        "WASM backend: record default ADSR unexpectedly produced silence"
+    );
+    for i in 1..res.len() {
+        assert!(
+            res[i] < res[i - 1],
+            "WASM backend: record default ADSR should monotonically decrease at index {i}: {} !< {}",
+            res[i],
+            res[i - 1]
+        );
+    }
+}

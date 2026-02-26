@@ -2278,20 +2278,12 @@ impl Context {
                                 concrete_ret_ty.to_type()
                             );
 
-                            let mangled_name = resolve_monomorphized_ext_fn_name(
+                            let resolved_name = resolve_monomorphized_ext_fn_name(
                                 *fn_name,
                                 concrete_arg_ty,
                                 concrete_ret_ty,
                             )
-                            .unwrap_or_else(|| {
-                                format!(
-                                    "{}_mono_{}_{}",
-                                    fn_name.as_str(),
-                                    concrete_arg_ty.to_mangled_string(),
-                                    concrete_ret_ty.to_mangled_string()
-                                )
-                                .to_symbol()
-                            });
+                            .unwrap_or(*fn_name);
 
                             let concrete_fn_ty = Type::Function {
                                 arg: concrete_arg_ty,
@@ -2299,7 +2291,7 @@ impl Context {
                             }
                             .into_id();
                             (
-                                Arc::new(Value::ExtFunction(mangled_name, concrete_fn_ty)),
+                                Arc::new(Value::ExtFunction(resolved_name, concrete_fn_ty)),
                                 concrete_ret_ty,
                                 concrete_arg_ty,
                             )
