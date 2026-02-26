@@ -180,7 +180,7 @@ fn mininotation_alternate_grouping() {
             let res =
                 run_file_with_plugins("mininotation_alternate_grouping.mmm", 1, [].into_iter(), false)
                     .unwrap();
-            let ans = vec![19.0]; // 19 boolean checks
+            let ans = vec![19.0];
             assert_eq!(res, ans);
         })
         .unwrap()

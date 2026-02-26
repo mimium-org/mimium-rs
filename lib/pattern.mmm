@@ -132,14 +132,19 @@ fn is_in_arc(arc:Arc,phase:float){
 fn note_at_phase(events:[Event], phase:float, current:Event)->Note{
     if ((events |> length_array) > 0.0){
         let (head,rest) = events |> split_head
+        let next:Event = {
+            arc = {start = head.arc.start, end = head.arc.end},
+            active = {start = head.active.start, end = head.active.end},
+            val = head.val
+        }
         if (phase >= head.arc.start){
-            note_at_phase(rest, phase, head)
+            note_at_phase(rest, phase, next)
         }else{
-            {val = current.val,
+            {val = current.val + (current.arc.end - current.arc.start) * 0.0,
              gate = is_in_arc(current.active,phase)}
         }
     }else{
-        { val = current.val,
+        { val = current.val + (current.arc.end - current.arc.start) * 0.0,
           gate = is_in_arc(current.active,phase)
         }
     }
