@@ -35,11 +35,7 @@ pub fn apply_state_storage_patch_plan(
     patch_plan: &StateStoragePatchPlan,
 ) -> Vec<u64> {
     let mut new_storage = vec![0u64; patch_plan.total_size];
-    patch::apply_patches(
-        &mut new_storage,
-        old_storage,
-        patch_plan.patches.as_slice(),
-    );
+    patch::apply_patches(&mut new_storage, old_storage, patch_plan.patches.as_slice());
 
     debug_assert_eq!(new_storage.len(), patch_plan.total_size);
 

@@ -2081,9 +2081,7 @@ impl InferContext {
         // Cases 2 & 3: peel wrappers and look up the field in the record.
         match self.lookup_field_in_type(et, field) {
             FieldLookup::Found(field_ty) => Ok(field_ty),
-            FieldLookup::RecordWithoutField => {
-                self.extend_record_with_field(et, field, loc)
-            }
+            FieldLookup::RecordWithoutField => self.extend_record_with_field(et, field, loc),
             FieldLookup::NotRecord => Err(vec![Error::FieldForNonRecord(loc, et)]),
         }
     }
@@ -3097,13 +3095,11 @@ fn dsp(){
         // non-record access error. Both indicate the intended regression is
         // caught: accessing `note.val` is a type error.
         assert!(
-            errors
-                .iter()
-                .any(|e| {
-                    let message = e.get_message();
-                    message.contains("Field \"val\"")
-                        || message.contains("Field access for non-record variable")
-                }),
+            errors.iter().any(|e| {
+                let message = e.get_message();
+                message.contains("Field \"val\"")
+                    || message.contains("Field access for non-record variable")
+            }),
             "Expected field access type error for \"val\", got: {:?}",
             errors.iter().map(|e| e.get_message()).collect::<Vec<_>>()
         );

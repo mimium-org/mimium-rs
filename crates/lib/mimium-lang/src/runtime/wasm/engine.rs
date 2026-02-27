@@ -345,42 +345,42 @@ impl DspRuntime for WasmDspRuntime {
             self.set_sample_rate(self.sample_rate);
 
             {
-                    let mut next_global_state = prewarmed_global_state;
+                let mut next_global_state = prewarmed_global_state;
 
-                    // Attempt state migration when both old and new skeletons exist.
-                    if let (Some(old_data), Some(old_skel), Some(new_skel)) = (
-                        &old_global_data,
-                        &self.current_dsp_skeleton,
-                        &dsp_state_skeleton,
-                    ) {
-                        debug_assert_eq!(
-                            state_patch_plan.total_size,
-                            new_skel.total_size() as usize,
-                            "state_patch_plan.total_size must match new skeleton total size"
-                        );
-                        if old_skel == new_skel && state_patch_plan.patches.is_empty() {
-                            log::info!("No state structure change detected, copying buffer");
-                            next_global_state = old_data.clone();
-                        } else {
-                            if next_global_state.len() != state_patch_plan.total_size {
-                                next_global_state.resize(state_patch_plan.total_size, 0);
-                            }
-                            state_tree::patch::apply_patches(
-                                next_global_state.as_mut_slice(),
-                                old_data,
-                                state_patch_plan.patches.as_slice(),
-                            );
-                        }
-                    } else if let Some(old_data) = &old_global_data {
-                        // No skeletons available; best-effort: copy old data.
+                // Attempt state migration when both old and new skeletons exist.
+                if let (Some(old_data), Some(old_skel), Some(new_skel)) = (
+                    &old_global_data,
+                    &self.current_dsp_skeleton,
+                    &dsp_state_skeleton,
+                ) {
+                    debug_assert_eq!(
+                        state_patch_plan.total_size,
+                        new_skel.total_size() as usize,
+                        "state_patch_plan.total_size must match new skeleton total size"
+                    );
+                    if old_skel == new_skel && state_patch_plan.patches.is_empty() {
+                        log::info!("No state structure change detected, copying buffer");
                         next_global_state = old_data.clone();
+                    } else {
+                        if next_global_state.len() != state_patch_plan.total_size {
+                            next_global_state.resize(state_patch_plan.total_size, 0);
+                        }
+                        state_tree::patch::apply_patches(
+                            next_global_state.as_mut_slice(),
+                            old_data,
+                            state_patch_plan.patches.as_slice(),
+                        );
                     }
+                } else if let Some(old_data) = &old_global_data {
+                    // No skeletons available; best-effort: copy old data.
+                    next_global_state = old_data.clone();
+                }
 
-                    self.engine.set_global_state_data(&next_global_state);
+                self.engine.set_global_state_data(&next_global_state);
 
-                    // Update stored skeleton for subsequent hot-swaps.
-                    self.current_dsp_skeleton = dsp_state_skeleton;
-                    true
+                // Update stored skeleton for subsequent hot-swaps.
+                self.current_dsp_skeleton = dsp_state_skeleton;
+                true
             }
         } else {
             false

@@ -32,17 +32,17 @@ use mimium_lang::{
         miniprint::MiniPrint,
     },
 };
-use notify::{Event, RecursiveMode, Watcher};
 #[cfg(target_os = "macos")]
 use notify::event::{AccessKind, EventKind, ModifyKind};
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 use notify::event::{AccessKind, EventKind, ModifyKind};
+use notify::{Event, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 
 #[cfg(not(target_arch = "wasm32"))]
-use mimium_lang::plugin::ExtFunTypeInfo;
-#[cfg(not(target_arch = "wasm32"))]
 use mimium_lang::mir::StateType;
+#[cfg(not(target_arch = "wasm32"))]
+use mimium_lang::plugin::ExtFunTypeInfo;
 #[cfg(not(target_arch = "wasm32"))]
 use state_tree::StateStoragePatchPlan;
 #[cfg(not(target_arch = "wasm32"))]
@@ -619,7 +619,11 @@ impl FileRunner {
         dsp_state_skeleton: Option<StateTreeSkeleton<StateType>>,
         ext_fns: Option<&[ExtFunTypeInfo]>,
     ) -> Result<ProgramPayload, String> {
-        let old_program = self.old_program.lock().ok().and_then(|guard| (*guard).clone());
+        let old_program = self
+            .old_program
+            .lock()
+            .ok()
+            .and_then(|guard| (*guard).clone());
         let previous_skeleton = old_program
             .as_ref()
             .and_then(|program| program.dsp_state_skeleton.clone());
@@ -654,8 +658,10 @@ impl FileRunner {
         new_skeleton: Option<&StateTreeSkeleton<StateType>>,
         prewarmed_state_size: usize,
     ) -> StateStoragePatchPlan {
-        if let (Some(old_skeleton), Some(new_skeleton)) = (previous_skeleton, new_skeleton.cloned()) {
-            let maybe_plan = state_tree::build_state_storage_patch_plan(old_skeleton, new_skeleton.clone());
+        if let (Some(old_skeleton), Some(new_skeleton)) = (previous_skeleton, new_skeleton.cloned())
+        {
+            let maybe_plan =
+                state_tree::build_state_storage_patch_plan(old_skeleton, new_skeleton.clone());
             if let Some(plan) = maybe_plan {
                 return plan;
             }
@@ -691,63 +697,61 @@ impl FileRunner {
     }
 
     fn recompile_file_inprocess(&self, new_content: String) {
-                #[cfg(not(target_arch = "wasm32"))]
-                let mode = RunMode::EmitByteCode;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mode = RunMode::EmitByteCode;
 
-                #[cfg(target_arch = "wasm32")]
-                let mode = {
-                    let _ = self.use_wasm;
-                    RunMode::EmitByteCode
-                };
-                let _ = self.tx_compiler.send(CompileRequest {
-                    source: new_content.clone(),
-                    path: self.fullpath.clone(),
-                    option: RunOptions {
-                        mode,
-                        with_gui: true,
-                        use_wasm: self.use_wasm,
-                        audio_setting: AudioSetting::default(),
-                        config: Config::default(),
-                    },
-                });
-                let _ = self.rx_compiler.recv().map(|res| match res {
-                    Ok(Response::Ast(_)) | Ok(Response::Mir(_)) => {
-                        log::warn!("unexpected response: AST/MIR");
-                    }
-                    Ok(Response::ByteCode(prog)) => {
-                        log::info!("compiled successfully.");
-                        if let Some(tx) = &self.tx_prog {
-                            let _ = tx.send(ProgramPayload::VmProgram(prog));
+        #[cfg(target_arch = "wasm32")]
+        let mode = {
+            let _ = self.use_wasm;
+            RunMode::EmitByteCode
+        };
+        let _ = self.tx_compiler.send(CompileRequest {
+            source: new_content.clone(),
+            path: self.fullpath.clone(),
+            option: RunOptions {
+                mode,
+                with_gui: true,
+                use_wasm: self.use_wasm,
+                audio_setting: AudioSetting::default(),
+                config: Config::default(),
+            },
+        });
+        let _ = self.rx_compiler.recv().map(|res| match res {
+            Ok(Response::Ast(_)) | Ok(Response::Mir(_)) => {
+                log::warn!("unexpected response: AST/MIR");
+            }
+            Ok(Response::ByteCode(prog)) => {
+                log::info!("compiled successfully.");
+                if let Some(tx) = &self.tx_prog {
+                    let _ = tx.send(ProgramPayload::VmProgram(prog));
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Ok(Response::WasmModule(output)) => {
+                log::info!("WASM compiled successfully ({} bytes).", output.bytes.len());
+                if let Some(tx) = &self.tx_prog {
+                    match self.prepare_hot_swap_wasm_payload(
+                        output.bytes,
+                        output.dsp_state_skeleton,
+                        Some(&output.ext_fns),
+                    ) {
+                        Ok(payload) => {
+                            let _ = tx.send(payload);
+                        }
+                        Err(e) => {
+                            log::error!("WASM prepare_hot_swap failed; skip hot-swap by spec: {e}");
                         }
                     }
-                    #[cfg(not(target_arch = "wasm32"))]
-                    Ok(Response::WasmModule(output)) => {
-                        log::info!("WASM compiled successfully ({} bytes).", output.bytes.len());
-                        if let Some(tx) = &self.tx_prog {
-                            match self.prepare_hot_swap_wasm_payload(
-                                output.bytes,
-                                output.dsp_state_skeleton,
-                                Some(&output.ext_fns),
-                            ) {
-                                Ok(payload) => {
-                                    let _ = tx.send(payload);
-                                }
-                                Err(e) => {
-                                    log::error!(
-                                        "WASM prepare_hot_swap failed; skip hot-swap by spec: {e}"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    Err(errs) => {
-                        let errs = errs
-                            .into_iter()
-                            .map(|e| Box::new(e) as Box<dyn ReportableError>)
-                            .collect::<Vec<_>>();
-                        report(&new_content, self.fullpath.clone(), &errs);
-                    }
-                });
+                }
+            }
+            Err(errs) => {
+                let errs = errs
+                    .into_iter()
+                    .map(|e| Box::new(e) as Box<dyn ReportableError>)
+                    .collect::<Vec<_>>();
+                report(&new_content, self.fullpath.clone(), &errs);
+            }
+        });
     }
 
     fn recompile_file(&self) {
@@ -763,11 +767,7 @@ impl FileRunner {
                                     bytes.len()
                                 );
                                 if let Some(tx) = &self.tx_prog {
-                                    match self.prepare_hot_swap_wasm_payload(
-                                        bytes,
-                                        None,
-                                        None,
-                                    ) {
+                                    match self.prepare_hot_swap_wasm_payload(bytes, None, None) {
                                         Ok(payload) => {
                                             let _ = tx.send(payload);
                                         }

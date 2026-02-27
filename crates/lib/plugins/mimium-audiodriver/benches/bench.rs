@@ -84,18 +84,15 @@ fn dsp(){{
     }
 
     fn load_pattern_test_source() -> String {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../../examples/pattern_test.mmm");
-        let source = fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!("failed to read {}: {e}", path.display())
-        });
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../examples/pattern_test.mmm");
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
         source.replace("    |> ProbeValue!(\"out\")\n", "")
     }
 
     fn make_pattern_test_variant(source: &str, variant_id: usize) -> String {
-        format!(
-            "{source}\n\nlet __bench_pattern_variant_{variant_id} = {variant_id}.0\n"
-        )
+        format!("{source}\n\nlet __bench_pattern_variant_{variant_id} = {variant_id}.0\n")
     }
 
     #[bench]

@@ -971,7 +971,8 @@ impl Machine {
                     let base = self.base_pointer as usize;
                     let iret = base + func as usize + 1;
                     let n = nret_req as usize;
-                    self.stack.copy_within(iret..(iret + n), base + func as usize);
+                    self.stack
+                        .copy_within(iret..(iret + n), base + func as usize);
                     self.stack.truncate(base + func as usize + n);
                 }
                 Instruction::Closure(dst, fn_index) => {
@@ -1392,6 +1393,11 @@ impl Machine {
     /// Retrieve a previously stored code value by its `RawVal` index.
     pub fn get_code(&self, val: RawVal) -> ExprNodeId {
         self.code_values[val as usize]
+    }
+
+    /// Try retrieving a previously stored code value by its `RawVal` index.
+    pub fn try_get_code(&self, val: RawVal) -> Option<ExprNodeId> {
+        self.code_values.get(val as usize).copied()
     }
 
     fn link_functions(&mut self) {

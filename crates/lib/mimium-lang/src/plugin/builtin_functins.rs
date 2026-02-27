@@ -150,7 +150,6 @@ mod split_tail {
     fn machine_function(
         machine: &mut crate::runtime::vm::Machine,
     ) -> crate::runtime::vm::ReturnCode {
-
         let arr_idx = machine.get_stack(0);
         let array = machine.arrays.get_array(arr_idx);
         let len = array.get_length_array();
@@ -234,7 +233,6 @@ mod split_head {
     fn machine_function(
         machine: &mut crate::runtime::vm::Machine,
     ) -> crate::runtime::vm::ReturnCode {
-
         let arr_idx = machine.get_stack(0);
         let array = machine.arrays.get_array(arr_idx);
         let len = array.get_length_array();
@@ -527,8 +525,7 @@ pub(crate) fn try_get_monomorphized_ext_fn_name(
 
     let base_name = {
         let name = fn_name.as_str();
-        if name == "__probe_value_intercept" || name.starts_with("__probe_value_intercept$arity")
-        {
+        if name == "__probe_value_intercept" || name.starts_with("__probe_value_intercept$arity") {
             "__probe_value_intercept"
         } else if name == "prepend" || name.starts_with("prepend$arity") {
             "prepend"
@@ -619,8 +616,7 @@ pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Optio
                 if actual_elem_size != elem_size {
                     panic!(
                         "split_head$arity{} called with array elem size {}",
-                        elem_size,
-                        actual_elem_size
+                        elem_size, actual_elem_size
                     );
                 }
                 let len = arr.get_length_array() as usize;
@@ -655,8 +651,7 @@ pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Optio
                 if actual_elem_size != elem_size {
                     panic!(
                         "split_tail$arity{} called with array elem size {}",
-                        elem_size,
-                        actual_elem_size
+                        elem_size, actual_elem_size
                     );
                 }
                 let len = arr.get_length_array() as usize;
@@ -1108,8 +1103,11 @@ mod tests {
         let arg_ty = Type::Tuple(vec![Type::Unknown.into_id(), numeric!()]).into_id();
         let ret_ty = Type::Tuple(vec![numeric!(), numeric!()]).into_id();
 
-        let resolved =
-            try_get_monomorphized_ext_fn_name("__probe_value_intercept".to_symbol(), arg_ty, ret_ty);
+        let resolved = try_get_monomorphized_ext_fn_name(
+            "__probe_value_intercept".to_symbol(),
+            arg_ty,
+            ret_ty,
+        );
 
         assert_eq!(resolved, Some("__probe_value_intercept$arity2".to_symbol()));
     }
@@ -1119,19 +1117,26 @@ mod tests {
         let arg_ty = Type::Tuple(vec![numeric!(), numeric!()]).into_id();
         let ret_ty = Type::Unknown.into_id();
 
-        let resolved =
-            try_get_monomorphized_ext_fn_name("__probe_value_intercept".to_symbol(), arg_ty, ret_ty);
+        let resolved = try_get_monomorphized_ext_fn_name(
+            "__probe_value_intercept".to_symbol(),
+            arg_ty,
+            ret_ty,
+        );
 
         assert_eq!(resolved, None);
     }
 
     #[test]
     fn probe_value_monomorphized_name_one_for_scalar_return() {
-        let arg_ty = Type::Tuple(vec![numeric!(), Type::Primitive(PType::Numeric).into_id()]).into_id();
+        let arg_ty =
+            Type::Tuple(vec![numeric!(), Type::Primitive(PType::Numeric).into_id()]).into_id();
         let ret_ty = numeric!();
 
-        let resolved =
-            try_get_monomorphized_ext_fn_name("__probe_value_intercept".to_symbol(), arg_ty, ret_ty);
+        let resolved = try_get_monomorphized_ext_fn_name(
+            "__probe_value_intercept".to_symbol(),
+            arg_ty,
+            ret_ty,
+        );
 
         assert_eq!(resolved, Some("__probe_value_intercept$arity1".to_symbol()));
     }
