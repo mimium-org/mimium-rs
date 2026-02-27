@@ -238,7 +238,9 @@ pub enum RunMode {
     EmitMir,
     EmitByteCode,
     #[cfg(not(target_arch = "wasm32"))]
-    EmitWasm,
+    EmitWasm {
+        output: Option<PathBuf>,
+    },
     NativeAudio,
     #[cfg(not(target_arch = "wasm32"))]
     WasmAudio,
@@ -310,7 +312,9 @@ impl RunOptions {
         #[cfg(not(target_arch = "wasm32"))]
         if args.mode.emit_wasm {
             return Self {
-                mode: RunMode::EmitWasm,
+                mode: RunMode::EmitWasm {
+                    output: args.output.clone(),
+                },
                 with_gui: false,
                 use_wasm: false,
                 audio_setting: audio_setting.clone(),
@@ -573,9 +577,11 @@ impl FileRunner {
             ));
         }
 
-        let wasm_path = self.fullpath.with_extension("wasm");
-        fs::read(&wasm_path)
-            .map_err(|e| format!("failed to read generated wasm {}: {e}", wasm_path.display()))
+        if output.stdout.is_empty() {
+            return Err("subprocess compile succeeded but produced empty wasm stdout".to_string());
+        }
+
+        Ok(output.stdout)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -915,8 +921,9 @@ pub fn run_file(
             Ok(())
         }
         #[cfg(not(target_arch = "wasm32"))]
-        RunMode::EmitWasm => {
+        RunMode::EmitWasm { output } => {
             use mimium_lang::utils::metadata::Location;
+            use std::io::Write;
             use std::sync::Arc;
 
             ctx.prepare_compiler();
@@ -932,23 +939,28 @@ pub fn run_file(
                 }) as Box<dyn ReportableError>]
             })?;
 
-            // Output module info
-            println!("Generated WASM module ({} bytes)", wasm_bytes.len());
-            println!("Magic: {:?}", &wasm_bytes[0..4]);
-            println!("Version: {:?}", &wasm_bytes[4..8]);
-
-            // Write to file
-            if let Some(parent) = fullpath.parent() {
-                let wasm_path = parent
-                    .join(fullpath.file_stem().unwrap())
-                    .with_extension("wasm");
-                std::fs::write(&wasm_path, &wasm_bytes).map_err(|e| {
+            if let Some(path) = output {
+                std::fs::write(&path, &wasm_bytes).map_err(|e| {
                     vec![Box::new(mimium_lang::utils::error::SimpleError {
                         message: e.to_string(),
                         span: Location::default(),
                     }) as Box<dyn ReportableError>]
                 })?;
-                println!("Written to: {}", wasm_path.display());
+                println!("Written to: {}", path.display());
+            } else {
+                let mut stdout = std::io::stdout().lock();
+                stdout.write_all(&wasm_bytes).map_err(|e| {
+                    vec![Box::new(mimium_lang::utils::error::SimpleError {
+                        message: e.to_string(),
+                        span: Location::default(),
+                    }) as Box<dyn ReportableError>]
+                })?;
+                stdout.flush().map_err(|e| {
+                    vec![Box::new(mimium_lang::utils::error::SimpleError {
+                        message: e.to_string(),
+                        span: Location::default(),
+                    }) as Box<dyn ReportableError>]
+                })?;
             }
 
             Ok(())

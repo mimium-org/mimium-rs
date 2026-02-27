@@ -67,7 +67,7 @@ impl AsyncCompilerService {
                     .map(Response::ByteCode)
                     .map_err(|errs| errs.into_iter().map(RichError::from).collect()),
                 #[cfg(not(target_arch = "wasm32"))]
-                RunMode::WasmAudio | RunMode::EmitWasm => self
+                RunMode::WasmAudio | RunMode::EmitWasm { .. } => self
                     .compiler
                     .emit_wasm(&request.source)
                     .map(Response::WasmModule)
