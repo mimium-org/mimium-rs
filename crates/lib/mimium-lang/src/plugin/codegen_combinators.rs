@@ -426,6 +426,61 @@ fn code_record(machine: &mut Machine) -> ReturnCode {
     1
 }
 
+/// `code_imcomplete_record(names: [string], values: [Code(...)]) -> Code({...})`
+fn code_imcomplete_record(machine: &mut Machine) -> ReturnCode {
+    let names_raw = machine.get_stack(0);
+    let vals_raw = machine.get_stack(1);
+
+    let names_arr = machine.arrays.get_array(names_raw);
+    let names_len = names_arr.get_length_array();
+    let names_data = names_arr.get_data().to_vec();
+
+    let vals_arr = machine.arrays.get_array(vals_raw);
+    let vals_data = vals_arr.get_data().to_vec();
+
+    let fields: Vec<RecordField> = (0..names_len as usize)
+        .map(|i| {
+            let name = raw_to_symbol(machine, names_data[i]);
+            let expr = machine.get_code(vals_data[i]);
+            RecordField { name, expr }
+        })
+        .collect();
+
+    let expr = expr_to_id(Expr::ImcompleteRecord(fields));
+    let code_val = machine.alloc_code(expr);
+    machine.set_stack(0, code_val);
+    1
+}
+
+/// `code_record_update(base: Code({...}), names: [string], values: [Code(...)]) -> Code({...})`
+fn code_record_update(machine: &mut Machine) -> ReturnCode {
+    let base_raw = machine.get_stack(0);
+    let names_raw = machine.get_stack(1);
+    let vals_raw = machine.get_stack(2);
+
+    let base_expr = machine.get_code(base_raw);
+
+    let names_arr = machine.arrays.get_array(names_raw);
+    let names_len = names_arr.get_length_array();
+    let names_data = names_arr.get_data().to_vec();
+
+    let vals_arr = machine.arrays.get_array(vals_raw);
+    let vals_data = vals_arr.get_data().to_vec();
+
+    let fields: Vec<RecordField> = (0..names_len as usize)
+        .map(|i| {
+            let name = raw_to_symbol(machine, names_data[i]);
+            let expr = machine.get_code(vals_data[i]);
+            RecordField { name, expr }
+        })
+        .collect();
+
+    let expr = expr_to_id(Expr::RecordUpdate(base_expr, fields));
+    let code_val = machine.alloc_code(expr);
+    machine.set_stack(0, code_val);
+    1
+}
+
 /// `code_field_access(val: Code({...}), field: string) -> Code(a)`
 fn code_field_access(machine: &mut Machine) -> ReturnCode {
     let val_raw = machine.get_stack(0);
@@ -673,6 +728,12 @@ pub fn codegen_combinator_signatures() -> Vec<ExtClsInfo> {
         mk_cls("code_then", code_then, fty(vec![f, f], f)),
         mk_cls("code_assign", code_assign, fty(vec![f, f], f)),
         mk_cls("code_record", code_record, fty(vec![as_, af], f)),
+        mk_cls(
+            "code_imcomplete_record",
+            code_imcomplete_record,
+            fty(vec![as_, af], f),
+        ),
+        mk_cls("code_record_update", code_record_update, fty(vec![f, as_, af], f)),
         mk_cls("code_field_access", code_field_access, fty(vec![f, s], f)),
         mk_cls("code_feed", code_feed, fty(vec![s, f], f)),
         mk_cls("code_block", code_block, fty(vec![f], f)),

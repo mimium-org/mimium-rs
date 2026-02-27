@@ -487,6 +487,8 @@ struct OldWasmProgram {
     dsp_state_skeleton: Option<StateTreeSkeleton<StateType>>,
     /// External function signatures required to instantiate/prewarm the next module.
     ext_fns: Vec<ExtFunTypeInfo>,
+    /// Frozen WASM plugin host handlers (e.g. ProbeValue intercepts).
+    plugin_fns: Option<mimium_lang::runtime::wasm::WasmPluginFnMap>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -588,10 +590,11 @@ impl FileRunner {
     fn try_prewarm_wasm_global_state(
         wasm_bytes: &[u8],
         ext_fns: &[ExtFunTypeInfo],
+        plugin_fns: Option<mimium_lang::runtime::wasm::WasmPluginFnMap>,
     ) -> Result<PreparedWasmSwapData, String> {
         use mimium_lang::runtime::wasm::engine::{WasmDspRuntime, WasmEngine};
 
-        let mut engine = WasmEngine::new(ext_fns, None)
+        let mut engine = WasmEngine::new(ext_fns, plugin_fns)
             .map_err(|e| format!("failed to create prewarm wasm engine: {e}"))?;
 
         engine
@@ -638,8 +641,10 @@ impl FileRunner {
             .map(|program| program.ext_fns.as_slice())
             .unwrap_or(&[]);
         let ext_fns = ext_fns.unwrap_or(fallback_ext_fns);
+        let plugin_fns = old_program.as_ref().and_then(|program| program.plugin_fns.clone());
 
-        let prepared_swap_data = Self::try_prewarm_wasm_global_state(&bytes, ext_fns)?;
+        let prepared_swap_data =
+            Self::try_prewarm_wasm_global_state(&bytes, ext_fns, plugin_fns.clone())?;
 
         let state_patch_plan = Self::build_required_state_patch_plan(
             previous_skeleton,
@@ -653,7 +658,7 @@ impl FileRunner {
             state_patch_plan,
             prewarmed_global_state: prepared_swap_data.prewarmed_global_state,
         };
-        self.update_old_program(dsp_state_skeleton, ext_fns.to_vec());
+        self.update_old_program(dsp_state_skeleton, ext_fns.to_vec(), plugin_fns);
 
         Ok(payload)
     }
@@ -693,11 +698,13 @@ impl FileRunner {
         &self,
         dsp_state_skeleton: Option<StateTreeSkeleton<StateType>>,
         ext_fns: Vec<ExtFunTypeInfo>,
+        plugin_fns: Option<mimium_lang::runtime::wasm::WasmPluginFnMap>,
     ) {
         if let Ok(mut guard) = self.old_program.lock() {
             *guard = Some(OldWasmProgram {
                 dsp_state_skeleton,
                 ext_fns,
+                plugin_fns,
             });
         }
     }
@@ -999,6 +1006,7 @@ pub fn run_file(
             // freeze_wasm_plugin_fns() must be called before generate_wasm_audioworkers()
             // so that both share the same underlying scheduler state.
             let plugin_fns = ctx.freeze_wasm_plugin_fns();
+            let plugin_fns_for_hotswap = plugin_fns.clone();
 
             // Collect per-sample audio workers from all plugins.
             let wasm_workers = ctx.generate_wasm_audioworkers();
@@ -1059,6 +1067,7 @@ pub fn run_file(
                 Some(OldWasmProgram {
                     dsp_state_skeleton: dsp_skeleton,
                     ext_fns,
+                    plugin_fns: plugin_fns_for_hotswap,
                 }),
                 Some(retire_rx),
             );
@@ -1104,6 +1113,7 @@ pub fn run_file(
             // freeze_wasm_plugin_fns() must be called before generate_wasm_audioworkers()
             // so that both share the same underlying scheduler state.
             let plugin_fns = ctx.freeze_wasm_plugin_fns();
+            let plugin_fns_for_hotswap = plugin_fns.clone();
 
             // Collect per-sample audio workers from all plugins.
             let wasm_workers = ctx.generate_wasm_audioworkers();
@@ -1161,6 +1171,7 @@ pub fn run_file(
                 Some(OldWasmProgram {
                     dsp_state_skeleton: dsp_skeleton,
                     ext_fns,
+                    plugin_fns: plugin_fns_for_hotswap,
                 }),
                 Some(retire_rx),
             );
