@@ -20,6 +20,7 @@ use wasm_encoder::{
     CodeSection, DataSection, ElementSection, EntityType, ExportSection, Function, FunctionSection,
     GlobalSection, ImportSection, MemArg, MemorySection, MemoryType, Module, TableSection,
     TableType, TypeSection, ValType,
+    NameMap, NameSection,
 };
 
 /// Upper bound of `$arityN` builtin specializations imported for WASM.
@@ -205,9 +206,12 @@ pub struct WasmGenerator {
     plugin_fns: PluginFunctionIndices,
 
     /// Registers produced by Alloc instructions, mapped to their content word size.
-    /// word_size == 1 means single-word (dereference when capturing),
-    /// word_size > 1 means multi-word like tuple (store pointer when capturing).
     alloc_registers: HashMap<mir::VReg, TypeSize>,
+    /// Whether an alloc register should be captured indirectly in closures.
+    ///
+    /// `true` means closure slots store alloc-cell pointers and
+    /// `GetUpValue`/`SetUpValue` perform one extra dereference.
+    alloc_register_indirect: HashMap<mir::VReg, bool>,
     /// Registers produced by GetElement instructions, mapped to the element's ValType.
     /// These registers hold pointers to elements but are often used as values in the MIR.
     getelement_registers: HashMap<mir::VReg, wasm_encoder::ValType>,
@@ -381,6 +385,7 @@ impl WasmGenerator {
             rt: RuntimeFunctionIndices::default(),
             plugin_fns: PluginFunctionIndices::default(),
             alloc_registers: HashMap::new(),
+            alloc_register_indirect: HashMap::new(),
             getelement_registers: HashMap::new(),
             fn_type_indices: Vec::new(),
             indirect_adapter_fn_indices: Vec::new(),
@@ -734,11 +739,12 @@ impl WasmGenerator {
 
     /// Setup memory and table sections
     fn setup_memory_and_table(&mut self) {
+        const MAX_MEMORY_PAGES: u64 = 65_536; // 4GiB on wasm32 linear memory
         // Linear memory: 1 initial page (64KB), max 1024 pages (64MB)
         // This is used for stack, runtime primitives data, and constants
         self.memory_section.memory(MemoryType {
             minimum: 1,
-            maximum: Some(1024),
+            maximum: Some(MAX_MEMORY_PAGES),
             memory64: false,
             shared: false,
             page_size_log2: None,
@@ -1089,7 +1095,10 @@ impl WasmGenerator {
             // Detect entry-point functions that need alloc pointer save/restore.
             // Only `dsp` resets the allocator each call — `_mimium_global` runs
             // once and its allocations (closures stored in globals) must persist.
-            let is_entry = func.label.as_str() == "dsp";
+            // Temporarily disable per-call allocator rewind for entry functions.
+            // Rewinding currently invalidates closure addresses that must live
+            // across samples (e.g. scheduler callbacks).
+            let is_entry = false;
             self.is_entry_function = is_entry;
 
             // Extra i32 local for saving alloc pointer at entry function start
@@ -1108,6 +1117,14 @@ impl WasmGenerator {
 
             // Translate basic blocks with structured control flow awareness
             self.emit_function_body(func, &mut wasm_func)?;
+
+            // Safety net for entry functions: ensure alloc pointer is restored
+            // even when control flow reaches function end without passing
+            // through an explicit MIR Return/ReturnFeed path.
+            if is_entry {
+                wasm_func.instruction(&W::LocalGet(self.alloc_ptr_save_local));
+                wasm_func.instruction(&W::GlobalSet(self.alloc_ptr_global));
+            }
 
             // Every WASM function body must end with an End instruction
             // (functions are implicit blocks in WASM)
@@ -1739,9 +1756,30 @@ impl WasmGenerator {
                     I::TaggedUnionGetTag(a) | I::TaggedUnionGetValue(a, _) => {
                         record_arg(a, vec![ValType::I64]);
                     }
-                    // GetElement: base is a pointer (I64)
-                    I::GetElement { value, .. } => {
-                        record_arg(value, vec![ValType::I64]);
+                    // GetElement: base is usually a pointer (I64), but for
+                    // single-word tuple/record values it behaves as identity.
+                    I::GetElement {
+                        value,
+                        ty,
+                        tuple_offset,
+                    } => {
+                        let scalar_aggregate = ty.word_size() <= 1 && *tuple_offset == 0;
+                        if scalar_aggregate {
+                            let elem_vtype = match ty.to_type() {
+                                Type::Tuple(elems) => elems
+                                    .get(*tuple_offset as usize)
+                                    .map(|e| Self::type_to_valtype(&e.to_type()))
+                                    .unwrap_or(ValType::I64),
+                                Type::Record(fields) => fields
+                                    .get(*tuple_offset as usize)
+                                    .map(|f| Self::type_to_valtype(&f.ty.to_type()))
+                                    .unwrap_or(ValType::I64),
+                                _ => ValType::I64,
+                            };
+                            record_arg(value, vec![elem_vtype]);
+                        } else {
+                            record_arg(value, vec![ValType::I64]);
+                        }
                     }
                     // Store: address is I64, source type depends on stored type
                     I::Store(addr, src, ty) => {
@@ -1865,15 +1903,22 @@ impl WasmGenerator {
                         I::Alloc(type_id) => {
                             let ws = type_id.word_size();
                             self.alloc_registers.insert(*reg_idx, ws);
+                            self.alloc_register_indirect.insert(
+                                *reg_idx,
+                                Self::alloc_capture_should_be_indirect(&type_id.to_type()),
+                            );
                             ValType::I64
                         }
                         // GetElement returns pointer (i64), but track it so consumers
                         // can dereference when using the result as a value.
                         I::GetElement {
-                            ty, tuple_offset, ..
+                            value,
+                            ty,
+                            tuple_offset,
                         } => {
                             // Extract the element's own type from the composite type
-                            let element_vtype = match ty.to_type() {
+                            let composite_ty = ty.to_type();
+                            let element_vtype = match &composite_ty {
                                 Type::Tuple(elems) => {
                                     let idx = *tuple_offset as usize;
                                     if idx < elems.len() {
@@ -1892,8 +1937,15 @@ impl WasmGenerator {
                                 }
                                 _ => ValType::I64,
                             };
-                            self.getelement_registers.insert(*reg_idx, element_vtype);
-                            ValType::I64
+                            let base_vtype = self.infer_value_type(value);
+                            let scalar_aggregate = ty.word_size() <= 1 && *tuple_offset == 0;
+                            if scalar_aggregate && base_vtype != ValType::I64 {
+                                // GetElement on a scalar-represented aggregate is identity.
+                                element_vtype
+                            } else {
+                                self.getelement_registers.insert(*reg_idx, element_vtype);
+                                ValType::I64
+                            }
                         }
                         // Phi inherits type from its first input
                         I::Phi(v1, _) => self.infer_value_type(v1),
@@ -2114,6 +2166,10 @@ impl WasmGenerator {
         // Export memory so the host can access it
         self.export_section
             .export("memory", wasm_encoder::ExportKind::Memory, 0);
+
+        // Export runtime allocator pointer for host-side safety recovery.
+        self.export_section
+            .export("__alloc_ptr", wasm_encoder::ExportKind::Global, self.alloc_ptr_global);
 
         Ok(())
     }
@@ -2578,7 +2634,11 @@ impl WasmGenerator {
                     func.instruction(&W::I32Add);
                     match upindex.as_ref() {
                         mir::Value::Register(reg_idx)
-                            if self.alloc_registers.get(reg_idx).copied().unwrap_or(0) == 1 =>
+                            if self
+                                .alloc_register_indirect
+                                .get(reg_idx)
+                                .copied()
+                                .unwrap_or(false) =>
                         {
                             // Single-word alloc: store the alloc pointer so the
                             // closure shares the mutable cell.  GetUpValue will
@@ -2841,13 +2901,12 @@ impl WasmGenerator {
 
             // Memory operations
             I::Alloc(ty) => {
-                // Allocate space in linear memory using the runtime bump allocator.
-                // This ensures each function invocation (including recursive ones)
-                // gets a unique address for its local allocations.
+                // Allocate at compile-time fixed offset in linear memory.
+                // This avoids unbounded per-sample growth for transient alloc cells.
                 let size_bytes = (ty.word_size() as u32).max(1) * 8;
-                self.emit_runtime_alloc(size_bytes, func);
-                func.instruction(&W::LocalGet(self.alloc_base_local));
-                func.instruction(&W::I64ExtendI32U);
+                let temp_addr = self.mem_layout.alloc_offset;
+                self.mem_layout.alloc_offset = self.mem_layout.alloc_offset.saturating_add(size_bytes);
+                func.instruction(&W::I64Const(temp_addr as i64));
             }
 
             I::Load(ptr, ty) => {
@@ -2990,9 +3049,28 @@ impl WasmGenerator {
                 // word_size: e.g. a UserSum is 2 words (tag + payload) in
                 // memory even though it flattens to a single I64 pointer
                 // when passed as a function parameter.
-                self.emit_value_load_typed(value, ValType::I64, func);
+                let composite_ty = ty.to_type();
+                let element_vtype = match &composite_ty {
+                    Type::Tuple(elems) => elems
+                        .get(*tuple_offset as usize)
+                        .map(|e| Self::type_to_valtype(&e.to_type()))
+                        .unwrap_or(ValType::I64),
+                    Type::Record(fields) => fields
+                        .get(*tuple_offset as usize)
+                        .map(|f| Self::type_to_valtype(&f.ty.to_type()))
+                        .unwrap_or(ValType::I64),
+                    _ => ValType::I64,
+                };
+                let base_vtype = self.infer_value_type(value);
+                let scalar_aggregate = ty.word_size() <= 1 && *tuple_offset == 0;
+                if scalar_aggregate && base_vtype != ValType::I64 {
+                    // Single-word aggregate values are passed directly.
+                    // `getelement(value, 0)` is therefore identity.
+                    self.emit_value_load_typed(value, element_vtype, func);
+                } else {
+                    self.emit_value_load_typed(value, ValType::I64, func);
+                }
                 if *tuple_offset > 0 {
-                    let composite_ty = ty.to_type();
                     let offset_bytes = match &composite_ty {
                         Type::Tuple(elems) => {
                             let word_offset: u64 = elems[0..(*tuple_offset as usize)]
@@ -3034,7 +3112,7 @@ impl WasmGenerator {
                             // Load normal args with tuple flattening so that
                             // aggregate values are expanded to match the
                             // flattened import signature.
-                            self.emit_call_args_flattened(args, func);
+                            self.emit_call_args_flattened_for_ext(name, args, func);
                             // Push dest pointer as extra argument
                             func.instruction(&W::I32Const(temp_addr as i32));
                             func.instruction(&W::Call(import_idx));
@@ -3049,22 +3127,7 @@ impl WasmGenerator {
                     } else {
                         // Single-word return ExtFunction: standard call
                         if let Some(import_idx) = self.resolve_ext_function(name) {
-                            // Load arguments and make the call
-                            for (arg_idx, (arg, ty)) in args.iter().enumerate() {
-                                let expected = if (name.as_str() == "prepend"
-                                    || name
-                                        .as_str()
-                                        .strip_prefix("prepend$arity")
-                                        .and_then(|n| n.parse::<usize>().ok())
-                                        .is_some())
-                                    && arg_idx == 0
-                                {
-                                    ValType::I64
-                                } else {
-                                    Self::type_to_valtype(&ty.to_type())
-                                };
-                                self.emit_value_load_typed(arg, expected, func);
-                            }
+                            self.emit_call_args_flattened_for_ext(name, args, func);
                             func.instruction(&W::Call(import_idx));
                         } else {
                             return Err(format!(
@@ -3157,7 +3220,7 @@ impl WasmGenerator {
                         // expanded into individual WASM values matching the
                         // import signature produced by setup_plugin_imports.
                         if let Some(import_idx) = self.resolve_ext_function(name) {
-                            self.emit_call_args_flattened(args, func);
+                            self.emit_call_args_flattened_for_ext(name, args, func);
                             func.instruction(&W::Call(import_idx));
                         } else {
                             return Err(format!(
@@ -3357,12 +3420,25 @@ impl WasmGenerator {
 
                 // If this upvalue is indirect (alloc pointer), dereference once
                 // more to reach the actual value stored in the alloc cell.
-                let is_indirect = self
+                let is_indirect_from_map = self
                     .indirect_upvalues
                     .get(&self.current_mir_fn_idx)
                     .and_then(|v| v.get(*idx as usize))
                     .copied()
                     .unwrap_or(false);
+                let is_indirect_from_mir = self
+                    .mir
+                    .functions
+                    .get(self.current_mir_fn_idx)
+                    .and_then(|f| f.upindexes.get(*idx as usize))
+                    .and_then(|up| match up.as_ref() {
+                        mir::Value::Register(reg_idx) => {
+                            self.alloc_register_indirect.get(reg_idx).copied()
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(false);
+                let is_indirect = is_indirect_from_map || is_indirect_from_mir;
                 if is_indirect {
                     // The slot holds an alloc cell address; load through it.
                     func.instruction(&W::I32WrapI64);
@@ -3384,12 +3460,25 @@ impl WasmGenerator {
                 };
 
                 // Check if this upvalue is indirect (alloc pointer).
-                let is_indirect = self
+                let is_indirect_from_map = self
                     .indirect_upvalues
                     .get(&self.current_mir_fn_idx)
                     .and_then(|v| v.get(*idx as usize))
                     .copied()
                     .unwrap_or(false);
+                let is_indirect_from_mir = self
+                    .mir
+                    .functions
+                    .get(self.current_mir_fn_idx)
+                    .and_then(|f| f.upindexes.get(*idx as usize))
+                    .and_then(|up| match up.as_ref() {
+                        mir::Value::Register(reg_idx) => {
+                            self.alloc_register_indirect.get(reg_idx).copied()
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(false);
+                let is_indirect = is_indirect_from_map || is_indirect_from_mir;
 
                 // Compute the store target address.
                 // closure_self_ptr + 8 + idx * 8
@@ -3455,16 +3544,14 @@ impl WasmGenerator {
                     func.instruction(&W::I32Add);
                     match upindex.as_ref() {
                         mir::Value::Register(reg_idx)
-                            if self.alloc_registers.get(reg_idx).copied().unwrap_or(0) == 1 =>
+                            if self
+                                .alloc_register_indirect
+                                .get(reg_idx)
+                                .copied()
+                                .unwrap_or(false) =>
                         {
-                            // Single-word alloc: dereference
+                            // Single-word alloc: store alloc pointer and dereference on GetUpValue
                             self.emit_value_load(upindex, func);
-                            func.instruction(&W::I32WrapI64);
-                            func.instruction(&W::I64Load(MemArg {
-                                offset: 0,
-                                align: 3,
-                                memory_index: 0,
-                            }));
                         }
                         mir::Value::Register(reg_idx)
                             if self.alloc_registers.contains_key(reg_idx) =>
@@ -3500,10 +3587,7 @@ impl WasmGenerator {
             I::CallCls(fn_ptr, args, ret_ty) => {
                 match fn_ptr.as_ref() {
                     mir::Value::ExtFunction(name, _fn_ty) => {
-                        for (arg, ty) in args {
-                            let expected = Self::type_to_valtype(&ty.to_type());
-                            self.emit_value_load_typed(arg, expected, func);
-                        }
+                        self.emit_call_args_flattened_for_ext(name, args, func);
                         if let Some(import_idx) = self.resolve_ext_function(name) {
                             func.instruction(&W::Call(import_idx));
                         } else {
@@ -3720,20 +3804,58 @@ impl WasmGenerator {
     /// Helper: Emit a runtime bump allocation of `size_bytes` bytes.
     ///
     /// Reads the current allocator pointer from the WASM global,
-    /// saves it to `alloc_base_local`, bumps the global, and returns
-    /// the base address in `alloc_base_local` for subsequent use.
+    /// saves it to `alloc_base_local`, grows linear memory when needed,
+    /// bumps the global, and returns the base address in `alloc_base_local`
+    /// for subsequent use.
     ///
     /// After calling this, use `W::LocalGet(self.alloc_base_local)` to
     /// get the i32 base address for memory stores.
     fn emit_runtime_alloc(&self, size_bytes: u32, func: &mut Function) {
         use wasm_encoder::Instruction as W;
-        // Save current alloc pointer
+        const WASM_PAGE_SHIFT: i32 = 16;
+        const WASM_PAGE_MASK: i32 = (1 << WASM_PAGE_SHIFT) - 1;
+
+        // Save current alloc pointer as allocation base.
         func.instruction(&W::GlobalGet(self.alloc_ptr_global));
         func.instruction(&W::LocalSet(self.alloc_base_local));
-        // Bump allocator
-        func.instruction(&W::GlobalGet(self.alloc_ptr_global));
+
+        // Compute allocation end pointer and store it in alloc_ptr_save_local
+        // (used here as a temporary i32 local).
+        func.instruction(&W::LocalGet(self.alloc_base_local));
         func.instruction(&W::I32Const(size_bytes as i32));
         func.instruction(&W::I32Add);
+        func.instruction(&W::LocalSet(self.alloc_ptr_save_local));
+
+        // If end > current memory size (bytes), grow memory.
+        func.instruction(&W::LocalGet(self.alloc_ptr_save_local));
+        func.instruction(&W::MemorySize(0));
+        func.instruction(&W::I32Const(WASM_PAGE_SHIFT));
+        func.instruction(&W::I32Shl);
+        func.instruction(&W::I32GtU);
+        func.instruction(&W::If(wasm_encoder::BlockType::Empty));
+
+        // pages_needed = ((end - mem_bytes) + (page_size-1)) >> 16
+        func.instruction(&W::LocalGet(self.alloc_ptr_save_local));
+        func.instruction(&W::MemorySize(0));
+        func.instruction(&W::I32Const(WASM_PAGE_SHIFT));
+        func.instruction(&W::I32Shl);
+        func.instruction(&W::I32Sub);
+        func.instruction(&W::I32Const(WASM_PAGE_MASK));
+        func.instruction(&W::I32Add);
+        func.instruction(&W::I32Const(WASM_PAGE_SHIFT));
+        func.instruction(&W::I32ShrU);
+        func.instruction(&W::MemoryGrow(0));
+
+        // memory.grow failure returns -1. Trap explicitly in that case.
+        func.instruction(&W::I32Const(-1));
+        func.instruction(&W::I32Eq);
+        func.instruction(&W::If(wasm_encoder::BlockType::Empty));
+        func.instruction(&W::Unreachable);
+        func.instruction(&W::End);
+        func.instruction(&W::End);
+
+        // Commit allocator pointer.
+        func.instruction(&W::LocalGet(self.alloc_ptr_save_local));
         func.instruction(&W::GlobalSet(self.alloc_ptr_global));
     }
 
@@ -3903,6 +4025,57 @@ impl WasmGenerator {
         }
     }
 
+    /// Emit call arguments for external functions with per-function ABI overrides.
+    fn emit_call_args_flattened_for_ext(
+        &mut self,
+        ext_name: &Symbol,
+        args: &[(VPtr, TypeNodeId)],
+        func: &mut Function,
+    ) {
+        use wasm_encoder::Instruction as W;
+
+        for (arg_idx, (arg, ty)) in args.iter().enumerate() {
+            let resolved = ty.to_type();
+            let flat_types = Self::flatten_type_to_valtypes(&resolved);
+
+            if flat_types.len() <= 1 {
+                let mut expected = flat_types.first().copied().unwrap_or(ValType::I64);
+
+                if (ext_name.as_str() == "prepend"
+                    || ext_name
+                        .as_str()
+                        .strip_prefix("prepend$arity")
+                        .and_then(|n| n.parse::<usize>().ok())
+                        .is_some())
+                    && arg_idx == 0
+                {
+                    expected = ValType::I64;
+                }
+
+                // Scheduler ABI: second arg is closure pointer word.
+                if ext_name.as_str() == "_mimium_schedule_at" && arg_idx == 1 {
+                    expected = ValType::I64;
+                }
+
+                self.emit_value_load_typed(arg, expected, func);
+            } else {
+                for (i, vtype) in flat_types.iter().enumerate() {
+                    self.emit_value_load(arg, func);
+                    func.instruction(&W::I32WrapI64);
+                    let load_memarg = MemArg {
+                        offset: (i * 8) as u64,
+                        align: 3,
+                        memory_index: 0,
+                    };
+                    match vtype {
+                        ValType::F64 => func.instruction(&W::F64Load(load_memarg)),
+                        _ => func.instruction(&W::I64Load(load_memarg)),
+                    };
+                }
+            }
+        }
+    }
+
     /// Emit call arguments as raw i64 words for indirect-call ABI.
     ///
     /// - Scalar f64 values are reinterpreted to i64 bit patterns.
@@ -4004,23 +4177,92 @@ impl WasmGenerator {
         }
     }
 
+    /// Decide whether `Alloc(ty)` should be captured indirectly in closure slots.
+    ///
+    /// Primitive scalar cells are captured indirectly so closures share mutable
+    /// storage. Aggregate values are kept as direct pointers even when their
+    /// word size is one (e.g. single-field records).
+    fn alloc_capture_should_be_indirect(ty: &Type) -> bool {
+        match ty {
+            Type::Primitive(PType::Numeric) | Type::Primitive(PType::Int) => true,
+            Type::Intermediate(cell) => {
+                let tv = cell.read().unwrap();
+                tv.parent
+                    .as_ref()
+                    .map(|parent| Self::alloc_capture_should_be_indirect(&parent.to_type()))
+                    .unwrap_or(true)
+            }
+            _ => false,
+        }
+    }
+
     /// Build the final WASM module
     fn build_module(&self) -> Module {
+        const MAX_MEMORY_PAGES: u64 = 65_536; // 4GiB on wasm32 linear memory
         let mut module = Module::new();
+
+        let initial_memory_pages = self.required_initial_memory_pages();
+        let mut memory_section = MemorySection::new();
+        memory_section.memory(MemoryType {
+            minimum: initial_memory_pages,
+            maximum: Some(MAX_MEMORY_PAGES),
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
 
         // Add all sections in proper order
         module.section(&self.type_section);
         module.section(&self.import_section);
         module.section(&self.function_section);
         module.section(&self.table_section);
-        module.section(&self.memory_section);
+        module.section(&memory_section);
         module.section(&self.global_section);
         module.section(&self.export_section);
         module.section(&self.element_section);
         module.section(&self.code_section);
         module.section(&self.data_section);
+        let name_section = self.build_name_section();
+        module.section(&name_section);
 
         module
+    }
+
+    fn build_name_section(&self) -> NameSection {
+        let mut name_section = NameSection::new();
+        let mut function_names = NameMap::new();
+
+        let mut pairs = self
+            .fn_name_to_idx
+            .iter()
+            .map(|(name, idx)| (*idx, name.as_str().to_string()))
+            .collect::<Vec<_>>();
+        pairs.sort_by_key(|(idx, _)| *idx);
+
+        pairs.into_iter().for_each(|(idx, name)| {
+            function_names.append(idx, &name);
+        });
+
+        name_section.functions(&function_names);
+        name_section
+    }
+
+    /// Compute the minimum initial number of linear-memory pages needed.
+    ///
+    /// Includes runtime headroom beyond the compile-time allocation high-water
+    /// mark so temporary per-sample allocations (e.g. closure/probe paths)
+    /// do not immediately hit out-of-bounds.
+    fn required_initial_memory_pages(&self) -> u64 {
+        const WASM_PAGE_BYTES: u32 = 64 * 1024;
+        const RUNTIME_ALLOC_HEADROOM_BYTES: u32 = 4 * 1024 * 1024; // 4 MiB
+        const MIN_INITIAL_PAGES: u32 = 64; // 4 MiB
+
+        let bytes_needed = self
+            .mem_layout
+            .alloc_offset
+            .saturating_add(RUNTIME_ALLOC_HEADROOM_BYTES);
+        let pages = bytes_needed.div_ceil(WASM_PAGE_BYTES);
+        pages.max(MIN_INITIAL_PAGES) as u64
     }
 
     /// Helper: Get or allocate a register for a MIR value
