@@ -84,16 +84,28 @@ pub fn seq(vals)->Pattern{
 fn reverse_arc(arc:Arc,last_time:float)->Arc{
     {start = last_time - arc.end, end = last_time - arc.start}
 }
-fn reverse(pt:Pattern)->Pattern{
+fn reverse_events(events:[Event], last_time:float, acc:[Event])->[Event]{
+    if ((events |> length_array) > 0.0){
+        let (head,rest) = events |> split_head
+        let rev:Event = {
+            head <- arc = reverse_arc(head.arc, last_time),
+                    active = reverse_arc(head.active, last_time)
+        }
+        reverse_events(rest, last_time, prepend(rev, acc))
+    }else{
+        acc
+    }
+}
+pub fn reverse(pt:Pattern)->Pattern{
     |arc:Arc|{
         let events = pt(arc)
-        let last = events[(events |> length_array) - 1]
-        let last_time = last.arc.end
-        map(events, |e:Event|{
-            { e <- arc = reverse_arc(e.arc, last_time),
-                   active = reverse_arc(e.active, last_time)
-            }
-        })
+        if ((events |> length_array) > 0.0){
+            let last = events[(events |> length_array) - 1]
+            let last_time = last.arc.end
+            reverse_events(events, last_time, [])
+        }else{
+            []
+        }
     }
 }
 

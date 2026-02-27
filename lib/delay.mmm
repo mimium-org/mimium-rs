@@ -1,6 +1,6 @@
 #stage(macro)
 fn mix_stereo(processor:`(float,float)->(float,float)){
-    `|input:(float,float),mix|{
+    `|input:(float,float),mix:float|{
         let wet = input |> $processor
         let mix_inv = 1-mix
         let dry = input * mix_inv
@@ -18,8 +18,11 @@ fn stereo_delay_inner(input:(float,float),time_sec,fb)->(float,float){
     let fbsig= (left*fb,right*fb)
     (_delay(input.0+fbsig.0,time_sec*samplerate),_delay(input.1+fbsig.1,time_sec*samplerate))
 }
-pub fn stereo_delay(input,time_sec=0.5,fb=0.2,mix=0.5){
-   (input,mix) |> mix_stereo!(`|x|stereo_delay_inner(x,time_sec,fb))
+pub fn stereo_delay(input:(float,float),time_sec:float=0.5,fb:float=0.2,mix:float=0.5)->(float,float){
+    let wet = stereo_delay_inner(input,time_sec,fb)
+    let mix_inv = 1.0-mix
+    let dry = input * mix_inv
+    dry + wet
 }
 
 use core::scale
@@ -34,6 +37,9 @@ fn pingpong_delay_inner(input:(float,float),time_sec,fb,width){
     let fb_r = input_r+left*fb
     (_delay(fb_l,time_sec*samplerate),_delay(fb_r,time_sec*samplerate))
 }
-pub fn pingpong_delay(input,time_sec=0.5,fb=0.2,width=1.0,mix=0.5){
-    (input,mix) |> mix_stereo!(`|x|pingpong_delay_inner(x,time_sec,fb,width))
+pub fn pingpong_delay(input:(float,float),time_sec:float=0.5,fb:float=0.2,width:float=1.0,mix:float=0.5)->(float,float){
+    let wet = pingpong_delay_inner(input,time_sec,fb,width)
+    let mix_inv = 1.0-mix
+    let dry = input * mix_inv
+    dry + wet
 }
