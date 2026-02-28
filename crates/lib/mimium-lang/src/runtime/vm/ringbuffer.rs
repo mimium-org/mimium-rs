@@ -31,14 +31,20 @@ impl<'a> Ringbuffer<'a> {
     pub fn process(&mut self, input: RawVal, time_raw: u64) -> RawVal {
         let len = self.data.len() as u64;
 
+        if len == 0 {
+            return 0;
+        }
+
         unsafe {
-            let time = f64::from_bits(time_raw) as u64;
-            let read_idx = *self.read_idx;
-            *self.write_idx = (read_idx + time) % len;
-            let write_idx = *self.write_idx;
+            let delay_time = f64::from_bits(time_raw);
+            let max_delay = (len - 1) as f64;
+            let delay_samples = delay_time.clamp(0.0, max_delay) as u64;
+            let write_idx = *self.write_idx % len;
+            let read_idx = (write_idx + len - delay_samples) % len;
             let res = *self.data.get_unchecked(read_idx as usize);
             *self.data.get_unchecked_mut(write_idx as usize) = input;
-            *self.read_idx = (read_idx + 1) % len;
+            *self.read_idx = read_idx;
+            *self.write_idx = (write_idx + 1) % len;
             res
         }
     }

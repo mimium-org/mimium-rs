@@ -1255,9 +1255,15 @@ fn state_delay_host(
         current.data.resize(total_needed, 0);
     }
 
-    let read_idx = current.data[pos];
-    let time_samples = time as u64;
-    let write_idx = (read_idx + time_samples) % buf_size as u64;
+    if buf_size == 0 {
+        return 0.0;
+    }
+
+    let len = buf_size as u64;
+    let max_delay = (len - 1) as f64;
+    let delay_samples = time.clamp(0.0, max_delay) as u64;
+    let write_idx = current.data[pos + 1] % len;
+    let read_idx = (write_idx + len - delay_samples) % len;
 
     // Read delayed value from ring buffer
     let res_bits = current.data[pos + 2 + read_idx as usize];
@@ -1266,9 +1272,9 @@ fn state_delay_host(
     // Write input to ring buffer
     current.data[pos + 2 + write_idx as usize] = input.to_bits();
 
-    // Advance read index
-    current.data[pos] = (read_idx + 1) % buf_size as u64;
-    current.data[pos + 1] = write_idx;
+    // Advance write index and keep current read index for introspection
+    current.data[pos] = read_idx;
+    current.data[pos + 1] = (write_idx + 1) % len;
 
     res
 }
