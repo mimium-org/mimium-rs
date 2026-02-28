@@ -4,7 +4,7 @@ use delay::fdelay
 
 fn fdelay_mod(input,time){
     let d = delay(40000,input,time)
-    let d2 = delay(1,d,1)
+    let d2 = d |> mem
     let ratio = time - floor(time)
     d*(1-ratio) + d2*ratio
 }

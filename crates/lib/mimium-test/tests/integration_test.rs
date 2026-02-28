@@ -558,6 +558,16 @@ fn fb_mem3_state_size() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn delay_mem_same_fn() {
+    let res = run_file_test_stereo("delay_mem_same_fn.mmm", 10).unwrap();
+    let ans = vec![
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 1.0, 3.0, 2.0, 4.0, 3.0, 5.0, 4.0, 6.0, 5.0, 7.0,
+        6.0, 8.0, 7.0,
+    ];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn fb_and_stateful_call() {
     let res = run_file_test_mono("fb_and_stateful_call.mmm", 10).unwrap();
     let ans = vec![1.0, 3.0, 6.0, 10.0, 15.0, 21.0, 28.0, 36.0, 45.0, 55.0];

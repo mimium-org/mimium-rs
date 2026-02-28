@@ -490,6 +490,8 @@ impl Context {
             intrinsics::COS => (Some(Instruction::CosF(a0)), vec![]),
             intrinsics::MEM => {
                 let skeleton = StateSkeleton::Mem(mir::StateType::from(numeric!()));
+                self.consume_and_insert_pushoffset();
+                self.get_ctxdata().next_state_offset = Some(skeleton.total_size());
                 (Some(Instruction::Mem(a0)), vec![skeleton])
             }
             _ => (None, vec![]),
