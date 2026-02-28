@@ -1,4 +1,13 @@
 #stage(macro)
+pub fn fdelay(max_time){
+    `|input,time|{
+        let d = delay($(max_time|>lift),input,time)
+        let d2 = mem(d)
+        let ratio = time % 1.0
+        d*(1-ratio) + d2*ratio
+    }
+}
+
 fn mix_stereo(processor:`(float,float)->(float,float)){
     `|input:(float,float),mix:float|{
         let wet = input |> $processor
@@ -10,7 +19,7 @@ fn mix_stereo(processor:`(float,float)->(float,float)){
 
 #stage(main)
 fn _delay(input,time){
-    delay(48000,input,time)
+    fdelay!(48000)(input,time)
 }
 
 fn stereo_delay_inner(input:(float,float),time_sec,fb)->(float,float){

@@ -1,0 +1,51 @@
+use core::mix
+use osc::sinwave
+use delay::fdelay
+
+fn fdelay_mod(input,time){
+    let d = delay(40000,input,time)
+    let d2 = delay(1,d,1)
+    let ratio = time - floor(time)
+    d*(1-ratio) + d2*ratio
+}
+
+//depth: 0 to 1
+pub fn vibrato(input,rate,depth){
+    // lfo is 0 to 0.1 sec delay time
+    let lfo = (sinwave(rate,0)+1)  *depth *4000
+    fdelay_mod(input,max(0,lfo))
+}
+
+pub fn vibrato_st(input,rate,depth){
+    let (l,r) = input
+   (vibrato(l,rate,depth), vibrato(r,rate+0.1,depth))
+}
+
+pub fn chorus(input,rate,depth,mix){
+    let v = vibrato(input,rate,depth)
+    mix(input,v,mix)
+}
+pub fn chorus_st(input,rate,depth,mix){
+    let (l,r) = input
+    let (vl,vr) = vibrato_st(input,rate,depth)
+    (mix(l,vl,mix), mix(r,vr,mix))
+}
+
+pub fn comb(input,rate,depth,fb){
+    vibrato(input+self*fb,rate,depth*0.01)
+}
+pub fn comb_st(input,rate,depth,fb){
+    let (l,r) = input
+    let (pl,pr)= self
+    let i = (l+pl*fb, r+pr*fb)
+    vibrato_st(i,rate,depth*0.01)
+}
+pub fn flanger(input,rate,depth,fb,mix){
+    let c = comb(input,rate,depth,fb)
+    mix(input,c,mix)
+}
+pub fn flanger_st(input,rate,depth,fb,mix){
+    let (l,r) = input
+    let (cl,cr) = comb_st(input,rate,depth,fb)
+    (mix(l,cl,mix), mix(r,cr,mix))
+}

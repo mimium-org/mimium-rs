@@ -4,16 +4,24 @@ use osc::*
 use env::adsr
 use delay::stereo_delay
 use filter::lowpass
-let modf = |f|((sinwave(f,0)+1)*500+400)
-let f = Slider!("freq",0.1,0,1)
-let lop = lowpass(_,modf(f),4)
+use modulation::*
+fn mychorus(input:(float,float)) {
+    let rate = 1
+    let depth = 0.1
+    let mix = 0.5
+    chorus_st(input,rate,depth,mix)
+}
+let mylop = lowpass(_,((sinwave(0.1,0)+1)*500+400),4)
+
 fn dsp(){
     let note = run_note!(mini("60 <62 72> <[64 [74 72] 65] [65 62]> ~ 69") 
-    |> legato(0.2,_), 1.0) 
+    |> legato(0.2,_), 0.5) 
+    // let note = {val = 60,gate=1.0}
     // let note = run_note!(alternate([pure(62), pure(72)], |p| cat([pure(60), p, cat([pure(64), cat([pure(74), pure(72)]), pure(65)]), silence(), pure(69)])) |> legato(0.2,_), 1.0)
-    saw(note.val-24 |> midi_to_hz, 0.0)
-         * adsr({attack = 0.001, release = 0.1, gate = note.gate})
-    |> lop
+    saw(note.val-12 |> midi_to_hz, 0.0)
+     * adsr({attack = 0.001,release=0.1,sustain=0.9,gate=note.gate}) 
+    |> mylop
     |> (|x| (x,x))
+    |> mychorus
     |> ProbeValue!("out")
 }   

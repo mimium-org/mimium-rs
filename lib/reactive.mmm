@@ -1,4 +1,4 @@
-fn metro(interval,sig:()->float)->()->float{
+pub fn metro(interval,sig:()->float)->()->float{
     let v = 0.0
     letrec updater = | |{
       let s:float =sig();
