@@ -8,6 +8,7 @@ use crate::mir::StateType;
 use crate::runtime::primitives::Word;
 use crate::runtime::{DspRuntime, ProgramPayload, ReturnCode, Time};
 use state_tree::tree::StateTreeSkeleton;
+use std::sync::mpsc;
 
 /// High-level WASM execution engine
 pub struct WasmEngine {
@@ -54,6 +55,15 @@ impl WasmEngine {
         // Cache the dsp function for fast per-sample execution
         self.dsp_func = module.get_or_cache_function("dsp").ok();
 
+        self.current_module = Some(module);
+        Ok(())
+    }
+
+    /// Load a precompiled/serialized WASM module for execution.
+    pub fn load_precompiled_module(&mut self, serialized_module: &[u8]) -> Result<(), String> {
+        let mut module = self.runtime.load_precompiled_module(serialized_module)?;
+
+        self.dsp_func = module.get_or_cache_function("dsp").ok();
         self.current_module = Some(module);
         Ok(())
     }
@@ -148,6 +158,11 @@ pub struct WasmDspRuntime {
     /// Mirrors `VmDspRuntime::sys_plugin_workers` but uses the WASM-specific
     /// [`WasmSystemPluginAudioWorker`](super::WasmSystemPluginAudioWorker) trait.
     sys_plugin_workers: Vec<Box<dyn super::WasmSystemPluginAudioWorker>>,
+    /// Sender used to transfer replaced engines to a non-RT thread.
+    ///
+    /// This keeps potentially expensive engine destruction (`drop`) out of the
+    /// real-time callback during hot-swap.
+    retired_engine_sender: Option<mpsc::Sender<WasmEngine>>,
 }
 
 impl WasmDspRuntime {
@@ -170,6 +185,7 @@ impl WasmDspRuntime {
             sample_rate: 48000.0,
             current_dsp_skeleton: dsp_skeleton,
             sys_plugin_workers: Vec::new(),
+            retired_engine_sender: None,
         }
     }
 
@@ -202,6 +218,16 @@ impl WasmDspRuntime {
     /// before and after `run_main()`.
     pub fn engine_mut(&mut self) -> &mut WasmEngine {
         &mut self.engine
+    }
+
+    /// Consume runtime and return the underlying engine.
+    pub fn into_engine(self) -> WasmEngine {
+        self.engine
+    }
+
+    /// Set sender used to defer old engine drops to non-RT thread.
+    pub fn set_engine_retire_sender(&mut self, sender: mpsc::Sender<WasmEngine>) {
+        self.retired_engine_sender = Some(sender);
     }
 
     /// Run the `mimium_main` (or global init) function if exported.
@@ -285,56 +311,76 @@ impl DspRuntime for WasmDspRuntime {
         WasmDspRuntime::set_sample_rate(self, sample_rate);
     }
 
+    /// Real-time hot-swap commit stage.
+    ///
+    /// Assumes non-RT `prepare_hot_swap` already computed:
+    /// - prepared engine with loaded module,
+    /// - prewarmed global state after `main`,
+    /// - state patch plan.
+    ///
+    /// This stage swaps in the prepared engine, applies state migration,
+    /// and forwards the old engine to a non-RT thread for deferred drop.
     fn try_hot_swap(&mut self, new_program: ProgramPayload) -> bool {
         if let ProgramPayload::WasmModule {
-            bytes,
+            bytes: _,
+            prepared_engine,
             dsp_state_skeleton,
+            state_patch_plan,
+            prewarmed_global_state,
         } = new_program
         {
             // Snapshot the old global state before loading the new module.
             let old_global_data: Option<Vec<u64>> =
                 self.engine.get_global_state_data().map(|d| d.to_vec());
 
-            match self.engine.load_module(&bytes) {
-                Ok(()) => {
-                    // Attempt state migration when both old and new skeletons exist.
-                    if let (Some(old_data), Some(old_skel), Some(new_skel)) = (
-                        &old_global_data,
-                        &self.current_dsp_skeleton,
-                        &dsp_state_skeleton,
-                    ) {
-                        match state_tree::update_state_storage(
-                            old_data,
-                            old_skel.clone(),
-                            new_skel.clone(),
-                        ) {
-                            Ok(Some(new_data)) => {
-                                self.engine.set_global_state_data(&new_data);
-                            }
-                            Ok(None) => {
-                                log::info!("No state structure change detected, copying buffer");
-                                self.engine.set_global_state_data(old_data);
-                            }
-                            Err(e) => {
-                                log::error!("Failed to migrate WASM global state: {e}");
-                            }
+            let old_engine = std::mem::replace(&mut self.engine, *prepared_engine);
+
+            if let Some(sender) = &self.retired_engine_sender {
+                if let Err(err) = sender.send(old_engine) {
+                    log::warn!("Failed to defer old WASM engine drop to non-RT thread");
+                    std::mem::forget(err.0);
+                }
+            }
+
+            self.set_sample_rate(self.sample_rate);
+
+            {
+                let mut next_global_state = prewarmed_global_state;
+
+                // Attempt state migration when both old and new skeletons exist.
+                if let (Some(old_data), Some(old_skel), Some(new_skel)) = (
+                    &old_global_data,
+                    &self.current_dsp_skeleton,
+                    &dsp_state_skeleton,
+                ) {
+                    debug_assert_eq!(
+                        state_patch_plan.total_size,
+                        new_skel.total_size() as usize,
+                        "state_patch_plan.total_size must match new skeleton total size"
+                    );
+                    if old_skel == new_skel && state_patch_plan.patches.is_empty() {
+                        log::info!("No state structure change detected, copying buffer");
+                        next_global_state = old_data.clone();
+                    } else {
+                        if next_global_state.len() != state_patch_plan.total_size {
+                            next_global_state.resize(state_patch_plan.total_size, 0);
                         }
-                    } else if let Some(old_data) = &old_global_data {
-                        // No skeletons available; best-effort: copy old data.
-                        self.engine.set_global_state_data(old_data);
+                        state_tree::patch::apply_patches(
+                            next_global_state.as_mut_slice(),
+                            old_data,
+                            state_patch_plan.patches.as_slice(),
+                        );
                     }
-
-                    // Update stored skeleton for subsequent hot-swaps.
-                    self.current_dsp_skeleton = dsp_state_skeleton;
-
-                    // Re-run main after hot-swap.
-                    let _ = self.run_main();
-                    true
+                } else if let Some(old_data) = &old_global_data {
+                    // No skeletons available; best-effort: copy old data.
+                    next_global_state = old_data.clone();
                 }
-                Err(e) => {
-                    log::error!("WASM hot-swap failed: {e}");
-                    false
-                }
+
+                self.engine.set_global_state_data(&next_global_state);
+
+                // Update stored skeleton for subsequent hot-swaps.
+                self.current_dsp_skeleton = dsp_state_skeleton;
+                true
             }
         } else {
             false
@@ -352,6 +398,12 @@ impl DspRuntime for WasmDspRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_wasm_engine_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<WasmEngine>();
+    }
 
     #[test]
     fn test_wasm_engine_create() {

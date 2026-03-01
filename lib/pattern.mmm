@@ -84,16 +84,28 @@ pub fn seq(vals)->Pattern{
 fn reverse_arc(arc:Arc,last_time:float)->Arc{
     {start = last_time - arc.end, end = last_time - arc.start}
 }
-fn reverse(pt:Pattern)->Pattern{
+fn reverse_events(events:[Event], last_time:float, acc:[Event])->[Event]{
+    if ((events |> length_array) > 0.0){
+        let (head,rest) = events |> split_head
+        let rev:Event = {
+            head <- arc = reverse_arc(head.arc, last_time),
+                    active = reverse_arc(head.active, last_time)
+        }
+        reverse_events(rest, last_time, prepend(rev, acc))
+    }else{
+        acc
+    }
+}
+pub fn reverse(pt:Pattern)->Pattern{
     |arc:Arc|{
         let events = pt(arc)
-        let last = events[(events |> length_array) - 1]
-        let last_time = last.arc.end
-        map(events, |e:Event|{
-            { e <- arc = reverse_arc(e.arc, last_time),
-                   active = reverse_arc(e.active, last_time)
-            }
-        })
+        if ((events |> length_array) > 0.0){
+            let last = events[(events |> length_array) - 1]
+            let last_time = last.arc.end
+            reverse_events(events, last_time, [])
+        }else{
+            []
+        }
     }
 }
 
@@ -132,14 +144,19 @@ fn is_in_arc(arc:Arc,phase:float){
 fn note_at_phase(events:[Event], phase:float, current:Event)->Note{
     if ((events |> length_array) > 0.0){
         let (head,rest) = events |> split_head
+        let next:Event = {
+            arc = {start = head.arc.start, end = head.arc.end},
+            active = {start = head.active.start, end = head.active.end},
+            val = head.val
+        }
         if (phase >= head.arc.start){
-            note_at_phase(rest, phase, head)
+            note_at_phase(rest, phase, next)
         }else{
-            {val = current.val,
+            {val = current.val + (current.arc.end - current.arc.start) * 0.0,
              gate = is_in_arc(current.active,phase)}
         }
     }else{
-        { val = current.val,
+        { val = current.val + (current.arc.end - current.arc.start) * 0.0,
           gate = is_in_arc(current.active,phase)
         }
     }

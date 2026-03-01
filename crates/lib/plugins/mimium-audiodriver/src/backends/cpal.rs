@@ -106,6 +106,7 @@ impl NativeAudioData {
         if let Ok(swap) = self.swap_channel.try_recv() {
             self.vmdata.resume_with_program(swap);
         }
+
         let len = dst.len();
 
         let local = &mut self.localbuffer.as_mut_slice()[..len];

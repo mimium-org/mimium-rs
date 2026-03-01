@@ -24,7 +24,6 @@ fn dsp(){{
         }
     }
 }
-
 #[wasm_bindgen_test(unsupported = test)]
 fn simple_arithmetic() {
     // unary
@@ -178,10 +177,14 @@ fn mininotation_alternate_grouping() {
     let result = std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
-            let res =
-                run_file_with_plugins("mininotation_alternate_grouping.mmm", 1, [].into_iter(), false)
-                    .unwrap();
-            let ans = vec![19.0]; // 19 boolean checks
+            let res = run_file_with_plugins(
+                "mininotation_alternate_grouping.mmm",
+                1,
+                [].into_iter(),
+                false,
+            )
+            .unwrap();
+            let ans = vec![19.0];
             assert_eq!(res, ans);
         })
         .unwrap()
@@ -552,6 +555,16 @@ fn fb_mem3_state_size() {
         "fb_mem3.mmm",
         [("counter", 1), ("mem_by_hand", 4), ("dsp", 5)],
     );
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn delay_mem_same_fn() {
+    let res = run_file_test_stereo("delay_mem_same_fn.mmm", 10).unwrap();
+    let ans = vec![
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 1.0, 3.0, 2.0, 4.0, 3.0, 5.0, 4.0, 6.0, 5.0, 7.0,
+        6.0, 8.0, 7.0,
+    ];
+    assert_eq!(res, ans);
 }
 
 #[wasm_bindgen_test(unsupported = test)]
@@ -977,6 +990,34 @@ fn probe_value_macro() {
     let res = driver.get_generated_samples().to_vec();
 
     let ans = vec![1.5, 1.2]; // ProbeValue should pass through tuple runtime value
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn slider_value_record_macro() {
+    let (_, src) = load_src("slider_value_record.mmm");
+
+    let mut driver = mimium_audiodriver::backends::local_buffer::LocalBufferDriver::new(1);
+    let audiodriverplug: Box<dyn mimium_lang::plugin::Plugin> = Box::new(driver.get_as_plugin());
+    let mut ctx = mimium_lang::ExecContext::new(
+        [audiodriverplug].into_iter(),
+        None,
+        mimium_lang::Config::default(),
+    );
+
+    ctx.add_system_plugin(mimium_guitools::GuiToolPlugin::default());
+
+    ctx.prepare_machine(&src).unwrap();
+    let _ = ctx.run_main();
+    let runtimedata = {
+        let ctxmut: &mut mimium_lang::ExecContext = &mut ctx;
+        RuntimeData::try_from(ctxmut).unwrap()
+    };
+    driver.init(runtimedata, None);
+    driver.play();
+    let res = driver.get_generated_samples().to_vec();
+
+    let ans = vec![0.75];
     assert_eq!(res, ans);
 }
 
@@ -1568,6 +1609,25 @@ fn wasm_stereo_output() {
         assert!(
             (actual - expected).abs() < 1e-10,
             "WASM backend: stereo sample {i} mismatch: {actual} vs {expected}"
+        );
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_record_default_adsr() {
+    let res = run_file_test_wasm("wasm_record_default_adsr.mmm", 8, false).unwrap();
+    assert_eq!(res.len(), 8, "WASM backend: output length mismatch");
+    assert!(
+        res.iter().any(|x| x.abs() > 1e-6),
+        "WASM backend: record default ADSR unexpectedly produced silence"
+    );
+    for i in 1..res.len() {
+        assert!(
+            res[i] < res[i - 1],
+            "WASM backend: record default ADSR should monotonically decrease at index {i}: {} !< {}",
+            res[i],
+            res[i - 1]
         );
     }
 }

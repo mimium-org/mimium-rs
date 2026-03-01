@@ -96,6 +96,52 @@ fn replace_alt_with(elems: [MiniElem], idx: float, p: Pattern, i: float) -> [Pat
     }
 }
 
+fn nth_pat_direct(pats: [Pattern], idx: float, i: float) -> Pattern {
+    let split = pats |> split_head
+    let head = split.0
+    let rest = split.1
+    if (i == idx) {
+        head
+    } else {
+        nth_pat_direct(rest, idx, i + 1.0)
+    }
+}
+
+fn nth_pat_wrapped(pats: [Pattern], idx: float) -> Pattern {
+    let n = length_array(pats)
+    if (n <= 0.0) {
+        silence()
+    } else if (idx < n) {
+        nth_pat_direct(pats, idx, 0.0)
+    } else {
+        nth_pat_wrapped(pats, idx - n)
+    }
+}
+
+fn replace_all_alts_with_index(elems: [MiniElem], idx: float) -> [Pattern] {
+    if (length_array(elems) > 0) {
+        let split = elems |> split_head
+        let head = split.0
+        let rest = split.1
+        let pat = match head {
+            Elem(pat) => pat,
+            Alt(pats) => nth_pat_wrapped(pats, idx)
+        }
+        prepend(pat, replace_all_alts_with_index(rest, idx))
+    } else {
+        []
+    }
+}
+
+fn build_alt_variants(elems: [MiniElem], i: float, n: float) -> [Pattern] {
+    if (i < n) {
+        let one = cat(replace_all_alts_with_index(elems, i))
+        prepend(one, build_alt_variants(elems, i + 1.0, n))
+    } else {
+        []
+    }
+}
+
 // Find the index and contents of the first Alt element.
 fn find_alt(elems: [MiniElem], i: float) -> (float, [Pattern]) {
     if (length_array(elems) > 0) {
@@ -133,9 +179,9 @@ fn build_pattern(elems: [MiniElem]) -> Pattern {
         }
     } else if (has_alt(elems) > 0.0) {
         let found = find_alt(elems, 0.0)
-        let idx = found.0
         let alt_pats = found.1
-        alternate(alt_pats, |p| cat(replace_alt_with(elems, idx, p, 0.0)))
+        let variants_count = length_array(alt_pats)
+        build_alt_variants(elems, 0.0, variants_count) |> slowcat
     } else {
         cat(map_elem_to_pat(elems))
     }

@@ -255,10 +255,26 @@ fn translate_stage0(expr: ExprNodeId) -> ExprNodeId {
             log::warn!("translate_staging: unexpected desugared-only node at stage 0");
             expr
         }
-        // Incomplete records and record updates should be desugared.
-        Expr::ImcompleteRecord(_) | Expr::RecordUpdate(..) => {
-            log::warn!("translate_staging: unexpected record update node at stage 0");
-            expr
+        Expr::ImcompleteRecord(fields) => {
+            let new_fields = fields
+                .into_iter()
+                .map(|f| RecordField {
+                    name: f.name,
+                    expr: translate_stage0(f.expr),
+                })
+                .collect();
+            Expr::ImcompleteRecord(new_fields).into_id_without_span()
+        }
+        Expr::RecordUpdate(record, fields) => {
+            let new_record = translate_stage0(record);
+            let new_fields = fields
+                .into_iter()
+                .map(|f| RecordField {
+                    name: f.name,
+                    expr: translate_stage0(f.expr),
+                })
+                .collect();
+            Expr::RecordUpdate(new_record, new_fields).into_id_without_span()
         }
     }
 }
@@ -514,9 +530,32 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
             log::warn!("translate_staging: desugared-only node in translate_code");
             expr
         }
-        Expr::ImcompleteRecord(_) | Expr::RecordUpdate(..) => {
-            log::warn!("translate_staging: record update node in translate_code");
-            expr
+        Expr::ImcompleteRecord(fields) => {
+            let names: Vec<ExprNodeId> = fields
+                .iter()
+                .map(|f| sym_to_string_literal(f.name))
+                .collect();
+            let vals: Vec<ExprNodeId> = fields
+                .into_iter()
+                .map(|f| translate_code(f.expr))
+                .collect();
+            let names_arr = Expr::ArrayLiteral(names).into_id_without_span();
+            let vals_arr = Expr::ArrayLiteral(vals).into_id_without_span();
+            make_apply("code_imcomplete_record", vec![names_arr, vals_arr])
+        }
+        Expr::RecordUpdate(record, fields) => {
+            let translated_record = translate_code(record);
+            let names: Vec<ExprNodeId> = fields
+                .iter()
+                .map(|f| sym_to_string_literal(f.name))
+                .collect();
+            let vals: Vec<ExprNodeId> = fields
+                .into_iter()
+                .map(|f| translate_code(f.expr))
+                .collect();
+            let names_arr = Expr::ArrayLiteral(names).into_id_without_span();
+            let vals_arr = Expr::ArrayLiteral(vals).into_id_without_span();
+            make_apply("code_record_update", vec![translated_record, names_arr, vals_arr])
         }
         Expr::Error => expr,
     }
