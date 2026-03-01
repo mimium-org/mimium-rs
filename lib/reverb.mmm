@@ -1,4 +1,4 @@
-use filter::onepole
+use filter::*
 
 
 #stage(main)
@@ -132,12 +132,16 @@ mod freeverb{
         }else{
             delays
         }
-        let filters =  map(|d| `|input,damp,roomsize|{
-            lp_fb_comb(input,$d,damp,roomsize)} ,delays_st)
-        |> foldl(_,`|input,damp,roomsize| 0,|a,b|{
-            `|input,damp,roomsize| ($a)(input,damp,roomsize) + ($b)(input,damp,roomsize)
-        } )
-        filters
+        foldl(
+            delays_st,
+            `|_input,_damp,_roomsize| 0,
+            |delay,rest| {
+                let d = `{ $(delay |> lift_f) }
+                `|input,damp,roomsize| {
+                    lp_fb_comb(input,$d,damp,roomsize) + ($rest)(input,damp,roomsize)
+                }
+            },
+        )
     }
     pub fn freeverb_mono_wet(is_right){
         `|input,damp,roomsize|{

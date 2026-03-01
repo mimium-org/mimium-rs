@@ -1,3 +1,4 @@
+use core::*
 #stage(macro)
 pub fn fdelay(max_time){
     `|input,time|{
@@ -34,7 +35,7 @@ pub fn stereo_delay(input:(float,float),time_sec:float=0.5,fb:float=0.2,mix:floa
     dry + wet
 }
 
-use core::scale
+
 fn pingpong_delay_inner(input:(float,float),time_sec,fb,width){
     let (left,right) = self
     // if width = 1 mix input and send to left, right receives only 

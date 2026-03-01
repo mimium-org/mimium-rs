@@ -1,5 +1,5 @@
 use core::mix
-use osc::sinwave
+use osc::*
 use delay::fdelay
 
 fn fdelay_mod(input,time){

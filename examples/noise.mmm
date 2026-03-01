@@ -1,8 +1,8 @@
 use noise::*
-
+use core::stereo_synth
 #stage(main)
 fn dsp(){
-    let l = white!()|>Probe!("Test1")
-    let r = white!()|>Probe!("Test2")
-    (l,r)*0.2 
+    stereo_synth!(| | white())  |> ProbeValue!("noise")
+    // (white!(),white!())  |> ProbeValue!("noise")
+
 }

@@ -1,3 +1,7 @@
+// example of uzulang(tidalcycles/strudel like language)
+// with embedded mininotation parser combinator library 
+// note that mininotation is very limimted for now
+
 use core::*
 use mininotation::*
 use osc::*

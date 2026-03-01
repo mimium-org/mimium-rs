@@ -1,7 +1,7 @@
-include("osc.mmm")
-include("filter.mmm")
+use osc::*
+use filter::lowpass
 fn dsp(){
-    let f = phasor(0.2)*3000.0+200.0;
+    let f = phasor(0.2,0)*3000.0+200.0;
     let sig = saw(220.0,0.0);
     let r = lowpass(sig,f,10.0)
     (r, r)

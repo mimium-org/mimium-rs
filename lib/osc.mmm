@@ -1,4 +1,4 @@
-use math::PI
+use math::*
 pub fn phasor(freq,phase_shift=0){
     (self + freq/samplerate + phase_shift)%1.0
 }
