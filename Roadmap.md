@@ -3,16 +3,17 @@
 
 ## For version 4
 
-- [ ] Variant Type
-- [ ] Row Polymorphism
-- [ ] Module System with Stage System
-- [ ] More stable support for web platform
+- [x] Variant Type
+- ~~[ ] Row Polymorphism~~
+- [x] Module System with Stage System
+- [x] More stable support for web platform
+- [x] Native & WASM backend with Cranelift
+- [x] Dynamic loading of plugins
+- [x] Parametric Polymorphism
 
 ## Further & Other Plans
 
-- [ ] Native & WASM backend with Cranelift
 - [ ] Transpilation to C++ using [Faust's Signal API](https://faustdoc.grame.fr/tutorials/signal-api/)
-- [ ] Dynamic loading of plugins
 - [ ] effect system for managing stateful function and IO
 
 ---
