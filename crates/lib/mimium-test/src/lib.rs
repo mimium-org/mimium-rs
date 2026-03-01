@@ -207,7 +207,7 @@ pub fn load_src(path: &'static str) -> (PathBuf, String) {
     #[cfg(target_arch = "wasm32")]
     let file = {
         let crate_root = fileloader::get_env("TEST_ROOT")
-            .unwrap_or_else(|| env!("CARGO_MANIFEST_DIR").to_string());
+            .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
         format!("{}/tests/mmm/{}", crate_root, path)
     };
 

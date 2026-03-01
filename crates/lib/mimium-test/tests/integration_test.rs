@@ -137,6 +137,7 @@ fn string_primitives() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+#[cfg(not(target_arch = "wasm32"))]
 fn parser_combinators() {
     // Parser module has many deeply nested functions requiring larger stack
     let result = std::thread::Builder::new()
@@ -154,6 +155,7 @@ fn parser_combinators() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+#[cfg(not(target_arch = "wasm32"))]
 fn mininotation() {
     // Mini-notation parser uses parser combinators + pattern library, needs larger stack
     // Pattern library depends on osc::phasor -> samplerate, so we need audio driver
@@ -172,6 +174,7 @@ fn mininotation() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+#[cfg(not(target_arch = "wasm32"))]
 fn mininotation_alternate_grouping() {
     // Mini-notation alternation/grouping edge cases based on TidalCycles reference.
     let result = std::thread::Builder::new()
@@ -561,8 +564,8 @@ fn fb_mem3_state_size() {
 fn delay_mem_same_fn() {
     let res = run_file_test_stereo("delay_mem_same_fn.mmm", 10).unwrap();
     let ans = vec![
-        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 1.0, 3.0, 2.0, 4.0, 3.0, 5.0, 4.0, 6.0, 5.0, 7.0,
-        6.0, 8.0, 7.0,
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 1.0, 3.0, 2.0, 4.0, 3.0, 5.0, 4.0, 6.0, 5.0, 7.0, 6.0,
+        8.0, 7.0,
     ];
     assert_eq!(res, ans);
 }
