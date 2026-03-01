@@ -535,10 +535,8 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
                 .iter()
                 .map(|f| sym_to_string_literal(f.name))
                 .collect();
-            let vals: Vec<ExprNodeId> = fields
-                .into_iter()
-                .map(|f| translate_code(f.expr))
-                .collect();
+            let vals: Vec<ExprNodeId> =
+                fields.into_iter().map(|f| translate_code(f.expr)).collect();
             let names_arr = Expr::ArrayLiteral(names).into_id_without_span();
             let vals_arr = Expr::ArrayLiteral(vals).into_id_without_span();
             make_apply("code_imcomplete_record", vec![names_arr, vals_arr])
@@ -549,13 +547,14 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
                 .iter()
                 .map(|f| sym_to_string_literal(f.name))
                 .collect();
-            let vals: Vec<ExprNodeId> = fields
-                .into_iter()
-                .map(|f| translate_code(f.expr))
-                .collect();
+            let vals: Vec<ExprNodeId> =
+                fields.into_iter().map(|f| translate_code(f.expr)).collect();
             let names_arr = Expr::ArrayLiteral(names).into_id_without_span();
             let vals_arr = Expr::ArrayLiteral(vals).into_id_without_span();
-            make_apply("code_record_update", vec![translated_record, names_arr, vals_arr])
+            make_apply(
+                "code_record_update",
+                vec![translated_record, names_arr, vals_arr],
+            )
         }
         Expr::Error => expr,
     }

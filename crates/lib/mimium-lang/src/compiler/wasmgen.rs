@@ -18,9 +18,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use wasm_encoder::{
     CodeSection, DataSection, ElementSection, EntityType, ExportSection, Function, FunctionSection,
-    GlobalSection, ImportSection, MemArg, MemorySection, MemoryType, Module, TableSection,
-    TableType, TypeSection, ValType,
-    NameMap, NameSection,
+    GlobalSection, ImportSection, MemArg, MemorySection, MemoryType, Module, NameMap, NameSection,
+    TableSection, TableType, TypeSection, ValType,
 };
 
 /// Upper bound of `$arityN` builtin specializations imported for WASM.
@@ -2124,13 +2123,14 @@ impl WasmGenerator {
     fn function_has_non_external_calls(func: &mir::Function) -> bool {
         use mir::Instruction as I;
 
-        func.body.iter().flat_map(|bb| bb.0.iter()).any(|(_, instr)| {
-            match instr {
+        func.body
+            .iter()
+            .flat_map(|bb| bb.0.iter())
+            .any(|(_, instr)| match instr {
                 I::Call(fn_ptr, _, _) => !matches!(fn_ptr.as_ref(), mir::Value::ExtFunction(_, _)),
                 I::CallIndirect(_, _, _) | I::CallCls(_, _, _) => true,
                 _ => false,
-            }
-        })
+            })
     }
 
     /// Export all functions and memory
@@ -2186,8 +2186,11 @@ impl WasmGenerator {
             .export("memory", wasm_encoder::ExportKind::Memory, 0);
 
         // Export runtime allocator pointer for host-side safety recovery.
-        self.export_section
-            .export("__alloc_ptr", wasm_encoder::ExportKind::Global, self.alloc_ptr_global);
+        self.export_section.export(
+            "__alloc_ptr",
+            wasm_encoder::ExportKind::Global,
+            self.alloc_ptr_global,
+        );
 
         Ok(())
     }

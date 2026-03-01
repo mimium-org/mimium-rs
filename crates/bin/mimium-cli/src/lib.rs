@@ -641,7 +641,9 @@ impl FileRunner {
             .map(|program| program.ext_fns.as_slice())
             .unwrap_or(&[]);
         let ext_fns = ext_fns.unwrap_or(fallback_ext_fns);
-        let plugin_fns = old_program.as_ref().and_then(|program| program.plugin_fns.clone());
+        let plugin_fns = old_program
+            .as_ref()
+            .and_then(|program| program.plugin_fns.clone());
 
         let prepared_swap_data =
             Self::try_prewarm_wasm_global_state(&bytes, ext_fns, plugin_fns.clone())?;

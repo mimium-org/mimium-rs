@@ -733,7 +733,11 @@ pub fn codegen_combinator_signatures() -> Vec<ExtClsInfo> {
             code_imcomplete_record,
             fty(vec![as_, af], f),
         ),
-        mk_cls("code_record_update", code_record_update, fty(vec![f, as_, af], f)),
+        mk_cls(
+            "code_record_update",
+            code_record_update,
+            fty(vec![f, as_, af], f),
+        ),
         mk_cls("code_field_access", code_field_access, fty(vec![f, s], f)),
         mk_cls("code_feed", code_feed, fty(vec![s, f], f)),
         mk_cls("code_block", code_block, fty(vec![f], f)),
