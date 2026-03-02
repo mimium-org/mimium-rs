@@ -1,0 +1,6 @@
+// Test stereo output: dsp returns a tuple (L, R)
+fn dsp() {
+    let l = 0.5
+    let r = -0.5
+    (l, r)
+}

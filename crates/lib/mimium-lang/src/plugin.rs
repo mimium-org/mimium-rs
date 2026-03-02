@@ -8,7 +8,12 @@
 //! 3. **System Plugin**. If your plugin needs to mutate states of system-wide instance (1 plugin instance per 1 vm), you need to implement `SystemPlugin` traits. System plugin can have callbacks invoked at the important timings of the system like `on_init`, `before_on_sample` & so on. Internal synchronous event scheduler is implemented through this plugins system. `mimium-rand` is also an example of this type of module.
 
 mod builtin_functins;
+pub mod codegen_combinators;
 mod system_plugin;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod loader;
+
 pub use builtin_functins::get_builtin_fns_as_plugins;
 use std::{cell::RefCell, rc::Rc};
 
@@ -275,9 +280,17 @@ impl Plugin for InstantPlugin {
     }
 
     fn get_type_infos(&self) -> Vec<ExtFunTypeInfo> {
+        // Collect extcls and commons names to deduplicate against macros.
+        // When both a macro and an extcls share the same name (e.g. `lift_f`),
+        // the extcls (VM combinator) takes precedence.
+        let extcls_names: std::collections::HashSet<crate::interner::Symbol> =
+            self.extcls.iter().map(|e| e.name).collect();
+        let commons_names: std::collections::HashSet<crate::interner::Symbol> =
+            self.commonfns.iter().map(|c| c.name).collect();
         let macros = self
             .macros
             .iter()
+            .filter(|m| !extcls_names.contains(&m.name) && !commons_names.contains(&m.name))
             .map(|m| ExtFunTypeInfo::new(m.name, m.ty, MacroStage::get_stage()));
         let extcls = self
             .extcls
@@ -322,4 +335,31 @@ pub fn get_ext_closures(
     plugins
         .iter()
         .flat_map(|plugin| plugin.get_ext_closures().into_iter())
+}
+
+pub(crate) type MonomorphizedExtFnNameResolver =
+    fn(Symbol, TypeNodeId, TypeNodeId) -> Option<Symbol>;
+
+const MONOMORPHIZED_EXT_FN_NAME_RESOLVERS: [MonomorphizedExtFnNameResolver; 1] =
+    [builtin_functins::try_get_monomorphized_ext_fn_name];
+
+pub(crate) fn resolve_monomorphized_ext_fn_name(
+    fn_name: Symbol,
+    concrete_arg_ty: TypeNodeId,
+    concrete_ret_ty: TypeNodeId,
+) -> Option<Symbol> {
+    MONOMORPHIZED_EXT_FN_NAME_RESOLVERS
+        .iter()
+        .find_map(|resolver| resolver(fn_name, concrete_arg_ty, concrete_ret_ty))
+}
+
+pub(crate) type SpecializedExtClsResolver = fn(Symbol, TypeNodeId) -> Option<ExtClsInfo>;
+
+const SPECIALIZED_EXTCLS_RESOLVERS: [SpecializedExtClsResolver; 1] =
+    [builtin_functins::try_make_specialized_extcls];
+
+pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Option<ExtClsInfo> {
+    SPECIALIZED_EXTCLS_RESOLVERS
+        .iter()
+        .find_map(|resolver| resolver(name, ty))
 }

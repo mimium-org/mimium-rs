@@ -17,8 +17,8 @@ use mimium_lang::{
     compiler::IoChannelInfo,
     plugin::{DynSystemPlugin, ExtClsInfo, InstantPlugin, SystemPluginAudioWorker},
     runtime::{
-        Time,
-        vm::{self, FuncProto, Program, ReturnCode},
+        DspRuntime, ProgramPayload, Time,
+        vm::{self, FuncProto, ReturnCode},
     },
     utils::{error::SimpleError, metadata::Location},
 };
@@ -63,6 +63,100 @@ impl SampleRate {
     }
 }
 
+/// Native bytecode VM implementation of [`DspRuntime`].
+///
+/// Wraps the VM `Machine`, the system plugin audio workers and the DSP
+/// function index so that the audio driver backends can execute one sample
+/// tick without knowing VM internals.
+pub struct VmDspRuntime {
+    pub vm: vm::Machine,
+    sys_plugin_workers: Vec<Box<dyn SystemPluginAudioWorker>>,
+    dsp_i: usize,
+    /// Cached output buffer – filled after each `run_dsp` call.
+    output_cache: Vec<f64>,
+}
+
+impl VmDspRuntime {
+    pub fn new(mut vm: vm::Machine, sys_plugins: &mut [DynSystemPlugin]) -> Self {
+        let dsp_i = vm.prog.get_fun_index("dsp").unwrap_or(0);
+        if let Some(IoChannelInfo { input, .. }) = vm.prog.iochannels {
+            vm.set_stack_range(0, &vec![0u64; input as usize]);
+        }
+        let sys_plugin_workers = sys_plugins
+            .iter_mut()
+            .filter_map(|p| p.take_audioworker())
+            .collect();
+        let ochannels = vm.prog.iochannels.map_or(0, |io| io.output as usize);
+        Self {
+            vm,
+            sys_plugin_workers,
+            dsp_i,
+            output_cache: vec![0.0; ochannels],
+        }
+    }
+
+    /// Direct access to the underlying [`FuncProto`] for the DSP function.
+    pub fn get_dsp_fn(&self) -> &FuncProto {
+        &self.vm.prog.global_fn_table[self.dsp_i].1
+    }
+}
+
+impl DspRuntime for VmDspRuntime {
+    fn run_dsp(&mut self, time: Time) -> ReturnCode {
+        self.sys_plugin_workers.iter_mut().for_each(
+            |plug: &mut Box<dyn SystemPluginAudioWorker>| {
+                let _ = plug.on_sample(time, &mut self.vm);
+            },
+        );
+        let rc = self.vm.execute_idx(self.dsp_i);
+
+        // Cache the output so get_output() can return a slice.
+        let ochannels = self.vm.prog.iochannels.map_or(0, |io| io.output as usize);
+        if ochannels > 0 {
+            let raw = vm::Machine::get_as_array::<f64>(self.vm.get_top_n(ochannels));
+            self.output_cache.clear();
+            self.output_cache.extend_from_slice(raw);
+        }
+        rc
+    }
+
+    fn get_output(&self, n_channels: usize) -> &[f64] {
+        &self.output_cache[..n_channels.min(self.output_cache.len())]
+    }
+
+    fn set_input(&mut self, input: &[f64]) {
+        let raw = unsafe { std::mem::transmute::<&[f64], &[u64]>(input) };
+        self.vm.set_stack_range(0, raw);
+    }
+
+    fn io_channels(&self) -> Option<IoChannelInfo> {
+        self.vm.prog.iochannels
+    }
+
+    fn try_hot_swap(&mut self, new_program: ProgramPayload) -> bool {
+        if let ProgramPayload::VmProgram(prog) = new_program {
+            self.dsp_i = prog.get_fun_index("dsp").unwrap_or(0);
+            if let Some(IoChannelInfo { input, .. }) = prog.iochannels {
+                self.vm.set_stack_range(0, &vec![0u64; input as usize]);
+            }
+            self.vm = self.vm.new_resume(prog);
+
+            let ochannels = self.vm.prog.iochannels.map_or(0, |io| io.output as usize);
+            self.output_cache.resize(ochannels, 0.0);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
 /// Abstraction over audio backends used by the runtime.
 ///
 /// Note: the trait does not define `new()`, allowing each backend to expose a
@@ -79,8 +173,8 @@ pub trait Driver {
     ) -> Option<IoChannelInfo>;
     fn play(&mut self) -> bool;
     fn pause(&mut self) -> bool;
-    fn renew_vm(&mut self, _new_vm: vm::Program) {}
-    fn get_vm_channel(&self) -> Option<mpsc::Sender<vm::Program>> {
+    fn renew_program(&mut self, _new_program: ProgramPayload) {}
+    fn get_program_channel(&self) -> Option<mpsc::Sender<ProgramPayload>> {
         None
     }
     fn get_samplerate(&self) -> u32;
@@ -96,87 +190,92 @@ pub trait Driver {
 }
 
 /// Objects required to execute a compiled program.
+///
+/// Holds a [`DspRuntime`] implementation that drives per-sample execution.
+/// Backends interact exclusively through the `DspRuntime` trait methods so that
+/// both the native VM and WASM runtimes can be used interchangeably.
 pub struct RuntimeData {
-    pub vm: vm::Machine,
-    pub sys_plugin_workers: Vec<Box<dyn SystemPluginAudioWorker>>,
-    pub dsp_i: usize,
+    pub runtime: Box<dyn DspRuntime>,
 }
+
 impl RuntimeData {
-    pub fn new(mut vm: vm::Machine, sys_plugins: &mut [DynSystemPlugin]) -> Self {
-        //todo:error handling
-        let dsp_i = vm.prog.get_fun_index("dsp").unwrap_or(0);
-        if let Some(IoChannelInfo { input, .. }) = vm.prog.iochannels {
-            vm.set_stack_range(0, &vec![0u64; input as usize]);
-        }
-        let sys_plugin_workers = sys_plugins
-            .iter_mut()
-            .filter_map(|p| p.take_audioworker())
-            .collect();
-        Self {
-            vm,
-            sys_plugin_workers,
-            dsp_i,
-        }
+    /// Create `RuntimeData` from a pre-built [`DspRuntime`].
+    pub fn new_from_runtime(runtime: Box<dyn DspRuntime>) -> Self {
+        Self { runtime }
     }
-    pub fn resume_with_program(&mut self, new_prog: Program) {
-        if let Some(IoChannelInfo { input, .. }) = self.vm.prog.iochannels {
-            self.vm.set_stack_range(0, &vec![0u64; input as usize]);
-        }
-        self.dsp_i = new_prog.get_fun_index("dsp").unwrap_or(0);
-        self.vm = self.vm.new_resume(new_prog);
+
+    /// Create `RuntimeData` by wrapping a native VM `Machine` in a [`VmDspRuntime`].
+    pub fn new(vm: vm::Machine, sys_plugins: &mut [DynSystemPlugin]) -> Self {
+        let runtime = Box::new(VmDspRuntime::new(vm, sys_plugins));
+        Self { runtime }
     }
-    // /// warn: Currently duplicated with ExecContext::run_main.
-    // /// only LocalBufferDriver uses this function.
-    // pub fn run_main(&mut self) -> ReturnCode {
-    //     self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
-    //         //todo: encapsulate unsafety within SystemPlugin functionality
-    //         let p = unsafe { plug.inner.get().as_mut().unwrap_unchecked() };
-    //         let _ = p.on_init(&mut self.vm);
-    //     });
-    //     let res = self.vm.execute_main();
-    //     self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
-    //         //todo: encapsulate unsafety within SystemPlugin functionality
-    //         let p = unsafe { plug.inner.get().as_mut().unwrap_unchecked() };
-    //         let _ = p.after_main(&mut self.vm);
-    //     });
-    //     res
-    // }
-    pub fn get_dsp_fn(&self) -> &FuncProto {
-        &self.vm.prog.global_fn_table[self.dsp_i].1
-    }
+
     /// Execute the compiled `dsp` function for one sample.
     pub fn run_dsp(&mut self, time: Time) -> ReturnCode {
-        self.sys_plugin_workers.iter_mut().for_each(
-            |plug: &mut Box<dyn SystemPluginAudioWorker>| {
-                let _ = plug.on_sample(time, &mut self.vm);
-            },
-        );
-        self.vm.execute_idx(self.dsp_i)
+        self.runtime.run_dsp(time)
+    }
+
+    /// I/O channel configuration (None if the dsp function was not found).
+    pub fn io_channels(&self) -> Option<IoChannelInfo> {
+        self.runtime.io_channels()
+    }
+
+    /// Read the output produced by the last `run_dsp` call.
+    pub fn get_output(&self, n_channels: usize) -> &[f64] {
+        self.runtime.get_output(n_channels)
+    }
+
+    /// Write input samples that will be available during the next `run_dsp` call.
+    pub fn set_input(&mut self, input: &[f64]) {
+        self.runtime.set_input(input);
+    }
+
+    /// Attempt to hot-swap the running program.
+    pub fn resume_with_program(&mut self, new_program: ProgramPayload) -> bool {
+        self.runtime.try_hot_swap(new_program)
+    }
+
+    /// Downcast the inner runtime to a concrete type.
+    ///
+    /// Useful for tests that need to inspect backend-specific state (e.g. VM
+    /// closures). Returns `None` if the runtime is not of the requested type.
+    pub fn downcast_runtime_ref<T: DspRuntime + 'static>(&self) -> Option<&T> {
+        self.runtime.as_any().downcast_ref::<T>()
+    }
+
+    /// Mutable downcast of the inner runtime.
+    pub fn downcast_runtime_mut<T: DspRuntime + 'static>(&mut self) -> Option<&mut T> {
+        self.runtime.as_any_mut().downcast_mut::<T>()
     }
 }
 
 impl TryFrom<&mut ExecContext> for RuntimeData {
     fn try_from(ctx: &mut ExecContext) -> Result<Self, Self::Error> {
-        let mut vm = ctx.take_vm().ok_or(SimpleError {
+        let vm = ctx.take_vm().ok_or(SimpleError {
             message: "Failed to take VM".into(),
             span: Location {
                 span: 0..0,
                 path: PathBuf::new(),
             },
         })?;
-        let dsp_i = vm.prog.get_fun_index("dsp").unwrap_or(0);
-        if let Some(IoChannelInfo { input, .. }) = vm.prog.iochannels {
-            vm.set_stack_range(0, &vec![0u64; input as usize]);
-        }
-        let sys_plugin_workers = ctx
+        let sys_plugin_workers: Vec<Box<dyn SystemPluginAudioWorker>> = ctx
             .get_system_plugins_mut()
             .flat_map(|p| p.take_audioworker())
             .collect();
-        Ok(Self {
+        // We already took workers above, so create VmDspRuntime manually
+        let dsp_i = vm.prog.get_fun_index("dsp").unwrap_or(0);
+        let ochannels = vm.prog.iochannels.map_or(0, |io| io.output as usize);
+        let mut vm = vm;
+        if let Some(IoChannelInfo { input, .. }) = vm.prog.iochannels {
+            vm.set_stack_range(0, &vec![0u64; input as usize]);
+        }
+        let runtime = Box::new(VmDspRuntime {
             vm,
             sys_plugin_workers,
             dsp_i,
-        })
+            output_cache: vec![0.0; ochannels],
+        });
+        Ok(Self { runtime })
     }
     type Error = SimpleError;
 }

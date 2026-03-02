@@ -1,0 +1,4 @@
+// Test min function
+fn dsp(){
+    min(3.5, 2.1)
+}

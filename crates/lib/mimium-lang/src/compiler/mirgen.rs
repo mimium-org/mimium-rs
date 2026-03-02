@@ -1,10 +1,10 @@
 use super::intrinsics;
 use super::typing::{InferContext, infer_root};
 
-use crate::compiler::parser;
+use crate::compiler::{bytecodegen, parser, translate_staging};
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
-use crate::plugin::MacroFunction;
+use crate::plugin::{MacroFunction, resolve_monomorphized_ext_fn_name};
 use crate::utils::miniprint::MiniPrint;
 use crate::{function, interpreter, numeric, unit};
 pub mod convert_pronoun;
@@ -12,21 +12,21 @@ pub mod convert_qualified_names;
 pub(crate) mod pattern_destructor;
 pub(crate) mod recursecheck;
 
-// use super::pattern_destructor::destruct_let_pattern;
 use crate::mir::{self, Argument, Instruction, Mir, VPtr, VReg, Value};
 
 use state_tree::tree::StateTreeSkeleton;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::types::{PType, RecordTypeField, Type};
+use crate::types::{PType, RecordTypeField, Type, TypeSchemeId};
 use crate::utils::environment::{Environment, LookupRes};
 use crate::utils::error::ReportableError;
 use crate::utils::metadata::{GLOBAL_LABEL, Location, Span};
 
-use crate::ast::{Expr, Literal};
+use crate::ast::{Expr, Literal, RecordField};
+use std::cell::OnceCell;
 
 // Decision Tree for pattern matching compilation
 // Used to compile multi-scrutinee pattern matching into nested switches
@@ -146,6 +146,44 @@ enum AssignDestination {
     Global(VPtr),
 }
 impl Context {
+    fn canonical_record_type_id(&self, ty: TypeNodeId) -> TypeNodeId {
+        // First, resolve any intermediate type variables to their concrete types.
+        let ty = InferContext::substitute_type(ty);
+        match ty.to_type() {
+            Type::Record(fields) => {
+                let mut normalized_fields = fields
+                    .iter()
+                    .map(|field| RecordTypeField {
+                        key: field.key,
+                        ty: self.canonical_record_type_id(field.ty),
+                        has_default: field.has_default,
+                    })
+                    .collect::<Vec<_>>();
+                normalized_fields.sort_by(|a, b| a.key.as_str().cmp(b.key.as_str()));
+                Type::Record(normalized_fields).into_id_with_location(ty.to_loc())
+            }
+            _ => ty.apply_fn(|t| self.canonical_record_type_id(t)),
+        }
+    }
+
+    fn alloc_record_aggregate(
+        &mut self,
+        fields: &[RecordField],
+        ty: TypeNodeId,
+    ) -> (VPtr, TypeNodeId, Vec<StateSkeleton>) {
+        let alloc_ty = self.canonical_record_type_id(ty);
+        if let Type::Record(type_fields) = alloc_ty.to_type() {
+            let ordered_exprs = type_fields
+                .iter()
+                .filter_map(|tf| fields.iter().find(|f| f.name == tf.key).map(|f| f.expr))
+                .collect::<Vec<_>>();
+            if ordered_exprs.len() == fields.len() {
+                return self.alloc_aggregates(&ordered_exprs, alloc_ty);
+            }
+        }
+        self.alloc_aggregates(&fields.iter().map(|f| f.expr).collect::<Vec<_>>(), alloc_ty)
+    }
+
     pub fn new(typeenv: InferContext, file_path: Option<PathBuf>) -> Self {
         Self {
             typeenv,
@@ -248,6 +286,194 @@ impl Context {
             _ => None,
         }
     }
+
+    fn is_tuple_arithmetic_binop_label(label: Symbol) -> bool {
+        matches!(
+            label.as_str(),
+            intrinsics::ADD | intrinsics::SUB | intrinsics::MULT | intrinsics::DIV
+        )
+    }
+
+    fn make_tuple_arithmetic_binop_leaf(
+        &mut self,
+        label: Symbol,
+        lhs_val: VPtr,
+        lhs_ty: TypeNodeId,
+        rhs_val: VPtr,
+        rhs_ty: TypeNodeId,
+    ) -> Option<VPtr> {
+        let lhs_scalar = match lhs_ty.to_type() {
+            Type::Primitive(PType::Numeric) => lhs_val,
+            Type::Primitive(PType::Int) => self.push_inst(Instruction::CastItoF(lhs_val)),
+            _ => return None,
+        };
+        let rhs_scalar = match rhs_ty.to_type() {
+            Type::Primitive(PType::Numeric) => rhs_val,
+            Type::Primitive(PType::Int) => self.push_inst(Instruction::CastItoF(rhs_val)),
+            _ => return None,
+        };
+
+        Some(match label.as_str() {
+            intrinsics::ADD => self.push_inst(Instruction::AddF(lhs_scalar, rhs_scalar)),
+            intrinsics::SUB => self.push_inst(Instruction::SubF(lhs_scalar, rhs_scalar)),
+            intrinsics::MULT => self.push_inst(Instruction::MulF(lhs_scalar, rhs_scalar)),
+            intrinsics::DIV => self.push_inst(Instruction::DivF(lhs_scalar, rhs_scalar)),
+            _ => unreachable!("already filtered by is_tuple_arithmetic_binop_label"),
+        })
+    }
+
+    fn make_tuple_arithmetic_binop_intrinsic_rec(
+        &mut self,
+        label: Symbol,
+        lhs_val: VPtr,
+        lhs_ty: TypeNodeId,
+        rhs_val: VPtr,
+        rhs_ty: TypeNodeId,
+        ret_ty: TypeNodeId,
+    ) -> Option<VPtr> {
+        let lhs_tuple = match lhs_ty.to_type() {
+            Type::Tuple(elems) => Some(elems),
+            _ => None,
+        };
+        let rhs_tuple = match rhs_ty.to_type() {
+            Type::Tuple(elems) => Some(elems),
+            _ => None,
+        };
+
+        match ret_ty.to_type() {
+            Type::Tuple(ret_elem_types) => {
+                if lhs_tuple.is_none() && rhs_tuple.is_none() {
+                    return None;
+                }
+
+                let tuple_len = lhs_tuple
+                    .as_ref()
+                    .map_or_else(|| rhs_tuple.as_ref().map_or(0, |v| v.len()), |v| v.len());
+                if let (Some(lhs_elems), Some(rhs_elems)) = (&lhs_tuple, &rhs_tuple)
+                    && lhs_elems.len() != rhs_elems.len()
+                {
+                    return None;
+                }
+                if tuple_len > 16 || ret_elem_types.len() != tuple_len {
+                    return None;
+                }
+
+                let lhs_scalar_slot = if lhs_tuple.is_none() {
+                    let slot = self.push_inst(Instruction::Alloc(lhs_ty));
+                    self.push_inst(Instruction::Store(slot.clone(), lhs_val.clone(), lhs_ty));
+                    Some(slot)
+                } else {
+                    None
+                };
+                let rhs_scalar_slot = if rhs_tuple.is_none() {
+                    let slot = self.push_inst(Instruction::Alloc(rhs_ty));
+                    self.push_inst(Instruction::Store(slot.clone(), rhs_val.clone(), rhs_ty));
+                    Some(slot)
+                } else {
+                    None
+                };
+
+                let tuple_ptr = self.push_inst(Instruction::Alloc(ret_ty));
+                ret_elem_types
+                    .iter()
+                    .enumerate()
+                    .try_for_each(|(idx, ret_elem_ty)| {
+                        let (lhs_elem, lhs_elem_ty) = if let Some(lhs_elems) = &lhs_tuple {
+                            (
+                                self.push_inst(Instruction::GetElement {
+                                    value: lhs_val.clone(),
+                                    ty: lhs_ty,
+                                    tuple_offset: idx as u64,
+                                }),
+                                lhs_elems[idx],
+                            )
+                        } else {
+                            (
+                                self.push_inst(Instruction::Load(
+                                    lhs_scalar_slot
+                                        .as_ref()
+                                        .expect("scalar slot exists when lhs is not tuple")
+                                        .clone(),
+                                    lhs_ty,
+                                )),
+                                lhs_ty,
+                            )
+                        };
+
+                        let (rhs_elem, rhs_elem_ty) = if let Some(rhs_elems) = &rhs_tuple {
+                            (
+                                self.push_inst(Instruction::GetElement {
+                                    value: rhs_val.clone(),
+                                    ty: rhs_ty,
+                                    tuple_offset: idx as u64,
+                                }),
+                                rhs_elems[idx],
+                            )
+                        } else {
+                            (
+                                self.push_inst(Instruction::Load(
+                                    rhs_scalar_slot
+                                        .as_ref()
+                                        .expect("scalar slot exists when rhs is not tuple")
+                                        .clone(),
+                                    rhs_ty,
+                                )),
+                                rhs_ty,
+                            )
+                        };
+
+                        self.make_tuple_arithmetic_binop_intrinsic_rec(
+                            label,
+                            lhs_elem,
+                            lhs_elem_ty,
+                            rhs_elem,
+                            rhs_elem_ty,
+                            *ret_elem_ty,
+                        )
+                        .map(|elem_val| {
+                            let dst = self.push_inst(Instruction::GetElement {
+                                value: tuple_ptr.clone(),
+                                ty: ret_ty,
+                                tuple_offset: idx as u64,
+                            });
+                            self.push_inst(Instruction::Store(dst, elem_val, *ret_elem_ty));
+                        })
+                        .ok_or(())
+                    })
+                    .ok()?;
+
+                Some(tuple_ptr)
+            }
+            _ => {
+                if lhs_tuple.is_some() || rhs_tuple.is_some() {
+                    None
+                } else {
+                    self.make_tuple_arithmetic_binop_leaf(label, lhs_val, lhs_ty, rhs_val, rhs_ty)
+                }
+            }
+        }
+    }
+
+    fn make_tuple_arithmetic_binop_intrinsic(
+        &mut self,
+        label: Symbol,
+        raw_args: &[(VPtr, TypeNodeId)],
+        ret_ty: TypeNodeId,
+    ) -> Option<VPtr> {
+        if raw_args.len() != 2 || !Self::is_tuple_arithmetic_binop_label(label) {
+            return None;
+        }
+
+        self.make_tuple_arithmetic_binop_intrinsic_rec(
+            label,
+            raw_args[0].0.clone(),
+            raw_args[0].1,
+            raw_args[1].0.clone(),
+            raw_args[1].1,
+            ret_ty,
+        )
+    }
+
     fn make_uniop_intrinsic(
         &mut self,
         label: Symbol,
@@ -264,6 +490,8 @@ impl Context {
             intrinsics::COS => (Some(Instruction::CosF(a0)), vec![]),
             intrinsics::MEM => {
                 let skeleton = StateSkeleton::Mem(mir::StateType::from(numeric!()));
+                self.consume_and_insert_pushoffset();
+                self.get_ctxdata().next_state_offset = Some(skeleton.total_size());
                 (Some(Instruction::Mem(a0)), vec![skeleton])
             }
             _ => (None, vec![]),
@@ -273,8 +501,14 @@ impl Context {
     fn make_intrinsics(
         &mut self,
         label: Symbol,
+        raw_args: &[(VPtr, TypeNodeId)],
         args: &[(VPtr, TypeNodeId)],
+        ret_ty: TypeNodeId,
     ) -> (Option<VPtr>, Vec<StateSkeleton>) {
+        if let Some(v) = self.make_tuple_arithmetic_binop_intrinsic(label, raw_args, ret_ty) {
+            return (Some(v), vec![]);
+        }
+
         let (inst, states) = match args.len() {
             1 => self.make_uniop_intrinsic(label, args),
             2 => (self.make_binop_intrinsic(label, args), vec![]),
@@ -308,59 +542,97 @@ impl Context {
         self.valenv.add_bind(&[bind]);
     }
 
-    /// Recursively insert CloseHeapClosure instructions for heap-allocated objects (closures)
-    /// based on type information. This handles nested structures like tuples and records.
-    fn insert_close_recursively(&mut self, v: VPtr, ty: TypeNodeId) {
+    /// Recursively insert CloseHeapClosure instructions for closures found
+    /// inside a value.  This captures upvalues from the stack into the heap
+    /// ("closing" the closure) so that it can safely escape its defining scope.
+    ///
+    /// Unlike `insert_release_recursively`, this does **not** decrement any
+    /// reference counts — it is purely a structural operation on closures.
+    fn insert_close_closures_recursively(&mut self, v: VPtr, ty: TypeNodeId) {
         match ty.to_type() {
-            Type::Function { arg, ret } => {
-                // This is a closure - insert CloseHeapClosure for the closure itself
+            Type::Function { .. } => {
                 self.push_inst(Instruction::CloseHeapClosure(v.clone()));
-
-                // For higher-order functions, we don't need to recurse into arg/ret here
-                // because the closure value itself is a single heap object.
-                // The arguments/return values will be processed when they are actually used.
-            }
-            Type::Boxed(inner) => {
-                // Boxed value going out of scope — decrement its reference count
-                self.push_inst(Instruction::BoxRelease {
-                    ptr: v.clone(),
-                    inner_type: inner,
-                });
-            }
-            Type::UserSum { .. } => {
-                // UserSum value going out of scope - need to release any boxed values within
-                // We emit a ReleaseUserSum instruction that will walk the structure at runtime
-                // and decrement reference counts for any heap-allocated objects
-                self.push_inst(Instruction::ReleaseUserSum {
-                    value: v.clone(),
-                    ty,
-                });
             }
             Type::Tuple(elem_types) => {
-                // Recursively process each element of the tuple
                 for (i, elem_ty) in elem_types.iter().enumerate() {
                     let elem_v = self.push_inst(Instruction::GetElement {
                         value: v.clone(),
                         ty,
                         tuple_offset: i as u64,
                     });
-                    self.insert_close_recursively(elem_v, *elem_ty);
+                    self.insert_close_closures_recursively(elem_v, *elem_ty);
                 }
             }
             Type::Record(fields) => {
-                // Recursively process each field of the record
                 for (i, field) in fields.iter().enumerate() {
                     let field_v = self.push_inst(Instruction::GetElement {
                         value: v.clone(),
                         ty,
                         tuple_offset: i as u64,
                     });
-                    self.insert_close_recursively(field_v, field.ty);
+                    self.insert_close_closures_recursively(field_v, field.ty);
                 }
             }
-            _ => {
-                // Other types (primitives, arrays, etc.) don't need closing
+            Type::TypeAlias(_) => {
+                let resolved = self.typeenv.resolve_type_alias(ty);
+                if resolved != ty {
+                    self.insert_close_closures_recursively(v, resolved);
+                }
             }
+            // Boxed, UserSum, and other types do not contain closures that need
+            // closing at this stage.
+            _ => {}
+        }
+    }
+
+    /// Recursively insert release instructions for all heap-allocated objects
+    /// (closures, boxed values, and UserSum variants) when a value goes out of
+    /// scope.  For closures this also drops the closure if its upvalues were
+    /// never closed.
+    fn insert_release_recursively(&mut self, v: VPtr, ty: TypeNodeId) {
+        match ty.to_type() {
+            Type::Function { .. } => {
+                self.push_inst(Instruction::CloseHeapClosure(v.clone()));
+            }
+            Type::Boxed(inner) => {
+                self.push_inst(Instruction::BoxRelease {
+                    ptr: v.clone(),
+                    inner_type: inner,
+                });
+            }
+            Type::UserSum { .. } => {
+                self.push_inst(Instruction::ReleaseUserSum {
+                    value: v.clone(),
+                    ty,
+                });
+            }
+            Type::Tuple(elem_types) => {
+                for (i, elem_ty) in elem_types.iter().enumerate() {
+                    let elem_v = self.push_inst(Instruction::GetElement {
+                        value: v.clone(),
+                        ty,
+                        tuple_offset: i as u64,
+                    });
+                    self.insert_release_recursively(elem_v, *elem_ty);
+                }
+            }
+            Type::Record(fields) => {
+                for (i, field) in fields.iter().enumerate() {
+                    let field_v = self.push_inst(Instruction::GetElement {
+                        value: v.clone(),
+                        ty,
+                        tuple_offset: i as u64,
+                    });
+                    self.insert_release_recursively(field_v, field.ty);
+                }
+            }
+            Type::TypeAlias(_) => {
+                let resolved = self.typeenv.resolve_type_alias(ty);
+                if resolved != ty {
+                    self.insert_release_recursively(v, resolved);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -405,6 +677,15 @@ impl Context {
                     ty,
                 });
             }
+            Type::TypeAlias(_) => {
+                // Resolve the alias to its underlying type and recurse.
+                // Without this, type-aliased functions (e.g., Pattern = (Arc)->[Event])
+                // would silently skip cloning, causing use-after-free.
+                let resolved = self.typeenv.resolve_type_alias(ty);
+                if resolved != ty {
+                    self.insert_clone_recursively(v, resolved);
+                }
+            }
             _ => {}
         }
     }
@@ -416,6 +697,7 @@ impl Context {
         ty: TypeNodeId,
         is_global: bool,
     ) {
+        let ty = InferContext::substitute_type(ty);
         let TypedPattern { pat, .. } = pattern;
         let span = pattern.to_span();
         match (pat, ty.to_type()) {
@@ -425,7 +707,7 @@ impl Context {
                     let gv = Arc::new(Value::Global(v.clone()));
                     if t.is_function() {
                         //globally allocated closures are immidiately closed, not to be disposed
-                        self.insert_close_recursively(v.clone(), ty);
+                        self.insert_close_closures_recursively(v.clone(), ty);
                     }
                     self.push_inst(Instruction::SetGlobal(gv.clone(), v.clone(), ty));
                     self.add_bind((*id, gv))
@@ -440,6 +722,12 @@ impl Context {
                         ty,
                         tuple_offset: i as u64,
                     });
+                    // Clone refcounted values extracted from the tuple so they
+                    // have their own reference count. Without this, both the
+                    // container's scope-exit release and the extracted
+                    // variable's scope-exit release would decrement the same
+                    // refcount, causing a double-release.
+                    self.insert_clone_recursively(elem_v.clone(), *cty);
                     let tid = Type::Unknown.into_id_with_location(self.get_loc_from_span(&span));
                     let tpat = TypedPattern::new(pat.clone(), tid);
                     self.add_bind_pattern(&tpat, elem_v, *cty, is_global);
@@ -456,10 +744,13 @@ impl Context {
                             ty,
                             tuple_offset: offset as u64,
                         });
+                        let elem_t = kvvec[offset].ty;
+                        // Clone refcounted values extracted from the record
+                        // (same rationale as tuple destructuring above).
+                        self.insert_clone_recursively(elem_v.clone(), elem_t);
                         let tid =
                             Type::Unknown.into_id_with_location(self.get_loc_from_span(&span));
                         let tpat = TypedPattern::new(pat.clone(), tid);
-                        let elem_t = kvvec[offset].ty;
                         self.add_bind_pattern(&tpat, elem_v, elem_t, is_global);
                     };
                 }
@@ -632,12 +923,488 @@ impl Context {
         let new_fid = FunctionId(self.program.functions.len() as u64);
 
         let mut specialized_fn = original_fn.clone();
+        specialized_fn.index = new_fid.0 as usize;
         specialized_fn.label = specialized_name;
+        self.specialize_monomorphized_function(&mut specialized_fn, arg_type, ret_type);
+
+        // Fix recursive self-references: replace Call(Value::Function(original_fid))
+        // with Call(Value::Function(new_fid)) so the monomorphized function
+        // calls itself rather than the original generic version.
+        for block in &mut specialized_fn.body {
+            let callee_regs: HashSet<u64> = block
+                .0
+                .iter()
+                .filter_map(|(_, inst)| match inst {
+                    Instruction::Call(fn_ptr, _, _)
+                    | Instruction::CallCls(fn_ptr, _, _)
+                    | Instruction::CallIndirect(fn_ptr, _, _) => match fn_ptr.as_ref() {
+                        Value::Register(r) => Some(*r),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect();
+            for (dst, inst) in &mut block.0 {
+                let replace_self_ref = |v: &mut VPtr| {
+                    if let Value::Function(fid) = v.as_ref() {
+                        if *fid == original_fid.0 as usize {
+                            *v = Arc::new(Value::Function(new_fid.0 as usize));
+                        }
+                    } else if let Value::Global(inner) = v.as_ref()
+                        && let Value::Function(fid) = inner.as_ref()
+                        && *fid == original_fid.0 as usize
+                    {
+                        *v = Arc::new(Value::Global(Arc::new(Value::Function(new_fid.0 as usize))));
+                    }
+                };
+                match inst {
+                    Instruction::Call(fn_ptr, _, _)
+                    | Instruction::CallCls(fn_ptr, _, _)
+                    | Instruction::CallIndirect(fn_ptr, _, _) => {
+                        replace_self_ref(fn_ptr);
+                    }
+                    Instruction::GetGlobal(global_ptr, _)
+                    | Instruction::Closure(global_ptr)
+                    | Instruction::CloseHeapClosure(global_ptr)
+                    | Instruction::CloneHeap(global_ptr)
+                    | Instruction::TaggedUnionGetTag(global_ptr)
+                    | Instruction::TaggedUnionGetValue(global_ptr, _)
+                    | Instruction::BoxLoad {
+                        ptr: global_ptr, ..
+                    }
+                    | Instruction::BoxClone { ptr: global_ptr }
+                    | Instruction::BoxRelease {
+                        ptr: global_ptr, ..
+                    }
+                    | Instruction::Return(global_ptr, _)
+                    | Instruction::ReturnFeed(global_ptr, _) => {
+                        replace_self_ref(global_ptr);
+                    }
+                    Instruction::SetGlobal(global_ptr, src_ptr, _)
+                    | Instruction::BoxStore {
+                        ptr: global_ptr,
+                        value: src_ptr,
+                        ..
+                    } => {
+                        replace_self_ref(global_ptr);
+                        replace_self_ref(src_ptr);
+                    }
+                    Instruction::SetUpValue(_, global_ptr, _) => {
+                        replace_self_ref(global_ptr);
+                    }
+                    Instruction::MakeClosure { fn_proto, .. }
+                    | Instruction::CloseUpValues(fn_proto, _) => {
+                        replace_self_ref(fn_proto);
+                    }
+                    Instruction::GetElement { value, .. }
+                    | Instruction::CloneUserSum { value, .. }
+                    | Instruction::ReleaseUserSum { value, .. }
+                    | Instruction::BoxAlloc { value, .. } => {
+                        replace_self_ref(value);
+                    }
+                    Instruction::Uinteger(v) => {
+                        if let Value::Register(r) = dst.as_ref()
+                            && callee_regs.contains(r)
+                            && *v == original_fid.0
+                        {
+                            *v = new_fid.0;
+                        }
+                    }
+                    _ => {}
+                }
+                // Also update the destination if it references the function.
+                replace_self_ref(dst);
+            }
+        }
 
         self.program.functions.push(specialized_fn);
         self.monomorph_map.insert(key, new_fid);
 
         new_fid
+    }
+
+    /// Specialize a cloned function body for concrete types.
+    ///
+    /// Performs two things generically (without knowledge of specific plugins):
+    /// 1. Substitutes generic `TypeScheme`/`Unknown` types with concrete types.
+    /// 2. Resolves ext function names via `resolve_monomorphized_ext_fn_name`.
+    fn specialize_monomorphized_function(
+        &self,
+        function: &mut mir::Function,
+        arg_type: TypeNodeId,
+        ret_type: TypeNodeId,
+    ) {
+        // Build a type substitution map: generic TypeNodeId → concrete TypeNodeId.
+        // Collect arg types that contain unresolved/generic components.
+        let has_generic_args = function
+            .args
+            .iter()
+            .any(|arg| arg.1.to_type().contains_unresolved());
+
+        // Also check the return type.
+        let has_generic_ret = function
+            .return_type
+            .get()
+            .is_some_and(|r| r.to_type().contains_unresolved());
+
+        // Nothing generic to substitute — skip.
+        if !has_generic_args && !has_generic_ret {
+            return;
+        }
+
+        // Build substitutions for each TypeScheme variable by structurally
+        // matching generic function types against concrete call-site types.
+        let mut scheme_subst = BTreeMap::<TypeSchemeId, TypeNodeId>::new();
+        let mut unresolved_subst = HashMap::<TypeNodeId, TypeNodeId>::new();
+        fn collect_scheme_subst(
+            generic_ty: TypeNodeId,
+            concrete_ty: TypeNodeId,
+            subst_map: &mut BTreeMap<TypeSchemeId, TypeNodeId>,
+            unresolved_subst: &mut HashMap<TypeNodeId, TypeNodeId>,
+        ) {
+            match (generic_ty.to_type(), concrete_ty.to_type()) {
+                (Type::TypeScheme(id), _) => {
+                    subst_map.entry(id).or_insert(concrete_ty);
+                }
+                (Type::Unknown, _) => {
+                    unresolved_subst.entry(generic_ty).or_insert(concrete_ty);
+                }
+                (Type::Array(g), Type::Array(c))
+                | (Type::Ref(g), Type::Ref(c))
+                | (Type::Code(g), Type::Code(c))
+                | (Type::Boxed(g), Type::Boxed(c)) => {
+                    collect_scheme_subst(g, c, subst_map, unresolved_subst);
+                }
+                (Type::Tuple(g), Type::Tuple(c)) | (Type::Union(g), Type::Union(c)) => {
+                    if g.len() == c.len() {
+                        g.iter().zip(c.iter()).for_each(|(gt, ct)| {
+                            collect_scheme_subst(*gt, *ct, subst_map, unresolved_subst)
+                        });
+                    }
+                }
+                (Type::Record(g_fields), Type::Record(c_fields)) => {
+                    if g_fields.len() == c_fields.len() {
+                        g_fields.iter().zip(c_fields.iter()).for_each(|(gf, cf)| {
+                            collect_scheme_subst(gf.ty, cf.ty, subst_map, unresolved_subst)
+                        });
+                    }
+                }
+                (
+                    Type::Function {
+                        arg: g_arg,
+                        ret: g_ret,
+                    },
+                    Type::Function {
+                        arg: c_arg,
+                        ret: c_ret,
+                    },
+                ) => {
+                    collect_scheme_subst(g_arg, c_arg, subst_map, unresolved_subst);
+                    collect_scheme_subst(g_ret, c_ret, subst_map, unresolved_subst);
+                }
+                (
+                    Type::UserSum {
+                        variants: g_variants,
+                        ..
+                    },
+                    Type::UserSum {
+                        variants: c_variants,
+                        ..
+                    },
+                ) => {
+                    if g_variants.len() == c_variants.len() {
+                        g_variants
+                            .iter()
+                            .zip(c_variants.iter())
+                            .for_each(|((_, gp), (_, cp))| {
+                                if let (Some(gt), Some(ct)) = (gp, cp) {
+                                    collect_scheme_subst(*gt, *ct, subst_map, unresolved_subst);
+                                }
+                            });
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let generic_args: Vec<TypeNodeId> = function.args.iter().map(|a| a.1).collect();
+        if generic_args.len() == 1 {
+            collect_scheme_subst(
+                generic_args[0],
+                arg_type,
+                &mut scheme_subst,
+                &mut unresolved_subst,
+            );
+        } else {
+            match arg_type.to_type() {
+                Type::Tuple(concrete_args) if concrete_args.len() == generic_args.len() => {
+                    generic_args.iter().zip(concrete_args.iter()).for_each(
+                        |(generic_arg, concrete_arg)| {
+                            collect_scheme_subst(
+                                *generic_arg,
+                                *concrete_arg,
+                                &mut scheme_subst,
+                                &mut unresolved_subst,
+                            )
+                        },
+                    );
+                }
+                Type::Record(concrete_fields) if concrete_fields.len() == generic_args.len() => {
+                    generic_args
+                        .iter()
+                        .zip(concrete_fields.iter().map(|f| f.ty))
+                        .for_each(|(generic_arg, concrete_arg)| {
+                            collect_scheme_subst(
+                                *generic_arg,
+                                concrete_arg,
+                                &mut scheme_subst,
+                                &mut unresolved_subst,
+                            )
+                        });
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(generic_ret) = function.return_type.get().copied() {
+            collect_scheme_subst(
+                generic_ret,
+                ret_type,
+                &mut scheme_subst,
+                &mut unresolved_subst,
+            );
+        }
+
+        let subst = |ty: TypeNodeId| -> TypeNodeId {
+            fn substitute_by_map(
+                ty: TypeNodeId,
+                subst_map: &BTreeMap<TypeSchemeId, TypeNodeId>,
+                unresolved_subst: &HashMap<TypeNodeId, TypeNodeId>,
+            ) -> TypeNodeId {
+                if let Some(concrete) = unresolved_subst.get(&ty) {
+                    return *concrete;
+                }
+                match ty.to_type() {
+                    Type::Unknown => {
+                        let mut mapped = unresolved_subst.values().copied();
+                        if let Some(first) = mapped.next() {
+                            if mapped.all(|candidate| candidate == first) {
+                                first
+                            } else {
+                                ty
+                            }
+                        } else {
+                            ty
+                        }
+                    }
+                    Type::TypeScheme(id) => subst_map.get(&id).copied().unwrap_or(ty),
+                    _ if ty.to_type().contains_unresolved() => {
+                        ty.apply_fn(|child| substitute_by_map(child, subst_map, unresolved_subst))
+                    }
+                    _ => ty,
+                }
+            }
+            substitute_by_map(ty, &scheme_subst, &unresolved_subst)
+        };
+
+        // Recursively substitute inside function types.
+        let subst_fn_ty = |fn_ty: TypeNodeId| -> TypeNodeId {
+            match fn_ty.to_type() {
+                Type::Function { arg, ret } => {
+                    let new_arg = match arg.to_type() {
+                        Type::Tuple(elems) => {
+                            let new_elems: Vec<TypeNodeId> =
+                                elems.iter().map(|e| subst(*e)).collect();
+                            Type::Tuple(new_elems).into_id()
+                        }
+                        _ => subst(arg),
+                    };
+                    let new_ret = subst(ret);
+                    Type::Function {
+                        arg: new_arg,
+                        ret: new_ret,
+                    }
+                    .into_id()
+                }
+                _ => subst(fn_ty),
+            }
+        };
+
+        // Update the function's own arg types and return type.
+        for arg in &mut function.args {
+            arg.1 = subst(arg.1);
+        }
+        let new_return_type = OnceCell::new();
+        let _ = new_return_type.set(ret_type);
+        function.return_type = new_return_type;
+
+        let ret_array_elem_ty = match ret_type.to_type() {
+            Type::Array(elem) => Some(elem),
+            _ => None,
+        };
+
+        // Walk the body and substitute types + resolve ext function calls.
+        for block in &mut function.body {
+            for (_dst, inst) in &mut block.0 {
+                Self::substitute_types_in_instruction(inst, &subst, &subst_fn_ty, &self.typeenv);
+                if let Instruction::Array(values, elem_ty) = inst
+                    && values.is_empty()
+                    && elem_ty.to_type().contains_unresolved()
+                    && let Some(concrete_elem_ty) = ret_array_elem_ty
+                {
+                    *elem_ty = concrete_elem_ty;
+                }
+            }
+        }
+    }
+
+    /// Substitute generic types in a single MIR instruction and resolve
+    /// monomorphized ext function names when applicable.
+    fn substitute_types_in_instruction(
+        inst: &mut Instruction,
+        subst: &dyn Fn(TypeNodeId) -> TypeNodeId,
+        subst_fn_ty: &dyn Fn(TypeNodeId) -> TypeNodeId,
+        typeenv: &InferContext,
+    ) {
+        match inst {
+            Instruction::Call(fn_ptr, args, ret_ty)
+            | Instruction::CallCls(fn_ptr, args, ret_ty)
+            | Instruction::CallIndirect(fn_ptr, args, ret_ty) => {
+                *ret_ty = subst(*ret_ty);
+                for (_, ty) in args.iter_mut() {
+                    *ty = subst(*ty);
+                }
+                // Try to resolve the ext function name for this concrete type.
+                if let Value::ExtFunction(name, fn_ty) = fn_ptr.as_ref() {
+                    let ext_arg_ty = if args.len() == 1 {
+                        args[0].1
+                    } else {
+                        Type::Tuple(args.iter().map(|(_, ty)| *ty).collect()).into_id()
+                    };
+                    let is_probe_value = {
+                        let name = name.as_str();
+                        name == "__probe_value_intercept"
+                            || name.starts_with("__probe_value_intercept$arity")
+                    };
+                    let mut ext_ret_ty = *ret_ty;
+                    if is_probe_value
+                        && ext_ret_ty.to_type().contains_unresolved()
+                        && let Some((_, first_arg_ty)) = args.first()
+                    {
+                        ext_ret_ty = *first_arg_ty;
+                        *ret_ty = ext_ret_ty;
+                    }
+
+                    let fallback_fn_ty = Type::Function {
+                        arg: ext_arg_ty,
+                        ret: ext_ret_ty,
+                    }
+                    .into_id();
+
+                    if let Some(resolved) =
+                        resolve_monomorphized_ext_fn_name(*name, ext_arg_ty, ext_ret_ty)
+                    {
+                        let concrete_fn_ty = typeenv
+                            .env
+                            .lookup(&resolved)
+                            .map(|(ty, _)| *ty)
+                            .unwrap_or(fallback_fn_ty);
+                        *fn_ptr = Arc::new(Value::ExtFunction(resolved, concrete_fn_ty));
+                    } else {
+                        let concrete_fn_ty = {
+                            let substituted = subst_fn_ty(*fn_ty);
+                            if substituted.to_type().contains_unresolved() {
+                                fallback_fn_ty
+                            } else {
+                                substituted
+                            }
+                        };
+                        *fn_ptr = Arc::new(Value::ExtFunction(*name, concrete_fn_ty));
+                    }
+                }
+            }
+            Instruction::Load(_, ty)
+            | Instruction::Alloc(ty)
+            | Instruction::GetState(ty)
+            | Instruction::GetGlobal(_, ty)
+            | Instruction::CloseUpValues(_, ty) => {
+                *ty = subst(*ty);
+            }
+            Instruction::Store(_, _, ty) | Instruction::SetGlobal(_, _, ty) => {
+                *ty = subst(*ty);
+            }
+            Instruction::GetElement { ty, .. } => {
+                *ty = subst(*ty);
+            }
+            Instruction::GetUpValue(_, ty) | Instruction::SetUpValue(_, _, ty) => {
+                *ty = subst(*ty);
+            }
+            Instruction::TaggedUnionWrap { union_type, .. } => {
+                *union_type = subst(*union_type);
+            }
+            Instruction::TaggedUnionGetValue(_, ty) => {
+                *ty = subst(*ty);
+            }
+            Instruction::BoxAlloc { inner_type, .. }
+            | Instruction::BoxLoad { inner_type, .. }
+            | Instruction::BoxRelease { inner_type, .. }
+            | Instruction::BoxStore { inner_type, .. } => {
+                *inner_type = subst(*inner_type);
+            }
+            Instruction::CloneUserSum { ty, .. } | Instruction::ReleaseUserSum { ty, .. } => {
+                *ty = subst(*ty);
+            }
+            Instruction::Return(_, ty) | Instruction::ReturnFeed(_, ty) => {
+                *ty = subst(*ty);
+            }
+            Instruction::Array(_, elem_ty) => {
+                *elem_ty = subst(*elem_ty);
+            }
+            // Instructions without TypeNodeId fields — nothing to substitute.
+            _ => {}
+        }
+    }
+
+    fn infer_concrete_call_arg_type(
+        &mut self,
+        formal_arg_ty: TypeNodeId,
+        args: &[ExprNodeId],
+    ) -> TypeNodeId {
+        if args.len() == 1 {
+            return self.typeenv.infer_type(args[0]).unwrap_or(formal_arg_ty);
+        }
+
+        match formal_arg_ty.to_type() {
+            Type::Record(fields) => {
+                let concrete_fields = fields
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, field)| {
+                        let inferred_ty = args
+                            .get(idx)
+                            .and_then(|arg| self.typeenv.infer_type(*arg).ok())
+                            .unwrap_or(field.ty);
+                        RecordTypeField {
+                            key: field.key,
+                            ty: inferred_ty,
+                            has_default: field.has_default,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                Type::Record(concrete_fields).into_id()
+            }
+            _ => {
+                let concrete_elems = args
+                    .iter()
+                    .map(|arg| {
+                        self.typeenv
+                            .infer_type(*arg)
+                            .unwrap_or(Type::Unknown.into_id())
+                    })
+                    .collect::<Vec<_>>();
+                Type::Tuple(concrete_elems).into_id()
+            }
+        }
     }
 
     pub fn eval_literal(&mut self, lit: &Literal, _span: &Span) -> VPtr {
@@ -666,8 +1433,6 @@ impl Context {
         }
     }
     fn eval_rvar(&mut self, e: ExprNodeId, t: TypeNodeId) -> VPtr {
-        let span = &e.to_span();
-        let loc = self.get_loc_from_span(span);
         // After convert_qualified_names, all module names are resolved to simple Var.
         // QualifiedVar should have been converted to Var with mangled name.
         let name = match e.to_expr() {
@@ -742,15 +1507,7 @@ impl Context {
                 Value::Function(_) | Value::Register(_) => v.clone(),
                 _ => unreachable!("non global_value"),
             },
-            LookupRes::None => {
-                let ty = self.typeenv.lookup(name, loc).expect(
-                    format!(
-                        "variable \"{name}\" not found. it should be detected at type checking stage"
-                    )
-                    .as_str(),
-                );
-                Arc::new(Value::ExtFunction(name, ty))
-            }
+            LookupRes::None => Arc::new(Value::ExtFunction(name, t)),
         }
     }
     /// Evaluates an assignee expression and returns a VPtr that is a pointer to the destination.
@@ -786,6 +1543,7 @@ impl Context {
                 let base_ptr = self.eval_expr_as_address(expr);
 
                 let record_ty_id = self.typeenv.infer_type(expr).unwrap();
+                let record_ty_id = self.canonical_record_type_id(record_ty_id);
                 let record_ty = record_ty_id.to_type();
 
                 if let Type::Record(fields) = record_ty {
@@ -863,6 +1621,122 @@ impl Context {
         (res, s)
     }
 
+    fn emit_call_to_value(
+        &mut self,
+        f_to_call: &VPtr,
+        raw_args: &[(VPtr, TypeNodeId)],
+        coerced_args: &[(VPtr, TypeNodeId)],
+        ret_ty: TypeNodeId,
+    ) -> (VPtr, Vec<StateSkeleton>) {
+        match f_to_call.as_ref() {
+            Value::Global(v) => match v.as_ref() {
+                Value::Function(idx) => {
+                    self.emit_fncall(*idx as u64, coerced_args.to_vec(), ret_ty)
+                }
+                Value::Register(_) => (
+                    self.push_inst(Instruction::CallIndirect(
+                        v.clone(),
+                        coerced_args.to_vec(),
+                        ret_ty,
+                    )),
+                    vec![],
+                ),
+                _ => panic!("calling non-function global value"),
+            },
+            Value::Register(_) => (
+                self.push_inst(Instruction::CallIndirect(
+                    f_to_call.clone(),
+                    coerced_args.to_vec(),
+                    ret_ty,
+                )),
+                vec![],
+            ),
+            Value::Function(idx) => self.emit_fncall(*idx as u64, coerced_args.to_vec(), ret_ty),
+            Value::ExtFunction(label, _ty) => {
+                if let (Some(res), states) =
+                    self.make_intrinsics(*label, raw_args, coerced_args, ret_ty)
+                {
+                    (res, states)
+                } else {
+                    (
+                        self.push_inst(Instruction::Call(
+                            f_to_call.clone(),
+                            coerced_args.to_vec(),
+                            ret_ty,
+                        )),
+                        vec![],
+                    )
+                }
+            }
+            Value::None => unreachable!(),
+            _ => todo!(),
+        }
+    }
+
+    fn make_auto_spread_call_rec(
+        &mut self,
+        f_to_call: &VPtr,
+        arg_val: VPtr,
+        arg_ty: TypeNodeId,
+        param_ty: TypeNodeId,
+        ret_ty: TypeNodeId,
+    ) -> Option<(VPtr, Vec<StateSkeleton>)> {
+        match (arg_ty.to_type(), ret_ty.to_type()) {
+            (Type::Tuple(arg_elems), Type::Tuple(ret_elems)) => {
+                if arg_elems.len() != ret_elems.len() || arg_elems.len() > 16 {
+                    return None;
+                }
+                let tuple_ptr = self.push_inst(Instruction::Alloc(ret_ty));
+                let states = arg_elems
+                    .iter()
+                    .zip(ret_elems.iter())
+                    .enumerate()
+                    .try_fold(
+                        vec![],
+                        |mut acc_states, (idx, (arg_elem_ty, ret_elem_ty))| {
+                            let arg_elem = self.push_inst(Instruction::GetElement {
+                                value: arg_val.clone(),
+                                ty: arg_ty,
+                                tuple_offset: idx as u64,
+                            });
+                            let (mapped_elem, child_states) = self.make_auto_spread_call_rec(
+                                f_to_call,
+                                arg_elem,
+                                *arg_elem_ty,
+                                param_ty,
+                                *ret_elem_ty,
+                            )?;
+                            acc_states.extend(child_states);
+
+                            let dst = self.push_inst(Instruction::GetElement {
+                                value: tuple_ptr.clone(),
+                                ty: ret_ty,
+                                tuple_offset: idx as u64,
+                            });
+                            self.push_inst(Instruction::Store(dst, mapped_elem, *ret_elem_ty));
+                            Some(acc_states)
+                        },
+                    )?;
+                Some((tuple_ptr, states))
+            }
+            (_, Type::Primitive(PType::Numeric)) => {
+                let raw_args = vec![(arg_val.clone(), arg_ty)];
+                let coerced_val = self.coerce_value(arg_val, arg_ty, param_ty);
+                let coerced_args = vec![(coerced_val, param_ty)];
+                Some(self.emit_call_to_value(f_to_call, &raw_args, &coerced_args, ret_ty))
+            }
+            _ => None,
+        }
+    }
+
+    fn auto_spread_param_endpoint_type(param_ty: TypeNodeId) -> Option<TypeNodeId> {
+        match param_ty.to_type() {
+            Type::Primitive(PType::Numeric) => Some(param_ty),
+            Type::Record(fields) if fields.len() == 1 => Some(fields[0].ty),
+            _ => None,
+        }
+    }
+
     fn eval_args(&mut self, args: &[ExprNodeId]) -> (Vec<(VPtr, TypeNodeId)>, Vec<StateSkeleton>) {
         let res = args
             .iter()
@@ -884,9 +1758,11 @@ impl Context {
                 if t.to_type().contains_function() || t.to_type().contains_boxed() {
                     self.insert_clone_recursively(res.clone(), t);
                 }
-                // Close heap-allocated values after cloning (for higher-order functions and boxed values)
+                // Close closures (capture upvalues) but do NOT release
+                // boxed/UserSum values — the callee receives the same reference,
+                // not a separate one.
                 if t.to_type().contains_function() || t.to_type().contains_boxed() {
-                    self.insert_close_recursively(res.clone(), t);
+                    self.insert_close_closures_recursively(res.clone(), t);
                 }
                 (res, t, s)
             })
@@ -924,7 +1800,21 @@ impl Context {
         items: &[ExprNodeId],
         ty: TypeNodeId,
     ) -> (VPtr, TypeNodeId, Vec<StateSkeleton>) {
-        log::trace!("alloc_aggregates: items = {items:?}, ty = {ty:?}");
+        let alloc_ty = match ty.to_type() {
+            Type::Failure | Type::Unknown => {
+                let inferred_elems = items
+                    .iter()
+                    .map(|expr| {
+                        self.typeenv
+                            .infer_type(*expr)
+                            .unwrap_or(Type::Unknown.into_id())
+                    })
+                    .collect::<Vec<_>>();
+                Type::Tuple(inferred_elems).into_id()
+            }
+            _ => ty,
+        };
+        log::trace!("alloc_aggregates: items = {items:?}, ty = {alloc_ty:?}");
         let len = items.len();
         if len == 0 {
             return (
@@ -940,19 +1830,20 @@ impl Context {
             let (v, elem_ty, s) = self.eval_expr(*e);
             let ptr = self.push_inst(Instruction::GetElement {
                 value: dst.clone(),
-                ty, // lazyly set after loops,
+                ty: alloc_ty, // lazyly set after loops,
                 tuple_offset: i as u64,
             });
             states.extend(s);
             self.push_inst(Instruction::Store(ptr, v, elem_ty));
         }
-        self.get_current_basicblock()
-            .0
-            .insert(alloc_insert_point, (dst.clone(), Instruction::Alloc(ty)));
+        self.get_current_basicblock().0.insert(
+            alloc_insert_point,
+            (dst.clone(), Instruction::Alloc(alloc_ty)),
+        );
 
         // pass only the head of the tuple, and the length can be known
         // from the type information.
-        (dst, ty, states)
+        (dst, alloc_ty, states)
     }
     /// Evaluates an expression as an l-value, returning a pointer to its memory location.
     fn eval_expr_as_address(&mut self, e: ExprNodeId) -> VPtr {
@@ -999,6 +1890,9 @@ impl Context {
         at: TypeNodeId,
         ty: TypeNodeId,
     ) -> Vec<(VPtr, TypeNodeId)> {
+        // Resolve any remaining intermediate type variables before matching.
+        let at = InferContext::substitute_type(at);
+        let ty = InferContext::substitute_type(ty);
         log::trace!("Unpacking argument {ty} for {at}");
         // Check if the argument is a tuple or record that we need to unpack
         match ty.to_type() {
@@ -1015,62 +1909,149 @@ impl Context {
                 })
                 .collect(),
             Type::Record(kvs) => {
-                enum SearchRes {
-                    Found(usize),
-                    Default,
-                }
-                if let Type::Record(param_types) = at.to_type() {
-                    let search_res = param_types.iter().map(|param| {
-                        kvs.iter()
-                            .enumerate()
-                            .find_map(|(i, kv)| {
-                                (param.key == kv.key).then_some((SearchRes::Found(i), kv))
-                            })
-                            .or(param.has_default.then_some((SearchRes::Default, param)))
-                    });
-                    search_res.map(
-                                            |searchres| match searchres {
-                                                Some((SearchRes::Found(i), kv)) => {
-                                                    log::trace!("non-default argument {} found", kv.key);
+                // Extract declared parameter names/types.  When the function
+                // type preserves field names (`at` is Record), use them
+                // directly.  Otherwise (e.g. after VM staging which produces
+                // Tuple-typed function args), recover parameter names from the
+                // MIR function definition.
+                let param_fields: Option<Vec<RecordTypeField>> =
+                    if let Type::Record(param_types) = at.to_type() {
+                        Some(param_types)
+                    } else if let Type::Tuple(tuple_tys) = at.to_type() {
+                        self.get_function_param_fields(&f_val, &tuple_tys)
+                    } else {
+                        None
+                    };
 
-                                                    let field_val = self.push_inst(
-                                                                    Instruction::GetElement {
-                                                                        value: arg_val.clone(),
-                                                                        ty,
-                                                                        tuple_offset: i as u64,
-                                                                    },
-                                                                );
-                                                                (field_val, kv.ty)
-                                                            },
-                                                Some((SearchRes::Default, kv)) => {
-                                                  if let Value::Function(fid) = f_val.as_ref() {
-                                                     let fid=      FunctionId(*fid as u64);
-                                                        log::trace!("searching default argument for {} in function {}", kv.key, self.program.functions[fid.0 as usize].label.as_str());
-                                                        let default_val = self.get_default_arg_call(kv.key, fid).expect(format!("msg: default argument {} not found", kv.key).as_str());
-                                                        (default_val, kv.ty)
-                                                    } else {
-                                                        log::error!("default argument cannot be supported with closure currently");
-                                                        (Arc::new(Value::None), Type::Failure.into_id())
-                                                    }
-                                                }
-                                                None=>{
-                                                    panic!("parameter pack failed, possible type inference bug")
-                                                }
-                                            }).collect::<Vec<_>>()
+                if let Some(param_types) = param_fields {
+                    let fid_opt = match f_val.as_ref() {
+                        Value::Function(fid) => Some(FunctionId(*fid as u64)),
+                        Value::Global(inner) => match inner.as_ref() {
+                            Value::Function(fid) => Some(FunctionId(*fid as u64)),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+
+                    param_types
+                        .iter()
+                        .enumerate()
+                        .map(|(param_index, param)| {
+                            if let Some((field_index, kv)) =
+                                kvs.iter().enumerate().find(|(_, kv)| param.key == kv.key)
+                            {
+                                log::trace!("named argument {} found", kv.key);
+                                let field_val = self.push_inst(Instruction::GetElement {
+                                    value: arg_val.clone(),
+                                    ty,
+                                    tuple_offset: field_index as u64,
+                                });
+                                return (field_val, kv.ty);
+                            }
+
+                            if let Some(fid) = fid_opt
+                                && let Some(default_val) = self.get_default_arg_call(param.key, fid)
+                                && !matches!(default_val.as_ref(), Value::None)
+                            {
+                                log::trace!("using default argument {}", param.key);
+                                return (default_val, param.ty);
+                            }
+
+                            if param_index < kvs.len() {
+                                let kv = &kvs[param_index];
+                                log::trace!("fallback positional argument {}", kv.key);
+                                let field_val = self.push_inst(Instruction::GetElement {
+                                    value: arg_val.clone(),
+                                    ty,
+                                    tuple_offset: param_index as u64,
+                                });
+                                return (field_val, kv.ty);
+                            }
+
+                            panic!("parameter pack failed, possible type inference bug")
+                        })
+                        .collect::<Vec<_>>()
                 } else {
-                    unreachable!("parameter pack failed, possible type inference bug")
+                    // No parameter names available — fall back to positional
+                    // unpacking (same as Tuple case).
+                    kvs.iter()
+                        .enumerate()
+                        .map(|(i, kv)| {
+                            let elem_val = self.push_inst(Instruction::GetElement {
+                                value: arg_val.clone(),
+                                ty,
+                                tuple_offset: i as u64,
+                            });
+                            (elem_val, kv.ty)
+                        })
+                        .collect()
                 }
             }
             _ => vec![(arg_val, ty)],
         }
     }
 
+    fn get_function_param_fields(
+        &self,
+        f_val: &VPtr,
+        tuple_tys: &[TypeNodeId],
+    ) -> Option<Vec<RecordTypeField>> {
+        let fid = match f_val.as_ref() {
+            Value::Function(fid) => Some(*fid),
+            Value::Global(inner) => {
+                if let Value::Function(fid) = inner.as_ref() {
+                    Some(*fid)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        fid.and_then(|fid| {
+            let func = self.program.functions.get(fid)?;
+
+            if let Some((fn_ty, _stage)) = self.typeenv.env.lookup(&func.label).cloned()
+                && let Type::Function { arg, .. } = fn_ty.to_type()
+                && let Type::Record(fields) = arg.to_type()
+                && fields.len() == tuple_tys.len()
+            {
+                return Some(
+                    fields
+                        .iter()
+                        .enumerate()
+                        .map(|(i, field)| RecordTypeField {
+                            key: field.key,
+                            ty: tuple_tys.get(i).copied().unwrap_or(field.ty),
+                            has_default: field.has_default,
+                        })
+                        .collect(),
+                );
+            }
+
+            Some(
+                func.args
+                    .iter()
+                    .zip(tuple_tys.iter())
+                    .map(|(arg, elem_ty)| RecordTypeField {
+                        key: arg.0,
+                        ty: *elem_ty,
+                        has_default: false,
+                    })
+                    .collect(),
+            )
+        })
+    }
+
     pub fn eval_expr(&mut self, e: ExprNodeId) -> (VPtr, TypeNodeId, Vec<StateSkeleton>) {
         let span = e.to_span();
-        let ty = self
-            .typeenv
-            .infer_type(e)
-            .expect("type inference failed, should be an error at type checker stage");
+        let ty = self.typeenv.infer_type(e).unwrap_or_else(|err| {
+            panic!(
+                "type inference failed for expr '{}' (id={:?}, span={:?}): {err:?}",
+                e.to_expr().simple_print(),
+                e.0,
+                e.to_span()
+            );
+        });
         let ty = InferContext::substitute_type(ty);
         match &e.to_expr() {
             Expr::Literal(lit) => {
@@ -1102,26 +2083,53 @@ impl Context {
             Expr::Proj(tup, idx) => {
                 let i = *idx as usize;
                 let (tup_v, tup_ty, states) = self.eval_expr(*tup);
-                let elem_ty = match tup_ty.to_type() {
+                let projection_ty = ty;
+                let aggregate_ty = match tup_ty.to_type() {
+                    Type::Tuple(_) | Type::Record(_) => tup_ty,
+                    _ => self
+                        .typeenv
+                        .infer_type(*tup)
+                        .map(InferContext::substitute_type)
+                        .ok()
+                        .filter(|inferred| {
+                            matches!(inferred.to_type(), Type::Tuple(_) | Type::Record(_))
+                        })
+                        .unwrap_or_else(|| {
+                            let placeholder = (0..=i)
+                                .map(|j| {
+                                    if j == i {
+                                        projection_ty
+                                    } else {
+                                        Type::Unknown.into_id()
+                                    }
+                                })
+                                .collect::<Vec<_>>();
+                            Type::Tuple(placeholder).into_id()
+                        }),
+                };
+                let elem_ty = match aggregate_ty.to_type() {
                     Type::Tuple(tys) if i < tys.len() => tys[i],
-                    _ => panic!(
-                        "expected tuple type for projection,perhaps type error bugs in the previous stage"
-                    ),
+                    Type::Record(fields) if i < fields.len() => fields[i].ty,
+                    _ => projection_ty,
                 };
                 let res = self.push_inst(Instruction::GetElement {
                     value: tup_v.clone(),
-                    ty: tup_ty,
+                    ty: aggregate_ty,
                     tuple_offset: i as u64,
                 });
+                // Clone refcounted values extracted from the tuple so the
+                // extracted copy has its own reference count, independent of
+                // the source container.  Without this, both the container's
+                // scope-exit release and the extracted value's scope-exit
+                // release would decrement the same refcount.
+                self.insert_clone_recursively(res.clone(), elem_ty);
                 (res, elem_ty, states)
             }
-            Expr::RecordLiteral(fields) => {
-                self.alloc_aggregates(&fields.iter().map(|f| f.expr).collect::<Vec<_>>(), ty)
-            }
+            Expr::RecordLiteral(fields) => self.alloc_record_aggregate(fields, ty),
             Expr::ImcompleteRecord(fields) => {
                 // For incomplete records, we also aggregate the available fields
                 // The default values will be handled in the type system and during record construction
-                self.alloc_aggregates(&fields.iter().map(|f| f.expr).collect::<Vec<_>>(), ty)
+                self.alloc_record_aggregate(fields, ty)
             }
             Expr::RecordUpdate(_, _) => {
                 // Record update syntax should be expanded during conversion phase
@@ -1130,19 +2138,31 @@ impl Context {
             }
             Expr::FieldAccess(expr, accesskey) => {
                 let (expr_v, expr_ty, states) = self.eval_expr(*expr);
+                let before_canonical = InferContext::substitute_type(expr_ty);
+                let expr_ty = self.canonical_record_type_id(expr_ty);
                 match expr_ty.to_type() {
                     Type::Record(fields) => {
+                        let field_keys: Vec<_> = fields.iter().map(|f| f.key.to_string()).collect();
                         let offset = fields
                             .iter()
                             .position(|RecordTypeField { key, .. }| *key == *accesskey)
-                            .expect("field access to non-existing field");
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "field access to non-existing field '.{}' in record with fields {:?} (before_canonical: {:?})",
+                                    accesskey, field_keys, before_canonical.to_type()
+                                )
+                            });
 
+                        let field_ty = fields[offset].ty;
                         let res = self.push_inst(Instruction::GetElement {
                             value: expr_v.clone(),
                             ty: expr_ty,
                             tuple_offset: offset as u64,
                         });
-                        (res, fields[offset].ty, states)
+                        // Clone refcounted values extracted from the record
+                        // (same rationale as Expr::Proj above).
+                        self.insert_clone_recursively(res.clone(), field_ty);
+                        (res, field_ty, states)
                     }
                     _ => panic!("expected record type for field access"),
                 }
@@ -1160,7 +2180,28 @@ impl Context {
                 let (values, tys): (Vec<_>, Vec<_>) = vts.into_iter().unzip();
                 // Assume all array elements have the same type (first element's type)
                 debug_assert!(tys.windows(2).all(|w| w[0] == w[1]));
-                let elem_ty = if !tys.is_empty() { tys[0] } else { numeric!() };
+                let elem_ty = if !tys.is_empty() {
+                    tys[0]
+                } else {
+                    // For empty array literals, extract the element type from the
+                    // inferred array type.  The type checker will have unified `[]`
+                    // with the expected array type (e.g. `[MiniElem]`), so `ty`
+                    // should be `Type::Array(elem_ty)`.
+                    match ty.to_type() {
+                        Type::Array(et) => et,
+                        _ => {
+                            numeric!()
+                        }
+                    }
+                };
+                // Resolve TypeAlias so that word_size() returns the correct
+                // size for the element type (e.g. Event → {arc,active,val}).
+                let elem_ty = self.typeenv.resolve_type_alias(elem_ty);
+                debug_assert!(
+                    !matches!(elem_ty.to_type(), Type::TypeAlias(_)),
+                    "Array element type should be resolved but got: {:?}",
+                    elem_ty.to_type()
+                );
                 let reg = self.push_inst(Instruction::Array(values.clone(), elem_ty));
                 (
                     reg,
@@ -1232,126 +2273,266 @@ impl Context {
                     panic!("non function type {} {} ", ft.to_type(), ty.to_type());
                 };
 
-                // Check if this is a generic function that needs monomorphization
-                let needs_monomorphization =
-                    at.to_type().contains_type_scheme() || rt.to_type().contains_type_scheme();
-
-                // If we have a generic external function (like `map`), we need to monomorphize it
-                let (f_to_call, monomorphized_rt) = if needs_monomorphization {
-                    if let Value::ExtFunction(fn_name, _fn_ty) = f_val.as_ref() {
-                        // Infer the concrete types from the arguments and expected return type
-                        // For now, use the types from type inference (ty for return, args types for arguments)
-                        let concrete_arg_ty = self
-                            .typeenv
-                            .infer_type(*args.first().expect("map needs args"))
-                            .unwrap_or(at);
-                        let concrete_ret_ty = ty;
-
-                        log::debug!(
-                            "Monomorphizing generic function '{}' with arg type: {}, ret type: {}",
-                            fn_name,
-                            concrete_arg_ty.to_type(),
-                            concrete_ret_ty.to_type()
-                        );
-
-                        // Create a monomorphized version of the external function
-                        let mangled_name = format!(
-                            "{}_mono_{}_{}",
-                            fn_name.as_str(),
-                            concrete_arg_ty.to_mangled_string(),
-                            concrete_ret_ty.to_mangled_string()
-                        )
-                        .to_symbol();
-
-                        let concrete_fn_ty = Type::Function {
-                            arg: concrete_arg_ty,
-                            ret: concrete_ret_ty,
+                // Check if this is a generic function that needs monomorphization.
+                // Both TypeScheme (explicit generic params) and Unknown (unresolved
+                // types from macro-generated code) trigger monomorphization.
+                //
+                // Additionally, if the function definition itself has generic
+                // types (its body was compiled with TypeScheme), it also needs
+                // monomorphization even when the call-site types are concrete
+                // (type inference resolves them but the function body bytecode
+                // still uses generic word sizes).
+                let fn_def_is_generic = match f_val.as_ref() {
+                    Value::Function(fid) => self.program.functions.get(*fid).is_some_and(|f| {
+                        f.args.iter().any(|a| a.1.to_type().contains_unresolved())
+                            || f.return_type
+                                .get()
+                                .is_some_and(|r| r.to_type().contains_unresolved())
+                    }),
+                    Value::Global(inner) => {
+                        if let Value::Function(fid) = inner.as_ref() {
+                            self.program.functions.get(*fid).is_some_and(|f| {
+                                f.args.iter().any(|a| a.1.to_type().contains_unresolved())
+                                    || f.return_type
+                                        .get()
+                                        .is_some_and(|r| r.to_type().contains_unresolved())
+                            })
+                        } else {
+                            false
                         }
-                        .into_id();
+                    }
+                    _ => false,
+                };
+                let needs_monomorphization = fn_def_is_generic
+                    || at.to_type().contains_unresolved()
+                    || rt.to_type().contains_unresolved();
 
-                        let monomorphized_fn =
-                            Arc::new(Value::ExtFunction(mangled_name, concrete_fn_ty));
-                        (monomorphized_fn, concrete_ret_ty)
-                    } else {
-                        todo!(
-                            "Monomorphization of non-external generic functions not yet implemented"
-                        );
-                        (f_val.clone(), rt)
+                // If we have a generic function, monomorphize it at call-site.
+                // Returns (f_to_call, monomorphized_ret_ty, concrete_arg_ty).
+                // The concrete arg type is needed so the caller uses the correct
+                // word-size when laying out arguments on the stack.
+                let (f_to_call, monomorphized_rt, monomorphized_at) = if needs_monomorphization {
+                    let concrete_arg_ty = self.infer_concrete_call_arg_type(at, args);
+                    let concrete_ret_ty = ty;
+
+                    // If the inferred types are still generic (we are inside a
+                    // generic function body), defer monomorphization until the
+                    // enclosing function is itself monomorphized.
+                    let still_generic = concrete_arg_ty.to_type().contains_unresolved()
+                        || concrete_ret_ty.to_type().contains_unresolved();
+
+                    match f_val.as_ref() {
+                        Value::ExtFunction(fn_name, _fn_ty) if !still_generic => {
+                            log::debug!(
+                                "Monomorphizing external function '{}' with arg type: {}, ret type: {}",
+                                fn_name,
+                                concrete_arg_ty.to_type(),
+                                concrete_ret_ty.to_type()
+                            );
+
+                            let resolved_name = resolve_monomorphized_ext_fn_name(
+                                *fn_name,
+                                concrete_arg_ty,
+                                concrete_ret_ty,
+                            )
+                            .unwrap_or(*fn_name);
+
+                            let concrete_fn_ty = Type::Function {
+                                arg: concrete_arg_ty,
+                                ret: concrete_ret_ty,
+                            }
+                            .into_id();
+                            (
+                                Arc::new(Value::ExtFunction(resolved_name, concrete_fn_ty)),
+                                concrete_ret_ty,
+                                concrete_arg_ty,
+                            )
+                        }
+                        Value::Function(fid) if !still_generic => {
+                            let original_fid = FunctionId(*fid as u64);
+                            let original_name = self.program.functions[*fid].label;
+                            let specialized_fid = self.get_or_create_monomorphized_function(
+                                original_name,
+                                concrete_arg_ty,
+                                concrete_ret_ty,
+                                original_fid,
+                            );
+                            (
+                                Arc::new(Value::Function(specialized_fid.0 as usize)),
+                                concrete_ret_ty,
+                                concrete_arg_ty,
+                            )
+                        }
+                        Value::Global(gv) if !still_generic => {
+                            if let Value::Function(fid) = gv.as_ref() {
+                                let original_fid = FunctionId(*fid as u64);
+                                let original_name = self.program.functions[*fid].label;
+                                let specialized_fid = self.get_or_create_monomorphized_function(
+                                    original_name,
+                                    concrete_arg_ty,
+                                    concrete_ret_ty,
+                                    original_fid,
+                                );
+                                (
+                                    Arc::new(Value::Function(specialized_fid.0 as usize)),
+                                    concrete_ret_ty,
+                                    concrete_arg_ty,
+                                )
+                            } else {
+                                (f_val.clone(), concrete_ret_ty, concrete_arg_ty)
+                            }
+                        }
+                        _ => (f_val.clone(), concrete_ret_ty, concrete_arg_ty),
                     }
                 } else {
-                    (f_val.clone(), rt)
+                    (f_val.clone(), ty, at)
+                };
+
+                let mut call_arg_ty = monomorphized_at;
+                let mut monomorphized_rt = monomorphized_rt;
+                let f_to_call = match f_to_call.as_ref() {
+                    Value::ExtFunction(fn_name, fn_ty) => {
+                        let resolved = resolve_monomorphized_ext_fn_name(
+                            *fn_name,
+                            monomorphized_at,
+                            monomorphized_rt,
+                        );
+                        if let Some(specialized_name) = resolved {
+                            if let Some((specialized_fn_ty, _stage)) =
+                                self.typeenv.env.lookup(&specialized_name).cloned()
+                            {
+                                if let Type::Function { arg, ret } = specialized_fn_ty.to_type() {
+                                    call_arg_ty = arg;
+                                    monomorphized_rt = ret;
+                                }
+                                Arc::new(Value::ExtFunction(specialized_name, specialized_fn_ty))
+                            } else {
+                                Arc::new(Value::ExtFunction(specialized_name, *fn_ty))
+                            }
+                        } else {
+                            f_to_call
+                        }
+                    }
+                    _ => f_to_call,
                 };
 
                 // Handle parameter packing/unpacking if needed
                 // How can we distinguish when the function takes a single tuple and argument is just a single tuple
-                let (atvvec, arg_states) = if args.len() == 1 {
-                    let (ats, states) = self.eval_args(args);
-                    let (arg_val, ty) = ats.first().unwrap().clone();
-                    if ty.to_type().can_be_unpacked() {
-                        (self.unpack_argument(f_val, arg_val, at, ty), states)
+                let (evaluated_args, arg_states) = self.eval_args(args);
+
+                let tuple_map_param_ty = Self::auto_spread_param_endpoint_type(call_arg_ty);
+                let tuple_map_applicable = args.len() == 1
+                    && !needs_monomorphization
+                    && tuple_map_param_ty.is_some()
+                    && matches!(rt.to_type(), Type::Primitive(PType::Numeric));
+
+                if tuple_map_applicable {
+                    let (arg_val, arg_ty) = evaluated_args.first().unwrap().clone();
+                    if matches!(arg_ty.to_type(), Type::Tuple(_))
+                        && matches!(monomorphized_rt.to_type(), Type::Tuple(_))
+                        && let Some((res, state)) = self.make_auto_spread_call_rec(
+                            &f_to_call,
+                            arg_val,
+                            arg_ty,
+                            tuple_map_param_ty.expect("checked above"),
+                            monomorphized_rt,
+                        )
+                    {
+                        return (
+                            res,
+                            monomorphized_rt,
+                            [app_state, arg_states, state].concat(),
+                        );
+                    }
+                }
+
+                let atvvec = if args.len() == 1 {
+                    let (arg_val, ty) = evaluated_args.first().unwrap().clone();
+                    let should_unpack_single_arg = match f_to_call.as_ref() {
+                        Value::Function(_) | Value::ExtFunction(_, _) => true,
+                        Value::Global(v) => {
+                            matches!(v.as_ref(), Value::Function(_) | Value::ExtFunction(_, _))
+                        }
+                        _ => false,
+                    };
+                    let callee_expects_aggregate_fields = match call_arg_ty.to_type() {
+                        Type::Tuple(_) => true,
+                        Type::Record(fields) => {
+                            fields.len() > 1 || matches!(ty.to_type(), Type::Record(_))
+                        }
+                        _ => false,
+                    };
+                    if should_unpack_single_arg
+                        && callee_expects_aggregate_fields
+                        && ty.to_type().can_be_unpacked()
+                    {
+                        self.unpack_argument(f_val, arg_val, call_arg_ty, ty)
+                    } else if should_unpack_single_arg
+                        && matches!(call_arg_ty.to_type(), Type::Record(ref fields) if fields.len() > 1)
+                    {
+                        let fields = match call_arg_ty.to_type() {
+                            Type::Record(fields) => fields,
+                            _ => unreachable!(),
+                        };
+                        let fid_opt = match f_to_call.as_ref() {
+                            Value::Function(fid) => Some(FunctionId(*fid as u64)),
+                            Value::Global(inner) => match inner.as_ref() {
+                                Value::Function(fid) => Some(FunctionId(*fid as u64)),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+
+                        let mut packed = vec![(arg_val.clone(), ty.clone())];
+                        let mut ok = true;
+                        for field in fields.iter().skip(1) {
+                            if !field.has_default {
+                                ok = false;
+                                break;
+                            }
+                            let default_val = fid_opt
+                                .and_then(|fid| self.get_default_arg_call(field.key, fid))
+                                .unwrap_or_else(|| Arc::new(Value::None));
+                            if matches!(default_val.as_ref(), Value::None) {
+                                ok = false;
+                                break;
+                            }
+                            packed.push((default_val, field.ty));
+                        }
+                        if ok { packed } else { vec![(arg_val, ty)] }
                     } else {
-                        (vec![(arg_val, ty)], states)
+                        vec![(arg_val, ty)]
                     }
                 } else {
-                    self.eval_args(args)
+                    let expected_arity = match call_arg_ty.to_type() {
+                        Type::Tuple(ts) => ts.len(),
+                        Type::Record(fields) => fields.len(),
+                        _ => 0,
+                    };
+                    let mut iter = evaluated_args.into_iter();
+                    let mut packed = Vec::new();
+                    if let Some((first_val, first_ty)) = iter.next() {
+                        if expected_arity > args.len() && first_ty.to_type().can_be_unpacked() {
+                            packed.extend(self.unpack_argument(
+                                f_val.clone(),
+                                first_val,
+                                call_arg_ty,
+                                first_ty,
+                            ));
+                        } else {
+                            packed.push((first_val, first_ty));
+                        }
+                    }
+                    packed.extend(iter);
+                    packed
                 };
 
                 // Coerce arguments based on subtype relationships (union wrapping, int->float, etc.)
-                let atvvec = self.coerce_args_for_call(atvvec, at);
+                let raw_atvvec = atvvec.clone();
+                let atvvec = self.coerce_args_for_call(atvvec, call_arg_ty);
 
-                let (res, state) = match f_to_call.as_ref() {
-                    Value::Global(v) => match v.as_ref() {
-                        Value::Function(idx) => {
-                            self.emit_fncall(*idx as u64, atvvec.clone(), monomorphized_rt)
-                        }
-                        Value::Register(_) => (
-                            self.push_inst(Instruction::CallIndirect(
-                                v.clone(),
-                                atvvec.clone(),
-                                monomorphized_rt,
-                            )),
-                            vec![],
-                        ),
-                        _ => {
-                            panic!("calling non-function global value")
-                        }
-                    },
-                    Value::Register(_) => {
-                        //closure
-                        //do not increment state size for closure
-                        (
-                            self.push_inst(Instruction::CallIndirect(
-                                f_to_call.clone(),
-                                atvvec.clone(),
-                                monomorphized_rt,
-                            )),
-                            vec![],
-                        )
-                    }
-                    Value::Function(idx) => {
-                        self.emit_fncall(*idx as u64, atvvec.clone(), monomorphized_rt)
-                    }
-                    Value::ExtFunction(label, _ty) => {
-                        let (res, states) =
-                            if let (Some(res), states) = self.make_intrinsics(*label, &atvvec) {
-                                (res, states)
-                            } else {
-                                // we assume non-builtin external functions are stateless for now
-                                (
-                                    self.push_inst(Instruction::Call(
-                                        f_to_call.clone(),
-                                        atvvec.clone(),
-                                        monomorphized_rt,
-                                    )),
-                                    vec![],
-                                )
-                            };
-                        (res, states)
-                    }
-                    // Value::ExternalClosure(i) => todo!(),
-                    Value::None => unreachable!(),
-                    _ => todo!(),
-                };
+                let (res, state) =
+                    self.emit_call_to_value(&f_to_call, &raw_atvvec, &atvvec, monomorphized_rt);
                 (
                     res,
                     monomorphized_rt,
@@ -1420,14 +2601,14 @@ impl Context {
                                     fn_proto: idx,
                                     size: 64,
                                 });
-                                ctx.insert_close_recursively(cls.clone(), rt);
+                                ctx.insert_close_closures_recursively(cls.clone(), rt);
                                 ctx.insert_clone_recursively(cls.clone(), rt);
                                 let _ = ctx.push_inst(Instruction::Return(cls, rt));
                             }
                             (_, _) => {
                                 if rt.to_type().contains_function() || rt.to_type().contains_boxed()
                                 {
-                                    ctx.insert_close_recursively(res.clone(), rt);
+                                    ctx.insert_close_closures_recursively(res.clone(), rt);
                                     ctx.insert_clone_recursively(res.clone(), rt);
                                     let _ = ctx.push_inst(Instruction::Return(res.clone(), rt));
                                 } else {
@@ -1512,7 +2693,7 @@ impl Context {
                     if ty.to_type().contains_boxed() || ty.to_type().contains_function() {
                         // Load the value and release it
                         let value = self.push_inst(Instruction::Load(ptr, ty));
-                        self.insert_close_recursively(value, ty);
+                        self.insert_release_recursively(value, ty);
                     }
                 }
 
@@ -1937,6 +3118,9 @@ impl Context {
                             ty,
                             tuple_offset: i as u64,
                         });
+                        // Clone refcounted values extracted from the tuple
+                        // (same rationale as add_bind_pattern tuple case).
+                        self.insert_clone_recursively(elem_val.clone(), *elem_ty);
                         // If the element type is Boxed, unbox it before binding
                         let (elem_val, bind_ty) = if let Type::Boxed(inner) = elem_ty.to_type() {
                             let unboxed = self.push_inst(Instruction::BoxLoad {
@@ -2056,6 +3240,11 @@ impl Context {
                 {
                     let bound_val =
                         self.push_inst(Instruction::TaggedUnionGetValue(scrut_val.clone(), vt));
+                    // Clone refcounted values extracted from the tagged union so
+                    // they have their own reference count, preventing
+                    // double-release when both the scrutinee and the extracted
+                    // binding go out of scope.
+                    self.insert_clone_recursively(bound_val.clone(), vt);
                     // Bind the pattern to the extracted value
                     self.bind_pattern(inner_pattern, bound_val, vt);
                 }
@@ -2646,6 +3835,8 @@ impl Context {
                             let enum_val = self.push_inst(Instruction::Load(enum_ptr, enum_val_ty));
                             let payload = self
                                 .push_inst(Instruction::TaggedUnionGetValue(enum_val, payload_ty));
+                            // Clone refcounted values extracted from the tagged union
+                            self.insert_clone_recursively(payload.clone(), payload_ty);
 
                             if let Some(elem_idx) = tuple_index {
                                 let payload_elem = self.push_inst(Instruction::GetElement {
@@ -2653,6 +3844,15 @@ impl Context {
                                     ty: payload_ty,
                                     tuple_offset: elem_idx as u64,
                                 });
+                                // Clone refcounted values from the payload element
+                                let payload_elem_ty = match payload_ty.to_type() {
+                                    Type::Tuple(types) => types[elem_idx],
+                                    _ => payload_ty,
+                                };
+                                self.insert_clone_recursively(
+                                    payload_elem.clone(),
+                                    payload_elem_ty,
+                                );
                                 self.add_bind((binding.var, payload_elem));
                             } else {
                                 self.add_bind((binding.var, payload));
@@ -2665,6 +3865,8 @@ impl Context {
                                 ty: tuple_ty,
                                 tuple_offset: col_idx as u64,
                             });
+                            // Clone refcounted values from the tuple element
+                            self.insert_clone_recursively(elem_val.clone(), elem_types[col_idx]);
                             self.add_bind((binding.var, elem_val));
                         }
                     }
@@ -2806,7 +4008,6 @@ pub fn typecheck(
     let (expr, convert_errs) =
         convert_pronoun::convert_pronoun(root_expr_id, file_path.clone().unwrap_or_default());
     let expr = recursecheck::convert_recurse(expr, file_path.clone().unwrap_or_default());
-    // let expr = destruct_let_pattern(expr);
     let infer_ctx = infer_root(
         expr,
         builtin_types,
@@ -2891,19 +4092,84 @@ pub fn compile_with_module_info(
     file_path: Option<PathBuf>,
     module_info: crate::ast::program::ModuleInfo,
 ) -> Result<Mir, Vec<Box<dyn ReportableError>>> {
-    let expr = root_expr_id.wrap_to_staged_expr();
+    // Only wrap non-staging programs in a Bracket when the AST actually
+    // contains staging constructs (Bracket, Escape, MacroExpand).  Plain
+    // programs go straight through the normal MIR pipeline.
+    let needs_staging = root_expr_id.has_staging_constructs();
+    let expr = if needs_staging {
+        root_expr_id.wrap_to_staged_expr()
+    } else {
+        root_expr_id
+    };
+    // Clone module_info before it is consumed by type checking so that the
+    // stage-0 compiler can reuse it for type alias resolution.
+    let module_info_for_stage0 = module_info.clone();
+    // Keep another clone for the stage-1 re-type-check after VM staging.
+    let module_info_for_stage1 = module_info.clone();
     let (expr, mut infer_ctx, errors) =
         typecheck_with_module_info(expr, builtin_types, file_path.clone(), module_info);
     if errors.is_empty() {
         let top_type = infer_ctx.infer_type(expr).unwrap();
-        let expr =
-            interpreter::expand_macro(expr, top_type, macro_env, infer_ctx.constructor_env.clone());
+
+        // ---------- Two-pass compilation via translate_staging ----------
+        //
+        // Phase 1: translate Bracket/Escape → combinator calls (stage-0 code).
+        // Phase 2: compile & execute stage-0 code on the VM to obtain the
+        //          stage-1 AST as an ExprNodeId.
+        // Phase 3: compile the stage-1 AST through the normal MIR pipeline.
+        //
+        // If the top-level type is `Code(T)` we go through the new path;
+        // otherwise the program has no staging and we skip directly to MIR gen.
+        let expr = if matches!(top_type.to_type(), Type::Code(_)) {
+            let stage0_expr = translate_staging::translate(expr);
+            log::trace!(
+                "ast after translate_staging: {:?}",
+                stage0_expr.to_expr().simple_print()
+            );
+            let stage1_ast = compile_and_execute_stage0(
+                stage0_expr,
+                builtin_types,
+                macro_env,
+                file_path.clone(),
+                module_info_for_stage0,
+            )?;
+            log::trace!(
+                "ast after stage-0 execution: {:?}",
+                stage1_ast.to_expr().simple_print()
+            );
+            stage1_ast
+        } else {
+            // No staging — the expression is already pure stage-1 code.
+            expr
+        };
 
         log::trace!(
             "ast after macro expansion: {:?}",
             expr.to_expr().simple_print()
         );
         let expr = parser::add_global_context(expr, file_path.clone().unwrap_or_default());
+
+        // Re-type-check the stage-1 AST using a FRESH type inference
+        // context.  The original `infer_ctx` was used to type-check the
+        // pre-staging program (which contains Bracket/Escape constructs)
+        // and carries stale type variables that conflict with the
+        // regenerated AST.  A fresh context with full module info resolves
+        // type aliases properly (e.g., Event = {arc, active, val}).
+        let infer_ctx = if matches!(top_type.to_type(), Type::Code(_)) {
+            let td = module_info_for_stage1.type_declarations.clone();
+            let ta = module_info_for_stage1.type_aliases.clone();
+            let infer_ctx_fresh = crate::compiler::typing::infer_root(
+                expr,
+                builtin_types,
+                file_path.clone().unwrap_or_default(),
+                Some(&td),
+                Some(&ta),
+                Some(module_info_for_stage1),
+            );
+            infer_ctx_fresh
+        } else {
+            infer_ctx
+        };
 
         let mut ctx = Context::new(infer_ctx, file_path.clone());
         let _res = ctx.eval_expr(expr);
@@ -2914,5 +4180,355 @@ pub fn compile_with_module_info(
     }
 }
 
-// #[cfg(test)]
-// mod test;
+// ---------------------------------------------------------------------------
+// Stage-0 compilation & execution
+// ---------------------------------------------------------------------------
+
+/// Compile a stage-0 expression (produced by [`translate_staging::translate`])
+/// to bytecode, execute it on a fresh VM, and return the resulting stage-1 AST.
+///
+/// The stage-0 expression consists entirely of codegen-combinator calls (e.g.
+/// `code_lit_f`, `code_var`, `code_app1`, …).  Executing it on the VM yields a
+/// single `RawVal` that indexes into [`Machine::code_values`], from which we
+/// recover the stage-1 `ExprNodeId`.
+fn compile_and_execute_stage0(
+    stage0_expr: ExprNodeId,
+    builtin_types: &[(Symbol, TypeNodeId)],
+    macro_env: &[Box<dyn MacroFunction>],
+    file_path: Option<PathBuf>,
+    module_info: crate::ast::program::ModuleInfo,
+) -> Result<ExprNodeId, Vec<Box<dyn ReportableError>>> {
+    use crate::plugin::codegen_combinators::codegen_combinator_signatures;
+    use crate::plugin::{ExtClsInfo, MachineFunction};
+    use crate::runtime::vm;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    // 1. Wrap in the global function expected by the MIR generator.
+    let wrapped = parser::add_global_context(stage0_expr, file_path.clone().unwrap_or_default());
+
+    // 2. Collect all known external function types (builtins + combinator
+    //    signatures) so the type checker and MIR generator can resolve them.
+    let combinator_sigs = codegen_combinator_signatures();
+    let combinator_names: std::collections::HashSet<Symbol> =
+        combinator_sigs.iter().map(|cls| cls.name).collect();
+    let combinator_types: Vec<(Symbol, TypeNodeId)> = combinator_sigs
+        .iter()
+        .map(|cls| (cls.name, cls.ty))
+        .collect();
+    // Collect macro names so we can filter their original Code-typed entries
+    // out of builtin_types (the stripped versions are added later).
+    let macro_names: std::collections::HashSet<Symbol> =
+        macro_env.iter().map(|m| m.get_name()).collect();
+
+    // Filter builtin types: skip entries whose names are overridden by
+    // combinator signatures (e.g. lift_f, lift_arrayf, lift) or by macro
+    // bridge closures (e.g. Probe, Slider) so that the Code()-stripped
+    // types take precedence.
+    let all_types: Vec<(Symbol, TypeNodeId)> = builtin_types
+        .iter()
+        .filter(|(name, _)| !combinator_names.contains(name) && !macro_names.contains(name))
+        .cloned()
+        .chain(combinator_types)
+        .collect();
+
+    // 2b. Build VM closures for all plugin macros not already covered by
+    //     combinator signatures.  This bridges both:
+    //     - Code-returning macros (e.g. Probe, ProbeValue)
+    //     - Value-level macros (e.g. str_length, str_concat)
+    //
+    // Each macro is wrapped in an `ExtClsInfo` closure that converts VM
+    // stack values to `interpreter::Value`, calls the macro function, and
+    // converts the result back.
+    let macro_vm_closures: Vec<ExtClsInfo> = macro_env
+        .iter()
+        .filter(|m| !combinator_names.contains(&m.get_name()))
+        .map(|m| {
+            let name = m.get_name();
+            let macro_fun = m.get_fn();
+            let fn_ty = m.get_type();
+
+            // Extract argument types and return type from the function signature.
+            let (arg_types, ret_ty) = match fn_ty.to_type() {
+                Type::Function { arg, ret } => {
+                    let args = match arg.to_type() {
+                        Type::Tuple(types) => types,
+                        _ => vec![arg],
+                    };
+                    (args, ret)
+                }
+                _ => (vec![], fn_ty),
+            };
+
+            let has_code_return = matches!(ret_ty.to_type(), Type::Code(_));
+            // For the VM: strip Code() from return type so the VM sees a plain Numeric.
+            let vm_ty = if has_code_return {
+                strip_code_from_return_type(fn_ty)
+            } else {
+                fn_ty
+            };
+
+            let vm_fun: crate::plugin::ExtClsType = Rc::new(RefCell::new(
+                move |machine: &mut vm::Machine| -> vm::ReturnCode {
+                    let concrete_arg_types =
+                        lookup_extfun_arg_types(machine, name).unwrap_or_else(|| arg_types.clone());
+
+                    // Convert each argument from VM representation to interpreter Value.
+                    let mut offset: i64 = 0;
+                    let args: Vec<(crate::interpreter::Value, TypeNodeId)> = concrete_arg_types
+                        .iter()
+                        .map(|&aty| {
+                            let val = raw_to_interpreter_value_at(machine, offset, aty);
+                            offset += aty.word_size() as i64;
+                            (val, aty)
+                        })
+                        .collect();
+
+                    let result = macro_fun.borrow()(&args);
+
+                    // Convert result back to VM representation.
+                    let result_raw = interpreter_value_to_raw(machine, result, name);
+                    machine.set_stack(0, result_raw);
+                    1
+                },
+            ));
+            ExtClsInfo {
+                name,
+                ty: vm_ty,
+                fun: vm_fun,
+            }
+        })
+        .collect();
+
+    // Add macro type info to the all_types list.
+    let macro_type_entries: Vec<(Symbol, TypeNodeId)> = macro_vm_closures
+        .iter()
+        .map(|cls| (cls.name, cls.ty))
+        .collect();
+    let all_types: Vec<(Symbol, TypeNodeId)> =
+        all_types.into_iter().chain(macro_type_entries).collect();
+
+    // 3. Type-check the stage-0 expression in a fresh context.
+    //    Pass user-defined type declarations and aliases so that enum
+    //    constructors and type aliases are available during stage-0.
+    //    module_info is also passed so that resolve_type_alias_symbol_fallback
+    //    can resolve mangled type names from imported modules.
+    let type_declarations = module_info.type_declarations.clone();
+    let type_aliases = module_info.type_aliases.clone();
+    let stage0_infer = infer_root(
+        wrapped,
+        &all_types,
+        file_path.clone().unwrap_or_default(),
+        Some(&type_declarations),
+        Some(&type_aliases),
+        Some(module_info),
+    );
+    if !stage0_infer.errors.is_empty() {
+        let errs: Vec<Box<dyn ReportableError>> = stage0_infer
+            .errors
+            .iter()
+            .cloned()
+            .map(|e| Box::new(e) as Box<dyn ReportableError>)
+            .collect();
+        return Err(errs);
+    }
+
+    // 4. Generate MIR.
+    let mut mir_ctx = Context::new(stage0_infer, file_path.clone());
+    let _res = mir_ctx.eval_expr(wrapped);
+    mir_ctx.program.file_path = file_path.clone();
+    let mir = mir_ctx.program.clone();
+
+    // 5. Generate bytecode.
+    let config = bytecodegen::Config::default();
+    let program = bytecodegen::gen_bytecode(mir, config);
+
+    // 6. Create a VM with combinator closures, builtin common function closures
+    //    (e.g. length_array, split_head, prepend), and macro bridge closures.
+    let builtin_plugin = crate::plugin::get_builtin_fns_as_plugins();
+    let builtin_closures = builtin_plugin.get_ext_closures();
+    let ext_closures = combinator_sigs
+        .into_iter()
+        .map(|cls| Box::new(cls) as Box<dyn MachineFunction>)
+        .chain(builtin_closures)
+        .chain(
+            macro_vm_closures
+                .into_iter()
+                .map(|cls| Box::new(cls) as Box<dyn MachineFunction>),
+        );
+    let mut machine = vm::Machine::new(program, [].into_iter(), ext_closures);
+    let retcode = machine.execute_main();
+
+    if retcode <= 0 {
+        return Err(vec![Box::new(crate::utils::error::SimpleError {
+            message: format!("stage-0 VM execution returned error code {retcode}"),
+            span: Location::default(),
+        })]);
+    }
+
+    // 7. The return value is at the top of the stack — a code-value index.
+    let result_raw = machine.get_top_n(1)[0];
+    let result_expr = machine.get_code(result_raw);
+    Ok(result_expr)
+}
+
+fn lookup_extfun_arg_types(
+    machine: &crate::runtime::vm::Machine,
+    name: Symbol,
+) -> Option<Vec<TypeNodeId>> {
+    machine
+        .prog
+        .ext_fun_table
+        .iter()
+        .filter(|(n, _)| n.as_str() == name.as_str())
+        .filter_map(|(_, ty)| match ty.to_type() {
+            Type::Function { arg, .. } => Some(match arg.to_type() {
+                Type::Tuple(types) => types,
+                _ => vec![arg],
+            }),
+            _ => None,
+        })
+        // Prefer concrete instantiations over generic signatures.
+        .max_by_key(|arg_tys| {
+            arg_tys
+                .iter()
+                .filter(|t| !t.to_type().contains_unresolved())
+                .count()
+        })
+}
+
+/// Strip `Code(T)` wrapper from a function's return type, replacing it with
+/// `Numeric`.  This makes macro function types compatible with the VM stage-0
+/// calling convention where code values are plain numeric indices.
+fn strip_code_from_return_type(fn_ty: TypeNodeId) -> TypeNodeId {
+    match fn_ty.to_type() {
+        Type::Function { arg, ret } => {
+            let new_ret = match ret.to_type() {
+                Type::Code(_) => crate::numeric!(),
+                _ => ret,
+            };
+            Type::Function { arg, ret: new_ret }.into_id()
+        }
+        _ => fn_ty,
+    }
+}
+
+/// Convert a VM `RawVal` to an interpreter `Value` based on the type.
+///
+/// - `String` → look up in the program string table.
+/// - `Code(T)` → retrieve the stored `ExprNodeId` from the machine's code values.
+/// - Everything else → treat as `f64` bit pattern (`Value::Number`).
+fn raw_to_interpreter_value_at(
+    machine: &crate::runtime::vm::Machine,
+    stack_offset: i64,
+    ty: TypeNodeId,
+) -> crate::interpreter::Value {
+    let word_size = ty.word_size() as usize;
+    let words = (0..word_size)
+        .map(|i| machine.get_stack(stack_offset + i as i64))
+        .collect::<Vec<_>>();
+    raw_words_to_interpreter_value(machine, &words, ty)
+}
+
+fn raw_words_to_interpreter_value(
+    machine: &crate::runtime::vm::Machine,
+    words: &[crate::runtime::vm::RawVal],
+    ty: TypeNodeId,
+) -> crate::interpreter::Value {
+    match ty.to_type() {
+        Type::Primitive(PType::String) => {
+            let idx = words.first().copied().unwrap_or_default() as usize;
+            let s = machine.prog.strings[idx].clone();
+            crate::interpreter::Value::String(s.to_symbol())
+        }
+        Type::Code(_) => {
+            let raw = words.first().copied().unwrap_or_default();
+            let expr = machine.get_code(raw);
+            crate::interpreter::Value::Code(expr)
+        }
+        Type::Array(elem_ty) => {
+            let arr_idx = words.first().copied().unwrap_or_default();
+            let arr = machine.arrays.get_array(arr_idx);
+            let elem_size = elem_ty.word_size() as usize;
+            let data = arr.get_data();
+            let elems = (0..arr.get_length_array() as usize)
+                .map(|i| {
+                    let start = i * elem_size;
+                    let end = start + elem_size;
+                    raw_words_to_interpreter_value(machine, &data[start..end], elem_ty)
+                })
+                .collect::<Vec<_>>();
+            crate::interpreter::Value::Array(elems)
+        }
+        Type::Tuple(elem_tys) => {
+            let mut offset = 0usize;
+            let elems = elem_tys
+                .iter()
+                .map(|elem_ty| {
+                    let size = elem_ty.word_size() as usize;
+                    let res = raw_words_to_interpreter_value(
+                        machine,
+                        &words[offset..offset + size],
+                        *elem_ty,
+                    );
+                    offset += size;
+                    res
+                })
+                .collect::<Vec<_>>();
+            crate::interpreter::Value::Tuple(elems)
+        }
+        Type::Record(fields) => {
+            let mut offset = 0usize;
+            let values = fields
+                .iter()
+                .map(|field| {
+                    let size = field.ty.word_size() as usize;
+                    let value = raw_words_to_interpreter_value(
+                        machine,
+                        &words[offset..offset + size],
+                        field.ty,
+                    );
+                    offset += size;
+                    (field.key, value)
+                })
+                .collect::<Vec<_>>();
+            crate::interpreter::Value::Record(values)
+        }
+        Type::TypeScheme(_) => {
+            let raw = words.first().copied().unwrap_or_default();
+            machine
+                .try_get_code(raw)
+                .map(crate::interpreter::Value::Code)
+                .unwrap_or_else(|| {
+                    let f = f64::from_bits(raw);
+                    crate::interpreter::Value::Number(f)
+                })
+        }
+        _ => {
+            let raw = words.first().copied().unwrap_or_default();
+            let f = f64::from_bits(raw);
+            crate::interpreter::Value::Number(f)
+        }
+    }
+}
+
+/// Convert an interpreter `Value` back to a VM `RawVal`.
+///
+/// - `Value::Number` → `f64::to_bits`
+/// - `Value::String` → push to the string table, return the new index.
+/// - `Value::Code` → `machine.alloc_code`, return the code-value index.
+fn interpreter_value_to_raw(
+    machine: &mut crate::runtime::vm::Machine,
+    value: crate::interpreter::Value,
+    name: Symbol,
+) -> crate::runtime::vm::RawVal {
+    match value {
+        crate::interpreter::Value::Number(n) => n.to_bits(),
+        crate::interpreter::Value::String(s) => {
+            machine.prog.strings.push(s.as_str().to_string());
+            (machine.prog.strings.len() - 1) as u64
+        }
+        crate::interpreter::Value::Code(expr) => machine.alloc_code(expr),
+        _ => panic!("unexpected return value type from macro {name}"),
+    }
+}

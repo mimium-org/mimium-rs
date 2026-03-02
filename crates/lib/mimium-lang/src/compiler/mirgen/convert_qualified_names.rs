@@ -19,6 +19,7 @@ use thiserror::Error;
 
 use crate::ast::Expr;
 use crate::ast::program::{ModuleInfo, resolve_qualified_path};
+use crate::compiler::intrinsics;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol};
 use crate::pattern::Pattern;
 use crate::utils::error::ReportableError;
@@ -334,8 +335,17 @@ fn convert_expr(ctx: &mut ResolveContext, e_id: ExprNodeId) -> ExprNodeId {
             Expr::Proj(new_e, idx).into_id(loc)
         }
         Expr::Let(pat, body, then) => {
+            let prev_context = std::mem::take(&mut ctx.current_module_context);
+            if let Some(module_context) = find_pattern_module_context(ctx, &pat.pat) {
+                ctx.current_module_context = module_context;
+            } else {
+                ctx.current_module_context = prev_context.clone();
+            }
+
             let new_body = convert_expr(ctx, body);
             let new_then = then.map(|t| convert_expr(ctx, t));
+
+            ctx.current_module_context = prev_context;
             Expr::Let(pat, new_body, new_then).into_id(loc)
         }
         Expr::Lambda(params, r_type, body) => {
@@ -458,10 +468,61 @@ fn convert_expr(ctx: &mut ResolveContext, e_id: ExprNodeId) -> ExprNodeId {
     }
 }
 
+fn find_pattern_module_context(
+    ctx: &ResolveContext,
+    pat: &crate::pattern::Pattern,
+) -> Option<Vec<Symbol>> {
+    match pat {
+        Pattern::Single(name) => ctx.module_info.module_context_map.get(name).cloned(),
+        Pattern::Tuple(items) => items
+            .iter()
+            .find_map(|item| find_pattern_module_context(ctx, item)),
+        Pattern::Record(fields) => fields
+            .iter()
+            .find_map(|(_, item)| find_pattern_module_context(ctx, item)),
+        Pattern::Placeholder | Pattern::Error => None,
+    }
+}
+
+fn resolve_alias_chain(module_info: &ModuleInfo, symbol: Symbol) -> Symbol {
+    let mut current = symbol;
+    let mut visited = HashSet::new();
+    while visited.insert(current) {
+        match module_info.use_alias_map.get(&current).copied() {
+            Some(next) if next != current => current = next,
+            _ => break,
+        }
+    }
+    current
+}
+
+fn is_core_intrinsic_name(name: Symbol) -> bool {
+    matches!(
+        name.as_str(),
+        intrinsics::NEG
+            | intrinsics::ADD
+            | intrinsics::SUB
+            | intrinsics::MULT
+            | intrinsics::DIV
+            | intrinsics::EQ
+            | intrinsics::NE
+            | intrinsics::LE
+            | intrinsics::LT
+            | intrinsics::GE
+            | intrinsics::GT
+            | intrinsics::MODULO
+            | intrinsics::POW
+            | intrinsics::AND
+            | intrinsics::OR
+            | intrinsics::TOFLOAT
+    )
+}
+
 /// Convert a simple variable reference, resolving explicit `use` aliases and wildcards.
 fn convert_var(ctx: &mut ResolveContext, name: Symbol, loc: Location) -> ExprNodeId {
     // Check if this is a use alias (explicit `use foo::bar` or `use foo::bar as alias`)
-    if let Some(&mangled_name) = ctx.module_info.use_alias_map.get(&name) {
+    if ctx.module_info.use_alias_map.contains_key(&name) {
+        let mangled_name = resolve_alias_chain(ctx.module_info, name);
         // Check visibility
         if let Some(&is_public) = ctx.module_info.visibility_map.get(&mangled_name)
             && !is_public
@@ -486,6 +547,34 @@ fn convert_var(ctx: &mut ResolveContext, name: Symbol, loc: Location) -> ExprNod
     // Try wildcard resolution
     if let Some(mangled) = ctx.resolve_through_wildcards(name) {
         return Expr::Var(mangled).into_id(loc);
+    }
+
+    if ctx.name_exists(&name) && is_core_intrinsic_name(name) {
+        return Expr::Var(name).into_id(loc);
+    }
+
+    // Try relative resolution from current module context (for intra-module references)
+    // and its parent modules.
+    if !ctx.current_module_context.is_empty() {
+        for prefix_len in (1..=ctx.current_module_context.len()).rev() {
+            let mut relative_path = ctx.current_module_context[..prefix_len].to_vec();
+            relative_path.push(name);
+            let relative_mangled = relative_path
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("$")
+                .to_symbol();
+            if ctx.name_exists(&relative_mangled) {
+                return Expr::Var(relative_mangled).into_id(loc);
+            }
+        }
+    }
+
+    // If the unqualified name already exists (e.g. local binding or builtin),
+    // keep it as-is.
+    if ctx.name_exists(&name) {
+        return Expr::Var(name).into_id(loc);
     }
 
     // Keep as-is - will be resolved by type checker (local variable or error)
@@ -519,12 +608,7 @@ fn convert_qualified_var(
     );
 
     // Check if it's a re-exported alias
-    let lookup_name = ctx
-        .module_info
-        .use_alias_map
-        .get(&resolved_name)
-        .copied()
-        .unwrap_or(resolved_name);
+    let lookup_name = resolve_alias_chain(ctx.module_info, resolved_name);
 
     // Check visibility for module members
     if resolved_path.len() > 1

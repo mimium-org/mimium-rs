@@ -1,5 +1,30 @@
 # CHANGELOG
 
+## v4.0.0
+
+### Breaking changes
+
+- Introduced **Module Semantics** and rewrote standard libraries to use it (#180).
+
+### New features / improvements
+
+- Introduced WASM backend and dynamic plugin loading (#185).
+- Introduced generics (#188).
+- Introduced basic standard operations between tuples and auto expansion (#187).
+- Introduced variant types and type aliases (#183, #184).
+- Added OSC control support for GUI sliders (#189).
+- Added Signature Help provider and Completion provider to the Language Server (#190).
+- Added a pattern library with a mini-notation subset interpreter based on parser combinators.
+- Improved WASM backend hot swap so that global context evaluation can run without blocking audio.
+- Improved macro execution performance by running macros on VM.
+
+### Bug fix
+
+- Fixed file change event watching during live coding on Windows.
+- Fixed glitch noise when delay time is modulated.
+
+
+
 ## v3.2.0
 
 3.2.0 contains many new language features.
@@ -7,7 +32,7 @@
 ### Added Features
 
 - **Abstract Data Type** with variant and type alias declaration syntax is introduced. `match` expression to decompose variants with pattern matching is also introduced. Recursive data structure like List and Tree is also supported.(#183, #184)
-- **Module Semantics** is introduces. This feature is very based on it of Rust. Users can export/import namespace of functions and types.(#180)
+- **Module Semantics** is introduced. This feature is very based on it of Rust. Users can export/import namespace of functions and types.(#180)
 
 Those change also contains some restructuring in VM deisgn and implementations, specifically for garbage collection.
 

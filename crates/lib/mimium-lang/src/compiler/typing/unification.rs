@@ -1,4 +1,5 @@
 use crate::utils::metadata::Span;
+use std::collections::HashSet;
 
 use super::*;
 
@@ -15,8 +16,8 @@ pub(crate) enum Relation {
 #[derive(PartialEq, Eq, Debug)]
 pub(crate) enum Error {
     TypeMismatch {
-        left: TypeNodeId,
-        right: TypeNodeId,
+        left: (TypeNodeId, Span),
+        right: (TypeNodeId, Span),
     },
     LengthMismatch {
         left: (Vec<TypeNodeId>, Span),
@@ -30,6 +31,64 @@ pub(crate) enum Error {
         left: (Vec<(Symbol, TypeNodeId)>, Span),
         right: (Vec<(Symbol, TypeNodeId)>, Span),
     },
+}
+
+fn is_dummy_span(span: &Span) -> bool {
+    span.start == 0 && span.end == 0
+}
+
+fn span_from_type_tree(t: TypeNodeId) -> Option<Span> {
+    let mut stack = vec![t];
+    let mut visited = HashSet::new();
+
+    while let Some(current) = stack.pop() {
+        if !visited.insert(current) {
+            continue;
+        }
+
+        let span = current.to_span();
+        if !is_dummy_span(&span) {
+            return Some(span);
+        }
+
+        match current.to_type() {
+            Type::Array(elem) | Type::Ref(elem) | Type::Code(elem) | Type::Boxed(elem) => {
+                stack.push(elem);
+            }
+            Type::Tuple(items) | Type::Union(items) => {
+                stack.extend(items.iter().copied());
+            }
+            Type::Record(fields) => {
+                stack.extend(fields.iter().map(|RecordTypeField { ty, .. }| *ty));
+            }
+            Type::Function { arg, ret } => {
+                stack.push(arg);
+                stack.push(ret);
+            }
+            Type::Intermediate(cell) => {
+                if let Some(parent) = cell.read().ok().and_then(|tv| tv.parent) {
+                    stack.push(parent);
+                }
+            }
+            Type::UserSum { variants, .. } => {
+                stack.extend(variants.iter().filter_map(|(_, payload)| *payload));
+            }
+            Type::Primitive(_)
+            | Type::TypeScheme(_)
+            | Type::TypeAlias(_)
+            | Type::Any
+            | Type::Failure
+            | Type::Unknown => {}
+        }
+    }
+
+    None
+}
+
+fn best_span(primary: TypeNodeId, secondary: TypeNodeId) -> Span {
+    span_from_type_tree(primary)
+        .or_else(|| span_from_type_tree(secondary))
+        .unwrap_or_else(|| primary.to_span())
 }
 
 // return true when the circular loop of intermediate variable exists.
@@ -98,36 +157,50 @@ fn unify_vec(a1: &[TypeNodeId], a2: &[TypeNodeId]) -> Result<Relation, Vec<Error
 }
 fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Error>> {
     log::trace!("unify_args {} and {}", t1.to_type(), t2.to_type());
-    let loc1 = t1.to_span(); //todo file
-    let loc2 = t1.to_span();
+    let loc1 = best_span(t1, t2);
+    let loc2 = best_span(t2, t1);
     let t1r = t1.get_root();
     let t2r = t2.get_root();
     let res = match &(t1r.to_type(), t2r.to_type()) {
         (Type::Record(_), Type::Record(_)) | (Type::Tuple(_), Type::Tuple(_)) => {
             unify_types(t1, t2)?
         }
+        (Type::Record(v), _t) if v.len() == 1 => unify_types_args(v.first().unwrap().ty, t2)?,
+        (_t, Type::Record(v)) if v.len() == 1 && !v.first().unwrap().has_default => {
+            unify_types_args(t1, v.first().unwrap().ty)?
+        }
         (_t, Type::Tuple(v)) if v.len() == 1 => unify_types_args(t1, *v.first().unwrap())?,
         (Type::Tuple(v), _t) if v.len() == 1 => unify_types_args(*v.first().unwrap(), t2)?,
 
-        (_t, Type::Record(v)) if v.len() == 1 => unify_types_args(t1, v.first().unwrap().ty)?,
-        (Type::Record(v), _t) if v.len() == 1 => unify_types_args(v.first().unwrap().ty, t2)?,
-
         (Type::Intermediate(i1), Type::Intermediate(i2)) => {
-            if *i1.read().unwrap() == *i2.read().unwrap() {
+            // Read all necessary values first, then release read locks
+            let (tv1_eq, var1, level1, parent1) = {
+                let guard = i1.read().unwrap();
+                (guard.clone(), guard.var, guard.level, guard.parent)
+            };
+            let (tv2_eq, var2, level2, parent2) = {
+                let guard = i2.read().unwrap();
+                (guard.clone(), guard.var, guard.level, guard.parent)
+            };
+
+            if tv1_eq == tv2_eq {
                 return Ok(Relation::Identical);
             }
-            if occur_check(i1.read().unwrap().var, t2) {
+            if occur_check(var1, t2) {
                 return Err(vec![Error::CircularType {
                     left: loc1,
                     right: loc2,
                 }]);
             }
-            if i2.read().unwrap().level > i1.read().unwrap().level {
-                i2.write().unwrap().level = i1.read().unwrap().level;
+
+            // Now acquire write locks only when needed
+            if level2 > level1 {
+                i2.write().unwrap().level = level1;
             }
-            match (i1.read().unwrap().parent, i2.read().unwrap().parent) {
+
+            match (parent1, parent2) {
                 (None, None) => {
-                    if i1.read().unwrap().var > i2.read().unwrap().var {
+                    if var1 > var2 {
                         i2.write().unwrap().parent = Some(t1r);
                     } else {
                         i1.write().unwrap().parent = Some(t2r);
@@ -143,16 +216,32 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
             Relation::Identical
         }
         (Type::Intermediate(i1), _) => {
+            let var1 = i1.read().unwrap().var;
+            if occur_check(var1, t2r) {
+                return Err(vec![Error::CircularType {
+                    left: loc1,
+                    right: loc2,
+                }]);
+            }
             let mut tv1 = i1.write().unwrap();
             tv1.parent = Some(t2r);
             tv1.bound.upper = t2r;
+            drop(tv1); // Explicitly release lock
 
             Relation::Identical
         }
         (_, Type::Intermediate(i2)) => {
+            let var2 = i2.read().unwrap().var;
+            if occur_check(var2, t1r) {
+                return Err(vec![Error::CircularType {
+                    left: loc1,
+                    right: loc2,
+                }]);
+            }
             let mut tv2 = i2.write().unwrap();
             tv2.parent = Some(t1r);
             tv2.bound.upper = t1r;
+            drop(tv2); // Explicitly release lock
             Relation::Identical
         }
         (Type::Record(kvs), Type::Tuple(_)) => {
@@ -175,8 +264,8 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
                 }
             }
             return Err(vec![Error::TypeMismatch {
-                left: t1,
-                right: t2,
+                left: (t1, loc1.clone()),
+                right: (t2, loc2.clone()),
             }]);
         }
         (_, _) => unify_types(t1, t2)?,
@@ -187,31 +276,40 @@ fn unify_types_args(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Erro
 /// Solve type constraints. Though the function arguments are immutable, it modified the content of Intermediate Type.
 /// If the result is `Relation::Subtype`, it means "t1 is subtype of t2".
 pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Vec<Error>> {
-    let loc1 = t1.to_span(); //todo file
-    let loc2 = t1.to_span();
+    let loc1 = best_span(t1, t2);
+    let loc2 = best_span(t2, t1);
 
     let t1r = t1.get_root();
     let t2r = t2.get_root();
     let res = match &(t1r.to_type(), t2r.to_type()) {
         (Type::Intermediate(i1), Type::Intermediate(i2)) => {
-            if *i1.read().unwrap() == *i2.read().unwrap() {
+            // Read all necessary values first, then release read locks
+            let (tv1_eq, var1, level1, parent1) = {
+                let guard = i1.read().unwrap();
+                (guard.clone(), guard.var, guard.level, guard.parent)
+            };
+            let (tv2_eq, var2, level2, parent2) = {
+                let guard = i2.read().unwrap();
+                (guard.clone(), guard.var, guard.level, guard.parent)
+            };
+
+            if tv1_eq == tv2_eq {
                 return Ok(Relation::Identical);
             }
-            if occur_check(i1.read().unwrap().var, t2) {
+            if occur_check(var1, t2) {
                 return Err(vec![Error::CircularType {
                     left: loc1,
                     right: loc2,
                 }]);
             }
-            let (level1, level2) = (i1.read().unwrap().level, i2.read().unwrap().level);
+
+            // Now acquire write locks only when needed
             if level1 < level2 {
                 i1.write().unwrap().level = level2;
             }
-            let parent1 = i1.read().unwrap().parent;
-            let parent2 = i2.read().unwrap().parent;
+
             match (parent1, parent2) {
                 (None, None) => {
-                    let (var1, var2) = (i1.read().unwrap().var, i2.read().unwrap().var);
                     if var1 > var2 {
                         i2.write().unwrap().parent = Some(t1r);
                     } else {
@@ -228,16 +326,32 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             Relation::Identical
         }
         (Type::Intermediate(i1), _) => {
+            let var1 = i1.read().unwrap().var;
+            if occur_check(var1, t2r) {
+                return Err(vec![Error::CircularType {
+                    left: loc1,
+                    right: loc2,
+                }]);
+            }
             let mut tv1 = i1.write().unwrap();
             tv1.parent = Some(t2r);
             tv1.bound.lower = t2r;
+            drop(tv1); // Explicitly release lock
 
             Relation::Identical
         }
         (_, Type::Intermediate(i2)) => {
+            let var2 = i2.read().unwrap().var;
+            if occur_check(var2, t1r) {
+                return Err(vec![Error::CircularType {
+                    left: loc1,
+                    right: loc2,
+                }]);
+            }
             let mut tv2 = i2.write().unwrap();
             tv2.parent = Some(t1r);
             tv2.bound.lower = t1r;
+            drop(tv2); // Explicitly release lock
             Relation::Identical
         }
         (Type::Array(a1), Type::Array(a2)) => {
@@ -247,8 +361,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 Relation::Identical => Relation::Identical,
                 _ => {
                     return Err(vec![Error::TypeMismatch {
-                        left: *a1,
-                        right: *a2,
+                        left: (*a1, loc1.clone()),
+                        right: (*a2, loc2.clone()),
                     }]);
                 }
             }
@@ -376,8 +490,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                     .map(|RecordTypeField { key, ty, .. }| (*key, *ty))
                     .collect::<Vec<_>>();
                 all_errs.push(Error::ImcompatibleRecords {
-                    left: (keys_a, t1.to_span()),
-                    right: (keys_b, t2.to_span()),
+                    left: (keys_a, loc1.clone()),
+                    right: (keys_b, loc2.clone()),
                 });
                 return Err(all_errs);
             } else {
@@ -399,8 +513,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             match (arg_res, ret_res) {
                 (Ok(Relation::Subtype), Ok(_)) | (Ok(_), Ok(Relation::Supertype)) => {
                     return Err(vec![Error::TypeMismatch {
-                        left: t1,
-                        right: t2,
+                        left: (t1, loc1.clone()),
+                        right: (t2, loc2.clone()),
                     }]);
                 }
                 (Ok(Relation::Identical), Ok(Relation::Identical)) => Relation::Identical,
@@ -415,6 +529,13 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             }
         }
         (Type::Primitive(p1), Type::Primitive(p2)) if p1 == p2 => Relation::Identical,
+        (Type::TypeScheme(s1), Type::TypeScheme(s2)) if s1 == s2 => Relation::Identical,
+        (Type::TypeScheme(_), _) | (_, Type::TypeScheme(_)) => {
+            return Err(vec![Error::TypeMismatch {
+                left: (t1, loc1.clone()),
+                right: (t2, loc2.clone()),
+            }]);
+        }
         (Type::Primitive(PType::Unit), Type::Tuple(v))
         | (Type::Tuple(v), Type::Primitive(PType::Unit))
             if v.is_empty() =>
@@ -429,9 +550,9 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
         {
             Relation::Identical
         }
-        (_t, Type::Record(v)) if v.len() == 1 => unify_types(t1, v.first().unwrap().ty)?,
-        (Type::Record(v), _t) if v.len() == 1 => unify_types(v.first().unwrap().ty, t2)?,
-
+        // Keep single-field records as records in general unification.
+        // Collapsing `{k:T}` to `T` here loses structural information and can
+        // incorrectly narrow chained accesses like `e.arc.start` into `{arc:{end:_}}`.
         (Type::Failure, _t) | (_t, Type::Any) => Relation::Identical,
         (Type::Any, _t) | (_t, Type::Failure) => Relation::Identical,
 
@@ -441,8 +562,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
             // Two unions are identical if they have the same members (in any order)
             if union_types1.len() != union_types2.len() {
                 return Err(vec![Error::TypeMismatch {
-                    left: t1,
-                    right: t2,
+                    left: (t1, loc1.clone()),
+                    right: (t2, loc2.clone()),
                 }]);
             }
             // Check that each member of union1 matches exactly one member of union2
@@ -455,8 +576,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 Relation::Identical
             } else {
                 return Err(vec![Error::TypeMismatch {
-                    left: t1,
-                    right: t2,
+                    left: (t1, loc1.clone()),
+                    right: (t2, loc2.clone()),
                 }]);
             }
         }
@@ -469,8 +590,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 }
             }
             return Err(vec![Error::TypeMismatch {
-                left: t1,
-                right: t2,
+                left: (t1, loc1.clone()),
+                right: (t2, loc2.clone()),
             }]);
         }
         (Type::Union(union_types), _t) => {
@@ -483,8 +604,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 return Ok(Relation::Supertype);
             }
             return Err(vec![Error::TypeMismatch {
-                left: t1,
-                right: t2,
+                left: (t1, loc1.clone()),
+                right: (t2, loc2.clone()),
             }]);
         }
         // UserSum type support: nominal typing — same name means identical type
@@ -493,8 +614,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 Relation::Identical
             } else {
                 return Err(vec![Error::TypeMismatch {
-                    left: t1,
-                    right: t2,
+                    left: (t1, loc1.clone()),
+                    right: (t2, loc2.clone()),
                 }]);
             }
         }
@@ -509,8 +630,8 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 Ok(_) => Relation::Identical,
                 Err(_) => {
                     return Err(vec![Error::TypeMismatch {
-                        left: t1,
-                        right: t2,
+                        left: (t1, loc1.clone()),
+                        right: (t2, loc2.clone()),
                     }]);
                 }
             }
@@ -521,20 +642,92 @@ pub(crate) fn unify_types(t1: TypeNodeId, t2: TypeNodeId) -> Result<Relation, Ve
                 Ok(_) => Relation::Identical,
                 Err(_) => {
                     return Err(vec![Error::TypeMismatch {
-                        left: t1,
-                        right: t2,
+                        left: (t1, loc1.clone()),
+                        right: (t2, loc2.clone()),
                     }]);
                 }
             }
         }
         (_p1, _p2) => {
             return Err(vec![Error::TypeMismatch {
-                left: t1,
-                right: t2,
+                left: (t1, loc1),
+                right: (t2, loc2),
             }]);
         }
     };
     log::trace!("unified {} and {}:{:?}", t1.to_type(), t2.to_type(), res);
 
     Ok(res)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{Error, unify_types};
+    use crate::{
+        types::{PType, Type},
+        utils::metadata::Location,
+    };
+
+    #[test]
+    fn length_mismatch_keeps_both_spans() {
+        let left_span = 10..20;
+        let right_span = 30..40;
+
+        let left_elem = Type::Primitive(PType::Numeric)
+            .into_id_with_location(Location::new(left_span.clone(), PathBuf::from("left.mmm")));
+        let right_elem = Type::Primitive(PType::Numeric).into_id_with_location(Location::new(
+            right_span.clone(),
+            PathBuf::from("right.mmm"),
+        ));
+
+        let left = Type::Tuple(vec![left_elem])
+            .into_id_with_location(Location::new(left_span.clone(), PathBuf::from("left.mmm")));
+        let right = Type::Tuple(vec![right_elem, right_elem]).into_id_with_location(Location::new(
+            right_span.clone(),
+            PathBuf::from("right.mmm"),
+        ));
+
+        let err = unify_types(left, right).expect_err("expected tuple length mismatch");
+        let Some(Error::LengthMismatch {
+            left: (_, lspan),
+            right: (_, rspan),
+        }) = err.first()
+        else {
+            panic!("unexpected error variant");
+        };
+
+        assert_eq!(lspan, &left_span);
+        assert_eq!(rspan, &right_span);
+    }
+
+    #[test]
+    fn length_mismatch_avoids_dummy_span_when_one_side_has_location() {
+        let right_span = 30..40;
+
+        let left_elem = Type::Primitive(PType::Numeric).into_id();
+        let right_elem = Type::Primitive(PType::Numeric).into_id_with_location(Location::new(
+            right_span.clone(),
+            PathBuf::from("right.mmm"),
+        ));
+
+        let left = Type::Tuple(vec![left_elem]).into_id();
+        let right = Type::Tuple(vec![right_elem, right_elem]).into_id_with_location(Location::new(
+            right_span.clone(),
+            PathBuf::from("right.mmm"),
+        ));
+
+        let err = unify_types(left, right).expect_err("expected tuple length mismatch");
+        let Some(Error::LengthMismatch {
+            left: (_, lspan),
+            right: (_, rspan),
+        }) = err.first()
+        else {
+            panic!("unexpected error variant");
+        };
+
+        assert_eq!(lspan, &right_span);
+        assert_eq!(rspan, &right_span);
+    }
 }

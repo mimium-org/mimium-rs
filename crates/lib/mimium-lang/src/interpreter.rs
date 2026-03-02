@@ -1,3 +1,5 @@
+mod serde_impl;
+
 use std::cell::RefCell;
 /// A tree walk interpreter of mimium, primarily used for macro expansion.
 /// This macro system is based on the multi-stage programming paradigm, like MetaML, MetaOCaml, Scala3, where expressions can be evaluated at multiple stages.
@@ -7,6 +9,7 @@ use itertools::Itertools;
 
 use crate::ast::{Expr, Literal, RecordField};
 use crate::compiler::EvalStage;
+use crate::compiler::mirgen::pattern_destructor::destruct_let_pattern;
 use crate::compiler::typing::ConstructorEnv;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedPattern};
@@ -220,6 +223,100 @@ impl TryInto<ExprNodeId> for Value {
 pub struct StageInterpreter {}
 
 impl StageInterpreter {
+    fn apply_closure_or_external(
+        &mut self,
+        ctx: &mut Context<Value>,
+        fv: Value,
+        args: Vec<(Value, TypeNodeId)>,
+    ) -> Option<Value> {
+        if let Some(ext_fn) = fv.clone().get_as_external_fn() {
+            Some(ext_fn.borrow()(args.as_slice()))
+        } else if let Some((c_env, names, body)) = fv.get_as_closure() {
+            log::trace!("entering closure app with names: {names:?}");
+            let binds = names.into_iter().zip(args).collect_vec();
+            let new_ctx = Context {
+                env: c_env,
+                stage: ctx.stage,
+                constructor_env: ctx.constructor_env.clone(),
+            };
+            Some(self.eval_with_closure_env(binds.as_slice(), new_ctx, body))
+        } else {
+            None
+        }
+    }
+
+    fn try_auto_spread_unary_apply(
+        &mut self,
+        ctx: &mut Context<Value>,
+        fv: Value,
+        arg: Value,
+    ) -> Option<Value> {
+        match arg {
+            Value::Tuple(elements) => {
+                let mapped = elements
+                    .into_iter()
+                    .map(|elem| self.try_auto_spread_unary_apply(ctx, fv.clone(), elem))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(Value::Tuple(mapped))
+            }
+            scalar => {
+                let args = vec![(scalar, Type::Unknown.into_id())];
+                self.apply_closure_or_external(ctx, fv, args)
+            }
+        }
+    }
+
+    fn try_auto_spread_binary_apply(
+        &mut self,
+        ctx: &mut Context<Value>,
+        fv: Value,
+        lhs: Value,
+        rhs: Value,
+    ) -> Option<Value> {
+        match (lhs, rhs) {
+            (Value::Tuple(lhs_elems), Value::Tuple(rhs_elems)) => {
+                if lhs_elems.len() != rhs_elems.len() {
+                    panic!(
+                        "Tuple length mismatch for auto-spread binary apply: left={}, right={}",
+                        lhs_elems.len(),
+                        rhs_elems.len()
+                    );
+                }
+                let mapped = lhs_elems
+                    .into_iter()
+                    .zip(rhs_elems)
+                    .map(|(l, r)| self.try_auto_spread_binary_apply(ctx, fv.clone(), l, r))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(Value::Tuple(mapped))
+            }
+            (Value::Tuple(lhs_elems), rhs_scalar) => {
+                let mapped = lhs_elems
+                    .into_iter()
+                    .map(|l| {
+                        self.try_auto_spread_binary_apply(ctx, fv.clone(), l, rhs_scalar.clone())
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                Some(Value::Tuple(mapped))
+            }
+            (lhs_scalar, Value::Tuple(rhs_elems)) => {
+                let mapped = rhs_elems
+                    .into_iter()
+                    .map(|r| {
+                        self.try_auto_spread_binary_apply(ctx, fv.clone(), lhs_scalar.clone(), r)
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                Some(Value::Tuple(mapped))
+            }
+            (lhs_scalar, rhs_scalar) => {
+                let args = vec![
+                    (lhs_scalar, Type::Unknown.into_id()),
+                    (rhs_scalar, Type::Unknown.into_id()),
+                ];
+                self.apply_closure_or_external(ctx, fv, args)
+            }
+        }
+    }
+
     /// Unified evaluation method that handles all expressions at all stages.
     /// Stage 0: Full evaluation with constructor resolution.
     /// Stage 1+: Code construction via rebuild().
@@ -362,6 +459,24 @@ impl StageInterpreter {
                     })
                     .collect::<Vec<_>>();
 
+                if args.len() == 1
+                    && let Some(spread_res) =
+                        self.try_auto_spread_unary_apply(ctx, fv.clone(), args[0].0.clone())
+                {
+                    return spread_res;
+                }
+
+                if args.len() == 2 {
+                    let lhs = args[0].0.clone();
+                    let rhs = args[1].0.clone();
+                    if (matches!(lhs, Value::Tuple(_)) || matches!(rhs, Value::Tuple(_)))
+                        && let Some(spread_res) =
+                            self.try_auto_spread_binary_apply(ctx, fv.clone(), lhs, rhs)
+                    {
+                        return spread_res;
+                    }
+                }
+
                 // Handle different function types
                 if let Some(ext_fn) = fv.clone().get_as_external_fn() {
                     ext_fn.borrow()(args.as_slice())
@@ -495,11 +610,12 @@ impl StageInterpreter {
                 panic!("escape expression cannot be evaluated in stage 0")
             }
             Expr::Bracket(e) => {
-                ctx.stage = EvalStage::Stage(1); // Increase the stage for bracket
+                let prev_stage = ctx.stage;
+                ctx.stage = prev_stage.increment();
                 log::trace!("Bracketting expression, stage => {:?}", ctx.stage);
 
                 let res = Value::Code(self.rebuild(ctx, e));
-                ctx.stage = EvalStage::Stage(0); // Decrease the stage back
+                ctx.stage = prev_stage;
                 res
             }
             Expr::Match(scrutinee, arms) => {
@@ -808,13 +924,15 @@ impl StageInterpreter {
                 Expr::Tuple(elements.into_iter().map(|e| self.rebuild(ctx, e)).collect())
                     .into_id(e.to_location())
             }
-            Expr::Proj(e, idx) => Expr::Proj(self.rebuild(ctx, e), idx).into_id(e.to_location()),
-            Expr::ArrayAccess(e, i) => {
-                Expr::ArrayAccess(self.rebuild(ctx, e), self.rebuild(ctx, i))
+            Expr::Proj(inner, idx) => {
+                Expr::Proj(self.rebuild(ctx, inner), idx).into_id(e.to_location())
+            }
+            Expr::ArrayAccess(base, i) => {
+                Expr::ArrayAccess(self.rebuild(ctx, base), self.rebuild(ctx, i))
                     .into_id(e.to_location())
             }
-            Expr::FieldAccess(e, name) => {
-                Expr::FieldAccess(self.rebuild(ctx, e), name).into_id(e.to_location())
+            Expr::FieldAccess(inner, name) => {
+                Expr::FieldAccess(self.rebuild(ctx, inner), name).into_id(e.to_location())
             }
             Expr::Block(b) => {
                 Expr::Block(b.map(|eid| self.rebuild(ctx, eid))).into_id(e.to_location())
@@ -877,6 +995,7 @@ fn expand_macro_rec(
     ty: TypeNodeId,
 ) -> ExprNodeId {
     if let Type::Code(t) = ty.to_type() {
+        let expr = destruct_let_pattern(expr);
         let res = interpreter.eval_expr(ctx, expr);
         match res {
             Value::Code(e) => {

@@ -1,9 +1,11 @@
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 use crate::compiler::intrinsics;
 use crate::interner::{Symbol, ToSymbol};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Op {
     Sum,     // +
     Minus,   // -

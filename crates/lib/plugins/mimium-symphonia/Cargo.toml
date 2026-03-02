@@ -7,15 +7,20 @@ repository.workspace = true
 description = "sound file sampler implementation using symphonia for mimium."
 build = "build.rs"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-# [lib]
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+dynamic-plugin-abi = []
 
 
 [dependencies]
 
 mimium-lang = { workspace = true }
+mimium-plugin-macros = { workspace = true }
 symphonia = { version = "0.5.4", features = ["all-codecs"] }
-
+bincode = { workspace = true }
 [dev-dependencies]
 mimium-test = { workspace = true }
 mimium-audiodriver = { workspace = true }

@@ -1,0 +1,13 @@
+// Test tuple argument passing: function receives a tuple and destructures it
+fn add_tuple(t) {
+    let (a, b, c) = t
+    a + b + c
+}
+
+fn make_tuple(x) {
+    (x, x * 2.0, x * 3.0)
+}
+
+fn dsp() {
+    add_tuple(make_tuple(1.0))
+}

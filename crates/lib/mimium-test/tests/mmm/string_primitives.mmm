@@ -1,0 +1,44 @@
+#stage(macro)
+fn test_string_primitives(){
+    // str_length
+    let len = str_length("hello")
+
+    // str_take / str_drop
+    let taken = str_take("hello world", 5)  // "hello"
+    let dropped = str_drop("hello world", 6) // "world"
+
+    // str_concat
+    let joined = str_concat("foo", "bar") // "foobar"
+
+    // str_eq
+    let eq1 = str_eq(taken, "hello")   // 1.0
+    let eq2 = str_eq(taken, "world")   // 0.0
+
+    // str_slice
+    let sliced = str_slice("abcdef", 2, 5) // "cde"
+
+    // str_char_at
+    let ch = str_char_at("abcdef", 3) // "d"
+
+    // str_to_number / number_to_str
+    let parsed = str_to_number("42.5")
+    let roundtrip = str_to_number(number_to_str(3.14))
+
+    // compose a result: len(5) + eq1(1) + eq2(0) + parsed(42.5) + roundtrip(3.14)
+    //                 + str_eq checks for take/drop/concat/slice/char_at
+    let check_taken  = str_eq(taken, "hello")       // 1.0
+    let check_dropped = str_eq(dropped, "world")     // 1.0
+    let check_joined = str_eq(joined, "foobar")      // 1.0
+    let check_sliced = str_eq(sliced, "cde")         // 1.0
+    let check_char   = str_eq(ch, "d")               // 1.0
+
+    // Total = 5 + 1 + 0 + 42.5 + 3.14 + 1 + 1 + 1 + 1 + 1 = 56.64
+    len + eq1 + eq2 + parsed + roundtrip
+        + check_taken + check_dropped + check_joined + check_sliced + check_char
+        |> lift_f
+}
+
+#stage(main)
+fn dsp(){
+    test_string_primitives!()
+}

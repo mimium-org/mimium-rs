@@ -1,0 +1,8 @@
+// Test min/max in combination
+fn dsp(){
+    let a = 5.0
+    let b = 3.0
+    let c = 4.0
+    // min(a, b) = 3.0, max(b, c) = 4.0, 3.0 + 4.0 = 7.0
+    min(a, b) + max(b, c)
+}

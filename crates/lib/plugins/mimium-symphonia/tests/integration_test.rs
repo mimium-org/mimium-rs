@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 use mimium_audiodriver::backends::local_buffer::LocalBufferDriver;
 use mimium_audiodriver::driver::{Driver, RuntimeData};
 use mimium_lang::plugin::SystemPlugin;

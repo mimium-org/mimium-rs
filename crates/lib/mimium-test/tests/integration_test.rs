@@ -73,6 +73,34 @@ fn array_length() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn array_primitives_tuple_runtime() {
+    let res = run_file_test_mono("array_primitives_tuple_runtime.mmm", 1).unwrap();
+    let ans = vec![88.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn generic_id() {
+    let res = run_file_test_mono("generic_id.mmm", 1).unwrap();
+    let ans = vec![6.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn generics_array_macro() {
+    let res = run_file_test_mono("generics_array_macro.mmm", 1).unwrap();
+    let ans = vec![24.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn generics_array() {
+    let res = run_file_test_mono("generics_array.mmm", 1).unwrap();
+    let ans = vec![24.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn split_tail() {
     let res = run_file_test_mono("split_tail.mmm", 1).unwrap();
     let ans = vec![24.0]; // (1+2+3)*4 = 6*4 = 24
@@ -101,9 +129,85 @@ fn split_head_macro() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
+fn string_primitives() {
+    let res = run_file_test_mono("string_primitives.mmm", 1).unwrap();
+    // 5 + 1 + 0 + 42.5 + 3.14 + 1 + 1 + 1 + 1 + 1 = 56.64
+    let ans = vec![56.64];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+#[cfg(not(target_arch = "wasm32"))]
+fn parser_combinators() {
+    // Parser module has many deeply nested functions requiring larger stack
+    let result = std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024) // 16 MB
+        .spawn(|| {
+            let res = run_file_test_mono("parser_combinators.mmm", 1).unwrap();
+            let ans = vec![52.0]; // 52 boolean checks, each contributing 1.0
+            assert_eq!(res, ans);
+        })
+        .unwrap()
+        .join();
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+#[cfg(not(target_arch = "wasm32"))]
+fn mininotation() {
+    // Mini-notation parser uses parser combinators + pattern library, needs larger stack
+    // Pattern library depends on osc::phasor -> samplerate, so we need audio driver
+    let result = std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024) // 16 MB
+        .spawn(|| {
+            let res = run_file_with_plugins("mininotation.mmm", 1, [].into_iter(), false).unwrap();
+            let ans = vec![22.0]; // 22 boolean checks, each contributing 1.0
+            assert_eq!(res, ans);
+        })
+        .unwrap()
+        .join();
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+#[cfg(not(target_arch = "wasm32"))]
+fn mininotation_alternate_grouping() {
+    // Mini-notation alternation/grouping edge cases based on TidalCycles reference.
+    let result = std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let res = run_file_with_plugins(
+                "mininotation_alternate_grouping.mmm",
+                1,
+                [].into_iter(),
+                false,
+            )
+            .unwrap();
+            let ans = vec![19.0];
+            assert_eq!(res, ans);
+        })
+        .unwrap()
+        .join();
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+#[wasm_bindgen_test(unsupported = test)]
 fn lift_arrayf_extended() {
     let res = run_file_test_mono("lift_arrayf_extended.mmm", 1).unwrap();
     let ans = vec![65.0]; // 5.0 + 10.0 + 20.0 + 30.0
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn lift_polymorphic() {
+    let res = run_file_test_mono("lift_polymorphic.mmm", 1).unwrap();
+    let ans = vec![11.0]; // 5.0 + 1.0 + 2.0 + 3.0
     assert_eq!(res, ans);
 }
 
@@ -182,6 +286,40 @@ fn primitive_sqrt() {
     let r = (res[0] - ans[0]).abs() < f64::EPSILON;
     assert!(r);
 }
+
+#[wasm_bindgen_test(unsupported = test)]
+fn primitive_min() {
+    let res = run_file_test_mono("primitive_min.mmm", 1).unwrap();
+    let ans = [2.1];
+    let r = (res[0] - ans[0]).abs() < f64::EPSILON;
+    assert!(r);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn primitive_max() {
+    let res = run_file_test_mono("primitive_max.mmm", 1).unwrap();
+    let ans = [3.5];
+    let r = (res[0] - ans[0]).abs() < f64::EPSILON;
+    assert!(r);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn primitive_minmax_combo() {
+    let res = run_file_test_mono("primitive_minmax_combo.mmm", 1).unwrap();
+    let ans = [7.0]; // min(5.0, 3.0) + max(3.0, 4.0) = 3.0 + 4.0
+    let r = (res[0] - ans[0]).abs() < f64::EPSILON;
+    assert!(r);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn adsr_simple() {
+    // Nested conditionals in stateful function (JmpIf within merge blocks).
+    // This is a regression test for WASM backend's emit_merge_block handling.
+    let res = run_file_test_mono("adsr_simple.mmm", 7).unwrap();
+    let ans = vec![1.0, 2.0, 3.0, 4.0, 5.0, 5.0, 5.0];
+    assert_eq!(res, ans);
+}
+
 #[wasm_bindgen_test(unsupported = test)]
 fn ifblock() {
     let res = run_file_test_mono("if.mmm", 1).unwrap();
@@ -386,6 +524,13 @@ fn tuple_args() {
     assert_eq!(res, ans);
 }
 
+#[wasm_bindgen_test(unsupported = test)]
+fn phi_multiword_arg_if() {
+    let res = run_file_test_mono("phi_multiword_arg_if.mmm", 1).unwrap();
+    let ans = vec![10.0];
+    assert_eq!(res, ans);
+}
+
 // implement one-sample delay on mimium with `self`
 #[wasm_bindgen_test(unsupported = test)]
 fn fb_mem() {
@@ -413,6 +558,16 @@ fn fb_mem3_state_size() {
         "fb_mem3.mmm",
         [("counter", 1), ("mem_by_hand", 4), ("dsp", 5)],
     );
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn delay_mem_same_fn() {
+    let res = run_file_test_stereo("delay_mem_same_fn.mmm", 10).unwrap();
+    let ans = vec![
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 1.0, 3.0, 2.0, 4.0, 3.0, 5.0, 4.0, 6.0, 5.0, 7.0, 6.0,
+        8.0, 7.0,
+    ];
+    assert_eq!(res, ans);
 }
 
 #[wasm_bindgen_test(unsupported = test)]
@@ -473,9 +628,8 @@ fn shadowing_assign() {
 
 #[wasm_bindgen_test(unsupported = test)]
 fn many_errors() {
-    let res = run_error_test("many_errors.mmm", false);
-    //todo! check error types
-    assert_eq!(res.len(), 9);
+    let errs = run_error_test_rich("many_errors.mmm", false);
+    assert_eq!(errs.len(), 10);
 }
 #[wasm_bindgen_test(unsupported = test)]
 fn hof_typefail() {
@@ -499,11 +653,15 @@ fn error_include_itself() {
 }
 
 #[wasm_bindgen_test(unsupported = test)]
-fn typing_tuple_fail() {
-    let res = run_error_test("typing_tuple_fail.mmm", false);
-    assert_eq!(res.len(), 1);
-    assert!(res[0].get_message().contains("Type mismatch"))
+fn type_param_reserved_name_fail() {
+    let errs = run_error_test("type_param_reserved_name_fail.mmm", false);
+    assert!(!errs.is_empty());
+    assert!(errs.iter().any(|e| {
+        e.get_message()
+            .contains("reserved for explicit type parameters")
+    }));
 }
+
 #[wasm_bindgen_test(unsupported = test)]
 fn block_local_scope() {
     let res = run_file_test_mono("block_local_scope.mmm", 1).unwrap();
@@ -634,6 +792,114 @@ fn parameter_pack_record_fail2() {
 }
 
 #[test]
+fn tuple_binop_basic() {
+    let res = run_file_test_mono("tuple_binop_basic.mmm", 1).unwrap();
+    let ans = vec![21.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_len_mismatch_fail() {
+    let res = run_error_test("tuple_binop_len_mismatch_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+}
+
+#[test]
+fn tuple_binop_nonnumeric_fail() {
+    let res = run_error_test("tuple_binop_nonnumeric_fail.mmm", false);
+    assert_eq!(res.len(), 2);
+}
+
+#[test]
+fn tuple_binop_arity_over16_fail() {
+    let res = run_error_test("tuple_binop_arity_over16_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+}
+
+#[test]
+fn tuple_binop_tuple_scalar_broadcast() {
+    let res = run_file_test_mono("tuple_binop_tuple_scalar_broadcast.mmm", 1).unwrap();
+    let ans = vec![12.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_scalar_tuple_broadcast() {
+    let res = run_file_test_mono("tuple_binop_scalar_tuple_broadcast.mmm", 1).unwrap();
+    let ans = vec![12.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_tuple_int_scalar_broadcast() {
+    let res = run_file_test_mono("tuple_binop_tuple_int_scalar_broadcast.mmm", 1).unwrap();
+    let ans = vec![12.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_nested_basic() {
+    let res = run_file_test_mono("tuple_binop_nested_basic.mmm", 1).unwrap();
+    let ans = vec![110.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_nested_tuple_scalar_broadcast() {
+    let res = run_file_test_mono("tuple_binop_nested_tuple_scalar_broadcast.mmm", 1).unwrap();
+    let ans = vec![20.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_nested_scalar_tuple_broadcast() {
+    let res = run_file_test_mono("tuple_binop_nested_scalar_tuple_broadcast.mmm", 1).unwrap();
+    let ans = vec![18.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_nested_shape_mismatch_fail() {
+    let res = run_error_test("tuple_binop_nested_shape_mismatch_fail.mmm", false);
+    assert_eq!(res.len(), 1);
+}
+
+#[test]
+fn auto_spread_stateless() {
+    let res = run_file_test_mono("tuple_map_f2f_stateless.mmm", 1).unwrap();
+    let ans = vec![5.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn auto_spread_stateful() {
+    let res = run_file_test_mono("tuple_map_f2f_stateful.mmm", 3).unwrap();
+    let ans = vec![3.0, 6.0, 9.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn auto_spread_stateful_nested() {
+    let res = run_file_test_mono("tuple_map_f2f_stateful_nested.mmm", 3).unwrap();
+    let ans = vec![10.0, 20.0, 30.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn auto_spread_macro_stage() {
+    let res = run_file_test_mono("auto_spread_macro_stage.mmm", 1).unwrap();
+    let ans = vec![5.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn tuple_binop_macro_stage() {
+    let res = run_file_test_mono("tuple_binop_macro_stage.mmm", 1).unwrap();
+    let ans = vec![56.0];
+    assert_eq!(res, ans);
+}
+
+#[test]
 fn record_imcomplete() {
     let res = run_file_test_mono("record_imcomplete.mmm", 1).unwrap();
     let ans = vec![701.0]; // 2*(5-7)
@@ -699,6 +965,62 @@ fn probe_macro() {
     let res = driver.get_generated_samples().to_vec();
 
     let ans = vec![42.0]; // Probe should pass through the value
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn probe_value_macro() {
+    let (_, src) = load_src("probe_value_macro.mmm");
+
+    let mut driver = mimium_audiodriver::backends::local_buffer::LocalBufferDriver::new(1);
+    let audiodriverplug: Box<dyn mimium_lang::plugin::Plugin> = Box::new(driver.get_as_plugin());
+    let mut ctx = mimium_lang::ExecContext::new(
+        [audiodriverplug].into_iter(),
+        None,
+        mimium_lang::Config::default(),
+    );
+
+    ctx.add_system_plugin(mimium_guitools::GuiToolPlugin::default());
+
+    ctx.prepare_machine(&src).unwrap();
+    let _ = ctx.run_main();
+    let runtimedata = {
+        let ctxmut: &mut mimium_lang::ExecContext = &mut ctx;
+        RuntimeData::try_from(ctxmut).unwrap()
+    };
+    driver.init(runtimedata, None);
+    driver.play();
+    let res = driver.get_generated_samples().to_vec();
+
+    let ans = vec![1.5, 1.2]; // ProbeValue should pass through tuple runtime value
+    assert_eq!(res, ans);
+}
+
+#[test]
+fn slider_value_record_macro() {
+    let (_, src) = load_src("slider_value_record.mmm");
+
+    let mut driver = mimium_audiodriver::backends::local_buffer::LocalBufferDriver::new(1);
+    let audiodriverplug: Box<dyn mimium_lang::plugin::Plugin> = Box::new(driver.get_as_plugin());
+    let mut ctx = mimium_lang::ExecContext::new(
+        [audiodriverplug].into_iter(),
+        None,
+        mimium_lang::Config::default(),
+    );
+
+    ctx.add_system_plugin(mimium_guitools::GuiToolPlugin::default());
+
+    ctx.prepare_machine(&src).unwrap();
+    let _ = ctx.run_main();
+    let runtimedata = {
+        let ctxmut: &mut mimium_lang::ExecContext = &mut ctx;
+        RuntimeData::try_from(ctxmut).unwrap()
+    };
+    driver.init(runtimedata, None);
+    driver.play();
+    let res = driver.get_generated_samples().to_vec();
+
+    let ans = vec![0.75];
     assert_eq!(res, ans);
 }
 
@@ -886,6 +1208,13 @@ fn type_alias_comprehensive() {
     // oscillator(440.0, 0.5) * 2.0 = (440.0 * 0.5) * 2.0 = 220.0 * 2.0 = 440.0
     let res = run_file_test_mono("type_alias_comprehensive.mmm", 1).unwrap();
     let ans = vec![440.0];
+    assert_eq!(res, ans);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn type_alias_function_lambda_param() {
+    let res = run_file_test_mono("type_alias_function_lambda_param.mmm", 1).unwrap();
+    let ans = vec![2.0];
     assert_eq!(res, ans);
 }
 
@@ -1199,4 +1528,109 @@ fn type_visibility_leak() {
         err_message.contains("private type") && err_message.contains("signature"),
         "Expected private type leak error, got: {err_message}"
     );
+}
+
+// ============================================================================
+// WASM Backend Tests
+// ============================================================================
+// These tests specifically verify the WASM backend implementation.
+// They are crucial for catching backend-specific issues like state management
+// and global variable initialization that may not be caught by VM tests alone.
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_counter() {
+    // Test basic stateful function (self) in WASM backend
+    // This catches issues with state persistence across dsp() calls
+    let res = run_file_test_wasm("counter.mmm", 10, false).unwrap();
+    let ans = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+    assert_eq!(
+        res, ans,
+        "WASM backend: stateful function should accumulate"
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_tuple_pass() {
+    // Test tuple argument flattening at call sites in WASM backend.
+    // A function receiving a tuple should have its params flattened,
+    // and the call site must expand the tuple pointer to individual values.
+    let res = run_file_test_wasm("tuple_pass.mmm", 3, false).unwrap();
+    // add_tuple(make_tuple(1.0)) = 1.0 + 2.0 + 3.0 = 6.0
+    let ans = vec![6.0, 6.0, 6.0];
+    assert_eq!(res, ans, "WASM backend: tuple arg flattening at call site");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_phi_multiword_arg_if() {
+    let res = run_file_test_wasm("phi_multiword_arg_if.mmm", 1, false).unwrap();
+    let ans = vec![10.0];
+    assert_eq!(res, ans, "WASM backend: phi with multiword argument values");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_global_state() {
+    // Test global variable initialization and stateful function with globals
+    // This catches issues where global initializer (_mimium_global) is not called
+    let res = run_file_test_wasm("global_state.mmm", 5, false).unwrap();
+    // Expected values: PI * (n+1) where n is iteration count
+    let ans = [
+        3.14159265359,
+        6.28318530718,
+        9.42477796077,
+        12.56637061436,
+        15.70796326795,
+    ];
+    // Use approximate comparison for floating-point values
+    assert_eq!(res.len(), ans.len(), "WASM backend: output length mismatch");
+    for (i, (actual, expected)) in res.iter().zip(ans.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "WASM backend: value mismatch at index {i}: {actual} vs {expected}"
+        );
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_stereo_output() {
+    // Test stereo (tuple) output from dsp() in WASM backend.
+    // dsp() returns (0.5, -0.5); the runtime must dereference the tuple
+    // pointer from linear memory to extract L and R channels.
+    let res = run_file_test_wasm("stereo_output.mmm", 3, true).unwrap();
+    // Stereo results are flattened: [L1, R1, L2, R2, L3, R3]
+    let ans = [0.5, -0.5, 0.5, -0.5, 0.5, -0.5];
+    assert_eq!(
+        res.len(),
+        ans.len(),
+        "WASM backend: stereo output length mismatch"
+    );
+    for (i, (actual, expected)) in res.iter().zip(ans.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-10,
+            "WASM backend: stereo sample {i} mismatch: {actual} vs {expected}"
+        );
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_record_default_adsr() {
+    let res = run_file_test_wasm("wasm_record_default_adsr.mmm", 8, false).unwrap();
+    assert_eq!(res.len(), 8, "WASM backend: output length mismatch");
+    assert!(
+        res.iter().any(|x| x.abs() > 1e-6),
+        "WASM backend: record default ADSR unexpectedly produced silence"
+    );
+    for i in 1..res.len() {
+        assert!(
+            res[i] < res[i - 1],
+            "WASM backend: record default ADSR should monotonically decrease at index {i}: {} !< {}",
+            res[i],
+            res[i - 1]
+        );
+    }
 }

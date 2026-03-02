@@ -10,6 +10,7 @@ members = [
     "crates/lib/plugins/mimium-symphonia",
     "crates/lib/plugins/mimium-midi",
     "crates/lib/plugins/mimium-guitools",
+    "crates/lib/plugins/mimium-plugin-macros",
     "crates/bin/mimium-cli",
     "crates/bin/mimium-fmt",
     "crates/bin/mimium-diff-visualizer",
@@ -37,6 +38,7 @@ mimium-midi = { path = "crates/lib/plugins/mimium-midi", version = "3.2.0" }
 mimium-symphonia = { path = "crates/lib/plugins/mimium-symphonia", version = "3.2.0" }
 mimium-scheduler = { path = "crates/lib/plugins/mimium-scheduler", version = "3.2.0" }
 mimium-guitools = { path = "crates/lib/plugins/mimium-guitools", version = "3.2.0" }
+mimium-plugin-macros = { path = "crates/lib/plugins/mimium-plugin-macros", version = "3.2.0" }
 mimium-cli = { path = "crates/bin/mimium-cli", version = "3.2.0" }
 mimium-fmt = { path = "crates/bin/mimium-fmt", version = "3.2.0" }
 mimium-language-server = { path = "crates/bin/mimium-language-server", version = "3.2.0" }
@@ -49,6 +51,7 @@ atomic_float = "1.1.0"
 log = "0.4.28"
 colog = "1.3.0"
 thiserror = "2.0"
+bincode = "1.3"
 
 
 # do not add git tag for each crates on release.

@@ -1,5 +1,7 @@
 use std::collections::LinkedList;
 
+use serde::{Deserialize, Serialize};
+
 use crate::interner::Symbol;
 
 type EnvInner<T> = LinkedList<Vec<(Symbol, T)>>;
@@ -8,7 +10,7 @@ type EnvInner<T> = LinkedList<Vec<(Symbol, T)>>;
 ///
 /// Each scope is represented by a vector of bindings and the whole stack is
 /// maintained as a `LinkedList`.  The top of the stack is the innermost scope.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Environment<T>(pub EnvInner<T>);
 
 /// Result of name lookup on [`Environment`].

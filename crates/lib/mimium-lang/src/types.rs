@@ -3,6 +3,8 @@ use std::{
     sync::{Arc, RwLock},
 };
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     format_vec,
     interner::{Symbol, TypeNodeId, with_session_globals},
@@ -12,7 +14,7 @@ use crate::{
 
 /// Basic types that are not boxed.
 /// They should be splitted semantically as the type of `feed x.e`cannot take function type.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PType {
     Unit,
     Int,
@@ -55,7 +57,7 @@ impl TypeVar {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RecordTypeField {
     pub key: Symbol,
     pub ty: TypeNodeId,
@@ -160,7 +162,7 @@ impl PartialEq for Type {
 }
 
 // currently, this refers to the number of registers
-pub type TypeSize = u8;
+pub type TypeSize = u16;
 
 impl Type {
     // check if contains any function type in its member.
@@ -174,6 +176,9 @@ impl Type {
                 .any(|RecordTypeField { ty, .. }| ty.to_type().contains_function()),
             Type::Union(t) => t.iter().any(|t| t.to_type().contains_function()),
             Type::Boxed(t) => t.to_type().contains_function(),
+            // TypeAlias may resolve to a function type, so conservatively
+            // return true to ensure proper refcount management.
+            Type::TypeAlias(_) => true,
             _ => false,
         }
     }
@@ -194,6 +199,9 @@ impl Type {
                 // This ensures proper reference counting for all variant types.
                 true
             }
+            // TypeAlias may resolve to a boxed or UserSum type, so conservatively
+            // return true to ensure proper refcount management.
+            Type::TypeAlias(_) => true,
             _ => false,
         }
     }
@@ -228,6 +236,28 @@ impl Type {
             Type::Code(t) => t.to_type().contains_type_scheme(),
             Type::Union(t) => t.iter().any(|t| t.to_type().contains_type_scheme()),
             Type::Boxed(t) => t.to_type().contains_type_scheme(),
+            _ => false,
+        }
+    }
+
+    /// Returns `true` when the type still contains unresolved components
+    /// (`Unknown`, `TypeScheme`, or unresolved `Intermediate`) that prevent
+    /// concrete monomorphization.
+    pub fn contains_unresolved(&self) -> bool {
+        match self {
+            Type::Unknown | Type::TypeScheme(_) => true,
+            Type::Intermediate(_) => true,
+            Type::Array(t) | Type::Ref(t) | Type::Code(t) | Type::Boxed(t) => {
+                t.to_type().contains_unresolved()
+            }
+            Type::Tuple(t) => t.iter().any(|t| t.to_type().contains_unresolved()),
+            Type::Record(t) => t
+                .iter()
+                .any(|RecordTypeField { ty, .. }| ty.to_type().contains_unresolved()),
+            Type::Function { arg, ret } => {
+                arg.to_type().contains_unresolved() || ret.to_type().contains_unresolved()
+            }
+            Type::Union(t) => t.iter().any(|t| t.to_type().contains_unresolved()),
             _ => false,
         }
     }
@@ -325,7 +355,13 @@ impl Type {
             Type::Ref(x) => format!("&{}", x.to_type().to_string_for_error()),
             Type::Boxed(x) => format!("boxed({})", x.to_type().to_string_for_error()),
             Type::Code(c) => format!("`({})", c.to_type().to_string_for_error()),
-            Type::Intermediate(_id) => "?".to_string(),
+            Type::Intermediate(cell) => {
+                let tv = cell.read().unwrap();
+                match tv.parent {
+                    Some(parent) => parent.to_type().to_string_for_error(),
+                    None => format!("unresolved type variable ?{}", tv.var.0),
+                }
+            }
             // if no special treatment is needed, forward to the Display implementation
             x => x.to_string(),
         }
@@ -590,6 +626,7 @@ impl fmt::Display for Type {
 }
 
 pub mod builder;
+mod serde_impl;
 
 // #[cfg(test)]
 // mod type_test {

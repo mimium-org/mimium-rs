@@ -1,0 +1,9 @@
+type alias Mapper = (float)->float
+
+fn make_mapper() -> Mapper {
+    |x: float| x + 1.0
+}
+
+fn dsp() {
+    make_mapper()(1.0)
+}

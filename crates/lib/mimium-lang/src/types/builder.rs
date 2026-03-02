@@ -3,26 +3,26 @@ use super::{PType, Type};
 #[macro_export]
 macro_rules! unit {
     () => {
-        Type::Primitive(PType::Unit).into_id()
+        $crate::types::Type::Primitive($crate::types::PType::Unit).into_id()
     };
 }
 
 #[macro_export]
 macro_rules! integer {
     () => {
-        Type::Primitive(PType::Int).into_id()
+        $crate::types::Type::Primitive($crate::types::PType::Int).into_id()
     };
 }
 #[macro_export]
 macro_rules! numeric {
     () => {
-        Type::Primitive(PType::Numeric).into_id()
+        $crate::types::Type::Primitive($crate::types::PType::Numeric).into_id()
     };
 }
 #[macro_export]
 macro_rules! string_t {
     () => {
-        Type::Primitive(PType::String).into_id()
+        $crate::types::Type::Primitive($crate::types::PType::String).into_id()
     };
 }
 #[macro_export]

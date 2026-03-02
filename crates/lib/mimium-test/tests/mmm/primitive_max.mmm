@@ -1,0 +1,4 @@
+// Test max function
+fn dsp(){
+    max(3.5, 2.1)
+}

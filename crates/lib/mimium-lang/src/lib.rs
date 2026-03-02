@@ -47,6 +47,8 @@ pub struct ExecContext {
     vm: Option<runtime::vm::Machine>,
     plugins: Vec<Box<dyn Plugin>>,
     sys_plugins: Vec<DynSystemPlugin>,
+    #[cfg(not(target_arch = "wasm32"))]
+    plugin_loader: Option<plugin::loader::PluginLoader>,
     path: Option<PathBuf>,
     config: Config,
 }
@@ -69,6 +71,8 @@ impl ExecContext {
             vm: None,
             plugins,
             sys_plugins,
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_loader: None,
             path,
             config,
         }
@@ -87,12 +91,138 @@ impl ExecContext {
     ) -> impl ExactSizeIterator<Item = &mut DynSystemPlugin> {
         self.sys_plugins.iter_mut()
     }
+
+    /// Collect audio handles from all system plugins.
+    ///
+    /// This calls `freeze_audio_handle()` on each plugin and returns all
+    /// non-None handles. Should be called after compilation (macros expanded)
+    /// but before the runtime is moved to the audio thread.
+    pub fn freeze_audio_handles(&mut self) -> Vec<Box<dyn std::any::Any + Send>> {
+        self.sys_plugins
+            .iter_mut()
+            .filter_map(|p| p.freeze_audio_handle())
+            .collect()
+    }
+
+    /// Collect WASM plugin function handlers from all system plugins.
+    ///
+    /// Each plugin's `freeze_for_wasm()` returns an optional map of function
+    /// names to closures.  This method merges all maps into one.  Should be
+    /// called after compilation but before WASM module instantiation.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn freeze_wasm_plugin_fns(&mut self) -> Option<runtime::wasm::WasmPluginFnMap> {
+        let merged: runtime::wasm::WasmPluginFnMap = self
+            .sys_plugins
+            .iter_mut()
+            .filter_map(|p| p.freeze_for_wasm())
+            .fold(runtime::wasm::WasmPluginFnMap::new(), |mut acc, map| {
+                acc.extend(map);
+                acc
+            });
+        if merged.is_empty() {
+            None
+        } else {
+            Some(merged)
+        }
+    }
+
+    /// Collect WASM audio workers from all system plugins.
+    ///
+    /// Each plugin's `generate_wasm_audioworker()` returns an optional
+    /// worker that will be called once per sample inside
+    /// [`WasmDspRuntime::run_dsp`].  Should be called after
+    /// `freeze_wasm_plugin_fns()`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn generate_wasm_audioworkers(
+        &mut self,
+    ) -> Vec<Box<dyn runtime::wasm::WasmSystemPluginAudioWorker>> {
+        self.sys_plugins
+            .iter_mut()
+            .filter_map(|p| p.generate_wasm_audioworker())
+            .collect()
+    }
+
+    /// Call `on_init_wasm()` on all system plugins.
+    ///
+    /// Should be called before WASM `main()` execution, mirroring the
+    /// native VM path in [`run_main`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn run_wasm_on_init(&self, engine: &mut runtime::wasm::engine::WasmEngine) {
+        self.sys_plugins.iter().for_each(|plug| {
+            let _ = plug.on_init_wasm(engine);
+        });
+    }
+
+    /// Call `after_main_wasm()` on all system plugins.
+    ///
+    /// Should be called after WASM `main()` execution, mirroring the
+    /// native VM path in [`run_main`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn run_wasm_after_main(&self, engine: &mut runtime::wasm::engine::WasmEngine) {
+        self.sys_plugins.iter().for_each(|plug| {
+            let _ = plug.after_main_wasm(engine);
+        });
+    }
+
     //todo: make it to builder pattern
     pub fn add_system_plugin<T: SystemPlugin + 'static>(&mut self, plug: T) {
         let plugin_dyn = DynSystemPlugin::from(plug);
 
         self.sys_plugins.push(plugin_dyn)
     }
+
+    /// Initialize the dynamic plugin loader.
+    ///
+    /// This must be called before loading any dynamic plugins.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn init_plugin_loader(&mut self) {
+        if self.plugin_loader.is_none() {
+            self.plugin_loader = Some(plugin::loader::PluginLoader::new());
+        }
+    }
+
+    /// Load a dynamic plugin from the specified path.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the plugin library (without extension).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the plugin cannot be loaded or is invalid.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load_dynamic_plugin<P: AsRef<std::path::Path>>(
+        &mut self,
+        path: P,
+    ) -> Result<(), plugin::loader::PluginLoaderError> {
+        self.init_plugin_loader();
+        if let Some(loader) = &mut self.plugin_loader {
+            loader.load_plugin(path)?;
+        }
+        Ok(())
+    }
+
+    /// Load all plugins from the standard plugin directory.
+    ///
+    /// This is a convenience method that loads all compatible plugins
+    /// from the default plugin directory.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load_builtin_dynamic_plugins(
+        &mut self,
+    ) -> Result<(), plugin::loader::PluginLoaderError> {
+        self.init_plugin_loader();
+        if let Some(loader) = &mut self.plugin_loader {
+            loader.load_builtin_plugins()?;
+        }
+        Ok(())
+    }
+
+    /// Get mutable reference to the plugin loader.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn get_plugin_loader_mut(&mut self) -> Option<&mut plugin::loader::PluginLoader> {
+        self.plugin_loader.as_mut()
+    }
+
     pub fn get_compiler(&self) -> Option<&compiler::Context> {
         self.compiler.as_ref()
     }
@@ -111,32 +241,66 @@ impl ExecContext {
     pub fn get_vm_mut(&mut self) -> Option<&mut runtime::vm::Machine> {
         self.vm.as_mut()
     }
-    fn get_extfun_types(&self) -> Vec<ExtFunTypeInfo> {
-        plugin::get_extfun_types(&self.plugins)
-            .chain(
-                self.sys_plugins
-                    .iter()
-                    .flat_map(|p| p.clsinfos.clone().into_iter().map(ExtFunTypeInfo::from)),
-            )
-            .collect()
+    /// Collect type information for all external functions from all plugin
+    /// sources: regular plugins, system plugins, and dynamically loaded plugins.
+    pub fn get_extfun_types(&self) -> Vec<ExtFunTypeInfo> {
+        let static_types = plugin::get_extfun_types(&self.plugins).chain(
+            self.sys_plugins
+                .iter()
+                .flat_map(|p| p.clsinfos.clone().into_iter().map(ExtFunTypeInfo::from)),
+        );
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let dynamic_types = self
+                .plugin_loader
+                .as_ref()
+                .map(|loader| loader.get_type_infos().into_iter())
+                .into_iter()
+                .flatten();
+
+            static_types.chain(dynamic_types).collect()
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            static_types.collect()
+        }
     }
     fn get_macro_types(&self) -> Vec<Box<dyn MacroFunction>> {
-        plugin::get_macro_functions(&self.plugins)
-            .chain(self.sys_plugins.iter().flat_map(|p| {
-                p.macroinfos
-                    .iter()
-                    .map(|i| Box::new(i.clone()) as Box<dyn MacroFunction>)
-            }))
-            .collect()
-    }
-    pub fn prepare_compiler(&mut self) {
-        let macroinfos = plugin::get_macro_functions(&self.plugins).chain(
+        let static_macros = plugin::get_macro_functions(&self.plugins).chain(
             self.sys_plugins.iter().flat_map(|p| {
                 p.macroinfos
                     .iter()
                     .map(|i| Box::new(i.clone()) as Box<dyn MacroFunction>)
             }),
         );
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let dynamic_macros = self
+                .plugin_loader
+                .as_ref()
+                .map(|loader| {
+                    loader
+                        .get_macro_functions()
+                        .into_iter()
+                        .map(|(_, _, macro_fn)| macro_fn)
+                })
+                .into_iter()
+                .flatten();
+
+            static_macros.chain(dynamic_macros).collect()
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            static_macros.collect()
+        }
+    }
+    pub fn prepare_compiler(&mut self) {
+        let macroinfos = self.get_macro_types();
+
         self.compiler = Some(compiler::Context::new(
             self.get_extfun_types(),
             macroinfos,
@@ -157,13 +321,28 @@ impl ExecContext {
 
     /// Build a VM from the given bytecode [`Program`].
     pub fn prepare_machine_with_bytecode(&mut self, prog: Program) {
-        let cls =
+        let static_cls =
             plugin::get_ext_closures(&self.plugins).chain(self.sys_plugins.iter().flat_map(|p| {
                 p.clsinfos
                     .clone()
                     .into_iter()
                     .map(|c| Box::new(c) as Box<dyn MachineFunction>)
             }));
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let cls: Box<dyn Iterator<Item = Box<dyn MachineFunction>>> = {
+            let dynamic_cls = self
+                .plugin_loader
+                .as_ref()
+                .map(|loader| loader.get_runtime_functions().into_iter())
+                .into_iter()
+                .flatten();
+            Box::new(static_cls.chain(dynamic_cls))
+        };
+
+        #[cfg(target_arch = "wasm32")]
+        let cls: Box<dyn Iterator<Item = Box<dyn MachineFunction>>> = Box::new(static_cls);
+
         let vm = vm::Machine::new(prog, [].into_iter(), cls);
         self.vm = Some(vm);
     }
@@ -175,14 +354,12 @@ impl ExecContext {
     pub fn run_main(&mut self) -> ReturnCode {
         if let Some(vm) = self.vm.as_mut() {
             self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
-                //todo: encapsulate unsafety within SystemPlugin functionality
-                let p = unsafe { plug.inner.get().as_mut().unwrap_unchecked() };
+                let mut p = plug.borrow_inner_mut();
                 let _ = p.on_init(vm);
             });
             let res = vm.execute_main();
             self.sys_plugins.iter().for_each(|plug: &DynSystemPlugin| {
-                //todo: encapsulate unsafety within SystemPlugin functionality
-                let p = unsafe { plug.inner.get().as_mut().unwrap_unchecked() };
+                let mut p = plug.borrow_inner_mut();
                 let _ = p.after_main(vm);
             });
             res
@@ -192,7 +369,7 @@ impl ExecContext {
     }
     pub fn try_get_main_loop(&mut self) -> Option<Box<dyn FnOnce()>> {
         let mut mainloops = self.sys_plugins.iter_mut().filter_map(|p| {
-            let p = unsafe { p.inner.get().as_mut().unwrap_unchecked() };
+            let mut p = p.borrow_inner_mut();
             p.try_get_main_loop()
         });
         let res = mainloops.next();

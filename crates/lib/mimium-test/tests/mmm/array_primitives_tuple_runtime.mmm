@@ -1,0 +1,17 @@
+fn dsp(){
+    let src = [(1.0,10.0), (2.0,20.0), (3.0,30.0)]
+
+    let (head, rest_head) = split_head(src)
+    let prepended = prepend((0.0,0.0), rest_head)
+
+    let (rest_tail, tail) = split_tail(src)
+    let (h0,h1) = head
+    let (p10,p11) = prepended[1]
+    let (t0,t1) = tail
+    let (rt10,rt11) = rest_tail[1]
+
+    h0 + h1
+    + p10 + p11
+    + t0 + t1
+    + rt10 + rt11
+}

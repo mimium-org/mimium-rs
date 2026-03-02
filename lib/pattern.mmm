@@ -1,0 +1,191 @@
+
+use osc::phasor
+pub type alias Time = float
+pub type alias Arc = {
+    start: Time,
+    end: Time
+}
+pub type alias Event  = {
+    arc:Arc,
+    active:Arc,
+    val: float
+}
+pub type alias Pattern = (Arc)->[Event]
+pub type alias Note = {val:float, gate:float}
+#stage(macro)
+fn map(arr:[a], f:(a)->b)->[b]{
+    if ((arr |> length_array) > 0){
+        let (head,rest) = arr |> split_head
+        prepend(f(head), map(rest, f))
+    }else{
+       []
+    }
+}
+pub fn silence()->Pattern{
+    |arc|{
+        []
+    }
+}
+pub fn pure(v:float)->Pattern{
+    |arc|{
+        let e = {arc=arc,
+                active=arc,
+                val=v}
+        [e]
+    }
+}
+fn concat_events(a:[Event], b:[Event])->[Event]{
+    if ((a |> length_array) > 0){
+        let (head,rest) = a |> split_head
+        prepend(head, concat_events(rest,b))
+    }else{
+        b
+    }
+}
+fn cat_inner(pts:[Pattern], i:float, n:float, arc:Arc)->[Event]{
+    let (head,rest) = pts |> split_head
+    let step = (arc.end - arc.start)/n
+    let sub_arc = { start=arc.start + i*step,
+                    end=arc.start + (i+1.0)*step}
+    let current = head(sub_arc)
+    if ((rest |> length_array) > 0){
+        concat_events(current, cat_inner(rest, i+1.0, n, arc))
+    }else{
+        current
+    }
+}
+pub fn cat(pts:[Pattern])->Pattern{
+    |arc:Arc|{
+        let n = length_array(pts)
+        if (n > 0.0){
+            cat_inner(pts, 0.0, n, arc)
+        }else{
+          []         
+        }
+    }
+}
+pub fn slowcat(pts:[Pattern])->Pattern{
+    |arc:Arc|{
+        let n = length_array(pts)
+        if (n > 0.0){
+            cat_inner(pts, 0.0, 1, arc)
+        }else{
+          []         
+        }
+    }
+}
+pub fn alternate(inserted:[Pattern],target:(Pattern)->Pattern)->Pattern{
+    map(inserted,target) |> slowcat
+}
+
+pub fn seq(vals)->Pattern{
+    map(vals,pure) |> cat
+}
+fn reverse_arc(arc:Arc,last_time:float)->Arc{
+    {start = last_time - arc.end, end = last_time - arc.start}
+}
+fn reverse_events(events:[Event], last_time:float, acc:[Event])->[Event]{
+    if ((events |> length_array) > 0.0){
+        let (head,rest) = events |> split_head
+        let rev:Event = {
+            head <- arc = reverse_arc(head.arc, last_time),
+                    active = reverse_arc(head.active, last_time)
+        }
+        reverse_events(rest, last_time, prepend(rev, acc))
+    }else{
+        acc
+    }
+}
+pub fn reverse(pt:Pattern)->Pattern{
+    |arc:Arc|{
+        let events = pt(arc)
+        if ((events |> length_array) > 0.0){
+            let last = events[(events |> length_array) - 1]
+            let last_time = last.arc.end
+            reverse_events(events, last_time, [])
+        }else{
+            []
+        }
+    }
+}
+
+pub fn legato(ratio,target:Pattern)->Pattern{
+    |arc|{
+        let events = target(arc)
+        map(events,|e:Event| {
+            let start = e.active.start
+            let len = (e.active.end - e.active.start) * ratio
+            let active:Arc = {start = start, end = start+len}
+            {
+             arc = e.arc,
+             active = active,
+             val = e.val}
+        })
+    }
+}
+
+#stage(main)
+/// events is assumed to be sorted by e.arc.start (ascending).
+fn value_at_phase(events:[Event], phase:float, current:float)->float{
+    if ((events |> length_array) > 0.0){
+        let (head,rest) = events |> split_head
+        if (phase >= head.arc.start){
+            value_at_phase(rest, phase, head.val)
+        }else{
+            current
+        }
+    }else{
+        current
+    }
+}
+fn is_in_arc(arc:Arc,phase:float){
+    if (phase >= arc.start && phase < arc.end) 1 else 0 
+}
+fn note_at_phase(events:[Event], phase:float, current:Event)->Note{
+    if ((events |> length_array) > 0.0){
+        let (head,rest) = events |> split_head
+        let next:Event = {
+            arc = {start = head.arc.start, end = head.arc.end},
+            active = {start = head.active.start, end = head.active.end},
+            val = head.val
+        }
+        if (phase >= head.arc.start){
+            note_at_phase(rest, phase, next)
+        }else{
+            {val = current.val + (current.arc.end - current.arc.start) * 0.0,
+             gate = is_in_arc(current.active,phase)}
+        }
+    }else{
+        { val = current.val + (current.arc.end - current.arc.start) * 0.0,
+          gate = is_in_arc(current.active,phase)
+        }
+    }
+}
+
+#stage(macro)
+fn get_events_len(events:[Event])->float{
+    let (rest,tail) = split_tail(events)
+    tail.arc.end
+}
+/// convert pattern to stream for continous value. so ignore the end of arc. just see the start of arc as event time.
+pub fn run(pt:Pattern, cycle_per_sec:float)->`float{
+    let events = pt({start=0.0,end=1.0})
+    let end = events |> get_events_len
+    `{
+        let phase = phasor($(cycle_per_sec/end |> lift), 0.0) * $(end|>lift)
+        let v = value_at_phase($(events |> lift), phase, 0.0)
+        v
+    }   
+}
+
+pub fn run_note(pt:Pattern, cycle_per_sec:float)->`Note{
+    let events = pt({start=0.0,end=1.0})
+    let empty_arc:Arc = {start = 0.0, end = 0.0}
+    let end = events |> get_events_len
+    let init_event:Event = {arc = empty_arc, active = empty_arc, val = 0.0}
+    `{
+        let phase = phasor($(cycle_per_sec/end |> lift), 0.0) * $(end|>lift)
+        let v = note_at_phase($(events |> lift), phase, $(init_event |> lift))
+        v
+    }   
+}

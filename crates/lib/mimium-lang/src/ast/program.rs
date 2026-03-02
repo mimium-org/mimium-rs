@@ -1,5 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
 
 use super::resolve_include::resolve_include;
 use super::statement::Statement;
@@ -8,13 +10,13 @@ use crate::ast::statement::into_then_expr;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::TypedId;
 use crate::types::{RecordTypeField, Type};
-use crate::utils::error::ReportableError;
+use crate::utils::error::{ReportableError, SimpleError};
 use crate::utils::metadata::{Location, Span};
 
 use super::StageKind;
 
 /// Visibility modifier for module members
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub enum Visibility {
     #[default]
     Private,
@@ -22,7 +24,7 @@ pub enum Visibility {
 }
 
 /// Qualified path for module references (e.g., modA::modB::func)
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct QualifiedPath {
     pub segments: Vec<Symbol>,
 }
@@ -149,6 +151,11 @@ fn mangle_qualified_name(prefix: &[Symbol], name: Symbol) -> Symbol {
     }
 }
 
+fn is_reserved_type_param_name(name: Symbol) -> bool {
+    let s = name.as_str();
+    s.len() == 1 && s.as_bytes()[0].is_ascii_lowercase()
+}
+
 /// Convert a full qualified path (all segments) to a mangled symbol name.
 /// For example, `[foo, bar, baz]` becomes `foo$bar$baz`.
 fn mangle_qualified_path(segments: &[Symbol]) -> Symbol {
@@ -172,20 +179,14 @@ fn resolve_external_module(
     module_info: &mut ModuleInfo,
 ) -> Vec<(Statement, Location)> {
     let module_filename = format!("{}.mmm", name.as_str());
-    let (imported_program, mut new_errs) =
+    let (imported, mut new_errs) =
         resolve_include(file_path.to_str().unwrap(), &module_filename, span);
     errs.append(&mut new_errs);
 
-    // Get the actual file path for the imported module
-    let module_file_path = file_path
-        .parent()
-        .map(|p| p.join(&module_filename))
-        .unwrap_or_else(|| PathBuf::from(&module_filename));
-
     // Process imported program with the module prefix
     stmts_from_program_with_prefix(
-        imported_program.statements,
-        module_file_path,
+        imported.program.statements,
+        imported.resolved_path,
         errs,
         module_prefix,
         module_info,
@@ -220,6 +221,8 @@ pub struct ModuleInfo {
     pub type_declarations: TypeDeclarationMap,
     /// Type aliases for simple type aliases
     pub type_aliases: TypeAliasMap,
+    /// Loaded external modules to avoid duplicate loading when resolving `use` statements
+    pub loaded_external_modules: HashSet<Symbol>,
 }
 
 impl ModuleInfo {
@@ -288,9 +291,12 @@ fn stmts_from_program_with_prefix(
     module_prefix: &[Symbol],
     module_info: &mut ModuleInfo,
 ) -> Vec<(Statement, Location)> {
-    statements
-        .into_iter()
-        .filter_map(|(stmt, span)| match stmt {
+    // Track the current stage so that module/use wrappers can restore it correctly.
+    let mut current_stage = StageKind::Main;
+    let mut result = Vec::new();
+
+    for (stmt, span) in statements {
+        let stmts: Option<Vec<(Statement, Location)>> = match stmt {
             ProgramStatement::FnDefinition {
                 visibility,
                 name,
@@ -332,26 +338,41 @@ fn stmts_from_program_with_prefix(
                 )])
             }
             ProgramStatement::GlobalStatement(statement) => {
+                if !module_prefix.is_empty() {
+                    collect_statement_bindings(&statement)
+                        .into_iter()
+                        .for_each(|name| {
+                            module_info
+                                .module_context_map
+                                .insert(name, module_prefix.to_vec());
+                        });
+                }
                 Some(vec![(statement, Location::new(span, file_path.clone()))])
             }
             ProgramStatement::Comment(_) | ProgramStatement::DocComment(_) => None,
             ProgramStatement::Import(filename) => {
-                let (imported_program, mut new_errs) =
+                let (imported, mut new_errs) =
                     resolve_include(file_path.to_str().unwrap(), filename.as_str(), span.clone());
                 errs.append(&mut new_errs);
                 let res =
-                    stmts_from_program(imported_program, file_path.clone(), errs, module_info);
+                    stmts_from_program(imported.program, imported.resolved_path, errs, module_info);
                 Some(res)
             }
-            ProgramStatement::StageDeclaration { stage } => Some(vec![(
-                Statement::DeclareStage(stage),
-                Location::new(span, file_path.clone()),
-            )]),
+            ProgramStatement::StageDeclaration { stage } => {
+                current_stage = stage.clone();
+                Some(vec![(
+                    Statement::DeclareStage(stage),
+                    Location::new(span, file_path.clone()),
+                )])
+            }
             ProgramStatement::ModuleDefinition {
                 visibility: _,
                 name,
                 body,
             } => {
+                let module_symbol = mangle_qualified_name(module_prefix, name);
+                module_info.loaded_external_modules.insert(module_symbol);
+
                 // Flatten module contents with qualified names
                 let mut new_prefix = module_prefix.to_vec();
                 new_prefix.push(name);
@@ -381,12 +402,12 @@ fn stmts_from_program_with_prefix(
                 };
 
                 // Wrap module contents with stage boundary:
-                // - Start with implicit #stage(main)
-                // - End with #stage(main) to restore default stage
-                // This ensures stage declarations inside modules don't leak out
+                // - Start with #stage(main) to isolate module from consumer's stage context
+                // - End with the consumer's current stage to restore it after module processing
                 let module_loc = Location::new(span, file_path.clone());
-                let maindecl = (Statement::DeclareStage(StageKind::Main), module_loc.clone());
-                let result = [vec![maindecl.clone()], inner_stmts, vec![maindecl]].concat();
+                let start_decl = (Statement::DeclareStage(StageKind::Main), module_loc.clone());
+                let restore_decl = (Statement::DeclareStage(current_stage.clone()), module_loc);
+                let result = [vec![start_decl], inner_stmts, vec![restore_decl]].concat();
 
                 Some(result)
             }
@@ -395,14 +416,59 @@ fn stmts_from_program_with_prefix(
                 path,
                 target,
             } => {
+                let imported_stmts = if let Some(base_module) = path.segments.first().copied() {
+                    let local_module_symbol = mangle_qualified_name(module_prefix, base_module);
+                    let absolute_module_symbol = mangle_qualified_name(&[], base_module);
+                    if module_info
+                        .loaded_external_modules
+                        .contains(&local_module_symbol)
+                        || module_info
+                            .loaded_external_modules
+                            .contains(&absolute_module_symbol)
+                    {
+                        vec![]
+                    } else {
+                        module_info
+                            .loaded_external_modules
+                            .insert(absolute_module_symbol);
+                        let new_prefix = vec![base_module];
+                        let inner_stmts = resolve_external_module(
+                            base_module,
+                            &file_path,
+                            span.clone(),
+                            errs,
+                            &new_prefix,
+                            module_info,
+                        );
+                        let module_loc = Location::new(span.clone(), file_path.clone());
+                        let start_decl =
+                            (Statement::DeclareStage(StageKind::Main), module_loc.clone());
+                        let restore_decl =
+                            (Statement::DeclareStage(current_stage.clone()), module_loc);
+                        [vec![start_decl], inner_stmts, vec![restore_decl]].concat()
+                    }
+                } else {
+                    vec![]
+                };
+
                 process_use_statement(&visibility, &path, &target, module_prefix, module_info);
-                None
+                (!imported_stmts.is_empty()).then_some(imported_stmts)
             }
             ProgramStatement::TypeAlias {
                 visibility,
                 name,
                 target_type,
             } => {
+                if is_reserved_type_param_name(name) {
+                    errs.push(Box::new(SimpleError {
+                        message: format!(
+                            "type name '{}' is reserved for explicit type parameters (single lowercase letter)",
+                            name.as_str()
+                        ),
+                        span: Location::new(span.clone(), file_path.clone()),
+                    }));
+                    continue;
+                }
                 // Store type alias for later use in type environment
                 let mangled_name = mangle_qualified_name(module_prefix, name);
                 module_info.type_aliases.insert(mangled_name, target_type);
@@ -424,6 +490,16 @@ fn stmts_from_program_with_prefix(
                 variants,
                 is_recursive,
             } => {
+                if is_reserved_type_param_name(name) {
+                    errs.push(Box::new(SimpleError {
+                        message: format!(
+                            "type name '{}' is reserved for explicit type parameters (single lowercase letter)",
+                            name.as_str()
+                        ),
+                        span: Location::new(span.clone(), file_path.clone()),
+                    }));
+                    continue;
+                }
                 // Store type declaration for later use in type environment
                 let mangled_name = mangle_qualified_name(module_prefix, name);
                 module_info.type_declarations.insert(
@@ -433,11 +509,11 @@ fn stmts_from_program_with_prefix(
                         is_recursive,
                     },
                 );
-                // Track visibility for module members
+                // Track visibility for type declarations
+                module_info
+                    .visibility_map
+                    .insert(mangled_name, visibility == Visibility::Public);
                 if !module_prefix.is_empty() {
-                    module_info
-                        .visibility_map
-                        .insert(mangled_name, visibility == Visibility::Public);
                     // Track module context for relative path resolution
                     module_info
                         .module_context_map
@@ -449,9 +525,61 @@ fn stmts_from_program_with_prefix(
                 Statement::Error,
                 Location::new(span, file_path.clone()),
             )]),
-        })
-        .flatten()
-        .collect()
+        };
+        if let Some(stmts) = stmts {
+            result.extend(stmts);
+        }
+    }
+    result
+}
+
+fn collect_pattern_bindings(pat: &crate::pattern::Pattern, out: &mut Vec<Symbol>) {
+    match pat {
+        crate::pattern::Pattern::Single(name) => out.push(*name),
+        crate::pattern::Pattern::Tuple(items) => {
+            items.iter().for_each(|p| collect_pattern_bindings(p, out));
+        }
+        crate::pattern::Pattern::Record(fields) => {
+            fields
+                .iter()
+                .for_each(|(_, p)| collect_pattern_bindings(p, out));
+        }
+        crate::pattern::Pattern::Placeholder | crate::pattern::Pattern::Error => {}
+    }
+}
+
+fn collect_statement_bindings(stmt: &Statement) -> Vec<Symbol> {
+    match stmt {
+        Statement::Let(typed_pat, _) => {
+            let mut symbols = vec![];
+            collect_pattern_bindings(&typed_pat.pat, &mut symbols);
+            symbols
+        }
+        Statement::LetRec(id, _) => vec![id.id],
+        Statement::Single(expr) => collect_expr_bindings(*expr),
+        _ => vec![],
+    }
+}
+
+fn collect_expr_bindings(expr: ExprNodeId) -> Vec<Symbol> {
+    match expr.to_expr() {
+        Expr::Let(typed_pat, _body, then_opt) => {
+            let mut symbols = vec![];
+            collect_pattern_bindings(&typed_pat.pat, &mut symbols);
+            if let Some(then) = then_opt {
+                symbols.extend(collect_expr_bindings(then));
+            }
+            symbols
+        }
+        Expr::LetRec(id, _body, then_opt) => {
+            let mut symbols = vec![id.id];
+            if let Some(then) = then_opt {
+                symbols.extend(collect_expr_bindings(then));
+            }
+            symbols
+        }
+        _ => vec![],
+    }
 }
 
 /// Process a use statement, registering aliases in module_info.
@@ -466,25 +594,41 @@ fn process_use_statement(
     module_prefix: &[Symbol],
     module_info: &mut ModuleInfo,
 ) {
-    // Helper to register an alias and optionally mark as public
-    let mut register_alias = |alias_name: Symbol, mangled: Symbol| {
+    let resolve_use_mangled = |segments: &[Symbol], info: &ModuleInfo| {
+        let absolute_mangled = mangle_qualified_path(segments);
+        let (resolved, _) =
+            resolve_qualified_path(segments, absolute_mangled, module_prefix, |name| {
+                info.visibility_map.contains_key(name)
+                    || info.use_alias_map.contains_key(name)
+                    || info.module_context_map.contains_key(name)
+                    || info.type_aliases.contains_key(name)
+                    || info.type_declarations.contains_key(name)
+            });
+        resolved
+    };
+
+    fn register_alias(
+        module_info: &mut ModuleInfo,
+        visibility: &Visibility,
+        module_prefix: &[Symbol],
+        alias_name: Symbol,
+        mangled: Symbol,
+    ) {
         module_info.use_alias_map.insert(alias_name, mangled);
 
-        // If pub use, register the re-exported name as public in the current module
         if *visibility == Visibility::Public {
             let exported_name = mangle_qualified_name(module_prefix, alias_name);
             module_info.visibility_map.insert(exported_name, true);
-            // Also add the mangled target as alias for the exported name
             module_info.use_alias_map.insert(exported_name, mangled);
         }
-    };
+    }
 
     match target {
         UseTarget::Single => {
             // use foo::bar creates an alias: bar -> foo$bar
             if let Some(alias_name) = path.segments.last().copied() {
-                let mangled = mangle_qualified_path(&path.segments);
-                register_alias(alias_name, mangled);
+                let mangled = resolve_use_mangled(&path.segments, module_info);
+                register_alias(module_info, visibility, module_prefix, alias_name, mangled);
             }
         }
         UseTarget::Multiple(names) => {
@@ -494,8 +638,8 @@ fn process_use_statement(
             for name in names {
                 let mut full_path = path.segments.clone();
                 full_path.push(*name);
-                let mangled = mangle_qualified_path(&full_path);
-                register_alias(*name, mangled);
+                let mangled = resolve_use_mangled(&full_path, module_info);
+                register_alias(module_info, visibility, module_prefix, *name, mangled);
             }
         }
         UseTarget::Wildcard => {

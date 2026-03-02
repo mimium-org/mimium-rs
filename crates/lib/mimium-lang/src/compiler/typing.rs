@@ -268,10 +268,53 @@ impl ReportableError for Error {
             Error::TypeMismatch {
                 left: (lty, locl),
                 right: (rty, locr),
-            } => vec![
-                (locl.clone(), lty.to_type().to_string_for_error()),
-                (locr.clone(), rty.to_type().to_string_for_error()),
-            ],
+            } => {
+                let expected = lty.get_root().to_type().to_string_for_error();
+                let found = rty.get_root().to_type().to_string_for_error();
+                let is_dummy = |loc: &Location| {
+                    loc.path.as_os_str().is_empty() || (loc.span.start == 0 && loc.span.end == 0)
+                };
+                let normalize_loc = |primary: &Location, fallback: &Location| {
+                    let mut loc = if is_dummy(primary) {
+                        fallback.clone()
+                    } else {
+                        primary.clone()
+                    };
+
+                    if loc.path.as_os_str().is_empty() {
+                        loc.path = if !primary.path.as_os_str().is_empty() {
+                            primary.path.clone()
+                        } else {
+                            fallback.path.clone()
+                        };
+                    }
+
+                    if loc.span.start == 0 && loc.span.end == 0 {
+                        if !(primary.span.start == 0 && primary.span.end == 0) {
+                            loc.span = primary.span.clone();
+                        } else if !(fallback.span.start == 0 && fallback.span.end == 0) {
+                            loc.span = fallback.span.clone();
+                        } else {
+                            loc.span = 0..1;
+                        }
+                    }
+                    loc
+                };
+
+                let left_loc = normalize_loc(locl, locr);
+                let right_loc = normalize_loc(locr, &left_loc);
+                if left_loc == right_loc {
+                    vec![(
+                        left_loc,
+                        format!("expected type: {expected}, found type: {found}"),
+                    )]
+                } else {
+                    vec![
+                        (left_loc, format!("expected type: {expected}")),
+                        (right_loc, format!("found type: {found}")),
+                    ]
+                }
+            }
             Error::PatternMismatch((ty, loct), (pat, locp)) => vec![
                 (loct.clone(), ty.to_type().to_string_for_error()),
                 (locp.clone(), pat.to_string()),
@@ -543,6 +586,16 @@ pub struct ConstructorInfo {
 /// Map from constructor name to its info
 pub type ConstructorEnv = HashMap<Symbol, ConstructorInfo>;
 
+/// Result of looking up a field in a (possibly wrapped) type.
+enum FieldLookup {
+    /// Field was found with this type.
+    Found(TypeNodeId),
+    /// A record was reached but the field was not present.
+    RecordWithoutField,
+    /// No record type could be reached.
+    NotRecord,
+}
+
 #[derive(Clone, Debug)]
 pub struct InferContext {
     interm_idx: IntermediateId,
@@ -552,6 +605,7 @@ pub struct InferContext {
     instantiated_map: BTreeMap<TypeSchemeId, TypeNodeId>, //from type scheme to typevar
     generalize_map: BTreeMap<IntermediateId, TypeSchemeId>,
     result_memo: BTreeMap<ExprKey, TypeNodeId>,
+    explicit_type_param_scopes: Vec<BTreeMap<Symbol, TypeNodeId>>,
     file_path: PathBuf,
     pub env: Environment<(TypeNodeId, EvalStage)>,
     /// Constructor environment for user-defined sum types
@@ -563,6 +617,8 @@ pub struct InferContext {
     /// Match expressions to check for exhaustiveness after type resolution
     match_expressions: Vec<(ExprNodeId, TypeNodeId)>,
     pub errors: Vec<Error>,
+    /// Debug: unique ID for this infer_root call
+    pub infer_root_id: usize,
 }
 struct TypeCycle(pub Vec<Symbol>);
 
@@ -582,6 +638,7 @@ impl InferContext {
             instantiated_map: Default::default(),
             generalize_map: Default::default(),
             result_memo: Default::default(),
+            explicit_type_param_scopes: Default::default(),
             file_path,
             env: Environment::<(TypeNodeId, EvalStage)>::default(),
             constructor_env: Default::default(),
@@ -589,6 +646,7 @@ impl InferContext {
             module_info,
             match_expressions: Default::default(),
             errors: Default::default(),
+            infer_root_id: usize::MAX,
         };
         res.env.extend();
         // Intrinsic types are persistent (available at all stages)
@@ -612,6 +670,64 @@ impl InferContext {
             res.register_type_aliases(type_aliases);
         }
         res
+    }
+
+    fn is_explicit_type_param_name(name: Symbol) -> bool {
+        let s = name.as_str();
+        s.len() == 1 && s.as_bytes()[0].is_ascii_lowercase()
+    }
+
+    fn collect_explicit_type_params_in_type(ty: TypeNodeId, out: &mut BTreeMap<Symbol, Location>) {
+        match ty.to_type() {
+            Type::TypeAlias(name) if Self::is_explicit_type_param_name(name) => {
+                out.entry(name).or_insert_with(|| ty.to_loc());
+            }
+            Type::Array(elem) | Type::Ref(elem) | Type::Code(elem) | Type::Boxed(elem) => {
+                Self::collect_explicit_type_params_in_type(elem, out);
+            }
+            Type::Tuple(elems) | Type::Union(elems) => elems
+                .iter()
+                .for_each(|elem| Self::collect_explicit_type_params_in_type(*elem, out)),
+            Type::Record(fields) => fields
+                .iter()
+                .for_each(|field| Self::collect_explicit_type_params_in_type(field.ty, out)),
+            Type::Function { arg, ret } => {
+                Self::collect_explicit_type_params_in_type(arg, out);
+                Self::collect_explicit_type_params_in_type(ret, out);
+            }
+            _ => {}
+        }
+    }
+
+    fn with_explicit_type_param_scope_from_types<T>(
+        &mut self,
+        types: &[TypeNodeId],
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let mut collected = BTreeMap::<Symbol, Location>::new();
+        types
+            .iter()
+            .for_each(|ty| Self::collect_explicit_type_params_in_type(*ty, &mut collected));
+        let map = collected
+            .into_iter()
+            .map(|(name, loc)| {
+                let ty = self
+                    .lookup_explicit_type_param(name)
+                    .unwrap_or_else(|| self.gen_typescheme(loc));
+                (name, ty)
+            })
+            .collect::<BTreeMap<_, _>>();
+        self.explicit_type_param_scopes.push(map);
+        let res = f(self);
+        let _ = self.explicit_type_param_scopes.pop();
+        res
+    }
+
+    fn lookup_explicit_type_param(&self, name: Symbol) -> Option<TypeNodeId> {
+        self.explicit_type_param_scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(&name).copied())
     }
 
     /// Register type declarations from ModuleInfo into the constructor environment
@@ -919,18 +1035,21 @@ impl InferContext {
     pub fn resolve_type_alias(&self, type_id: TypeNodeId) -> TypeNodeId {
         match type_id.to_type() {
             Type::TypeAlias(alias_name) => {
-                if let Some(resolved_type) = self.type_aliases.get(&alias_name) {
+                let resolved_alias_name = self.resolve_type_alias_symbol_fallback(alias_name);
+                if let Some(resolved_type) = self.type_aliases.get(&resolved_alias_name) {
                     // Recursively resolve in case the alias points to another alias
                     self.resolve_type_alias(*resolved_type)
                 } else {
                     type_id // Return original if not found (shouldn't happen)
                 }
             }
-            _ => type_id, // Not an alias, return as-is
+            _ => type_id.apply_fn(|t| self.resolve_type_alias(t)),
         }
     }
 }
 impl InferContext {
+    const TUPLE_BINOP_MAX_ARITY: usize = 16;
+
     fn intrinsic_types() -> Vec<(Symbol, TypeNodeId)> {
         let binop_ty = function!(vec![numeric!(), numeric!()], numeric!());
         let binop_names = [
@@ -976,6 +1095,278 @@ impl InferContext {
         .chain(binds)
         .chain(unibinds)
         .collect()
+    }
+
+    fn is_tuple_arithmetic_binop_label(label: Symbol) -> bool {
+        matches!(
+            label.as_str(),
+            intrinsics::ADD | intrinsics::SUB | intrinsics::MULT | intrinsics::DIV
+        )
+    }
+
+    fn try_get_tuple_arithmetic_binop_label(&self, fun: ExprNodeId) -> Option<Symbol> {
+        match fun.to_expr() {
+            Expr::Var(name) if Self::is_tuple_arithmetic_binop_label(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    fn resolve_for_tuple_binop(&self, ty: TypeNodeId) -> TypeNodeId {
+        let resolved_alias = self.resolve_type_alias(ty);
+        Self::substitute_type(resolved_alias)
+    }
+
+    fn type_loc_or_expr_loc(&self, ty: TypeNodeId, expr_loc: &Location) -> Location {
+        let ty_loc = ty.to_loc();
+        if ty_loc.path.as_os_str().is_empty() {
+            expr_loc.clone()
+        } else {
+            ty_loc
+        }
+    }
+
+    fn is_numeric_scalar_for_tuple_binop(&self, ty: TypeNodeId) -> bool {
+        matches!(
+            self.resolve_for_tuple_binop(ty).to_type(),
+            Type::Primitive(PType::Numeric) | Type::Primitive(PType::Int)
+        )
+    }
+
+    fn make_tuple_binop_arity_error(&self, actual_arity: usize, loc: &Location) -> Error {
+        Error::TypeMismatch {
+            left: (
+                Type::Tuple(vec![numeric!(); Self::TUPLE_BINOP_MAX_ARITY])
+                    .into_id_with_location(loc.clone()),
+                loc.clone(),
+            ),
+            right: (
+                Type::Tuple(vec![numeric!(); actual_arity]).into_id_with_location(loc.clone()),
+                loc.clone(),
+            ),
+        }
+    }
+
+    fn infer_tuple_arithmetic_binop_type_rec(
+        &mut self,
+        lhs_ty: TypeNodeId,
+        rhs_ty: TypeNodeId,
+        loc: &Location,
+        errs: &mut Vec<Error>,
+    ) -> Option<TypeNodeId> {
+        let lhs_resolved = self.resolve_for_tuple_binop(lhs_ty);
+        let rhs_resolved = self.resolve_for_tuple_binop(rhs_ty);
+
+        match (lhs_resolved.to_type(), rhs_resolved.to_type()) {
+            (Type::Tuple(lhs_elems), Type::Tuple(rhs_elems)) => {
+                if lhs_elems.len() != rhs_elems.len() {
+                    errs.push(Error::TypeMismatch {
+                        left: (lhs_ty, loc.clone()),
+                        right: (rhs_ty, loc.clone()),
+                    });
+                    return None;
+                }
+                if lhs_elems.len() > Self::TUPLE_BINOP_MAX_ARITY {
+                    errs.push(self.make_tuple_binop_arity_error(lhs_elems.len(), loc));
+                    return None;
+                }
+
+                let result_elems = lhs_elems
+                    .iter()
+                    .zip(rhs_elems.iter())
+                    .filter_map(|(lt, rt)| {
+                        self.infer_tuple_arithmetic_binop_type_rec(*lt, *rt, loc, errs)
+                    })
+                    .collect::<Vec<_>>();
+
+                if result_elems.len() != lhs_elems.len() {
+                    None
+                } else {
+                    Some(Type::Tuple(result_elems).into_id_with_location(loc.clone()))
+                }
+            }
+            (Type::Tuple(tuple_elems), _) => {
+                if tuple_elems.len() > Self::TUPLE_BINOP_MAX_ARITY {
+                    errs.push(self.make_tuple_binop_arity_error(tuple_elems.len(), loc));
+                    return None;
+                }
+                if !self.is_numeric_scalar_for_tuple_binop(rhs_ty) {
+                    let rhs_loc = self.type_loc_or_expr_loc(rhs_ty, loc);
+                    errs.push(Error::TypeMismatch {
+                        left: (numeric!(), rhs_loc.clone()),
+                        right: (rhs_ty, rhs_loc),
+                    });
+                    return None;
+                }
+
+                let result_elems = tuple_elems
+                    .iter()
+                    .filter_map(|elem_ty| {
+                        self.infer_tuple_arithmetic_binop_type_rec(*elem_ty, rhs_ty, loc, errs)
+                    })
+                    .collect::<Vec<_>>();
+
+                if result_elems.len() != tuple_elems.len() {
+                    None
+                } else {
+                    Some(Type::Tuple(result_elems).into_id_with_location(loc.clone()))
+                }
+            }
+            (_, Type::Tuple(tuple_elems)) => {
+                if tuple_elems.len() > Self::TUPLE_BINOP_MAX_ARITY {
+                    errs.push(self.make_tuple_binop_arity_error(tuple_elems.len(), loc));
+                    return None;
+                }
+                if !self.is_numeric_scalar_for_tuple_binop(lhs_ty) {
+                    let lhs_loc = self.type_loc_or_expr_loc(lhs_ty, loc);
+                    errs.push(Error::TypeMismatch {
+                        left: (numeric!(), lhs_loc.clone()),
+                        right: (lhs_ty, lhs_loc),
+                    });
+                    return None;
+                }
+
+                let result_elems = tuple_elems
+                    .iter()
+                    .filter_map(|elem_ty| {
+                        self.infer_tuple_arithmetic_binop_type_rec(lhs_ty, *elem_ty, loc, errs)
+                    })
+                    .collect::<Vec<_>>();
+
+                if result_elems.len() != tuple_elems.len() {
+                    None
+                } else {
+                    Some(Type::Tuple(result_elems).into_id_with_location(loc.clone()))
+                }
+            }
+            _ => {
+                let mut valid = true;
+                if !self.is_numeric_scalar_for_tuple_binop(lhs_ty) {
+                    let lhs_loc = self.type_loc_or_expr_loc(lhs_ty, loc);
+                    errs.push(Error::TypeMismatch {
+                        left: (numeric!(), lhs_loc.clone()),
+                        right: (lhs_ty, lhs_loc),
+                    });
+                    valid = false;
+                }
+                if !self.is_numeric_scalar_for_tuple_binop(rhs_ty) {
+                    let rhs_loc = self.type_loc_or_expr_loc(rhs_ty, loc);
+                    errs.push(Error::TypeMismatch {
+                        left: (numeric!(), rhs_loc.clone()),
+                        right: (rhs_ty, rhs_loc),
+                    });
+                    valid = false;
+                }
+                if valid { Some(numeric!()) } else { None }
+            }
+        }
+    }
+
+    fn infer_tuple_arithmetic_binop_type(
+        &mut self,
+        lhs_ty: TypeNodeId,
+        rhs_ty: TypeNodeId,
+        loc: Location,
+    ) -> Result<TypeNodeId, Vec<Error>> {
+        let mut errs = vec![];
+        let result_ty = self.infer_tuple_arithmetic_binop_type_rec(lhs_ty, rhs_ty, &loc, &mut errs);
+        if !errs.is_empty() {
+            return Err(errs);
+        }
+        result_ty.ok_or_else(|| {
+            vec![Error::TypeMismatch {
+                left: (lhs_ty, loc.clone()),
+                right: (rhs_ty, loc),
+            }]
+        })
+    }
+
+    fn is_auto_spread_endpoint_type(&self, ty: TypeNodeId) -> bool {
+        matches!(
+            self.resolve_for_tuple_binop(ty).to_type(),
+            Type::Primitive(PType::Numeric)
+                | Type::Primitive(PType::Int)
+                | Type::Intermediate(_)
+                | Type::TypeScheme(_)
+                | Type::Unknown
+                | Type::Failure
+        )
+    }
+
+    fn auto_spread_param_endpoint_type(&self, param_ty: TypeNodeId) -> Option<TypeNodeId> {
+        let resolved = self.resolve_for_tuple_binop(param_ty);
+        match resolved.to_type() {
+            Type::Record(fields) if fields.len() == 1 => Some(fields[0].ty),
+            _ => Some(resolved),
+        }
+    }
+
+    fn is_numeric_to_numeric_function_for_auto_spread(&self, fn_ty: TypeNodeId) -> bool {
+        let resolved = self.resolve_for_tuple_binop(fn_ty);
+        matches!(
+            resolved.to_type(),
+            Type::Function { arg, ret }
+                if self
+                    .auto_spread_param_endpoint_type(arg)
+                    .is_some_and(|endpoint| self.is_auto_spread_endpoint_type(endpoint))
+                    && self.is_auto_spread_endpoint_type(ret)
+        )
+    }
+
+    fn infer_auto_spread_type_rec(
+        &mut self,
+        arg_ty: TypeNodeId,
+        loc: &Location,
+        errs: &mut Vec<Error>,
+    ) -> Option<TypeNodeId> {
+        let resolved = self.resolve_for_tuple_binop(arg_ty);
+        match resolved.to_type() {
+            Type::Tuple(elems) => {
+                if elems.len() > Self::TUPLE_BINOP_MAX_ARITY {
+                    errs.push(self.make_tuple_binop_arity_error(elems.len(), loc));
+                    return None;
+                }
+                let mapped = elems
+                    .iter()
+                    .filter_map(|elem_ty| self.infer_auto_spread_type_rec(*elem_ty, loc, errs))
+                    .collect::<Vec<_>>();
+                if mapped.len() != elems.len() {
+                    None
+                } else {
+                    Some(Type::Tuple(mapped).into_id_with_location(loc.clone()))
+                }
+            }
+            _ => {
+                if self.is_numeric_scalar_for_tuple_binop(arg_ty) {
+                    Some(numeric!())
+                } else {
+                    let arg_loc = self.type_loc_or_expr_loc(arg_ty, loc);
+                    errs.push(Error::TypeMismatch {
+                        left: (numeric!(), arg_loc.clone()),
+                        right: (arg_ty, arg_loc),
+                    });
+                    None
+                }
+            }
+        }
+    }
+
+    fn infer_auto_spread_type(
+        &mut self,
+        fn_ty: TypeNodeId,
+        arg_ty: TypeNodeId,
+        loc: Location,
+    ) -> Result<TypeNodeId, Vec<Error>> {
+        let mut errs = vec![];
+        let result_ty = self.infer_auto_spread_type_rec(arg_ty, &loc, &mut errs);
+        if !errs.is_empty() {
+            return Err(errs);
+        }
+        result_ty.ok_or_else(|| {
+            vec![Error::TypeMismatch {
+                left: (arg_ty, loc.clone()),
+                right: (arg_ty, loc),
+            }]
+        })
     }
 
     /// Get the type associated with a constructor name from a union or user-defined sum type
@@ -1160,25 +1551,65 @@ impl InferContext {
         self.interm_idx.0 += 1;
         res
     }
+
+    fn resolve_type_alias_symbol_fallback(&self, name: Symbol) -> Symbol {
+        if name.as_str().contains('$') {
+            return name;
+        }
+
+        if let Some(ref module_info) = self.module_info
+            && let Some(mapped) = module_info.use_alias_map.get(&name)
+        {
+            return *mapped;
+        }
+
+        if self.type_aliases.contains_key(&name) {
+            return name;
+        }
+
+        // Also check type_declarations directly (for UserSum types defined without module prefix)
+        if let Some(ref module_info) = self.module_info
+            && module_info.type_declarations.contains_key(&name)
+        {
+            return name;
+        }
+
+        // Search for mangled names ending with $<name> in both type_aliases and type_declarations
+        let suffix = format!("${}", name.as_str());
+        let mut candidates: Vec<Symbol> = self
+            .type_aliases
+            .keys()
+            .copied()
+            .filter(|symbol| symbol.as_str().ends_with(&suffix))
+            .collect();
+
+        if let Some(ref module_info) = self.module_info {
+            candidates.extend(
+                module_info
+                    .type_declarations
+                    .keys()
+                    .copied()
+                    .filter(|symbol| symbol.as_str().ends_with(&suffix)),
+            );
+        }
+
+        if candidates.len() == 1 {
+            candidates[0]
+        } else {
+            name
+        }
+    }
+
     fn convert_unknown_to_intermediate(&mut self, t: TypeNodeId, loc: Location) -> TypeNodeId {
         match t.to_type() {
             Type::Unknown => self.gen_intermediate_type_with_location(loc.clone()),
             Type::TypeAlias(name) => {
-                // Determine if this is a qualified path (contains '$') or a simple name
-                let resolved_name = if name.as_str().contains('$') {
-                    // Already a mangled name from qualified path (e.g., mymath$PrivateNum)
-                    // Use it directly
-                    name
-                } else if let Some(ref module_info) = self.module_info {
-                    // Simple name - check use_alias_map for resolution
-                    module_info
-                        .use_alias_map
-                        .get(&name)
-                        .copied()
-                        .unwrap_or(name)
-                } else {
-                    name
-                };
+                if Self::is_explicit_type_param_name(name) {
+                    return self
+                        .lookup_explicit_type_param(name)
+                        .unwrap_or_else(|| self.gen_typescheme(loc.clone()));
+                }
+                let resolved_name = self.resolve_type_alias_symbol_fallback(name);
 
                 log::trace!(
                     "Resolving TypeAlias: {} -> {}",
@@ -1187,34 +1618,36 @@ impl InferContext {
                 );
 
                 // Check visibility if module_info is available
-                if let Some(ref module_info) = self.module_info {
-                    if let Some(&is_public) = module_info.visibility_map.get(&resolved_name) {
-                        if !is_public {
-                            // Type is private - report error for accessing it from outside
-                            let type_path: Vec<&str> = resolved_name.as_str().split('$').collect();
-                            if type_path.len() > 1 {
-                                // This is a module member type
-                                let module_path: Vec<crate::interner::Symbol> = type_path
-                                    [..type_path.len() - 1]
-                                    .iter()
-                                    .map(ToSymbol::to_symbol)
-                                    .collect();
-                                let type_name = type_path.last().unwrap().to_symbol();
+                if let Some(ref module_info) = self.module_info
+                    && let Some(&is_public) = module_info.visibility_map.get(&resolved_name)
+                    && !is_public
+                {
+                    // Type is private - report error for accessing it from outside
+                    let type_path: Vec<&str> = resolved_name.as_str().split('$').collect();
+                    if type_path.len() > 1 {
+                        // This is a module member type
+                        let module_path: Vec<crate::interner::Symbol> = type_path
+                            [..type_path.len() - 1]
+                            .iter()
+                            .map(ToSymbol::to_symbol)
+                            .collect();
+                        let type_name = type_path.last().unwrap().to_symbol();
 
-                                // Report error for private type access
-                                self.errors.push(Error::PrivateTypeAccess {
-                                    module_path,
-                                    type_name,
-                                    location: loc.clone(),
-                                });
-                            }
-                        }
+                        // Report error for private type access
+                        self.errors.push(Error::PrivateTypeAccess {
+                            module_path,
+                            type_name,
+                            location: loc.clone(),
+                        });
                     }
                 }
 
                 // Resolve type alias by looking it up in the environment
                 match self.lookup(resolved_name, loc.clone()) {
                     Ok(resolved_ty) => {
+                        let resolved_ty = self.resolve_type_alias(resolved_ty);
+                        let resolved_ty =
+                            self.convert_unknown_to_intermediate(resolved_ty, loc.clone());
                         log::trace!(
                             "Resolved TypeAlias {} to {}",
                             resolved_name.as_str(),
@@ -1238,9 +1671,10 @@ impl InferContext {
 
     /// Check if a symbol is public based on the visibility map
     fn is_public(&self, name: &Symbol) -> bool {
+        let resolved_name = self.resolve_type_alias_symbol_fallback(*name);
         self.module_info
             .as_ref()
-            .and_then(|info| info.visibility_map.get(name))
+            .and_then(|info| info.visibility_map.get(&resolved_name))
             .is_some_and(|vis| *vis)
     }
 
@@ -1271,9 +1705,10 @@ impl InferContext {
         let resolved = Self::substitute_type(ty);
         match resolved.to_type() {
             Type::TypeAlias(name) => {
+                let resolved_name = self.resolve_type_alias_symbol_fallback(name);
                 // Check if this type alias is private
-                if self.is_private(&name) {
-                    return Some(name);
+                if self.is_private(&resolved_name) {
+                    return Some(resolved_name);
                 }
 
                 // If it's a qualified name, extract type name and check visibility
@@ -1346,10 +1781,10 @@ impl InferContext {
 
                 // Check payload types of variants
                 for (_variant_name, payload_ty_opt) in variants.iter() {
-                    if let Some(payload_ty) = payload_ty_opt {
-                        if let Some(private_type) = self.contains_private_type(*payload_ty) {
-                            return Some(private_type);
-                        }
+                    if let Some(payload_ty) = payload_ty_opt
+                        && let Some(private_type) = self.contains_private_type(*payload_ty)
+                    {
+                        return Some(private_type);
                     }
                 }
                 None
@@ -1366,9 +1801,12 @@ impl InferContext {
     fn convert_unify_error(&self, e: UnificationError) -> Error {
         let gen_loc = |span| Location::new(span, self.file_path.clone());
         match e {
-            UnificationError::TypeMismatch { left, right } => Error::TypeMismatch {
-                left: (left, gen_loc(left.to_span())),
-                right: (right, gen_loc(right.to_span())),
+            UnificationError::TypeMismatch {
+                left: (left, lspan),
+                right: (right, rspan),
+            } => Error::TypeMismatch {
+                left: (left, gen_loc(lspan)),
+                right: (right, gen_loc(rspan)),
             },
             UnificationError::LengthMismatch {
                 left: (left, lspan),
@@ -1469,6 +1907,13 @@ impl InferContext {
         }
     }
 
+    fn instantiate_fresh(&mut self, t: TypeNodeId) -> TypeNodeId {
+        self.instantiated_map.clear();
+        let res = self.instantiate(t);
+        self.instantiated_map.clear();
+        res
+    }
+
     // Note: the third argument `span` is used for the error location in case of
     // type mismatch. This is needed because `t`'s span refers to the location
     // where it originally defined (e.g. the explicit return type of the
@@ -1480,6 +1925,8 @@ impl InferContext {
     ) -> Result<TypeNodeId, Vec<Error>> {
         let (TypedPattern { pat, ty, .. }, loc_p) = pat;
         let (body_t, loc_b) = body.clone();
+        let should_generalize =
+            !matches!(&pat, Pattern::Single(id) if *id == "record_update_temp".to_symbol());
         let mut bind_item = |pat| {
             let newloc = ty.to_loc();
             let ity = self.gen_intermediate_type_with_location(newloc.clone());
@@ -1531,7 +1978,11 @@ impl InferContext {
             )]),
         }?;
         let rel = self.unify_types(pat_t, body_t)?;
-        Ok(self.generalize(pat_t))
+        if should_generalize {
+            Ok(self.generalize(pat_t))
+        } else {
+            Ok(pat_t)
+        }
     }
 
     pub fn lookup(&self, name: Symbol, loc: Location) -> Result<TypeNodeId, Error> {
@@ -1556,6 +2007,131 @@ impl InferContext {
             }),
         }
     }
+
+    /// Resolve a type through intermediate type variables, type aliases, and
+    /// single-element wrappers, returning the concrete inner type.
+    fn peel_to_inner(&self, ty: TypeNodeId) -> TypeNodeId {
+        let resolved = self.resolve_type_alias(ty);
+        match resolved.to_type() {
+            Type::Intermediate(tv) => {
+                let tv = tv.read().unwrap();
+                let next = tv.parent.unwrap_or(tv.bound.lower);
+                if next.0 == resolved.0 {
+                    resolved
+                } else {
+                    self.peel_to_inner(next)
+                }
+            }
+            Type::Tuple(elems) if elems.len() == 1 => self.peel_to_inner(elems[0]),
+            _ => resolved,
+        }
+    }
+
+    /// Look up `field` in a type that may be wrapped in intermediates,
+    /// type aliases, or single-element tuples.
+    fn lookup_field_in_type(&self, ty: TypeNodeId, field: Symbol) -> FieldLookup {
+        let peeled = self.peel_to_inner(ty);
+        match peeled.to_type() {
+            Type::Record(fields) => fields
+                .iter()
+                .find(|f| f.key == field)
+                .map(|f| FieldLookup::Found(f.ty))
+                .unwrap_or(FieldLookup::RecordWithoutField),
+            _ => FieldLookup::NotRecord,
+        }
+    }
+
+    /// Type-check a field access expression (`expr.field`).
+    ///
+    /// Three cases:
+    /// 1. Completely unresolved intermediate — constrain with `{field: ?a}`.
+    /// 2. Resolves to a record containing `field` — return the field type.
+    /// 3. Record exists but `field` is missing and the outer type is an
+    ///    intermediate — extend the record constraint via unification.
+    fn infer_field_access(
+        &mut self,
+        et: TypeNodeId,
+        field: Symbol,
+        loc: Location,
+    ) -> Result<TypeNodeId, Vec<Error>> {
+        // Case 1: completely unresolved intermediate — constrain as {field: ?a}.
+        if let Type::Intermediate(tv) = et.to_type() {
+            let is_unresolved = {
+                let tv = tv.read().unwrap();
+                let lower_is_record_like = match tv.bound.lower.to_type() {
+                    Type::Record(_) => true,
+                    Type::Tuple(elems) => elems.len() == 1,
+                    _ => false,
+                };
+                tv.parent.is_none() && !lower_is_record_like
+            };
+            if is_unresolved {
+                let field_ty = self.gen_intermediate_type_with_location(loc.clone());
+                let expected = Type::Record(vec![RecordTypeField {
+                    key: field,
+                    ty: field_ty,
+                    has_default: false,
+                }])
+                .into_id_with_location(loc);
+                let _rel = self.unify_types(et, expected)?;
+                return Ok(field_ty);
+            }
+        }
+
+        // Cases 2 & 3: peel wrappers and look up the field in the record.
+        match self.lookup_field_in_type(et, field) {
+            FieldLookup::Found(field_ty) => Ok(field_ty),
+            FieldLookup::RecordWithoutField => self.extend_record_with_field(et, field, loc),
+            FieldLookup::NotRecord => Err(vec![Error::FieldForNonRecord(loc, et)]),
+        }
+    }
+
+    /// When a record type is known but doesn't yet contain `field`, extend
+    /// the record constraint via unification. Falls back to `FieldNotExist`
+    /// when the expression type is not an intermediate.
+    fn extend_record_with_field(
+        &mut self,
+        et: TypeNodeId,
+        field: Symbol,
+        loc: Location,
+    ) -> Result<TypeNodeId, Vec<Error>> {
+        if let Type::Intermediate(tv) = et.to_type() {
+            let existing_fields = {
+                let tv = tv.read().unwrap();
+                match tv.parent.map(|p| p.to_type()) {
+                    Some(Type::Record(fields)) => Some(fields),
+                    _ => match tv.bound.lower.to_type() {
+                        Type::Record(fields) => Some(fields),
+                        _ => None,
+                    },
+                }
+            };
+            if let Some(mut fields) = existing_fields {
+                let field_ty = self.gen_intermediate_type_with_location(loc.clone());
+                if fields.iter().all(|f| f.key != field) {
+                    fields.push(RecordTypeField {
+                        key: field,
+                        ty: field_ty,
+                        has_default: false,
+                    });
+                }
+                let extended = Type::Record(fields).into_id_with_location(loc);
+                // Directly update the Intermediate's parent to the extended
+                // record. We cannot use `unify_types` here because it calls
+                // `get_root()`, which follows the parent chain past the
+                // Intermediate to the old (incomplete) parent Record — ending
+                // up in a Record-Record unification that never updates the
+                // Intermediate itself.
+                {
+                    let mut guard = tv.write().unwrap();
+                    guard.parent = Some(extended);
+                }
+                return Ok(field_ty);
+            }
+        }
+        Err(vec![Error::FieldNotExist { field, loc, et }])
+    }
+
     pub(crate) fn infer_type_literal(e: &Literal, loc: Location) -> Result<TypeNodeId, Error> {
         let pt = match e {
             Literal::Float(_) | Literal::Now | Literal::SampleRate => PType::Numeric,
@@ -1591,7 +2167,7 @@ impl InferContext {
                 let first = elem_types
                     .first()
                     .copied()
-                    .unwrap_or(Type::Unknown.into_id_with_location(loc.clone()));
+                    .unwrap_or_else(|| self.gen_intermediate_type_with_location(loc.clone()));
                 //todo:collect multiple errors
                 let elem_t = elem_types
                     .iter()
@@ -1683,40 +2259,7 @@ impl InferContext {
             Expr::FieldAccess(expr, field) => {
                 let et = self.infer_type_unwrapping(*expr);
                 log::trace!("field access {} : {}", field, et.to_type());
-                let fields_to_ans = |fields: &[RecordTypeField]| {
-                    fields
-                        .iter()
-                        .find_map(
-                            |RecordTypeField { key, ty, .. }| {
-                                if *key == *field { Some(*ty) } else { None }
-                            },
-                        )
-                        .ok_or_else(|| {
-                            vec![Error::FieldNotExist {
-                                field: *field,
-                                loc: loc.clone(),
-                                et,
-                            }]
-                        })
-                };
-                // we directly inspect if the intermediate type is a record or not.
-                // this is because we can not infer the number of fields in the record from the fields access expression.
-                // This rule will be loosened when structural subtyping is implemented.
-                match et.to_type() {
-                    Type::Record(fields) => fields_to_ans(&fields),
-                    Type::Intermediate(tv) => {
-                        let tv = tv.read().unwrap();
-                        if let Some(parent) = tv.parent {
-                            match parent.to_type() {
-                                Type::Record(fields) => fields_to_ans(&fields),
-                                _ => Err(vec![Error::FieldForNonRecord(loc, et)]),
-                            }
-                        } else {
-                            Err(vec![Error::FieldForNonRecord(loc, et)])
-                        }
-                    }
-                    _ => Err(vec![Error::FieldForNonRecord(loc, et)]),
-                }
+                self.infer_field_access(et, *field, loc)
             }
             Expr::Feed(id, body) => {
                 //todo: add span to Feed expr for keeping the location of `self`.
@@ -1732,44 +2275,66 @@ impl InferContext {
                 }
             }
             Expr::Lambda(p, rtype, body) => {
-                self.env.extend();
-                let dup = p.iter().duplicates_by(|id| id.id).map(|id| {
-                    let loc = Location::new(id.to_span(), self.file_path.clone());
-                    (id.id, loc)
-                });
-                if dup.clone().count() > 0 {
-                    return Err(vec![Error::DuplicateKeyInParams(dup.collect())]);
-                }
-                let pvec = p
+                let mut scoped_types = p
                     .iter()
-                    .map(|id| {
-                        let ity = self.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
-                        self.env.add_bind(&[(id.id, (ity, self.stage))]);
-                        RecordTypeField {
-                            key: id.id,
-                            ty: ity,
-                            has_default: false,
-                        }
-                    })
+                    .map(|id| id.ty)
+                    .filter(|ty| ty.to_type() != Type::Unknown)
                     .collect::<Vec<_>>();
-                let ptype = if pvec.is_empty() {
-                    Type::Primitive(PType::Unit).into_id_with_location(loc.clone())
-                } else {
-                    Type::Record(pvec).into_id_with_location(loc.clone())
-                };
-                let bty = if let Some(r) = rtype {
-                    let bty = self.infer_type_unwrapping(*body);
-                    let _rel = self.unify_types(*r, bty)?;
-                    bty
-                } else {
-                    self.infer_type_unwrapping(*body)
-                };
-                self.env.to_outer();
-                Ok(Type::Function {
-                    arg: ptype,
-                    ret: bty,
-                }
-                .into_id_with_location(e.to_location()))
+                rtype.iter().copied().for_each(|ty| scoped_types.push(ty));
+                self.with_explicit_type_param_scope_from_types(&scoped_types, |this| {
+                    this.env.extend();
+                    let lambda_res = (|| -> Result<TypeNodeId, Vec<Error>> {
+                        this.instantiated_map.clear();
+                        let dup = p.iter().duplicates_by(|id| id.id).map(|id| {
+                            let loc = Location::new(id.to_span(), this.file_path.clone());
+                            (id.id, loc)
+                        });
+                        if dup.clone().count() > 0 {
+                            return Err(vec![Error::DuplicateKeyInParams(dup.collect())]);
+                        }
+                        let pvec = p
+                            .iter()
+                            .map(|id| {
+                                let annotated_ty =
+                                    this.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
+                                let ity = this.instantiate(annotated_ty);
+                                this.env.add_bind(&[(id.id, (ity, this.stage))]);
+                                RecordTypeField {
+                                    key: id.id,
+                                    ty: ity,
+                                    has_default: false,
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        let ptype = if pvec.is_empty() {
+                            Type::Primitive(PType::Unit).into_id_with_location(loc.clone())
+                        } else if pvec.len() == 1 {
+                            pvec[0].ty
+                        } else {
+                            Type::Tuple(pvec.iter().map(|f| f.ty).collect())
+                                .into_id_with_location(loc.clone())
+                        };
+                        let bty = if let Some(r) = rtype {
+                            let annotated_ret =
+                                this.convert_unknown_to_intermediate(*r, r.to_loc());
+                            let expected_ret = this.instantiate(annotated_ret);
+                            let bty = this.infer_type_unwrapping(*body);
+                            let _rel = this.unify_types(expected_ret, bty)?;
+                            bty
+                        } else {
+                            this.infer_type_unwrapping(*body)
+                        };
+                        this.instantiated_map.clear();
+                        Ok(Type::Function {
+                            arg: ptype,
+                            ret: bty,
+                        }
+                        .into_id_with_location(e.to_location()))
+                    })();
+                    this.env.to_outer();
+                    this.instantiated_map.clear();
+                    lambda_res
+                })
             }
             Expr::Let(tpat, body, then) => {
                 let bodyt = self.infer_type_levelup(*body);
@@ -1780,18 +2345,17 @@ impl InferContext {
                 // Check for private type leak in public function declarations
                 // Use the original type before resolution to catch TypeAlias references
                 if let Pattern::Single(name) = &tpat.pat {
-                    eprintln!(
-                        "[DEBUG] Checking private type leak for Let binding: {}",
+                    log::trace!(
+                        "Checking private type leak for Let binding: {}",
                         name.as_str()
                     );
-                    eprintln!(
-                        "[DEBUG] Original type before resolution: {:?}",
-                        tpat.ty.to_type()
-                    );
+                    log::trace!("Original type before resolution: {:?}", tpat.ty.to_type());
                     self.check_private_type_leak(*name, tpat.ty, loc_p.clone());
                 }
 
-                let pat_t = self.bind_pattern((tpat.clone(), loc_p), (bodyt, loc_b));
+                let pat_t = self.with_explicit_type_param_scope_from_types(&[tpat.ty], |this| {
+                    this.bind_pattern((tpat.clone(), loc_p), (bodyt, loc_b))
+                });
                 let _pat_t = self.unwrap_result(pat_t);
                 match then {
                     Some(e) => self.infer_type(*e),
@@ -1799,16 +2363,18 @@ impl InferContext {
                 }
             }
             Expr::LetRec(id, body, then) => {
-                let idt = self.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
-                self.env.add_bind(&[(id.id, (idt, self.stage))]);
-                //polymorphic inference is not allowed in recursive function.
+                self.with_explicit_type_param_scope_from_types(&[id.ty], |this| {
+                    let idt = this.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
+                    this.env.add_bind(&[(id.id, (idt, this.stage))]);
+                    //polymorphic inference is not allowed in recursive function.
 
-                let bodyt = self.infer_type_levelup(*body);
+                    let bodyt = this.infer_type_levelup(*body);
 
-                let _res = self.unify_types(idt, bodyt);
+                    let _res = this.unify_types(idt, bodyt);
 
-                // Check if public function leaks private type in its declared signature
-                self.check_private_type_leak(id.id, id.ty, loc.clone());
+                    // Check if public function leaks private type in its declared signature
+                    this.check_private_type_leak(id.id, id.ty, loc.clone());
+                });
 
                 match then {
                     Some(e) => self.infer_type(*e),
@@ -1826,20 +2392,11 @@ impl InferContext {
                     }
                     Expr::FieldAccess(record, field_name) => {
                         // Handle field assignment: record.field = value
-                        let record_type = self.infer_type_unwrapping(record);
+                        let _record_type = self.infer_type_unwrapping(record);
                         let value_type = self.infer_type_unwrapping(*expr);
-                        let tmptype = Type::Record(vec![RecordTypeField {
-                            key: field_name,
-                            ty: value_type,
-                            has_default: false,
-                        }])
-                        .into_id();
-                        if self.unify_types(record_type, tmptype)? == Relation::Supertype {
-                            unreachable!(
-                                "record field access for an empty record will not likely to happen."
-                            )
-                        };
-                        Ok(value_type)
+                        let field_type = self.infer_type_unwrapping(*assignee);
+                        let _rel = self.unify_types(field_type, value_type)?;
+                        Ok(unit!())
                     }
                     Expr::ArrayAccess(_, _) => {
                         unimplemented!("Assignment to array is not implemented yet.")
@@ -1875,19 +2432,52 @@ impl InferContext {
                 }
                 // Aliases and wildcards are already resolved by convert_qualified_names
                 let res = self.unwrap_result(self.lookup(*name, loc).map_err(|e| vec![e]));
-                Ok(self.instantiate(res))
+                Ok(self.instantiate_fresh(res))
             }
             Expr::QualifiedVar(path) => {
                 unreachable!("Qualified Var should be removed in the previous step.")
             }
             Expr::Apply(fun, callee) => {
                 let loc_f = fun.to_location();
+                if callee.len() == 2 && self.try_get_tuple_arithmetic_binop_label(*fun).is_some() {
+                    let lhs_ty = self.infer_type_unwrapping(callee[0]);
+                    let rhs_ty = self.infer_type_unwrapping(callee[1]);
+                    let lhs_is_tuple = matches!(
+                        self.resolve_for_tuple_binop(lhs_ty).to_type(),
+                        Type::Tuple(_)
+                    );
+                    let rhs_is_tuple = matches!(
+                        self.resolve_for_tuple_binop(rhs_ty).to_type(),
+                        Type::Tuple(_)
+                    );
+                    if lhs_is_tuple || rhs_is_tuple {
+                        return self.infer_tuple_arithmetic_binop_type(
+                            lhs_ty,
+                            rhs_ty,
+                            loc_f.clone(),
+                        );
+                    }
+                }
+
+                if callee.len() == 1 {
+                    let fnl = self.infer_type_unwrapping(*fun);
+                    let arg_ty = self.infer_type_unwrapping(callee[0]);
+                    let arg_is_tuple = matches!(
+                        self.resolve_for_tuple_binop(arg_ty).to_type(),
+                        Type::Tuple(_)
+                    );
+                    if arg_is_tuple && self.is_numeric_to_numeric_function_for_auto_spread(fnl) {
+                        return self.infer_auto_spread_type(fnl, arg_ty, loc_f.clone());
+                    }
+                }
+
                 let fnl = self.infer_type_unwrapping(*fun);
                 let callee_t = match callee.len() {
                     0 => Type::Primitive(PType::Unit).into_id_with_location(loc.clone()),
                     1 => self.infer_type_unwrapping(callee[0]),
                     _ => {
                         let at_vec = self.infer_vec(callee.as_slice())?;
+
                         let span = callee[0].to_span().start..callee.last().unwrap().to_span().end;
                         let loc = Location::new(span, self.file_path.clone());
                         Type::Tuple(at_vec).into_id_with_location(loc)
@@ -1933,13 +2523,17 @@ impl InferContext {
                 },
             ),
             Expr::Escape(e) => {
-                let loc_e = Location::new(e.to_span(), self.file_path.clone());
+                let loc_e = loc.clone();
+                let prev_stage = self.stage;
                 // Decrease stage for escape expression
-                self.stage = self.stage.decrement();
+                self.stage = prev_stage.decrement();
                 log::trace!("Unstaging escape expression, stage => {:?}", self.stage);
                 let res = self.infer_type_unwrapping(*e);
-                // Increase stage back
-                self.stage = self.stage.increment();
+                // Restore previous stage regardless of saturation behavior
+                self.stage = prev_stage;
+                if matches!(res.get_root().to_type(), Type::Primitive(PType::Unit)) {
+                    return Ok(Type::Primitive(PType::Unit).into_id_with_location(loc_e));
+                }
                 let intermediate = self.gen_intermediate_type_with_location(loc_e.clone());
                 let rel = self.unify_types(
                     res,
@@ -1948,13 +2542,14 @@ impl InferContext {
                 Ok(intermediate)
             }
             Expr::Bracket(e) => {
-                let loc_e = Location::new(e.to_span(), self.file_path.clone());
+                let loc_e = loc.clone();
+                let prev_stage = self.stage;
                 // Increase stage for bracket expression
-                self.stage = self.stage.increment();
+                self.stage = prev_stage.increment();
                 log::trace!("Staging bracket expression, stage => {:?}", self.stage);
                 let res = self.infer_type_unwrapping(*e);
-                // Decrease stage back
-                self.stage = self.stage.decrement();
+                // Restore previous stage regardless of boundary behavior
+                self.stage = prev_stage;
                 Ok(Type::Code(res).into_id_with_location(loc_e))
             }
             Expr::Match(scrutinee, arms) => {
@@ -2057,9 +2652,11 @@ impl InferContext {
         match self.infer_type(e) {
             Ok(t) => t,
             Err(err) => {
+                let failure_ty = Type::Failure
+                    .into_id_with_location(Location::new(e.to_span(), self.file_path.clone()));
                 self.errors.extend(err);
-                Type::Failure
-                    .into_id_with_location(Location::new(e.to_span(), self.file_path.clone()))
+                self.result_memo.insert(e.0, failure_ty);
+                failure_ty
             }
         }
     }
@@ -2184,6 +2781,9 @@ pub fn infer_root(
     type_aliases: Option<&crate::ast::program::TypeAliasMap>,
     module_info: Option<crate::ast::program::ModuleInfo>,
 ) -> InferContext {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static INFER_ROOT_COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let call_id = INFER_ROOT_COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut ctx = InferContext::new(
         builtin_types,
         file_path.clone(),
@@ -2191,6 +2791,7 @@ pub fn infer_root(
         type_aliases,
         module_info,
     );
+    ctx.infer_root_id = call_id;
     let _t = ctx
         .infer_type(e)
         .unwrap_or(Type::Failure.into_id_with_location(e.to_location()));
@@ -2253,7 +2854,7 @@ mod tests {
             assert_eq!(expected_stage, EvalStage::Stage(1));
             assert_eq!(found_stage, EvalStage::Stage(0));
         } else {
-            panic!("Expected StageMismatch error, got: {:?}", result);
+            panic!("Expected StageMismatch error, got: {result:?}");
         }
     }
 
@@ -2275,8 +2876,7 @@ mod tests {
             let result = ctx.lookup(var_name, loc.clone());
             assert!(
                 result.is_ok(),
-                "Persistent stage variables should be accessible from stage {}",
-                stage
+                "Persistent stage variables should be accessible from stage {stage}"
             );
         }
     }
@@ -2288,7 +2888,7 @@ mod tests {
 
         // Define variables at different stages
         for stage in [0, 1, 2] {
-            let var_name = format!("var_stage_{}", stage).to_symbol();
+            let var_name = format!("var_stage_{stage}").to_symbol();
             let var_type =
                 Type::Primitive(crate::types::PType::Numeric).into_id_with_location(loc.clone());
             ctx.env
@@ -2298,12 +2898,11 @@ mod tests {
         // Each variable should only be accessible from its own stage
         for stage in [0, 1, 2] {
             ctx.stage = EvalStage::Stage(stage);
-            let var_name = format!("var_stage_{}", stage).to_symbol();
+            let var_name = format!("var_stage_{stage}").to_symbol();
             let result = ctx.lookup(var_name, loc.clone());
             assert!(
                 result.is_ok(),
-                "Variable should be accessible from its own stage {}",
-                stage
+                "Variable should be accessible from its own stage {stage}"
             );
 
             // Should not be accessible from other stages
@@ -2313,9 +2912,7 @@ mod tests {
                     let result = ctx.lookup(var_name, loc.clone());
                     assert!(
                         result.is_err(),
-                        "Variable from stage {} should not be accessible from stage {}",
-                        stage,
-                        other_stage
+                        "Variable from stage {stage} should not be accessible from stage {other_stage}",
                     );
                 }
             }
@@ -2456,5 +3053,55 @@ fn dsp() {
 
         // Check for compilation errors
         assert!(result.is_ok(), "MIR generation failed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_macro_return_record_missing_field_reports_type_error() {
+        use crate::compiler;
+
+        let src = r#"
+pub type alias Note = {v:float, gate:float}
+
+#stage(macro)
+fn make_note()->`Note{
+    `({v = 60.0, gate = 1.0})
+}
+
+fn dsp(){
+    let note = make_note!()
+    note.val
+}
+"#;
+
+        let empty_ext_fns: Vec<compiler::ExtFunTypeInfo> = vec![];
+        let empty_macros: Vec<Box<dyn crate::plugin::MacroFunction>> = vec![];
+        let ctx = compiler::Context::new(
+            empty_ext_fns,
+            empty_macros,
+            Some(std::path::PathBuf::from("test")),
+            compiler::Config::default(),
+        );
+        let result = ctx.emit_mir(src);
+
+        assert!(
+            result.is_err(),
+            "Compilation should fail for missing record field access"
+        );
+
+        let errors = result.err().unwrap();
+        // NOTE:
+        // Depending on current inference order, this scenario reports either a
+        // direct missing-field diagnostic (`Field "val"`) or the more general
+        // non-record access error. Both indicate the intended regression is
+        // caught: accessing `note.val` is a type error.
+        assert!(
+            errors.iter().any(|e| {
+                let message = e.get_message();
+                message.contains("Field \"val\"")
+                    || message.contains("Field access for non-record variable")
+            }),
+            "Expected field access type error for \"val\", got: {:?}",
+            errors.iter().map(|e| e.get_message()).collect::<Vec<_>>()
+        );
     }
 }

@@ -244,7 +244,15 @@ impl<'a> Parser<'a> {
         self.builder.start_node(SyntaxKind::Program);
 
         while !self.is_at_end() {
+            let before = self.current;
             self.parse_statement();
+            if self.current == before && !self.is_at_end() {
+                self.add_error(ParserError::invalid_syntax(
+                    self.current_token_index(),
+                    "parser made no progress while parsing statement; skipping token for recovery",
+                ));
+                self.bump();
+            }
         }
 
         let root_id = self.builder.finish_node().unwrap();
@@ -821,19 +829,23 @@ impl<'a> Parser<'a> {
     /// Get precedence of an infix operator (None means not an infix operator)
     fn get_infix_precedence(&self, token_kind: TokenKind) -> Option<usize> {
         match token_kind {
-            TokenKind::OpOr => Some(1),
-            TokenKind::OpAnd => Some(2),
-            TokenKind::OpEqual | TokenKind::OpNotEqual => Some(3),
+            // Pipe should have the lowest precedence to allow chaining with other operators
+            // but must be > 0 to avoid infinite loop in statement context (min_prec == 0)
+            TokenKind::OpPipe => Some(1),
+            TokenKind::OpOr => Some(2),
+            TokenKind::OpAnd => Some(3),
+            TokenKind::OpEqual | TokenKind::OpNotEqual => Some(4),
             TokenKind::OpLessThan
             | TokenKind::OpLessEqual
             | TokenKind::OpGreaterThan
-            | TokenKind::OpGreaterEqual => Some(4),
-            TokenKind::OpSum | TokenKind::OpMinus => Some(5),
-            TokenKind::OpProduct | TokenKind::OpDivide | TokenKind::OpModulo => Some(6),
-            TokenKind::OpExponent => Some(7),
-            // Pipe should have the lowest precedence to allow chaining with other operators
-            TokenKind::OpPipe => Some(0),
-            TokenKind::OpAt => Some(9),
+            | TokenKind::OpGreaterEqual => Some(5),
+            TokenKind::OpSum | TokenKind::OpMinus => Some(6),
+            TokenKind::OpProduct | TokenKind::OpDivide | TokenKind::OpModulo => Some(7),
+            TokenKind::OpExponent => Some(8),
+            TokenKind::OpAt => Some(10),
+            // Arrow is NOT an infix operator in expressions, only used in type annotations
+            // Return None to prevent it from being treated as an operator
+            TokenKind::Arrow => None,
             _ => None,
         }
     }
@@ -986,10 +998,35 @@ impl<'a> Parser<'a> {
 
     /// Parse type expression
     fn parse_type(&mut self) {
-        // Check for function type with parentheses: (T1, T2) -> R
+        // Check for function type with parentheses: (T1, T2) -> R or (T) -> R
         if self.check(TokenKind::ParenBegin) {
-            let ahead_arrow =
-                (1..MAX_LOOKAHEAD).find(|&i| matches!(self.peek_ahead(i), Some(TokenKind::Arrow)));
+            // Look ahead for Arrow to detect function types
+            // Need to handle both `(T1, T2) -> R` and `(T) -> R`
+            let mut ahead_arrow = None;
+            let mut paren_depth = 0;
+            for i in 1..MAX_LOOKAHEAD {
+                match self.peek_ahead(i) {
+                    Some(TokenKind::ParenBegin) => paren_depth += 1,
+                    Some(TokenKind::ParenEnd) => {
+                        if paren_depth == 0 {
+                            // Found the closing paren of our type expression
+                            // Check if Arrow follows immediately after
+                            if self.peek_ahead(i + 1) == Some(TokenKind::Arrow) {
+                                ahead_arrow = Some(i + 1);
+                            }
+                            break;
+                        } else {
+                            paren_depth -= 1;
+                        }
+                    }
+                    Some(TokenKind::Arrow) if paren_depth == 0 => {
+                        ahead_arrow = Some(i);
+                        break;
+                    }
+                    None => break,
+                    _ => continue,
+                }
+            }
 
             if ahead_arrow.is_some() {
                 // Function type
@@ -1502,7 +1539,17 @@ impl<'a> Parser<'a> {
             this.expect(TokenKind::BlockBegin);
 
             while !this.check(TokenKind::BlockEnd) && !this.is_at_end() {
+                let before = this.current;
                 this.parse_statement();
+
+                if this.current == before && !this.is_at_end() {
+                    this.add_error(ParserError::invalid_syntax(
+                        this.current_token_index(),
+                        "parser made no progress in block; skipping token for recovery",
+                    ));
+                    this.bump();
+                    continue;
+                }
 
                 // After a statement, if there's trailing linebreak/semicolon,
                 // prepare for next statement. Otherwise, assume statement continues
@@ -1555,7 +1602,18 @@ impl<'a> Parser<'a> {
             // Parse match arms
             this.emit_node(SyntaxKind::MatchArmList, |this| {
                 while !this.check(TokenKind::BlockEnd) && !this.is_at_end() {
+                    let before = this.current;
                     this.parse_match_arm();
+
+                    if this.current == before && !this.is_at_end() {
+                        this.add_error(ParserError::invalid_syntax(
+                            this.current_token_index(),
+                            "parser made no progress in match arm; skipping token for recovery",
+                        ));
+                        this.bump();
+                        continue;
+                    }
+
                     // Arms are separated by linebreaks or commas
                     if this.has_trailing_linebreak() {
                         continue;

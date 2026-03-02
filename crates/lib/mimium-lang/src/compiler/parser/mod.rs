@@ -239,4 +239,21 @@ mod tests {
         let num_token = tokens.iter().find(|t| t.kind == TokenKind::Int).unwrap();
         assert_eq!(num_token.text(source), "42");
     }
+
+    #[test]
+    fn test_unexpected_closing_token_does_not_stall() {
+        let source = "}";
+        let (ast, tokens, _preparsed, _arena, errors) = parse(source);
+
+        match ast {
+            AstNode::Program { .. } => {}
+            _ => panic!("Expected Program node"),
+        }
+
+        assert!(!tokens.is_empty());
+        assert!(
+            !errors.is_empty(),
+            "Expected parser errors for malformed input"
+        );
+    }
 }

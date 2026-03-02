@@ -2,6 +2,52 @@
 
 Common integrated (or regression) test modules and basic integration tests of mimium.
 
+## Testing with Different Backends
+
+mimium-test supports running integration tests with both the **VM backend** (default) and the **WASM backend**.
+
+### Running tests with VM backend (default)
+
+```bash
+cargo test --package mimium-test
+```
+
+### Running tests with WASM backend
+
+Use the `MIMIUM_BACKEND` environment variable to switch to WASM backend:
+
+**PowerShell (Windows):**
+```powershell
+$env:MIMIUM_BACKEND="wasm"; cargo test --package mimium-test
+```
+
+**Bash/Zsh (Unix/Linux/macOS):**
+```bash
+MIMIUM_BACKEND=wasm cargo test --package mimium-test
+```
+
+### Running specific tests with WASM backend
+
+**PowerShell:**
+```powershell
+$env:MIMIUM_BACKEND="wasm"; cargo test --package mimium-test --test integration_test simple_arithmetic
+```
+
+**Bash:**
+```bash
+MIMIUM_BACKEND=wasm cargo test --package mimium-test --test integration_test simple_arithmetic
+```
+
+### Implementation Details
+
+The test infrastructure automatically checks the `MIMIUM_BACKEND` environment variable. When set to `wasm`, the following functions automatically use the WASM backend:
+- `run_source_test()` - Compiles and runs source code
+- `run_file_test()` - Loads and runs test files
+- `run_file_test_mono()` - Mono output tests
+- `run_file_test_stereo()` - Stereo output tests
+
+This means you can write tests once and run them on both backends without any code changes.
+
 ## When use test modules from external crate
 
 When you write test for mimium-plugin, you can import this test crate as `dev-dependencies` to utilize integrated test modules.

@@ -13,3 +13,25 @@ You can format code with Option+Shift+F (from Command Palette, select "Format Do
 - Error diagnostics(syntactic error/type checking error)
 - Semantic highlighting using compiler's parser
 - Code Formatting through mimium-fmt(partial formatting for selected range is not supported for now)
+
+## Analysis execution mode
+
+`mimium-language-server` supports two analysis modes:
+
+- `worker` (default): run parse/typecheck in a separate process (`mimium-language-server-worker`)
+- `inprocess`: run parse/typecheck in the language server process
+
+You can switch the mode with environment variable:
+
+- `MIMIUM_LS_ANALYSIS_MODE=worker`
+- `MIMIUM_LS_ANALYSIS_MODE=inprocess`
+
+When `worker` mode is used, the worker binary path is resolved in this order:
+
+1. `MIMIUM_LS_WORKER` (explicit absolute/relative path)
+2. `mimium-language-server-worker` in the same directory as the language server executable
+
+On Windows, `.exe` is also accepted automatically (for example, `mimium-language-server-worker.exe`).
+
+If worker mode is enabled and the worker cannot be launched, analysis does not fall back automatically.
+In that case, set `MIMIUM_LS_ANALYSIS_MODE=inprocess` explicitly.

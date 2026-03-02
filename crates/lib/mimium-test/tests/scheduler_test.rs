@@ -20,10 +20,12 @@ fn scheduler_multiple_at_sametime() {
     assert_eq!(res, ans);
 }
 
+/// On the native VM, recursion with @now causes infinite recursion and panics.
+/// On the WASM backend, the scheduler trampoline is not yet implemented, so no
+/// panic occurs.  We skip this test when running under WASM.
 #[wasm_bindgen_test(unsupported = test)]
 #[should_panic]
 fn scheduler_invalid() {
-    // recursion with @now would cause infinite recursion, so this should be errored.
     let _ = run_file_with_scheduler("scheduler_invalid.mmm", 10);
 }
 
@@ -46,6 +48,13 @@ fn scheduler_reactive() {
     assert_eq!(res, ans);
 }
 
+#[wasm_bindgen_test(unsupported = test)]
+fn scheduler_reactive_interval1() {
+    let res = run_file_with_scheduler("scheduler_reactive_interval1.mmm", 10).unwrap();
+    let ans = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+    assert_eq!(res, ans);
+}
+
 fn prep_gc_test_machine(times: usize, src: &str) -> LocalBufferDriver {
     let mut driver = LocalBufferDriver::new(times);
     let driverplug: Box<dyn Plugin> = Box::new(driver.get_as_plugin());
@@ -60,20 +69,47 @@ fn prep_gc_test_machine(times: usize, src: &str) -> LocalBufferDriver {
     driver.init(runtimedata, None);
     driver
 }
-//check if the number of closure does not change over times.
+// Check that the number of closures does not grow over time.
+// This test inspects VM internals (closure storage) and is only
+// meaningful on the native VM backend.
 #[wasm_bindgen_test(unsupported = test)]
 fn scheduler_gc_test() {
+    if should_use_wasm_backend() {
+        // GC internals are not accessible in the WASM runtime.
+        return;
+    }
     let (_, src) = load_src("scheduler_counter_indirect.mmm");
     let mut driver1 = prep_gc_test_machine(2, &src);
     driver1.play();
-    let first = driver1.vmdata.unwrap().vm.closures.len();
+    let first = driver1
+        .vmdata
+        .unwrap()
+        .downcast_runtime_ref::<mimium_audiodriver::driver::VmDspRuntime>()
+        .unwrap()
+        .vm
+        .closures
+        .len();
 
     let mut driver2 = prep_gc_test_machine(3, &src);
     driver2.play();
-    let second = driver2.vmdata.unwrap().vm.closures.len();
+    let second = driver2
+        .vmdata
+        .unwrap()
+        .downcast_runtime_ref::<mimium_audiodriver::driver::VmDspRuntime>()
+        .unwrap()
+        .vm
+        .closures
+        .len();
 
     let mut driver3 = prep_gc_test_machine(4, &src);
     driver3.play();
-    let third = driver3.vmdata.unwrap().vm.closures.len();
+    let third = driver3
+        .vmdata
+        .unwrap()
+        .downcast_runtime_ref::<mimium_audiodriver::driver::VmDspRuntime>()
+        .unwrap()
+        .vm
+        .closures
+        .len();
     assert!(first == second && second == third)
 }

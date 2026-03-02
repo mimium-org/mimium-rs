@@ -1,18 +1,55 @@
+use core::*
+#stage(macro)
+pub fn fdelay(max_time){
+    `|input,time|{
+        let d = delay($(max_time|>lift),input,time)
+        let d2 = mem(d)
+        let ratio = time % 1.0
+        d*(1-ratio) + d2*ratio
+    }
+}
+
+fn mix_stereo(processor:`(float,float)->(float,float)){
+    `|input:(float,float),mix:float|{
+        let wet = input |> $processor
+        let mix_inv = 1-mix
+        let dry = input * mix_inv
+        dry + wet
+    }
+}
+
+#stage(main)
 fn _delay(input,time){
-    delay(48000,input,time)
+    fdelay!(48000)(input,time)
 }
 
-fn pingpong_delay_inner(input:(float,float),time,fb)->(float,float){
-    let (left_i,right_i) = input
-    let (left_fb, right_fb) = self
-
-    let left_res = _delay(left_i+right_fb*fb ,time)
-    let right_res = _delay(right_i+left_fb*fb , time)
-    (left_res,right_res)
+fn stereo_delay_inner(input:(float,float),time_sec,fb)->(float,float){
+    let (left,right) = self
+    let fbsig= (left*fb,right*fb)
+    (_delay(input.0+fbsig.0,time_sec*samplerate),_delay(input.1+fbsig.1,time_sec*samplerate))
 }
-fn pingpong_delay(input,time,fb,mix){
-    let (left_dry,right_dry) = input
-    let (left_wet,right_wet) = pingpong_delay_inner(input,time,fb)
-    let mix_inv = 1-mix
-    (left_dry*mix_inv + left_wet*mix, right_dry*mix_inv + right_wet*mix )
+pub fn stereo_delay(input:(float,float),time_sec:float=0.5,fb:float=0.2,mix:float=0.5)->(float,float){
+    let wet = stereo_delay_inner(input,time_sec,fb)
+    let mix_inv = 1.0-mix
+    let dry = input * mix_inv
+    dry + wet
+}
+
+
+fn pingpong_delay_inner(input:(float,float),time_sec,fb,width){
+    let (left,right) = self
+    // if width = 1 mix input and send to left, right receives only 
+    // fb signal from left,
+    let input_l = input.0 * (width|>scale(_,0,1,1,0.5)) 
+                    +input.1 *(width|>scale(_,0,1,0,0.5))
+    let input_r = input.1 *(width|>scale(_,0,1,1,0))
+    let fb_l = input_l+right*fb //swap feedback path
+    let fb_r = input_r+left*fb
+    (_delay(fb_l,time_sec*samplerate),_delay(fb_r,time_sec*samplerate))
+}
+pub fn pingpong_delay(input:(float,float),time_sec:float=0.5,fb:float=0.2,width:float=1.0,mix:float=0.5)->(float,float){
+    let wet = pingpong_delay_inner(input,time_sec,fb,width)
+    let mix_inv = 1.0-mix
+    let dry = input * mix_inv
+    dry + wet
 }

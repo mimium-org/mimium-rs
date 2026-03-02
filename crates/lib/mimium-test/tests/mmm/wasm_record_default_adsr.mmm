@@ -1,0 +1,8 @@
+use env::adsr
+use osc::saw
+use core::midi_to_hz
+
+fn dsp(){
+    let note = { val = 60.0, gate = 1.0 }
+    saw(midi_to_hz(note.val), 0.0) * adsr({attack = 0.001, release = 0.1, gate = note.gate})
+}

@@ -15,6 +15,30 @@ struct ConvertResult {
     found_any: bool,
 }
 
+fn convert_lambda_param_defaults<F>(
+    params: Vec<TypedId>,
+    conversion: &F,
+) -> (Vec<TypedId>, bool, Vec<Error>)
+where
+    F: Fn(ExprNodeId) -> (ConvertResult, Vec<Error>),
+{
+    let mut found_any = false;
+    let mut all_errs = vec![];
+    let converted_params = params
+        .into_iter()
+        .map(|mut param| {
+            if let Some(default_expr) = param.default_value {
+                let (res, errs) = conversion(default_expr);
+                found_any |= res.found_any;
+                all_errs.extend(errs);
+                param.default_value = Some(res.expr);
+            }
+            param
+        })
+        .collect();
+    (converted_params, found_any, all_errs)
+}
+
 // This applies conversion() recursively. This is intended to be used in the `_`
 // branch of pattern matching so that particular types of epressions can be
 // caught and treated differently.
@@ -78,11 +102,17 @@ where
             (ConvertResult { expr, found_any }, [errs, errs2].concat())
         }
         Expr::Lambda(params, r_type, body) => {
-            // Note: params and r_type cannot be handled by conversion() because
-            //       these are Type, not Expr.
+            let (params, params_found_any, params_errs) =
+                convert_lambda_param_defaults(params, &conversion);
             let (ConvertResult { expr, found_any }, errs) = conversion(body);
             let expr = Expr::Lambda(params, r_type, expr).into_id(loc);
-            (ConvertResult { expr, found_any }, errs)
+            (
+                ConvertResult {
+                    expr,
+                    found_any: found_any | params_found_any,
+                },
+                [params_errs, errs].concat(),
+            )
         }
         Expr::Apply(fun, callee) => {
             let (fun, errs) = conversion(fun);
@@ -345,6 +375,10 @@ fn convert_self(
             }
         },
         Expr::Lambda(params, r_type, body) => {
+            let (params, params_found_any, params_errs) =
+                convert_lambda_param_defaults(params, &|e| {
+                    convert_self(e, feedctx, file_path.clone())
+                });
             let nfctx = feedctx.get_next_id();
             let (res, err) = convert_self(body, nfctx, file_path);
             let nbody = if res.found_any {
@@ -356,9 +390,9 @@ fn convert_self(
             (
                 ConvertResult {
                     expr,
-                    found_any: false,
+                    found_any: params_found_any,
                 },
-                err,
+                [params_errs, err].concat(),
             )
         }
         Expr::Feed(_, _) => panic!(
@@ -469,7 +503,14 @@ fn convert_operators(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
             //   original
             // }
 
-            let record = convert_operators(record, file_path);
+            let record = convert_operators(record, file_path.clone());
+            let fields = fields
+                .into_iter()
+                .map(|field| RecordField {
+                    name: field.name,
+                    expr: convert_operators(field.expr, file_path.clone()),
+                })
+                .collect::<Vec<_>>();
 
             // Generate a unique temporary variable name
             let temp_var_name = "record_update_temp".to_symbol();
@@ -482,11 +523,12 @@ fn convert_operators(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
             };
 
             // Build the chain of assignments and final return
-            let target_expr = Expr::Var(temp_var_name).into_id(loc.clone());
+            let mk_target = || Expr::Var(temp_var_name).into_id_without_span();
+            let target_expr = mk_target();
 
             // Process assignments in reverse order to build the Then chain correctly
             let then_chain = fields.into_iter().rev().fold(target_expr, |e, field| {
-                let access = Expr::FieldAccess(target_expr, field.name).into_id_without_span();
+                let access = Expr::FieldAccess(mk_target(), field.name).into_id_without_span();
                 let assign = Expr::Assign(access, field.expr).into_id_without_span();
                 Expr::Then(assign, Some(e)).into_id_without_span()
             });
