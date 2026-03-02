@@ -42,3 +42,22 @@ jobs:
       - name: "mimium-lang test for web"
         run: wasm-pack test --node
         working-directory: crates/lib/mimium-lang
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+          cache: 'npm'
+          cache-dependency-path: crates/lib/mimium-web/package-lock.json
+
+      - name: Install npm dependencies for web e2e
+        run: npm ci
+        working-directory: crates/lib/mimium-web
+
+      - name: Install Playwright browser and system deps
+        run: npx playwright install --with-deps chromium
+        working-directory: crates/lib/mimium-web
+
+      - name: Run Playwright e2e fixture suite
+        run: npm run test:e2e
+        working-directory: crates/lib/mimium-web
