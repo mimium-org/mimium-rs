@@ -2250,7 +2250,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-audiodriver"
-version = "4.0.0-alpha.1"
+version = "4.0.0-alpha.4"
 dependencies = [
  "cpal",
  "mimium-lang",
@@ -2260,7 +2260,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-bintools"
-version = "4.0.0-alpha.1"
+version = "4.0.0-alpha.4"
 dependencies = [
  "mimium-cli",
  "mimium-fmt",
@@ -2273,7 +2273,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-cli"
-version = "4.0.0-alpha.1"
+version = "4.0.0-alpha.4"
 dependencies = [
  "clap",
  "colog",
@@ -2290,7 +2290,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-diff-visualizer"
-version = "4.0.0-alpha.1"
+version = "4.0.0-alpha.4"
 dependencies = [
  "anyhow",
  "mimium-lang",
@@ -2299,7 +2299,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-fmt"
-version = "4.0.0-alpha.1"
+version = "4.0.0-alpha.4"
 dependencies = [
  "clap",
  "mimium-lang",
@@ -2308,7 +2308,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-guitools"
-version = "4.0.0-alpha.1"
+version = "4.0.0-alpha.4"
 dependencies = [
  "atomic_float",
  "bincode",
@@ -2323,7 +2323,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-lang"
-version = "4.0.0-alpha.1"
+version = "4.0.0-alpha.4"
 dependencies = [
  "ariadne",
  "bincode",
@@ -2351,7 +2351,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-language-server"
-version = "4.0.0-alpha.1"
+version = "4.0.0-alpha.4"
 dependencies = [
  "chumsky",
  "dashmap 6.1.0",
@@ -2373,7 +2373,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-midi"
-version = "4.0.0-alpha.1"
+version = "4.0.0-alpha.4"
 dependencies = [
  "atomic_float",
  "bincode",
@@ -2386,7 +2386,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-plugin-macros"
-version = "4.0.0-alpha.1"
+version = "4.0.0-alpha.4"
 dependencies = [
  "mimium-lang",
  "proc-macro2",
@@ -2396,7 +2396,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-scheduler"
-version = "4.0.0-alpha.1"
+version = "4.0.0-alpha.4"
 dependencies = [
  "log",
  "mimium-lang",
@@ -2405,7 +2405,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-symphonia"
-version = "4.0.0-alpha.1"
+version = "4.0.0-alpha.4"
 dependencies = [
  "bincode",
  "mimium-audiodriver",
@@ -2417,7 +2417,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-test"
-version = "4.0.0-alpha.1"
+version = "4.0.0-alpha.4"
 dependencies = [
  "mimium-audiodriver",
  "mimium-guitools",
@@ -2430,7 +2430,7 @@ dependencies = [
 
 [[package]]
 name = "mimium-web"
-version = "4.0.0-alpha.1"
+version = "4.0.0-alpha.4"
 dependencies = [
  "console_error_panic_hook",
  "itertools 0.13.0",
@@ -3568,7 +3568,7 @@ dependencies = [
 
 [[package]]
 name = "state-tree"
-version = "4.0.0-alpha.1"
+version = "4.0.0-alpha.4"
 dependencies = [
  "itertools 0.13.0",
  "log",
