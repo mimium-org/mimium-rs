@@ -94,7 +94,20 @@ Note that this command will modify the version in the root `Cargo.toml` and make
 
 Also it internally executes `cargo publish` to upload crates into crate.io, so make sure you have a write permission token to publish. (Set `CRATEIO_TOKEN` for repository secrets.)
 
-For the wasm build, it executes `wasm-pack publish --target web`. It also requires npm publish token. (Set `NPM_PUBLISH_TOKEN` secret.)
+For the wasm build, it executes `wasm-pack build --target web`, updates `crates/lib/mimium-web/pkg/package.json` `files` to include `snippets`, and publishes with `npm publish`. It also requires npm publish token. (Set `NPM_PUBLISH_TOKEN` secret.)
+
+If you need to run the wasm package publish manually, use the same sequence as CI:
+
+```sh
+wasm-pack build crates/lib/mimium-web --target web
+npm pkg set --prefix crates/lib/mimium-web/pkg \
+  'files[0]=mimium_web_bg.wasm' \
+  'files[1]=mimium_web.js' \
+  'files[2]=mimium_web.d.ts' \
+  'files[3]=snippets' \
+  'files[4]=snippets/**'
+npm publish ./crates/lib/mimium-web/pkg --access public
+```
 
 If tagged commit is pushed to github, the another workflow is triggered.
 
