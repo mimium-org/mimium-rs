@@ -176,7 +176,17 @@ pub async fn preload_github_stdlib_cache() -> Result<(), String> {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[wasm_bindgen(module = "/src/utils/fileloader.cjs")]
+pub fn put_virtual_file_cache(path: &str, content: &str) -> Result<(), String> {
+    __mimium_test_put_cache(path, content).map_err(|e| format!("{e:?}"))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn clear_virtual_file_cache() -> Result<(), String> {
+    __mimium_test_clear_cache().map_err(|e| format!("{e:?}"))
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(module = "/src/utils/fileloader.mjs")]
 extern "C" {
     #[wasm_bindgen(catch)]
     fn read_file(path: &str) -> Result<String, JsValue>;

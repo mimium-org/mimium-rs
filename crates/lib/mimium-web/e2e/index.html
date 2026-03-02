@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>mimium-web e2e</title>
+  </head>
+  <body>
+    <script type="module">
+      window.__e2e_boot_error = null;
+
+      try {
+        const module = await import('/pkg/mimium_web.js');
+        const init = module.default;
+        const Config = module.Config;
+        const Context = module.Context;
+
+        let initialized = false;
+
+        async function ensureInit() {
+          if (!initialized) {
+            await init();
+            initialized = true;
+          }
+        }
+
+        window.runModuleUseIntegration = async () => {
+          await ensureInit();
+
+          const config = Config.new();
+          config.sample_rate = 48000;
+          config.buffer_size = 1;
+
+          const ctx = new Context(config);
+          ctx.clear_virtual_file_cache();
+          ctx.put_virtual_file_cache('module_external_math.mmm', 'pub fn sum(a,b){a+b}');
+
+          ctx.compile_direct(`
+mod module_external_math
+use module_external_math::sum
+fn dsp(){
+  sum(5.0, 7.0)
+}
+`);
+
+          const output = new Float32Array(1);
+          const input = new Float32Array(0);
+          ctx.process(input, output);
+          return output[0];
+        };
+      } catch (error) {
+        window.__e2e_boot_error = String(error?.stack || error);
+      }
+    </script>
+  </body>
+</html>

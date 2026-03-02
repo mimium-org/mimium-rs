@@ -1,3 +1,8 @@
 **/target
 .DS_Store
 tmp
+
+# mimium-web E2E local artifacts
+crates/lib/mimium-web/node_modules/
+crates/lib/mimium-web/test-results/
+crates/lib/mimium-web/playwright-report/
