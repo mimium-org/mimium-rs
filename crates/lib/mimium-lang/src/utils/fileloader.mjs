@@ -1,8 +1,21 @@
 let fs = null;
 const isNode = typeof process !== 'undefined' && !!(process.versions && process.versions.node);
 if (isNode) {
-  const nodeModule = await import('node:fs');
-  fs = nodeModule.default ?? nodeModule;
+  if (typeof process.getBuiltinModule === 'function') {
+    fs = process.getBuiltinModule('node:fs') ?? process.getBuiltinModule('fs');
+  }
+  if (!fs) {
+    try {
+      const requireOrNull = Function(
+        'return typeof require !== "undefined" ? require : null;'
+      )();
+      if (requireOrNull) {
+        fs = requireOrNull('node:fs');
+      }
+    } catch {
+      fs = null;
+    }
+  }
 }
 
 const DEFAULT_GITHUB_LIB_BASE = 'https://raw.githubusercontent.com/mimium-org/mimium-rs/';
