@@ -21,6 +21,7 @@ const LIB_FILES = [
 
 const memoryCache = new Map();
 let lastPreloadBaseUrl = '';
+let lastModulePreloadBaseUrl = '';
 
 function normalizePath(path) {
   if (typeof path !== 'string') {
@@ -33,6 +34,39 @@ function normalizePath(path) {
     .filter((seg) => seg.length > 0 && seg !== '.')
     .join('/');
   return collapsed;
+}
+
+function normalizeBaseUrlCandidate(baseUrlCandidate) {
+  if (!baseUrlCandidate || baseUrlCandidate.length === 0) {
+    return '';
+  }
+
+  let resolved = baseUrlCandidate;
+  if (typeof location !== 'undefined') {
+    resolved = new URL(baseUrlCandidate, location.href).toString();
+  }
+
+  try {
+    const parsed = new URL(resolved);
+    if (parsed.hostname !== 'github.com') {
+      return resolved;
+    }
+
+    const segments = parsed.pathname.split('/').filter((segment) => segment.length > 0);
+    const [owner, repo, mode, ref, ...rest] = segments;
+    if (!owner || !repo || !mode || !ref) {
+      return resolved;
+    }
+    if (mode !== 'tree' && mode !== 'blob') {
+      return resolved;
+    }
+
+    const restPath = rest.join('/');
+    const rawPath = restPath.length > 0 ? `/${owner}/${repo}/${ref}/${restPath}` : `/${owner}/${repo}/${ref}`;
+    return `https://raw.githubusercontent.com${rawPath}`;
+  } catch {
+    return resolved;
+  }
 }
 
 function putMemoryAliases(filename, content) {
@@ -134,12 +168,85 @@ async function fetchLibFile(baseUrl, filename) {
   return response.text();
 }
 
+function collectDependencies(source) {
+  const moduleDeps = [...source.matchAll(/^\s*mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/gm)].map(
+    (match) => `${match[1]}.mmm`
+  );
+  const includeDeps = [...source.matchAll(/^\s*include\(\s*"([^"]+)"\s*\)\s*$/gm)].map(
+    (match) => match[1]
+  );
+  return [...new Set([...moduleDeps, ...includeDeps])];
+}
+
+function getModuleBaseUrl(base_url) {
+  const candidate =
+    base_url && base_url.length > 0
+      ? base_url
+      : globalThis.__mimium_module_base_url ||
+        (typeof location !== 'undefined' ? new URL('.', location.href).toString() : '');
+  if (!candidate) {
+    return '';
+  }
+  const normalized = normalizeBaseUrlCandidate(candidate);
+  return normalized.endsWith('/') ? normalized : `${normalized}/`;
+}
+
+async function fetchSourceFromBaseUrl(baseUrl, relativePath) {
+  const url = new URL(relativePath, baseUrl).toString();
+  const response = await fetch(url, { cache: 'no-cache' });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
+  }
+  return response.text();
+}
+
+async function preload_user_module_cache(source, base_url) {
+  if (isNode) {
+    return;
+  }
+
+  const baseUrl = getModuleBaseUrl(base_url);
+  if (!baseUrl) {
+    return;
+  }
+  globalThis.__mimium_module_base_url = baseUrl;
+  lastModulePreloadBaseUrl = baseUrl;
+
+  const pending = collectDependencies(source);
+  const visited = new Set();
+
+  while (pending.length > 0) {
+    const depPath = pending.pop();
+    const normalized = normalizePath(depPath || '');
+    if (!normalized || visited.has(normalized)) {
+      continue;
+    }
+    visited.add(normalized);
+
+    const cached =
+      memoryCache.get(depPath) ??
+      memoryCache.get(normalized) ??
+      memoryCache.get(`./${normalized}`) ??
+      memoryCache.get(`lib/${normalized}`) ??
+      memoryCache.get(`/lib/${normalized}`);
+    if (cached !== undefined) {
+      collectDependencies(cached).forEach((nestedDep) => pending.push(nestedDep));
+      continue;
+    }
+
+    const fetched = await fetchSourceFromBaseUrl(baseUrl, depPath);
+    putMemoryAliases(depPath, fetched);
+    collectDependencies(fetched).forEach((nestedDep) => pending.push(nestedDep));
+  }
+}
+
 async function preload_mimium_lib_cache(base_url) {
   const baseUrlCandidate =
     base_url && base_url.length > 0
       ? base_url
       : `${DEFAULT_GITHUB_LIB_BASE}${DEFAULT_GITHUB_TAG}/lib/`;
-  const baseUrl = baseUrlCandidate.endsWith('/') ? baseUrlCandidate : `${baseUrlCandidate}/`;
+  const normalizedBaseUrl = normalizeBaseUrlCandidate(baseUrlCandidate);
+  const baseUrl = normalizedBaseUrl.endsWith('/') ? normalizedBaseUrl : `${normalizedBaseUrl}/`;
   globalThis.__mimium_lib_base_url = baseUrl;
   lastPreloadBaseUrl = baseUrl;
 
@@ -173,18 +280,36 @@ function __mimium_test_put_cache(path, content) {
 function __mimium_test_clear_cache() {
   memoryCache.clear();
   lastPreloadBaseUrl = '';
+  lastModulePreloadBaseUrl = '';
   delete globalThis.__mimium_lib_base_url;
+  delete globalThis.__mimium_module_base_url;
 }
 
 function __mimium_test_get_last_preload_base_url() {
   return lastPreloadBaseUrl;
 }
 
+function __mimium_test_get_last_module_preload_base_url() {
+  return lastModulePreloadBaseUrl;
+}
+
+function set_module_base_url(base_url) {
+  const normalized = getModuleBaseUrl(base_url);
+  if (!normalized) {
+    delete globalThis.__mimium_module_base_url;
+    return;
+  }
+  globalThis.__mimium_module_base_url = normalized;
+}
+
 export {
   read_file,
   get_env,
   preload_mimium_lib_cache,
+  preload_user_module_cache,
+  set_module_base_url,
   __mimium_test_put_cache,
   __mimium_test_clear_cache,
-  __mimium_test_get_last_preload_base_url
+  __mimium_test_get_last_preload_base_url,
+  __mimium_test_get_last_module_preload_base_url
 };

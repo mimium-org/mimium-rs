@@ -10,6 +10,7 @@ const fixtureDir = path.resolve(rootDir, '../mimium-test/tests/mmm');
 const stdlibDir = path.resolve(rootDir, '../../../lib');
 const port = Number(process.env.PORT || 4173);
 const mockLibPrefix = '/raw.githubusercontent.com/mimium-org/mimium-rs/';
+const mockGithubTreePrefix = '/github.com/mimium-org/mimium-rs/';
 
 const mockLibRequestCounts = new Map();
 
@@ -26,6 +27,26 @@ const contentTypes = new Map([
 
 function resolveFilePath(requestPath) {
   const decodedPath = decodeURIComponent(requestPath.split('?')[0]);
+
+  if (decodedPath.startsWith(mockGithubTreePrefix)) {
+    const suffix = decodedPath.slice(mockGithubTreePrefix.length);
+    const [mode, tag, ...rest] = suffix.split('/');
+    const fileName = rest.length === 2 && rest[0] === 'lib' ? rest[1] : '';
+    if (!tag || !fileName || fileName.includes('/')) {
+      return null;
+    }
+    if (mode !== 'tree' && mode !== 'blob') {
+      return null;
+    }
+    const absoluteStdlibPath = path.resolve(stdlibDir, fileName);
+    if (!absoluteStdlibPath.startsWith(stdlibDir)) {
+      return null;
+    }
+    return {
+      filePath: absoluteStdlibPath,
+      mockLibKey: `${tag}/${fileName}`
+    };
+  }
 
   if (decodedPath.startsWith(mockLibPrefix)) {
     const suffix = decodedPath.slice(mockLibPrefix.length);

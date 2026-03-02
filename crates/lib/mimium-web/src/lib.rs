@@ -38,6 +38,7 @@ pub struct Context {
     processor: Option<Processer>,
     swap_channel: Option<mpsc::Sender<vm::Program>>,
     config: Config,
+    module_base_url: Option<String>,
 }
 
 fn get_default_context() -> ExecContext {
@@ -116,12 +117,27 @@ impl Context {
     #[wasm_bindgen]
     pub async fn compile(&mut self, src: String) -> Result<(), JsValue> {
         self.init_github_lib_cache().await?;
+        fileloader::preload_user_module_cache(src.as_str(), self.module_base_url.as_deref())
+            .await
+            .map_err(|e| JsValue::from_str(&e))?;
         self.compile_inner(src)
     }
 
     #[wasm_bindgen]
     pub fn compile_direct(&mut self, src: String) -> Result<(), JsValue> {
         self.compile_inner(src)
+    }
+
+    #[wasm_bindgen]
+    pub fn set_module_base_url(&mut self, base_url: String) -> Result<(), JsValue> {
+        let normalized = if base_url.trim().is_empty() {
+            None
+        } else {
+            Some(base_url)
+        };
+        fileloader::set_module_base_url(normalized.as_deref()).map_err(|e| JsValue::from_str(&e))?;
+        self.module_base_url = normalized;
+        Ok(())
     }
 
     #[wasm_bindgen]
@@ -183,6 +199,9 @@ impl Context {
     #[wasm_bindgen]
     pub async fn recompile(&mut self, src: String) -> Result<(), JsValue> {
         self.init_github_lib_cache().await?;
+        fileloader::preload_user_module_cache(src.as_str(), self.module_base_url.as_deref())
+            .await
+            .map_err(|e| JsValue::from_str(&e))?;
         self.recompile_inner(src)
     }
 

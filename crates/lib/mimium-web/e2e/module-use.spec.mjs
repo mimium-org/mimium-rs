@@ -113,4 +113,67 @@ test.describe('stdlib preload with temporary base URL', () => {
     const secondStats = await getMockLibStats(page);
     expect(secondStats.total).toBe(firstStats.total);
   });
+
+  test('accepts github tree URL and resolves it to raw content fetches', async ({ page }) => {
+    await page.goto('/e2e/index.html');
+    await page.waitForFunction(
+      () =>
+        typeof window.preloadStdlibFromBaseUrl === 'function' ||
+        window.__e2e_boot_error !== null
+    );
+    const bootError = await page.evaluate(() => window.__e2e_boot_error);
+    expect(bootError).toBeNull();
+
+    await resetMockLibStats(page);
+
+    const uniqueTag = `e2e-tree-${Date.now()}`;
+    const treeBaseUrl = `${new URL('/', page.url()).toString()}github.com/mimium-org/mimium-rs/tree/${uniqueTag}/lib/`;
+
+    await page.evaluate(async (url) => {
+      await window.preloadStdlibFromBaseUrl({ baseUrl: url, clearVirtualCache: true });
+    }, treeBaseUrl);
+
+    const stats = await getMockLibStats(page);
+    const tagEntries = Object.entries(stats.requests).filter(([key]) =>
+      key.startsWith(`${uniqueTag}/`)
+    );
+    expect(tagEntries.length).toBeGreaterThan(0);
+    expect(stats.total).toBeGreaterThan(0);
+  });
+});
+
+test.describe('browser network module loading', () => {
+  test('loads external module file over network during compile', async ({ page }) => {
+    const requestedUrls = [];
+    page.on('request', (request) => {
+      requestedUrls.push(request.url());
+    });
+
+    await page.goto('/e2e/index.html');
+    await page.waitForFunction(
+      () =>
+        typeof window.runFixtureIntegrationWithNetwork === 'function' ||
+        window.__e2e_boot_error !== null
+    );
+    const bootError = await page.evaluate(() => window.__e2e_boot_error);
+    expect(bootError).toBeNull();
+
+    const result = await page.evaluate(async () => {
+      return window.runFixtureIntegrationWithNetwork({
+        fixtureName: 'module_external_use.mmm',
+        moduleBaseUrl: `${location.origin}/fixtures/`
+      });
+    });
+
+    expect(result.samples.length).toBe(result.expected.length);
+    const tolerance = Math.max(result.tol || 0, 1e-5);
+    result.samples.forEach((sample, index) => {
+      expect(Math.abs(sample - result.expected[index])).toBeLessThanOrEqual(tolerance);
+    });
+
+    const moduleRequests = requestedUrls.filter((url) =>
+      url.endsWith('/fixtures/module_external_math.mmm')
+    );
+    expect(moduleRequests.length).toBeGreaterThan(0);
+  });
 });

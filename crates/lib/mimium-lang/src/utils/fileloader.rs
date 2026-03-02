@@ -183,6 +183,21 @@ pub async fn preload_stdlib_cache_with_base_url(base_url: &str) -> Result<(), St
 }
 
 #[cfg(target_arch = "wasm32")]
+pub async fn preload_user_module_cache(
+    source: &str,
+    module_base_url: Option<&str>,
+) -> Result<(), String> {
+    preload_user_module_cache_js(source, module_base_url.unwrap_or(""))
+        .await
+        .map_err(|e| format!("{:?}", e))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn set_module_base_url(base_url: Option<&str>) -> Result<(), String> {
+    set_module_base_url_js(base_url.unwrap_or("")).map_err(|e| format!("{:?}", e))
+}
+
+#[cfg(target_arch = "wasm32")]
 pub fn put_virtual_file_cache(path: &str, content: &str) -> Result<(), String> {
     __mimium_test_put_cache(path, content).map_err(|e| format!("{e:?}"))
 }
@@ -201,6 +216,10 @@ extern "C" {
     pub fn get_env(key: &str) -> Result<String, JsValue>;
     #[wasm_bindgen(catch)]
     async fn preload_mimium_lib_cache(base_url: &str) -> Result<(), JsValue>;
+    #[wasm_bindgen(catch, js_name = preload_user_module_cache)]
+    async fn preload_user_module_cache_js(source: &str, base_url: &str) -> Result<(), JsValue>;
+    #[wasm_bindgen(catch, js_name = set_module_base_url)]
+    fn set_module_base_url_js(base_url: &str) -> Result<(), JsValue>;
     #[wasm_bindgen(catch)]
     fn __mimium_test_put_cache(path: &str, content: &str) -> Result<(), JsValue>;
     #[wasm_bindgen(catch)]
