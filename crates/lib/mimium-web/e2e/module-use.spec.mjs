@@ -30,6 +30,26 @@ function getWebFixtureList() {
 
 const webFixtures = getWebFixtureList();
 
+async function getMockLibStats(page) {
+  return page.evaluate(async () => {
+    const response = await fetch('/mock-lib-stats', { cache: 'no-store' });
+    if (!response.ok) {
+      throw new Error(`Failed to get mock lib stats: ${response.status}`);
+    }
+    return response.json();
+  });
+}
+
+async function resetMockLibStats(page) {
+  await page.evaluate(async () => {
+    const response = await fetch('/mock-lib-reset', { cache: 'no-store' });
+    if (!response.ok) {
+      throw new Error(`Failed to reset mock lib stats: ${response.status}`);
+    }
+    await response.json();
+  });
+}
+
 test.describe('web fixtures', () => {
   test('has at least one web fixture', () => {
     expect(webFixtures.length).toBeGreaterThan(0);
@@ -56,5 +76,41 @@ test.describe('web fixtures', () => {
         expect(Math.abs(sample - result.expected[index])).toBeLessThanOrEqual(tolerance);
       });
     });
+  });
+});
+
+test.describe('stdlib preload with temporary base URL', () => {
+  test('fetches from mock server once and reuses cache on second preload', async ({ page }) => {
+    await page.goto('/e2e/index.html');
+    await page.waitForFunction(
+      () =>
+        typeof window.preloadStdlibFromBaseUrl === 'function' ||
+        window.__e2e_boot_error !== null
+    );
+    const bootError = await page.evaluate(() => window.__e2e_boot_error);
+    expect(bootError).toBeNull();
+
+    await resetMockLibStats(page);
+
+    const uniqueTag = `e2e-opfs-${Date.now()}`;
+    const baseUrl = `${new URL('/', page.url()).toString()}raw.githubusercontent.com/mimium-org/mimium-rs/${uniqueTag}/lib/`;
+
+    await page.evaluate(async (url) => {
+      await window.preloadStdlibFromBaseUrl({ baseUrl: url, clearVirtualCache: true });
+    }, baseUrl);
+
+    const firstStats = await getMockLibStats(page);
+    const firstEntries = Object.entries(firstStats.requests).filter(([key]) =>
+      key.startsWith(`${uniqueTag}/`)
+    );
+    expect(firstEntries.length).toBeGreaterThan(0);
+    expect(firstStats.total).toBeGreaterThan(0);
+
+    await page.evaluate(async (url) => {
+      await window.preloadStdlibFromBaseUrl({ baseUrl: url, clearVirtualCache: true });
+    }, baseUrl);
+
+    const secondStats = await getMockLibStats(page);
+    expect(secondStats.total).toBe(firstStats.total);
   });
 });

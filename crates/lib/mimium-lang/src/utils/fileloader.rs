@@ -176,6 +176,13 @@ pub async fn preload_github_stdlib_cache() -> Result<(), String> {
 }
 
 #[cfg(target_arch = "wasm32")]
+pub async fn preload_stdlib_cache_with_base_url(base_url: &str) -> Result<(), String> {
+    preload_mimium_lib_cache(base_url)
+        .await
+        .map_err(|e| format!("{:?}", e))
+}
+
+#[cfg(target_arch = "wasm32")]
 pub fn put_virtual_file_cache(path: &str, content: &str) -> Result<(), String> {
     __mimium_test_put_cache(path, content).map_err(|e| format!("{e:?}"))
 }

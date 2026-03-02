@@ -110,6 +110,22 @@
             tol: meta.tol ?? 0
           };
         };
+
+        window.preloadStdlibFromBaseUrl = async ({ baseUrl, clearVirtualCache = true }) => {
+          await ensureInit();
+
+          const config = Config.new();
+          config.sample_rate = 48000;
+          config.buffer_size = 1;
+
+          const ctx = new Context(config);
+          if (clearVirtualCache) {
+            ctx.clear_virtual_file_cache();
+          }
+          await ctx.init_lib_cache_with_base_url(baseUrl);
+
+          return { ok: true };
+        };
       } catch (error) {
         window.__e2e_boot_error = String(error?.stack || error);
       }

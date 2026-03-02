@@ -132,6 +132,13 @@ impl Context {
     }
 
     #[wasm_bindgen]
+    pub async fn init_lib_cache_with_base_url(&self, base_url: String) -> Result<(), JsValue> {
+        mimium_lang::utils::fileloader::preload_stdlib_cache_with_base_url(base_url.as_str())
+            .await
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
+    #[wasm_bindgen]
     pub fn put_virtual_file_cache(&self, path: String, content: String) -> Result<(), JsValue> {
         fileloader::put_virtual_file_cache(path.as_str(), content.as_str())
             .map_err(|e| JsValue::from_str(&e))
