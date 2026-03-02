@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[7.0],"web":true}
+
 // Test min/max in combination
 fn dsp(){
     let a = 5.0

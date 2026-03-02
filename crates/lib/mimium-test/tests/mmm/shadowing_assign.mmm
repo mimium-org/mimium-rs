@@ -1,3 +1,4 @@
+// @test {"times":1,"stereo":false,"expected":[7.0],"web":true}
 //answer should be 7
 
 

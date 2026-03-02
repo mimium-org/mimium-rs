@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[21.0],"web":true}
+
 let arr = [(1.0,2.0),(3.0,4.0),(5.0,6.0)]
 
 let (e1,e2) = arr[0]

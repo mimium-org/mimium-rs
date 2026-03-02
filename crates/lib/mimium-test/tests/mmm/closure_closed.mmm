@@ -1,3 +1,4 @@
+// @test {"times":2,"stereo":false,"expected":[-6.0, -6.0],"web":true}
 //expect -6.0
 fn test(x:float){
     let y = 5.0

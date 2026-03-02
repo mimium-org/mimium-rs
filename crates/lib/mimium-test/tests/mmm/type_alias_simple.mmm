@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[880.0],"web":true}
+
 type alias Freq = float
 
 fn dsp() {

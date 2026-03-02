@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[21.0],"web":true}
+
 fn dsp(){
     let a = (1.0, 2.0, 3.0)
     let b = (4.0, 5.0, 6.0)

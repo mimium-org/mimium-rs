@@ -1,3 +1,5 @@
+// @test {"times":7,"stereo":false,"expected":[1.0,2.0,3.0,4.0,5.0,5.0,5.0],"web":true}
+
 // Test nested conditionals in stateful functions
 // This is a regression test for WASM backend handling of nested JmpIf in merge blocks
 

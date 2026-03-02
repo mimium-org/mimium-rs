@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
+const fixtureDir = path.resolve(rootDir, '../mimium-test/tests/mmm');
 const port = Number(process.env.PORT || 4173);
 
 const contentTypes = new Map([
@@ -20,6 +21,15 @@ const contentTypes = new Map([
 ]);
 
 function resolveFilePath(requestPath) {
+  if (requestPath.startsWith('/fixtures/')) {
+    const fixturePath = requestPath.replace('/fixtures/', '');
+    const absoluteFixturePath = path.resolve(fixtureDir, fixturePath);
+    if (!absoluteFixturePath.startsWith(fixtureDir)) {
+      return null;
+    }
+    return absoluteFixturePath;
+  }
+
   const normalizedPath = requestPath === '/' ? '/e2e/index.html' : requestPath;
   const decodedPath = decodeURIComponent(normalizedPath.split('?')[0]);
   const absolutePath = path.resolve(rootDir, `.${decodedPath}`);

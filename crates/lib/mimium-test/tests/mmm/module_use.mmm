@@ -1,3 +1,5 @@
+// @test {"times":3,"stereo":false,"expected":[15.0,15.0,15.0],"web":true}
+
 // Test use statement functionality
 // use foo::bar should make bar accessible without qualification
 

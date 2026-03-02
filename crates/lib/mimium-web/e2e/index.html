@@ -24,8 +24,65 @@
           }
         }
 
-        window.runModuleUseIntegration = async () => {
+        const testMetaPrefix = '// @test ';
+
+        function parseTestMetaFromSource(src) {
+          const line = src
+            .split('\n')
+            .slice(0, 8)
+            .map((item) => item.trim())
+            .find((item) => item.startsWith(testMetaPrefix));
+          if (!line) {
+            throw new Error('Missing // @test metadata in fixture source');
+          }
+          return JSON.parse(line.slice(testMetaPrefix.length));
+        }
+
+        async function loadFixture(name) {
+          const response = await fetch(`/fixtures/${name}`, { cache: 'no-store' });
+          if (!response.ok) {
+            throw new Error(`Failed to load fixture ${name}: ${response.status}`);
+          }
+          return response.text();
+        }
+
+        function collectDependencies(source) {
+          const moduleDeps = [...source.matchAll(/^\s*mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/gm)].map(
+            (match) => `${match[1]}.mmm`
+          );
+          const includeDeps = [
+            ...source.matchAll(/^\s*include\(\s*"([^"]+)"\s*\)\s*$/gm)
+          ].map((match) => match[1]);
+          return [...new Set([...moduleDeps, ...includeDeps])];
+        }
+
+        async function preloadDependenciesToCache(ctx, rootSource) {
+          const visited = new Set();
+          const pending = collectDependencies(rootSource);
+
+          while (pending.length > 0) {
+            const depPath = pending.pop();
+            if (!depPath || visited.has(depPath)) {
+              continue;
+            }
+            visited.add(depPath);
+
+            const depSource = await loadFixture(depPath);
+            ctx.put_virtual_file_cache(depPath, depSource);
+
+            collectDependencies(depSource).forEach((nestedDep) => {
+              if (!visited.has(nestedDep)) {
+                pending.push(nestedDep);
+              }
+            });
+          }
+        }
+
+        window.runFixtureIntegration = async (fixtureName) => {
           await ensureInit();
+
+          const source = await loadFixture(fixtureName);
+          const meta = parseTestMetaFromSource(source);
 
           const config = Config.new();
           config.sample_rate = 48000;
@@ -33,20 +90,25 @@
 
           const ctx = new Context(config);
           ctx.clear_virtual_file_cache();
-          ctx.put_virtual_file_cache('module_external_math.mmm', 'pub fn sum(a,b){a+b}');
+          await preloadDependenciesToCache(ctx, source);
 
-          ctx.compile_direct(`
-mod module_external_math
-use module_external_math::sum
-fn dsp(){
-  sum(5.0, 7.0)
-}
-`);
+          ctx.compile_direct(source);
 
-          const output = new Float32Array(1);
-          const input = new Float32Array(0);
-          ctx.process(input, output);
-          return output[0];
+          const channelsToCollect = meta.stereo ? 2 : 1;
+          const samples = [];
+          for (let i = 0; i < meta.times; i += 1) {
+            const output = new Float32Array(Math.max(ctx.get_output_channels(), channelsToCollect));
+            ctx.process(new Float32Array(0), output);
+            for (let ch = 0; ch < channelsToCollect; ch += 1) {
+              samples.push(output[ch]);
+            }
+          }
+
+          return {
+            expected: meta.expected,
+            samples,
+            tol: meta.tol ?? 0
+          };
         };
       } catch (error) {
         window.__e2e_boot_error = String(error?.stack || error);

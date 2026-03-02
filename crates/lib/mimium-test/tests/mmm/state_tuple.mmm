@@ -1,3 +1,4 @@
+// @test {"times":3,"stereo":true,"expected":[1.0, 2.0, 2.0, 4.0, 3.0, 6.0],"web":true}
 fn bifb()->(float,float){
     let (a,b) =self
     (a+1.0,b+2.0)

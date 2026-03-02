@@ -1,3 +1,4 @@
+// @test {"times":2,"stereo":false,"expected":[2.0, 2.0],"web":true}
 //answer 2
 fn dsp(){
     let x = 5.0

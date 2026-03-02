@@ -1,3 +1,4 @@
+// @test {"times":3,"stereo":false,"expected":[42.0, 42.0, 42.0],"web":true}
 // Test nested modules - using fully qualified paths
 
 mod outer {

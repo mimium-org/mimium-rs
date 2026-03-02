@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[300.0],"web":true}
+
 let value = {key1 = 100.0,key2 = 200.0}
 
 let {key1 = v1, key2 = v2} = value

@@ -2423,6 +2423,8 @@ dependencies = [
  "mimium-guitools",
  "mimium-lang",
  "mimium-scheduler",
+ "serde",
+ "serde_json",
  "wasm-bindgen-test",
 ]
 

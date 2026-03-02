@@ -1,3 +1,4 @@
+// @test {"times":3,"stereo":false,"expected":[25.0, 25.0, 25.0],"web":true}
 // Basic module test: define a module and access its members
 
 mod mymath {

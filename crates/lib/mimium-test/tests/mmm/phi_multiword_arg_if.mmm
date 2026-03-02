@@ -1,3 +1,4 @@
+// @test {"times":1,"stereo":false,"expected":[10.0],"web":true}
 type alias Pair = (float, float)
 
 fn choose(a: Pair, b: Pair, cond: float) -> Pair {

@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[6.0],"web":true}
+
 type MyEnum = One | Two | Three 
 
 fn test(myenum){

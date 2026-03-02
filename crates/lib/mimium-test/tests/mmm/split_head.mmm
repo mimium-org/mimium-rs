@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[9.0],"web":true}
+
 #stage(macro)
 fn test_split(){
    `{[1,2,3,4] |> split_head}

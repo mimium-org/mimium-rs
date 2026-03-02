@@ -1,3 +1,4 @@
+// @test {"times":5,"stereo":true,"expected":[0.0, 0.0, 1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0],"web":true}
 // this creates two counters on global scope with tuple assignment
 fn makecounter(){
     let x = 0.0

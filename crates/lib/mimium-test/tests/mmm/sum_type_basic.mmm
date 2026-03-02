@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[3.0],"web":true}
+
 // Test for Phase 2: primitive sum types with constructor patterns
 // Tests union type float | int with pattern matching
 

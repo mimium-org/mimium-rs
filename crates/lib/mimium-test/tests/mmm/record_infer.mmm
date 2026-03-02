@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[81.5],"web":true}
+
 //test for more complex record and tuple type inference
 
 let myrec = { 

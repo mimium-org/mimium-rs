@@ -1,3 +1,4 @@
+// @test {"times":3,"stereo":true,"expected":[1.0, 2.0, 1.0, 2.0, 1.0, 2.0],"web":true}
 fn to_stereo(x:float) -> (float,float) {
   (x, x * 2.0)
 }

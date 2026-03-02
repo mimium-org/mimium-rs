@@ -1,3 +1,4 @@
+// @test {"times":1,"stereo":false,"expected":[18.0],"web":true}
 fn dsp(){
   let c = 2.0 + ((1.0, 2.0), (3.0, 4.0))
   c.0.0 + c.0.1 + c.1.0 + c.1.1

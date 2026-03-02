@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[5.0],"web":true}
+
 let arr = [10,20,30,40,50]
 
 let len = length_array(arr);

@@ -1,3 +1,4 @@
+// @test {"times":1,"stereo":false,"expected":[24.0],"web":true}
 fn map(arr,func){
     if ((arr |> length_array) > 1){
         let (head,rest) = split_head(arr)

@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[26.0],"web":true}
+
 type MyEnum = One(float) 
             | Two((float,float))
 

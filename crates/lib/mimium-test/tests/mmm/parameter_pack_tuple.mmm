@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[13.0],"web":true}
+
 fn add3(a:float,b:float,c:float){
   a+b+c
 }

@@ -1,3 +1,4 @@
+// @test {"times":5,"stereo":false,"expected":[100.0, 100.0, 100.0, 100.0, 100.0],"web":true}
 let a = (40,60)
 let b = a.0
 let c = a.1
