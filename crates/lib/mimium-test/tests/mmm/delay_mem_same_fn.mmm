@@ -1,0 +1,13 @@
+fn counter(){
+    1.0 + self
+}
+
+fn delay_mem_same_fn(x){
+    let d = delay(16.0, x, 2.0)
+    let m = mem(d)
+    (d, m)
+}
+
+fn dsp(){
+    delay_mem_same_fn(counter())
+}

@@ -1,14 +1,24 @@
-include("math.mmm")
-fn onepole(x, ratio){
+use math::*
+pub fn onepole(x, ratio){
     x*(1.0-ratio) + self*ratio
 }
 
-fn smooth(x){
+pub fn smooth(x){
     onepole(x, 0.95)
 }
+pub fn freq2tau(x){
+    1/(2*PI()*x)
+}
+pub fn tau2pole(x){
+    exp(-1/x*samplerate)
+}
+pub fn lop_tau(input,tau){
+    onepole(input,tau2pole(tau))
+}
+
 
 fn gen_hp_coeff(fc,q,fs){
-    let omega = 2.0 * PI* fc / fs
+    let omega = 2.0 * PI()* fc / fs
     let alpha = sin(omega)/(2.0* q)
     let norm = 1.0 + alpha
     let a1 = -2.0 * cos(omega) / norm
@@ -20,7 +30,7 @@ fn gen_hp_coeff(fc,q,fs){
     (a1,a2,b0,b1,b2)
 }
 fn gen_lp_coeff(fc,q,fs){
-    let omega = 2.0 * PI* fc / fs
+    let omega = 2.0 * PI()* fc / fs
     let alpha = sin(omega)/(2.0* q)
     let norm = 1.0 + alpha
     let a1 = -2.0 * cos(omega) / norm
@@ -33,7 +43,7 @@ fn gen_lp_coeff(fc,q,fs){
 }
 
 fn gen_bp_coeff(fc,q,fs){
-    let omega = 2.0 * PI* fc / fs
+    let omega = 2.0 * PI()* fc / fs
     let alpha = sin(omega)/(2.0* q)
     let norm = 1.0 + alpha
     let a1 = -2.0 * cos(omega) / norm
@@ -45,7 +55,7 @@ fn gen_bp_coeff(fc,q,fs){
 }
 
 fn gen_ap_coeff(fc,q,fs){
-    let omega = 2.0 * PI* fc / fs
+    let omega = 2.0 * PI()* fc / fs
     let alpha = sin(omega)/(2.0* q)
     let norm = 1.0 + alpha
     let a1 = -2.0 * cos(omega) / norm
@@ -58,7 +68,7 @@ fn gen_ap_coeff(fc,q,fs){
 
 fn gen_peaking_coeff(fc,gain_db,q,fs){
     let A = 10 ^ (gain_db/40)
-    let omega = 2.0 * PI* fc / fs
+    let omega = 2.0 * PI()* fc / fs
     let alpha = sin(omega)/(2.0* q)
     let norm = 1 + alpha/A
     let b0 = 1.0
@@ -74,26 +84,26 @@ fn _biquad_inner (x,a1,a2){
     let w = x - a1*ws - a2*wss
     (w, ws, wss)
 }
-fn biquad(x,coeffs){
+pub fn biquad(x,coeffs){
     let (a1,a2,b0,b1,b2) = coeffs;
 	let (w,ws,wss) = _biquad_inner(x,a1,a2);
 	b0*w + b1*ws + b2*wss
 }
 
-fn lowpass(x,fc,q){
+pub fn lowpass(x,fc,q){
     biquad(x,gen_lp_coeff(fc,q,samplerate))
 }
 
-fn highpass(x,fc,q){
+pub fn highpass(x,fc,q){
     biquad(x,gen_hp_coeff(fc,q,samplerate))
 }
-fn bandpass(x,fc,q){
+pub fn bandpass(x,fc,q){
     biquad(x,gen_bp_coeff(fc,q,samplerate))
 }
-fn allpass(x,fc,q){
+pub fn allpass(x,fc,q){
     biquad(x,gen_ap_coeff(fc,q,samplerate))
 }
 
-fn peakeq(x,fc,gaindb,q){
+pub fn peakeq(x,fc,gaindb,q){
     biquad(x,gen_peaking_coeff(fc,gaindb,q,samplerate))
 }

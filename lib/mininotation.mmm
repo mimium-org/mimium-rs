@@ -1,0 +1,329 @@
+//! Mini-notation parser for building Patterns from strings.
+//!
+//! A subset of TidalCycles mini-notation:
+//!   "1 2 3"        -> cat([pure(1), pure(2), pure(3)])
+//!   "~"            -> silence()
+//!   "[1 2 3]"      -> cat([pure(1), pure(2), pure(3)])
+//!   "1 <2 3> 4"    -> alternate([pure(2), pure(3)],
+//!                        |p| cat([pure(1), p, pure(4)]))
+
+use parser::number
+use parser::is_digit
+
+pub use pattern::*
+
+#stage(macro)
+
+// ---------------------------------------------------------------------------
+// Intermediate parse result type
+// ---------------------------------------------------------------------------
+
+// A parsed element is either a concrete pattern or an alternate group.
+pub type MiniElem = Elem(Pattern) | Alt([Pattern])
+
+// ---------------------------------------------------------------------------
+// Array helpers (generic over Pattern and MiniElem)
+// ---------------------------------------------------------------------------
+
+fn concat_pats(a: [Pattern], b: [Pattern]) -> [Pattern] {
+    if (length_array(a) > 0) {
+        let split = a |> split_head
+        let head = split.0
+        let rest = split.1
+        prepend(head, concat_pats(rest, b))
+    } else {
+        b
+    }
+}
+
+fn concat_elems(a: [MiniElem], b: [MiniElem]) -> [MiniElem] {
+    if (length_array(a) > 0) {
+        let split = a |> split_head
+        let head = split.0
+        let rest = split.1
+        prepend(head, concat_elems(rest, b))
+    } else {
+        b
+    }
+}
+
+fn map_elem_to_pat(elems: [MiniElem]) -> [Pattern] {
+    if (length_array(elems) > 0) {
+        let split = elems |> split_head
+        let head = split.0
+        let rest = split.1
+        let p = match head {
+            Elem(pat) => pat,
+            Alt(pats) => {
+                // Fallback: if Alt appears where we expect a plain pattern,
+                // just use the first alternative.
+                let first_split = pats |> split_head
+                let first = first_split.0
+                first
+            }
+        }
+        prepend(p, map_elem_to_pat(rest))
+    } else {
+        []
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Building Pattern from parsed elements (handling alternate)
+// ---------------------------------------------------------------------------
+
+// Replace the element at the given index with `p`, return [Pattern].
+fn replace_alt_with(elems: [MiniElem], idx: float, p: Pattern, i: float) -> [Pattern] {
+    if (length_array(elems) > 0) {
+        let split = elems |> split_head
+        let head = split.0
+        let rest = split.1
+        if (i == idx) {
+            prepend(p, replace_alt_with(rest, idx, p, i + 1.0))
+        } else {
+            let pat = match head {
+                Elem(pat) => pat,
+                Alt(pats) => {
+                    let first_split = pats |> split_head
+                    let first = first_split.0
+                    first
+                }
+            }
+            prepend(pat, replace_alt_with(rest, idx, p, i + 1.0))
+        }
+    } else {
+        []
+    }
+}
+
+fn nth_pat_direct(pats: [Pattern], idx: float, i: float) -> Pattern {
+    let split = pats |> split_head
+    let head = split.0
+    let rest = split.1
+    if (i == idx) {
+        head
+    } else {
+        nth_pat_direct(rest, idx, i + 1.0)
+    }
+}
+
+fn nth_pat_wrapped(pats: [Pattern], idx: float) -> Pattern {
+    let n = length_array(pats)
+    if (n <= 0.0) {
+        silence()
+    } else if (idx < n) {
+        nth_pat_direct(pats, idx, 0.0)
+    } else {
+        nth_pat_wrapped(pats, idx - n)
+    }
+}
+
+fn replace_all_alts_with_index(elems: [MiniElem], idx: float) -> [Pattern] {
+    if (length_array(elems) > 0) {
+        let split = elems |> split_head
+        let head = split.0
+        let rest = split.1
+        let pat = match head {
+            Elem(pat) => pat,
+            Alt(pats) => nth_pat_wrapped(pats, idx)
+        }
+        prepend(pat, replace_all_alts_with_index(rest, idx))
+    } else {
+        []
+    }
+}
+
+fn build_alt_variants(elems: [MiniElem], i: float, n: float) -> [Pattern] {
+    if (i < n) {
+        let one = cat(replace_all_alts_with_index(elems, i))
+        prepend(one, build_alt_variants(elems, i + 1.0, n))
+    } else {
+        []
+    }
+}
+
+// Find the index and contents of the first Alt element.
+fn find_alt(elems: [MiniElem], i: float) -> (float, [Pattern]) {
+    if (length_array(elems) > 0) {
+        let split = elems |> split_head
+        let head = split.0
+        let rest = split.1
+        match head {
+            Alt(pats) => (i, pats),
+            Elem(_) => find_alt(rest, i + 1.0)
+        }
+    } else {
+        // No Alt found; return sentinel
+        (0.0 - 1.0, [])
+    }
+}
+
+fn has_alt(elems: [MiniElem]) -> float {
+    let found = find_alt(elems, 0.0)
+    let idx = found.0
+    if (idx >= 0.0) 1.0 else 0.0
+}
+
+// Build a Pattern from a list of MiniElems.
+// If the list contains an Alt element, wrap the whole group with `alternate`.
+fn build_pattern(elems: [MiniElem]) -> Pattern {
+    let n = length_array(elems)
+    if (n == 0.0) {
+        silence()
+    } else if (n == 1.0) {
+        let split = elems |> split_head
+        let head = split.0
+        match head {
+            Elem(pat) => pat,
+            Alt(pats) => pats |> slowcat
+        }
+    } else if (has_alt(elems) > 0.0) {
+        let found = find_alt(elems, 0.0)
+        let alt_pats = found.1
+        let variants_count = length_array(alt_pats)
+        build_alt_variants(elems, 0.0, variants_count) |> slowcat
+    } else {
+        cat(map_elem_to_pat(elems))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Recursive descent parser operating on strings
+// ---------------------------------------------------------------------------
+
+// Skip ASCII whitespace characters.
+fn skip_spaces(s: string) -> string {
+    if (str_length(s) > 0.0) {
+        let c = str_char_at(s, 0)
+        if (str_eq(c, " ") > 0.0) {
+            skip_spaces(str_drop(s, 1))
+        } else {
+            s
+        }
+    } else {
+        s
+    }
+}
+
+// Check if a character is a digit or sign/dot (start of a number).
+fn is_number_start(c: string) -> float {
+    if (is_digit(c) > 0.0) 1.0
+    else if (str_eq(c, "-") > 0.0) 1.0
+    else if (str_eq(c, "+") > 0.0) 1.0
+    else 0.0
+}
+
+// Parse a number string (digits, optional sign, optional decimal).
+// Returns (number_string, rest).
+fn parse_number_str(s: string) -> (string, string) {
+    let result = (number())(s)
+    if (parser::is_ok(result) > 0.0) {
+        (parser::get_matched(result), parser::get_rest(result))
+    } else {
+        ("", s)
+    }
+}
+
+// Check if a character is a terminator for the current group.
+fn is_terminator(c: string, term: string) -> float {
+    if (str_eq(c, term) > 0.0) 1.0
+    else if (str_eq(c, "]") > 0.0) 1.0
+    else if (str_eq(c, ">") > 0.0) 1.0
+    else 0.0
+}
+
+// Parse space-separated elements until terminator or end of input.
+// Consumes the terminator character.
+fn parse_elems(s: string, term: string) -> ([MiniElem], string) {
+    let input = skip_spaces(s)
+    if (str_length(input) == 0.0) {
+        ([], input)
+    } else {
+        let c = str_char_at(input, 0)
+        if (str_length(term) > 0.0) {
+            if (str_eq(c, term) > 0.0) {
+                ([], str_drop(input, 1))
+            } else {
+                let parsed = if (str_eq(c, "~") > 0.0) {
+                    (Elem(silence()), str_drop(input, 1))
+                } else if (str_eq(c, "[") > 0.0) {
+                    let parsed_inner = parse_elems(str_drop(input, 1), "]")
+                    let inner = parsed_inner.0
+                    let rest = parsed_inner.1
+                    (Elem(build_pattern(inner)), rest)
+                } else if (str_eq(c, "<") > 0.0) {
+                    let parsed_inner = parse_elems(str_drop(input, 1), ">")
+                    let inner = parsed_inner.0
+                    let rest = parsed_inner.1
+                    (Alt(map_elem_to_pat(inner)), rest)
+                } else if (is_number_start(c) > 0.0) {
+                    let parsed_num = parse_number_str(input)
+                    let num_str = parsed_num.0
+                    let rest = parsed_num.1
+                    if (str_length(num_str) > 0.0) {
+                        (Elem(pure(str_to_number(num_str))), rest)
+                    } else {
+                        (Elem(silence()), str_drop(input, 1))
+                    }
+                } else {
+                    (Elem(silence()), str_drop(input, 1))
+                }
+                let elem = parsed.0
+                let rest = parsed.1
+                let parsed_more = parse_elems(rest, term)
+                let more = parsed_more.0
+                let rest2 = parsed_more.1
+                (prepend(elem, more), rest2)
+            }
+        } else {
+            let parsed = if (str_eq(c, "~") > 0.0) {
+                (Elem(silence()), str_drop(input, 1))
+            } else if (str_eq(c, "[") > 0.0) {
+                let parsed_inner = parse_elems(str_drop(input, 1), "]")
+                let inner = parsed_inner.0
+                let rest = parsed_inner.1
+                (Elem(build_pattern(inner)), rest)
+            } else if (str_eq(c, "<") > 0.0) {
+                let parsed_inner = parse_elems(str_drop(input, 1), ">")
+                let inner = parsed_inner.0
+                let rest = parsed_inner.1
+                (Alt(map_elem_to_pat(inner)), rest)
+            } else if (is_number_start(c) > 0.0) {
+                let parsed_num = parse_number_str(input)
+                let num_str = parsed_num.0
+                let rest = parsed_num.1
+                if (str_length(num_str) > 0.0) {
+                    (Elem(pure(str_to_number(num_str))), rest)
+                } else {
+                    (Elem(silence()), str_drop(input, 1))
+                }
+            } else {
+                (Elem(silence()), str_drop(input, 1))
+            }
+            let elem = parsed.0
+            let rest = parsed.1
+            let parsed_more = parse_elems(rest, term)
+            let more = parsed_more.0
+            let rest2 = parsed_more.1
+            (prepend(elem, more), rest2)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/// Parse a mini-notation string into a Pattern.
+///
+/// Examples:
+///   mini("1 2 3")        -- cat of three pure patterns
+///   mini("~")            -- silence
+///   mini("[1 2] 3")      -- cat of (cat of 1,2) and 3
+///   mini("0 <1 2> 3")    -- alternate: cycles through 1 and 2
+///                        --   in the context of 0 _ 3
+pub fn mini(s: string) -> Pattern {
+    let parsed = parse_elems(s, "")
+    let elems = parsed.0
+    build_pattern(elems)
+}

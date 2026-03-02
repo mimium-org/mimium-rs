@@ -1,8 +1,8 @@
-include("core.mmm")
+use core::*
 
-include("osc.mmm")
-include("reactive.mmm")
-
+use osc::*
+use reactive::metro
+use modulation::*
 fn major(){
     let prev = self
     let incr = if (prev==4 ||prev==11 || prev == 12) 1 else 2
@@ -12,6 +12,6 @@ fn major(){
 let mynote:()->float = metro(0.5*samplerate ,major);
 
 fn dsp(){
-    let r = sinwave(mynote()+60 |> midi_to_hz ,0.0) * 0.5
+    let r = saw(mynote()+60 |> midi_to_hz ,0.0) * 0.5
     (r,r)
 }

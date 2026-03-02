@@ -2278,6 +2278,7 @@ dependencies = [
  "notify",
  "ringbuf",
  "serde",
+ "state-tree",
  "toml",
 ]
 

@@ -8,6 +8,7 @@
 //! 3. **System Plugin**. If your plugin needs to mutate states of system-wide instance (1 plugin instance per 1 vm), you need to implement `SystemPlugin` traits. System plugin can have callbacks invoked at the important timings of the system like `on_init`, `before_on_sample` & so on. Internal synchronous event scheduler is implemented through this plugins system. `mimium-rand` is also an example of this type of module.
 
 mod builtin_functins;
+pub mod codegen_combinators;
 mod system_plugin;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -279,9 +280,17 @@ impl Plugin for InstantPlugin {
     }
 
     fn get_type_infos(&self) -> Vec<ExtFunTypeInfo> {
+        // Collect extcls and commons names to deduplicate against macros.
+        // When both a macro and an extcls share the same name (e.g. `lift_f`),
+        // the extcls (VM combinator) takes precedence.
+        let extcls_names: std::collections::HashSet<crate::interner::Symbol> =
+            self.extcls.iter().map(|e| e.name).collect();
+        let commons_names: std::collections::HashSet<crate::interner::Symbol> =
+            self.commonfns.iter().map(|c| c.name).collect();
         let macros = self
             .macros
             .iter()
+            .filter(|m| !extcls_names.contains(&m.name) && !commons_names.contains(&m.name))
             .map(|m| ExtFunTypeInfo::new(m.name, m.ty, MacroStage::get_stage()));
         let extcls = self
             .extcls

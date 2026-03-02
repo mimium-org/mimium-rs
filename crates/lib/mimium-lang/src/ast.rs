@@ -125,6 +125,45 @@ pub enum Expr {
 }
 
 impl ExprNodeId {
+    /// Check whether the AST contains any staging constructs (Bracket, Escape,
+    /// or MacroExpand).  Programs without these are plain stage-1 code and do
+    /// not need to be wrapped / processed through the staging pipeline.
+    pub fn has_staging_constructs(self) -> bool {
+        self.has_staging_rec()
+    }
+
+    fn has_staging_rec(self) -> bool {
+        let conv = |e: &Self| e.has_staging_rec();
+        let conv_opt = |e: &Option<Self>| e.as_ref().is_some_and(|e| e.has_staging_rec());
+        let convvec = |es: &[Self]| es.iter().any(|e| e.has_staging_rec());
+        let convfields = |fs: &[RecordField]| fs.iter().any(|f| f.expr.has_staging_rec());
+        match self.to_expr() {
+            Expr::Bracket(_) | Expr::Escape(_) | Expr::MacroExpand(..) => true,
+            Expr::Proj(e, _)
+            | Expr::FieldAccess(e, _)
+            | Expr::UniOp(_, e)
+            | Expr::Paren(e)
+            | Expr::Lambda(_, _, e)
+            | Expr::Feed(_, e) => conv(&e),
+            Expr::ArrayAccess(e1, e2) | Expr::BinOp(e1, _, e2) | Expr::Assign(e1, e2) => {
+                conv(&e1) || conv(&e2)
+            }
+            Expr::Block(e) => conv_opt(&e),
+            Expr::Tuple(es) | Expr::ArrayLiteral(es) => convvec(&es),
+            Expr::RecordLiteral(fields) | Expr::ImcompleteRecord(fields) => convfields(&fields),
+            Expr::RecordUpdate(e, fields) => conv(&e) || convfields(&fields),
+            Expr::Apply(e, args) => conv(&e) || convvec(&args),
+            Expr::Then(e1, e2) | Expr::Let(_, e1, e2) | Expr::LetRec(_, e1, e2) => {
+                conv(&e1) || conv_opt(&e2)
+            }
+            Expr::If(cond, then, orelse) => conv(&cond) || conv(&then) || conv_opt(&orelse),
+            Expr::Match(scrutinee, arms) => {
+                conv(&scrutinee) || arms.iter().any(|arm| arm.body.has_staging_rec())
+            }
+            _ => false,
+        }
+    }
+
     pub fn wrap_to_staged_expr(self) -> Self {
         // TODO: what if more escape is used than minimum level??
 

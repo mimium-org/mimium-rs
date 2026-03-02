@@ -89,9 +89,24 @@ fn find_workspace_lib_path(
     None
 }
 
+/// Get additional library search paths from the `MIMIUM_LIB_PATH` environment variable.
+/// Multiple paths can be separated by `:` (Unix) or `;` (Windows).
+fn get_env_lib_paths() -> Vec<PathBuf> {
+    env::var("MIMIUM_LIB_PATH")
+        .ok()
+        .map(|val| env::split_paths(&val).collect())
+        .unwrap_or_default()
+}
+
 /// Used for resolving include.
-/// If the filename is given it searches ~/.mimium/lib first. If not found, tries to find in relative path.
-/// If the relative path is given explicitly, do not find in standard library path.
+///
+/// Search order:
+/// 1. `~/.mimium/lib` (default library path)
+/// 2. Paths specified by the `MIMIUM_LIB_PATH` environment variable
+/// 3. Workspace ancestor `lib/` directories
+/// 4. Relative to the current file
+///
+/// Absolute or explicitly relative paths (starting with `.`) skip steps 1-3.
 pub fn load_mmmlibfile(current_file_or_dir: &str, path: &str) -> Result<(String, PathBuf), Error> {
     let path = std::path::Path::new(path);
     let search_default_lib = !(path.is_absolute() || path.starts_with("."));
@@ -104,6 +119,17 @@ pub fn load_mmmlibfile(current_file_or_dir: &str, path: &str) -> Result<(String,
             // if not found in the stdlib, continue to find in a relative path.
         }
     };
+    // Search paths from MIMIUM_LIB_PATH environment variable
+    if search_default_lib {
+        for lib_dir in get_env_lib_paths() {
+            let cpath = lib_dir.join(path);
+            if let Ok(cpath) = cpath.canonicalize()
+                && let Ok(content) = load(&cpath.to_string_lossy())
+            {
+                return Ok((content, cpath));
+            }
+        }
+    }
     if search_default_lib
         && let Some(cpath) = find_workspace_lib_path(current_file_or_dir, path)
         && let Ok(content) = load(&cpath.to_string_lossy())

@@ -150,10 +150,6 @@ mod split_tail {
     fn machine_function(
         machine: &mut crate::runtime::vm::Machine,
     ) -> crate::runtime::vm::ReturnCode {
-        log::warn!(
-            "split_tail used at runtime may cause memory leaks. Consider using it at macro stage (stage 0) instead."
-        );
-
         let arr_idx = machine.get_stack(0);
         let array = machine.arrays.get_array(arr_idx);
         let len = array.get_length_array();
@@ -237,10 +233,6 @@ mod split_head {
     fn machine_function(
         machine: &mut crate::runtime::vm::Machine,
     ) -> crate::runtime::vm::ReturnCode {
-        log::warn!(
-            "split_head used at runtime may cause memory leaks. Consider using it at macro stage (stage 0) instead."
-        );
-
         let arr_idx = machine.get_stack(0);
         let array = machine.arrays.get_array(arr_idx);
         let len = array.get_length_array();
@@ -523,36 +515,64 @@ pub(crate) fn try_get_monomorphized_ext_fn_name(
     concrete_arg_ty: TypeNodeId,
     concrete_ret_ty: TypeNodeId,
 ) -> Option<Symbol> {
-    // Do not resolve when the types are still generic; let the
-    // monomorphization pass call us again once concrete types are known.
-    if concrete_arg_ty.to_type().contains_unresolved()
-        || concrete_ret_ty.to_type().contains_unresolved()
-    {
-        return None;
-    }
+    let resolved_word_size = |ty: TypeNodeId| {
+        if ty.to_type().contains_unresolved() {
+            None
+        } else {
+            Some(ty.word_size())
+        }
+    };
 
-    let elem_word_size = match fn_name.as_str() {
-        "__probe_value_intercept" => match concrete_arg_ty.to_type() {
-            crate::types::Type::Tuple(elems) if !elems.is_empty() => elems[0].word_size(),
-            crate::types::Type::Record(fields) if !fields.is_empty() => fields[0].ty.word_size(),
-            _ => concrete_ret_ty.word_size(),
-        },
-        "prepend" => match concrete_ret_ty.to_type() {
-            crate::types::Type::Array(elem_ty) => elem_ty.word_size(),
+    let base_name = {
+        let name = fn_name.as_str();
+        if name == "__probe_value_intercept" || name.starts_with("__probe_value_intercept$arity") {
+            "__probe_value_intercept"
+        } else if name == "prepend" || name.starts_with("prepend$arity") {
+            "prepend"
+        } else if name == "split_head" || name.starts_with("split_head$arity") {
+            "split_head"
+        } else if name == "split_tail" || name.starts_with("split_tail$arity") {
+            "split_tail"
+        } else {
+            return None;
+        }
+    };
+
+    let elem_word_size = match base_name {
+        "__probe_value_intercept" => {
+            // ProbeValue intercept returns the probed value as-is.
+            // Use return word size as arity source so tuple/record passthrough
+            // values resolve to the correct specialized runtime symbol.
+            resolved_word_size(concrete_ret_ty)?
+        }
+        "prepend" => match concrete_arg_ty.to_type() {
+            crate::types::Type::Tuple(args) if args.len() == 2 => match args[1].to_type() {
+                crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
+                _ => return None,
+            },
+            crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
             _ => return None,
         },
-        "split_head" => match concrete_ret_ty.to_type() {
-            crate::types::Type::Tuple(elems) if elems.len() == 2 => elems[0].word_size(),
+        "split_head" => match concrete_arg_ty.to_type() {
+            crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
+            crate::types::Type::Tuple(args) if args.len() == 1 => match args[0].to_type() {
+                crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
+                _ => return None,
+            },
             _ => return None,
         },
-        "split_tail" => match concrete_ret_ty.to_type() {
-            crate::types::Type::Tuple(elems) if elems.len() == 2 => elems[1].word_size(),
+        "split_tail" => match concrete_arg_ty.to_type() {
+            crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
+            crate::types::Type::Tuple(args) if args.len() == 1 => match args[0].to_type() {
+                crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
+                _ => return None,
+            },
             _ => return None,
         },
         _ => return None,
     };
 
-    Some(format!("{}$arity{}", fn_name.as_str(), elem_word_size).to_symbol())
+    Some(format!("{}$arity{}", base_name, elem_word_size).to_symbol())
 }
 
 pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Option<ExtClsInfo> {
@@ -592,11 +612,11 @@ pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Optio
             move |machine: &mut crate::runtime::vm::Machine| -> crate::runtime::vm::ReturnCode {
                 let arr_idx = machine.get_stack(0);
                 let arr = machine.arrays.get_array(arr_idx);
-                if arr.get_elem_word_size() as usize != elem_size {
+                let actual_elem_size = arr.get_elem_word_size() as usize;
+                if actual_elem_size != elem_size {
                     panic!(
                         "split_head$arity{} called with array elem size {}",
-                        elem_size,
-                        arr.get_elem_word_size()
+                        elem_size, actual_elem_size
                     );
                 }
                 let len = arr.get_length_array() as usize;
@@ -627,11 +647,11 @@ pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Optio
             move |machine: &mut crate::runtime::vm::Machine| -> crate::runtime::vm::ReturnCode {
                 let arr_idx = machine.get_stack(0);
                 let arr = machine.arrays.get_array(arr_idx);
-                if arr.get_elem_word_size() as usize != elem_size {
+                let actual_elem_size = arr.get_elem_word_size() as usize;
+                if actual_elem_size != elem_size {
                     panic!(
                         "split_tail$arity{} called with array elem size {}",
-                        elem_size,
-                        arr.get_elem_word_size()
+                        elem_size, actual_elem_size
                     );
                 }
                 let len = arr.get_length_array() as usize;
@@ -716,6 +736,285 @@ mod map {
     }
 }
 
+// ---------------------------------------------------------------------------
+// String primitive functions (Stage 0 / macro-only)
+//
+// These operate on `Value::String(Symbol)` at macro expansion time.
+// Internal encoding follows Rust's UTF-8 `str` – random access is O(N).
+// ---------------------------------------------------------------------------
+
+/// Returns the number of Unicode scalar values (chars) in the string.
+/// Type: `(String) -> Numeric`
+mod str_length {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, numeric, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 1);
+        match &args[0].0 {
+            Value::String(s) => Value::Number(s.as_str().chars().count() as f64),
+            _ => panic!("str_length: expected String argument"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "str_length".to_symbol(),
+            ty: function!(vec![string_t!()], numeric!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
+/// Takes the first N characters from a string.
+/// Type: `(String, Numeric) -> String`
+mod str_take {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, numeric, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 2);
+        match (&args[0].0, &args[1].0) {
+            (Value::String(s), Value::Number(n)) => {
+                let n = *n as usize;
+                let result: String = s.as_str().chars().take(n).collect();
+                Value::String(result.to_symbol())
+            }
+            _ => panic!("str_take: expected (String, Numeric) arguments"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "str_take".to_symbol(),
+            ty: function!(vec![string_t!(), numeric!()], string_t!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
+/// Drops the first N characters from a string.
+/// Type: `(String, Numeric) -> String`
+mod str_drop {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, numeric, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 2);
+        match (&args[0].0, &args[1].0) {
+            (Value::String(s), Value::Number(n)) => {
+                let n = *n as usize;
+                let result: String = s.as_str().chars().skip(n).collect();
+                Value::String(result.to_symbol())
+            }
+            _ => panic!("str_drop: expected (String, Numeric) arguments"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "str_drop".to_symbol(),
+            ty: function!(vec![string_t!(), numeric!()], string_t!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
+/// Concatenates two strings.
+/// Type: `(String, String) -> String`
+mod str_concat {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 2);
+        match (&args[0].0, &args[1].0) {
+            (Value::String(a), Value::String(b)) => {
+                let result = format!("{}{}", a.as_str(), b.as_str());
+                Value::String(result.to_symbol())
+            }
+            _ => panic!("str_concat: expected (String, String) arguments"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "str_concat".to_symbol(),
+            ty: function!(vec![string_t!(), string_t!()], string_t!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
+/// Checks equality of two strings. Returns 1.0 if equal, 0.0 otherwise.
+/// Type: `(String, String) -> Numeric`
+mod str_eq {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, numeric, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 2);
+        match (&args[0].0, &args[1].0) {
+            (Value::String(a), Value::String(b)) => {
+                Value::Number(if a.as_str() == b.as_str() { 1.0 } else { 0.0 })
+            }
+            _ => panic!("str_eq: expected (String, String) arguments"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "str_eq".to_symbol(),
+            ty: function!(vec![string_t!(), string_t!()], numeric!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
+/// Extracts a substring by character index range [start, end).
+/// Type: `(String, Numeric, Numeric) -> String`
+mod str_slice {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, numeric, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 3);
+        match (&args[0].0, &args[1].0, &args[2].0) {
+            (Value::String(s), Value::Number(start), Value::Number(end)) => {
+                let start = *start as usize;
+                let end = *end as usize;
+                let result: String = s
+                    .as_str()
+                    .chars()
+                    .skip(start)
+                    .take(end.saturating_sub(start))
+                    .collect();
+                Value::String(result.to_symbol())
+            }
+            _ => panic!("str_slice: expected (String, Numeric, Numeric) arguments"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "str_slice".to_symbol(),
+            ty: function!(vec![string_t!(), numeric!(), numeric!()], string_t!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
+/// Returns the character at the given index as a single-character string.
+/// Type: `(String, Numeric) -> String`
+mod str_char_at {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, numeric, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 2);
+        match (&args[0].0, &args[1].0) {
+            (Value::String(s), Value::Number(idx)) => {
+                let idx = *idx as usize;
+                match s.as_str().chars().nth(idx) {
+                    Some(c) => Value::String(c.to_string().to_symbol()),
+                    None => panic!(
+                        "str_char_at: index {} out of bounds for string of length {}",
+                        idx,
+                        s.as_str().chars().count()
+                    ),
+                }
+            }
+            _ => panic!("str_char_at: expected (String, Numeric) arguments"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "str_char_at".to_symbol(),
+            ty: function!(vec![string_t!(), numeric!()], string_t!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
+/// Parses a string as a floating-point number. Panics on invalid input.
+/// Type: `(String) -> Numeric`
+mod str_to_number {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, numeric, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 1);
+        match &args[0].0 {
+            Value::String(s) => {
+                let n: f64 = s.as_str().parse().unwrap_or_else(|e| {
+                    panic!("str_to_number: failed to parse \"{}\": {e}", s.as_str())
+                });
+                Value::Number(n)
+            }
+            _ => panic!("str_to_number: expected String argument"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "str_to_number".to_symbol(),
+            ty: function!(vec![string_t!()], numeric!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
+/// Converts a number to its string representation.
+/// Type: `(Numeric) -> String`
+mod number_to_str {
+    use super::*;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::plugin::MacroInfo;
+    use crate::{function, numeric, string_t, types::Type};
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 1);
+        match &args[0].0 {
+            Value::Number(n) => Value::String(n.to_string().to_symbol()),
+            _ => panic!("number_to_str: expected Numeric argument"),
+        }
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        MacroInfo {
+            name: "number_to_str".to_symbol(),
+            ty: function!(vec![numeric!()], string_t!()),
+            fun: Rc::new(RefCell::new(macro_function)),
+        }
+    }
+}
+
 /// Main function to expose the definitions of built-in functions.
 fn generate_builtin_functions() -> impl ExactSizeIterator<Item = CommonFunction> {
     [
@@ -765,16 +1064,80 @@ fn generate_default_macros() -> impl ExactSizeIterator<Item = MacroInfo> {
         lift_f::signature(),
         lift_arrayf::signature(),
         map::signature(),
+        // String primitives (Stage 0 only)
+        str_length::signature(),
+        str_take::signature(),
+        str_drop::signature(),
+        str_concat::signature(),
+        str_eq::signature(),
+        str_slice::signature(),
+        str_char_at::signature(),
+        str_to_number::signature(),
+        number_to_str::signature(),
     ]
     .into_iter()
 }
 pub fn get_builtin_fns_as_plugins() -> Box<dyn Plugin> {
     let commonfns = generate_builtin_functions().collect();
     let macros = generate_default_macros().collect();
+    let extcls = super::codegen_combinators::codegen_combinator_signatures();
 
     Box::new(InstantPlugin {
         macros,
-        extcls: vec![],
+        extcls,
         commonfns,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::try_get_monomorphized_ext_fn_name;
+    use crate::{
+        interner::ToSymbol,
+        numeric,
+        types::{PType, Type},
+    };
+
+    #[test]
+    fn probe_value_monomorphized_name_uses_return_word_size() {
+        let arg_ty = Type::Tuple(vec![Type::Unknown.into_id(), numeric!()]).into_id();
+        let ret_ty = Type::Tuple(vec![numeric!(), numeric!()]).into_id();
+
+        let resolved = try_get_monomorphized_ext_fn_name(
+            "__probe_value_intercept".to_symbol(),
+            arg_ty,
+            ret_ty,
+        );
+
+        assert_eq!(resolved, Some("__probe_value_intercept$arity2".to_symbol()));
+    }
+
+    #[test]
+    fn probe_value_monomorphized_name_none_for_unresolved_return() {
+        let arg_ty = Type::Tuple(vec![numeric!(), numeric!()]).into_id();
+        let ret_ty = Type::Unknown.into_id();
+
+        let resolved = try_get_monomorphized_ext_fn_name(
+            "__probe_value_intercept".to_symbol(),
+            arg_ty,
+            ret_ty,
+        );
+
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn probe_value_monomorphized_name_one_for_scalar_return() {
+        let arg_ty =
+            Type::Tuple(vec![numeric!(), Type::Primitive(PType::Numeric).into_id()]).into_id();
+        let ret_ty = numeric!();
+
+        let resolved = try_get_monomorphized_ext_fn_name(
+            "__probe_value_intercept".to_symbol(),
+            arg_ty,
+            ret_ty,
+        );
+
+        assert_eq!(resolved, Some("__probe_value_intercept$arity1".to_symbol()));
+    }
 }

@@ -4,7 +4,7 @@ use egui::ahash::HashMap;
 use mimium_lang::{
     ast::{Expr, Literal, RecordField},
     code, function,
-    interner::{ToSymbol, TypeNodeId},
+    interner::{ExprNodeId, ToSymbol, TypeNodeId},
     interpreter::Value,
     log, numeric,
     pattern::TypedId,
@@ -397,6 +397,9 @@ impl GuiToolPlugin {
                 let (min, max) = Self::default_slider_range(*init);
                 self.build_slider_code_from_name(&label, *init, min, max)
             }
+            Value::Code(expr) => {
+                Value::Code(self.make_slider_generic_code_rec(*expr, current_path))
+            }
             Value::Record(fields) => {
                 let record_fields = fields
                     .iter()
@@ -437,6 +440,64 @@ impl GuiToolPlugin {
                     Value::Code(Expr::Block(None).into_id_without_span())
                 }
             },
+        }
+    }
+
+    fn make_slider_generic_code_rec(&mut self, expr: ExprNodeId, current_path: &str) -> ExprNodeId {
+        match expr.to_expr() {
+            Expr::Literal(Literal::Float(sym)) => {
+                let init = sym.as_str().parse::<f64>().unwrap_or(0.0);
+                let label = current_path.to_string();
+                let (min, max) = Self::default_slider_range(init);
+                match self.build_slider_code_from_name(&label, init, min, max) {
+                    Value::Code(code_expr) => code_expr,
+                    other => other
+                        .try_into()
+                        .unwrap_or_else(|_| Expr::Block(None).into_id_without_span()),
+                }
+            }
+            Expr::Literal(Literal::Int(v)) => {
+                let init = v as f64;
+                let label = current_path.to_string();
+                let (min, max) = Self::default_slider_range(init);
+                match self.build_slider_code_from_name(&label, init, min, max) {
+                    Value::Code(code_expr) => code_expr,
+                    other => other
+                        .try_into()
+                        .unwrap_or_else(|_| Expr::Block(None).into_id_without_span()),
+                }
+            }
+            Expr::RecordLiteral(fields) => {
+                let mapped_fields = fields
+                    .iter()
+                    .map(|field| {
+                        let child_path = Self::join_slider_path(current_path, field.name.as_str());
+                        RecordField {
+                            name: field.name,
+                            expr: self.make_slider_generic_code_rec(field.expr, &child_path),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                Expr::RecordLiteral(mapped_fields).into_id_without_span()
+            }
+            Expr::Tuple(elements) => {
+                let mapped = elements
+                    .iter()
+                    .enumerate()
+                    .map(|(index, element)| {
+                        let child_path = Self::join_slider_path(current_path, &index.to_string());
+                        self.make_slider_generic_code_rec(*element, &child_path)
+                    })
+                    .collect::<Vec<_>>();
+                Expr::Tuple(mapped).into_id_without_span()
+            }
+            _ => {
+                log::warn!(
+                    "SliderValue code argument contains unsupported expression kind: {:?}",
+                    expr.to_expr()
+                );
+                expr
+            }
         }
     }
 

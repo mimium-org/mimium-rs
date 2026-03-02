@@ -291,9 +291,12 @@ fn stmts_from_program_with_prefix(
     module_prefix: &[Symbol],
     module_info: &mut ModuleInfo,
 ) -> Vec<(Statement, Location)> {
-    statements
-        .into_iter()
-        .filter_map(|(stmt, span)| match stmt {
+    // Track the current stage so that module/use wrappers can restore it correctly.
+    let mut current_stage = StageKind::Main;
+    let mut result = Vec::new();
+
+    for (stmt, span) in statements {
+        let stmts: Option<Vec<(Statement, Location)>> = match stmt {
             ProgramStatement::FnDefinition {
                 visibility,
                 name,
@@ -336,11 +339,13 @@ fn stmts_from_program_with_prefix(
             }
             ProgramStatement::GlobalStatement(statement) => {
                 if !module_prefix.is_empty() {
-                    collect_statement_bindings(&statement).into_iter().for_each(|name| {
-                        module_info
-                            .module_context_map
-                            .insert(name, module_prefix.to_vec());
-                    });
+                    collect_statement_bindings(&statement)
+                        .into_iter()
+                        .for_each(|name| {
+                            module_info
+                                .module_context_map
+                                .insert(name, module_prefix.to_vec());
+                        });
                 }
                 Some(vec![(statement, Location::new(span, file_path.clone()))])
             }
@@ -353,10 +358,13 @@ fn stmts_from_program_with_prefix(
                     stmts_from_program(imported.program, imported.resolved_path, errs, module_info);
                 Some(res)
             }
-            ProgramStatement::StageDeclaration { stage } => Some(vec![(
-                Statement::DeclareStage(stage),
-                Location::new(span, file_path.clone()),
-            )]),
+            ProgramStatement::StageDeclaration { stage } => {
+                current_stage = stage.clone();
+                Some(vec![(
+                    Statement::DeclareStage(stage),
+                    Location::new(span, file_path.clone()),
+                )])
+            }
             ProgramStatement::ModuleDefinition {
                 visibility: _,
                 name,
@@ -394,12 +402,12 @@ fn stmts_from_program_with_prefix(
                 };
 
                 // Wrap module contents with stage boundary:
-                // - Start with implicit #stage(main)
-                // - End with #stage(main) to restore default stage
-                // This ensures stage declarations inside modules don't leak out
+                // - Start with #stage(main) to isolate module from consumer's stage context
+                // - End with the consumer's current stage to restore it after module processing
                 let module_loc = Location::new(span, file_path.clone());
-                let maindecl = (Statement::DeclareStage(StageKind::Main), module_loc.clone());
-                let result = [vec![maindecl.clone()], inner_stmts, vec![maindecl]].concat();
+                let start_decl = (Statement::DeclareStage(StageKind::Main), module_loc.clone());
+                let restore_decl = (Statement::DeclareStage(current_stage.clone()), module_loc);
+                let result = [vec![start_decl], inner_stmts, vec![restore_decl]].concat();
 
                 Some(result)
             }
@@ -433,11 +441,11 @@ fn stmts_from_program_with_prefix(
                             module_info,
                         );
                         let module_loc = Location::new(span.clone(), file_path.clone());
-                        let maindecl = (
-                            Statement::DeclareStage(StageKind::Main),
-                            module_loc.clone(),
-                        );
-                        [vec![maindecl.clone()], inner_stmts, vec![maindecl]].concat()
+                        let start_decl =
+                            (Statement::DeclareStage(StageKind::Main), module_loc.clone());
+                        let restore_decl =
+                            (Statement::DeclareStage(current_stage.clone()), module_loc);
+                        [vec![start_decl], inner_stmts, vec![restore_decl]].concat()
                     }
                 } else {
                     vec![]
@@ -459,7 +467,7 @@ fn stmts_from_program_with_prefix(
                         ),
                         span: Location::new(span.clone(), file_path.clone()),
                     }));
-                    return None;
+                    continue;
                 }
                 // Store type alias for later use in type environment
                 let mangled_name = mangle_qualified_name(module_prefix, name);
@@ -490,7 +498,7 @@ fn stmts_from_program_with_prefix(
                         ),
                         span: Location::new(span.clone(), file_path.clone()),
                     }));
-                    return None;
+                    continue;
                 }
                 // Store type declaration for later use in type environment
                 let mangled_name = mangle_qualified_name(module_prefix, name);
@@ -501,11 +509,11 @@ fn stmts_from_program_with_prefix(
                         is_recursive,
                     },
                 );
-                // Track visibility for module members
+                // Track visibility for type declarations
+                module_info
+                    .visibility_map
+                    .insert(mangled_name, visibility == Visibility::Public);
                 if !module_prefix.is_empty() {
-                    module_info
-                        .visibility_map
-                        .insert(mangled_name, visibility == Visibility::Public);
                     // Track module context for relative path resolution
                     module_info
                         .module_context_map
@@ -517,9 +525,12 @@ fn stmts_from_program_with_prefix(
                 Statement::Error,
                 Location::new(span, file_path.clone()),
             )]),
-        })
-        .flatten()
-        .collect()
+        };
+        if let Some(stmts) = stmts {
+            result.extend(stmts);
+        }
+    }
+    result
 }
 
 fn collect_pattern_bindings(pat: &crate::pattern::Pattern, out: &mut Vec<Symbol>) {

@@ -1,9 +1,7 @@
-include("osc.mmm")
-include("env.mmm")
-include("filter.mmm")
-fn midi_to_hz(note){
-    440.0*(2.0^ ((note-69.0)/12.0) )
-}
+use core::midi_to_hz
+use osc::saw
+use env::adsr
+use filter::lowpass
 // let _ = set_midi_port("from Max 1")
 
 fn osc(freq){
@@ -15,7 +13,7 @@ fn my_synth(note,vel,cutoff_base,fenv_depth){
     let cutfreq = cutoff_base + adsr(0.6,0.3,0.3,2.0,gain) * fenv_depth 
     let sig = note 
                 |> midi_to_hz 
-                |> osc;
+                |> osc
     lowpass(sig,cutfreq,5.0)*gain_env
 }
 fn dsp(){

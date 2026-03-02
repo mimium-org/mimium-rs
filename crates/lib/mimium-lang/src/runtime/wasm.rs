@@ -8,9 +8,9 @@ pub mod engine;
 use crate::runtime::primitives::Word;
 use crate::runtime::vm::heap::{self, HeapStorage};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use wasmtime::{
     AsContextMut, Caller, Config, Engine, FuncType, Linker, Module, OptLevel, Store, Val, ValType,
+    WasmBacktraceDetails,
 };
 
 /// Upper bound of `$arityN` builtin specializations exported by the WASM host runtime.
@@ -53,9 +53,6 @@ pub struct WasmRuntime {
     engine: Engine,
     /// Linker for connecting host functions
     linker: Linker<RuntimeState>,
-    /// Plugin loader (for calling plugin functions from host functions)
-    #[cfg(not(target_arch = "wasm32"))]
-    plugin_loader: Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>,
 }
 
 /// State storage for a single execution context (global or per-closure).
@@ -98,9 +95,6 @@ pub struct RuntimeState {
     pub(crate) current_time: u64,
     /// Sample rate (for runtime_get_samplerate)
     pub(crate) sample_rate: f64,
-    /// Plugin loader (for calling plugin functions)
-    #[cfg(not(target_arch = "wasm32"))]
-    plugins: Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>,
 }
 
 impl RuntimeState {
@@ -130,8 +124,6 @@ impl Default for RuntimeState {
             state_stack: Vec::new(),
             current_time: 0,
             sample_rate: 44100.0,
-            #[cfg(not(target_arch = "wasm32"))]
-            plugins: None,
         }
     }
 }
@@ -161,6 +153,8 @@ impl WasmRuntime {
         // Enable WASM features that may improve performance
         config.wasm_simd(true); // SIMD operations
         config.wasm_bulk_memory(true); // Bulk memory operations
+        config.wasm_backtrace_details(WasmBacktraceDetails::Enable);
+        config.debug_info(true);
 
         let engine =
             Engine::new(&config).map_err(|e| format!("Failed to create WASM engine: {e}"))?;
@@ -170,13 +164,9 @@ impl WasmRuntime {
         Self::register_runtime_primitives(&mut linker)?;
 
         // Register plugin functions as host trampolines
-        let plugin_loader = Self::register_plugin_functions(&mut linker, ext_fns, plugin_fns)?;
+        Self::register_plugin_functions(&mut linker, ext_fns, plugin_fns)?;
 
-        Ok(Self {
-            engine,
-            linker,
-            plugin_loader,
-        })
+        Ok(Self { engine, linker })
     }
 
     /// Create a new WASM runtime for wasm32 target (without plugins)
@@ -194,6 +184,8 @@ impl WasmRuntime {
         // Enable WASM features that may improve performance
         config.wasm_simd(true); // SIMD operations
         config.wasm_bulk_memory(true); // Bulk memory operations
+        config.wasm_backtrace_details(WasmBacktraceDetails::Enable);
+        config.debug_info(true);
 
         let engine =
             Engine::new(&config).map_err(|e| format!("Failed to create WASM engine: {e}"))?;
@@ -203,7 +195,7 @@ impl WasmRuntime {
         Self::register_runtime_primitives(&mut linker)?;
 
         // Register plugin functions as host trampolines (no plugin_fns on wasm32)
-        let _plugin_loader = Self::register_plugin_functions(&mut linker, ext_fns, None)?;
+        Self::register_plugin_functions(&mut linker, ext_fns, None)?;
 
         Ok(Self { engine, linker })
     }
@@ -213,13 +205,22 @@ impl WasmRuntime {
         let module = Module::from_binary(&self.engine, wasm_bytes)
             .map_err(|e| format!("Failed to load WASM module: {e:#}"))?;
 
-        let mut runtime_state = RuntimeState::default();
+        self.instantiate_module(module)
+    }
 
-        // Set plugin loader reference in runtime state
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            runtime_state.plugins = self.plugin_loader.clone();
-        }
+    /// Load and instantiate a precompiled/serialized WASM module artifact.
+    pub fn load_precompiled_module(
+        &mut self,
+        serialized_module: &[u8],
+    ) -> Result<WasmModule, String> {
+        let module = unsafe { Module::deserialize(&self.engine, serialized_module) }
+            .map_err(|e| format!("Failed to deserialize precompiled WASM module: {e:#}"))?;
+
+        self.instantiate_module(module)
+    }
+
+    fn instantiate_module(&mut self, module: Module) -> Result<WasmModule, String> {
+        let mut runtime_state = RuntimeState::default();
 
         let mut store = Store::new(&self.engine, runtime_state);
 
@@ -439,7 +440,7 @@ impl WasmRuntime {
         linker: &mut Linker<RuntimeState>,
         ext_fns: &[crate::plugin::ExtFunTypeInfo],
         plugin_fns: Option<WasmPluginFnMap>,
-    ) -> Result<Option<Arc<Mutex<crate::plugin::loader::PluginLoader>>>, String> {
+    ) -> Result<(), String> {
         use crate::types::Type;
 
         // Register trampolines for every runtime-stage external function.
@@ -592,15 +593,7 @@ impl WasmRuntime {
                             // write any return value.
                             if results.is_empty() {
                                 if let Some(ref func) = handler {
-                                    let args: Vec<f64> = params
-                                        .iter()
-                                        .filter_map(|v| match v {
-                                            wasmtime::Val::F64(f) => Some(f64::from_bits(*f)),
-                                            wasmtime::Val::I64(i) => Some(*i as f64),
-                                            wasmtime::Val::I32(i) => Some(*i as f64),
-                                            _ => None,
-                                        })
-                                        .collect();
+                                    let args = decode_trampoline_args(params);
                                     let _ = func(&args);
                                 }
                                 return Ok(());
@@ -608,15 +601,7 @@ impl WasmRuntime {
 
                             // Try the per-function handler registered by the plugin
                             if let Some(ref func) = handler {
-                                let args: Vec<f64> = params
-                                    .iter()
-                                    .filter_map(|v| match v {
-                                        wasmtime::Val::F64(f) => Some(f64::from_bits(*f)),
-                                        wasmtime::Val::I64(i) => Some(*i as f64),
-                                        wasmtime::Val::I32(i) => Some(*i as f64),
-                                        _ => None,
-                                    })
-                                    .collect();
+                                let args = decode_trampoline_args(params);
 
                                 if let Some(result) = func(&args) {
                                     // Match the Val variant to the declared return type.
@@ -660,8 +645,7 @@ impl WasmRuntime {
             }
         }
 
-        // Return None since plugin loader is managed by ExecContext
-        Ok(None)
+        Ok(())
     }
 }
 
@@ -682,6 +666,13 @@ pub struct WasmModule {
 }
 
 impl WasmModule {
+    /// Serialize compiled module artifacts for fast later deserialization.
+    pub fn serialize_compiled_module(&self) -> Result<Vec<u8>, String> {
+        self.module
+            .serialize()
+            .map_err(|e| format!("Failed to serialize compiled WASM module: {e:#}"))
+    }
+
     /// Get or cache a function by name
     pub fn get_or_cache_function(&mut self, name: &str) -> Result<wasmtime::Func, String> {
         if let Some(func) = self.function_cache.get(name) {
@@ -765,6 +756,29 @@ impl WasmModule {
     pub fn set_current_time(&mut self, time: u64) {
         self.store.data_mut().current_time = time;
     }
+
+    /// Read current value of exported allocator pointer global.
+    pub fn get_alloc_ptr(&mut self) -> Result<i32, String> {
+        let global = self
+            .instance
+            .get_global(&mut self.store, "__alloc_ptr")
+            .ok_or("No __alloc_ptr global export")?;
+        match global.get(&mut self.store) {
+            wasmtime::Val::I32(v) => Ok(v),
+            _ => Err("__alloc_ptr global type mismatch".to_string()),
+        }
+    }
+
+    /// Restore allocator pointer global to a previous value.
+    pub fn set_alloc_ptr(&mut self, value: i32) -> Result<(), String> {
+        let global = self
+            .instance
+            .get_global(&mut self.store, "__alloc_ptr")
+            .ok_or("No __alloc_ptr global export")?;
+        global
+            .set(&mut self.store, wasmtime::Val::I32(value))
+            .map_err(|e| format!("Failed to set __alloc_ptr: {e:#}"))
+    }
 }
 
 /// Check whether the named external function uses the destination-pointer
@@ -828,11 +842,11 @@ fn mimium_type_to_wasmtime_valtype(ty: &crate::types::Type) -> ValType {
         Type::Code(_) => ValType::I64,
         Type::Intermediate(cell) => {
             let tv = cell.read().unwrap();
-            tv.parent.as_ref().map_or(ValType::F64, |parent| {
+            tv.parent.as_ref().map_or(ValType::I64, |parent| {
                 mimium_type_to_wasmtime_valtype(&parent.to_type())
             })
         }
-        _ => ValType::F64,
+        _ => ValType::I64,
     }
 }
 
@@ -850,6 +864,19 @@ fn valtype_eq(a: &ValType, b: &ValType) -> bool {
             | (ValType::F32, ValType::F32)
             | (ValType::F64, ValType::F64)
     )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn decode_trampoline_args(params: &[Val]) -> Vec<f64> {
+    params
+        .iter()
+        .filter_map(|v| match v {
+            Val::F64(f) => Some(f64::from_bits(*f)),
+            Val::I64(i) => Some(*i as f64),
+            Val::I32(i) => Some(*i as f64),
+            _ => None,
+        })
+        .collect()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1228,9 +1255,15 @@ fn state_delay_host(
         current.data.resize(total_needed, 0);
     }
 
-    let read_idx = current.data[pos];
-    let time_samples = time as u64;
-    let write_idx = (read_idx + time_samples) % buf_size as u64;
+    if buf_size == 0 {
+        return 0.0;
+    }
+
+    let len = buf_size as u64;
+    let max_delay = (len - 1) as f64;
+    let delay_samples = time.clamp(0.0, max_delay) as u64;
+    let write_idx = current.data[pos + 1] % len;
+    let read_idx = (write_idx + len - delay_samples) % len;
 
     // Read delayed value from ring buffer
     let res_bits = current.data[pos + 2 + read_idx as usize];
@@ -1239,9 +1272,9 @@ fn state_delay_host(
     // Write input to ring buffer
     current.data[pos + 2 + write_idx as usize] = input.to_bits();
 
-    // Advance read index
-    current.data[pos] = (read_idx + 1) % buf_size as u64;
-    current.data[pos + 1] = write_idx;
+    // Advance write index and keep current read index for introspection
+    current.data[pos] = read_idx;
+    current.data[pos + 1] = (write_idx + 1) % len;
 
     res
 }

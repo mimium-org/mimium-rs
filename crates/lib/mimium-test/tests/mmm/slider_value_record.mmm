@@ -1,0 +1,4 @@
+fn dsp(){
+    let param = SliderValue!("param", {modf = 0.5, nested = {amount = 0.25}})
+    param.modf + param.nested.amount
+}

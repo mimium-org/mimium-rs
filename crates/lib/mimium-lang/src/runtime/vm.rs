@@ -1,5 +1,5 @@
 use core::slice;
-use slotmap::{DefaultKey, SlotMap};
+use slotmap::{DefaultKey, Key, KeyData, SlotMap};
 use std::{cell::RefCell, cmp::Ordering, collections::HashMap, ops::Range, rc::Rc};
 pub mod bytecode;
 pub mod heap;
@@ -14,7 +14,7 @@ pub use program::{FuncProto, Program};
 
 use crate::{
     compiler::bytecodegen::ByteCodeGenerator,
-    interner::{Symbol, ToSymbol, TypeNodeId},
+    interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId},
     plugin::{ExtClsInfo, ExtClsType, ExtFunInfo, ExtFunType, MachineFunction},
     runtime::vm::program::WordSize,
     types::{Type, TypeSize},
@@ -83,7 +83,11 @@ impl ArrayHeap {
         self.elem_word_size
     }
     pub fn get_data(&self) -> &[RawVal] {
-        &self.data
+        if self.data.is_empty() {
+            &[]
+        } else {
+            &self.data
+        }
     }
     pub fn get_data_mut(&mut self) -> &mut [RawVal] {
         &mut self.data
@@ -105,15 +109,24 @@ impl ArrayStorage {
             std::mem::size_of::<ArrayIdx>() == 8,
             "ArrayIdx size must be 8 bytes"
         );
-        unsafe { std::mem::transmute_copy::<ArrayIdx, RawVal>(&key) }
+        key.data().as_ffi() as RawVal
     }
     pub fn get_array(&self, id: RawVal) -> &ArrayHeap {
-        let key: ArrayIdx = unsafe { std::mem::transmute_copy::<RawVal, ArrayIdx>(&id) };
-        self.data.get(key).expect("Invalid ArrayIdx")
+        let key = ArrayIdx::from(KeyData::from_ffi(id as u64));
+        self.data
+            .get(key)
+            .unwrap_or_else(|| panic!("Invalid ArrayIdx: raw_id={id}"))
+    }
+    /// Try to get an array by its raw ID, returning `None` if the ID is invalid.
+    pub fn try_get_array(&self, id: RawVal) -> Option<&ArrayHeap> {
+        let key = ArrayIdx::from(KeyData::from_ffi(id as u64));
+        self.data.get(key)
     }
     pub fn get_array_mut(&mut self, id: RawVal) -> &mut ArrayHeap {
-        let key: ArrayIdx = unsafe { std::mem::transmute_copy::<RawVal, ArrayIdx>(&id) };
-        self.data.get_mut(key).expect("Invalid ArrayIdx")
+        let key = ArrayIdx::from(KeyData::from_ffi(id as u64));
+        self.data
+            .get_mut(key)
+            .unwrap_or_else(|| panic!("Invalid ArrayIdx (mut): raw_id={id}"))
     }
 }
 // Upvalues are used with Rc<RefCell<UpValue>> because it maybe shared between multiple closures
@@ -220,6 +233,11 @@ pub struct Machine {
     delaysizes_pos_stack: Vec<usize>,
     global_vals: Vec<RawVal>,
     debug_stacktype: Vec<RawValType>,
+    current_ext_call_nargs: u8,
+    /// Storage for code values (AST fragments) produced by codegen combinators.
+    /// Each entry is an interned `ExprNodeId`; the index into this vec is
+    /// stored as a `RawVal` on the VM stack.
+    code_values: Vec<ExprNodeId>,
 }
 
 macro_rules! binop {
@@ -393,6 +411,8 @@ impl Machine {
             delaysizes_pos_stack: vec![0],
             global_vals: vec![],
             debug_stacktype: vec![RawValType::Int; 255],
+            current_ext_call_nargs: 0,
+            code_values: vec![],
         };
         extfns.for_each(|ExtFunInfo { name, fun, .. }| {
             let _ = res.install_extern_fn(name, fun);
@@ -421,6 +441,8 @@ impl Machine {
             delaysizes_pos_stack: vec![0],
             global_vals: vec![],
             debug_stacktype: vec![RawValType::Int; 255],
+            current_ext_call_nargs: 0,
+            code_values: vec![],
         };
         //expect there are no change changes in external function use for now
 
@@ -429,8 +451,7 @@ impl Machine {
         new_vm.global_vals = self.global_vals.clone();
         new_vm.arrays = self.arrays.clone();
 
-        let new_state = state_tree::update_state_storage(
-            &self.global_states.rawdata,
+        let patch_plan = state_tree::build_state_storage_patch_plan(
             self.prog
                 .get_dsp_state_skeleton()
                 .cloned()
@@ -441,17 +462,12 @@ impl Machine {
                 .cloned()
                 .expect("dsp function not found"),
         );
-        match new_state {
-            Ok(Some(s)) => {
-                new_vm.global_states.rawdata = s;
-            }
-            Ok(None) => {
-                log::info!("No state structure change detected. Just copies buffer");
-                new_vm.global_states.rawdata = self.global_states.rawdata.clone();
-            }
-            Err(e) => {
-                log::error!("Failed to migrate global state: {e}");
-            }
+        if let Some(plan) = patch_plan {
+            new_vm.global_states.rawdata =
+                state_tree::apply_state_storage_patch_plan(&self.global_states.rawdata, &plan);
+        } else {
+            log::info!("No state structure change detected. Just copies buffer");
+            new_vm.global_states.rawdata = self.global_states.rawdata.clone();
         }
         new_vm.link_functions();
         new_vm.execute_main();
@@ -533,6 +549,11 @@ impl Machine {
         let len = self.stack.len();
         &self.stack[(len - n)..]
     }
+
+    /// Number of argument words for the currently executing external function call.
+    pub fn get_current_ext_call_nargs(&self) -> u8 {
+        self.current_ext_call_nargs
+    }
     /// Extract the [`ClosureIdx`] stored inside a heap-allocated closure object.
     ///
     /// During the migration period the heap object wraps a single `ClosureIdx`
@@ -607,9 +628,9 @@ impl Machine {
     }
     fn call_function<F>(
         &mut self,
-        func_pos: u8,
+        func_pos: Reg,
         nargs: u8,
-        nret_req: u8,
+        nret_req: TypeSize,
         mut action: F,
     ) -> ReturnCode
     where
@@ -626,7 +647,7 @@ impl Machine {
 
         let nret = action(self);
 
-        if nret_req > nret as u8 {
+        if nret_req > nret as TypeSize {
             if nret == 1 && arg_snapshot.len() >= nret_req as usize {
                 let base = self.base_pointer as usize;
                 let ret_start = base - 1;
@@ -685,8 +706,6 @@ impl Machine {
     /// If the underlying closure has not escaped (`is_closed == false`),
     /// also drops the closure via the normal refcount mechanism.
     fn release_heap_closure(&mut self, heap_idx: heap::HeapIdx) {
-        log::trace!("release_heap_closure: heap_idx={heap_idx:?}");
-
         // Extract the ClosureIdx before we do anything that mutably borrows heap.
         let maybe_closure = self.heap.get(heap_idx).and_then(|obj| {
             (!obj.data.is_empty()).then_some(Self::get_as::<ClosureIdx>(obj.data[0]))
@@ -755,7 +774,7 @@ impl Machine {
                 Type::Record(fields) => fields.len(),
                 _ => unreachable!("single argument should be 1 element record"),
             } as u8;
-            let base = nargs as u8;
+            let base = nargs as Reg;
             let nret = ByteCodeGenerator::word_size_for_type(ret);
             wrap_bytecode.push(Instruction::MoveConst(base, 0));
             wrap_bytecode.push(Instruction::MoveRange(base + 1, 0, asize));
@@ -927,7 +946,9 @@ impl Machine {
                 Instruction::CallExtFun(func, nargs, nret_req) => {
                     let ext_fn_idx = self.get_stack(func as i64) as usize;
                     let fidx = self.fn_map.get(&ext_fn_idx).unwrap();
-                    let nret = match fidx {
+                    let prev_nargs = self.current_ext_call_nargs;
+                    self.current_ext_call_nargs = nargs;
+                    let _nret = match fidx {
                         ExtFnIdx::Fun(fi) => {
                             let f = self.ext_fun_table[*fi].1;
                             self.call_function(func, nargs, nret_req, f)
@@ -940,13 +961,19 @@ impl Machine {
                             })
                         }
                     };
+                    self.current_ext_call_nargs = prev_nargs;
 
-                    // return
+                    // Shift return values one position left so they start at
+                    // register `func` (the slot that held the function ref).
+                    // `call_function` already ensured exactly `nret_req` words
+                    // are on the stack, so use that — not the raw `nret` which
+                    // may exceed the truncated stack length.
                     let base = self.base_pointer as usize;
                     let iret = base + func as usize + 1;
+                    let n = nret_req as usize;
                     self.stack
-                        .copy_within(iret..(iret + nret as usize), base + func as usize);
-                    self.stack.truncate(base + func as usize + nret as usize);
+                        .copy_within(iret..(iret + n), base + func as usize);
+                    self.stack.truncate(base + func as usize + n);
                 }
                 Instruction::Closure(dst, fn_index) => {
                     let fn_proto_pos = self.get_stack(fn_index as i64) as usize;
@@ -1039,7 +1066,9 @@ impl Machine {
                     let heap_idx = Self::get_as::<heap::HeapIdx>(heap_addr);
 
                     // Extract the ClosureIdx from the heap object
-                    let heap_obj = self.heap.get(heap_idx).expect("Invalid heap index");
+                    let heap_obj = self.heap.get(heap_idx).unwrap_or_else(|| {
+                        panic!("Invalid heap index: {heap_idx:?} (heap_len={}, func_i={func_i}, pc={pcounter})", self.heap.len());
+                    });
                     let cls_i = Self::get_as::<ClosureIdx>(heap_obj.data[0]);
 
                     let cls = self.get_closure(cls_i);
@@ -1215,15 +1244,37 @@ impl Machine {
                     let array = self.get_stack(arr as i64);
                     let index = self.get_stack(idx as i64);
                     let index_val = Self::get_as::<f64>(index);
+                    if !index_val.is_finite() || index_val < 0.0 {
+                        let caller = self
+                            .prog
+                            .global_fn_table
+                            .get(func_i)
+                            .map(|(n, _)| n.as_str())
+                            .unwrap_or("<unknown>");
+                        panic!(
+                            "GetArrayElem invalid index {} in caller {}",
+                            index_val, caller
+                        );
+                    }
                     let adata = self.arrays.get_array(array);
                     let elem_word_size = adata.elem_word_size as usize;
-                    let buffer = unsafe {
-                        let address = adata
-                            .data
-                            .as_ptr()
-                            .wrapping_add(index_val as usize * elem_word_size);
-                        std::slice::from_raw_parts(address, elem_word_size)
-                    };
+                    let index_int = index_val as usize;
+                    let len = adata.get_length_array() as usize;
+                    if index_int >= len {
+                        let caller = self
+                            .prog
+                            .global_fn_table
+                            .get(func_i)
+                            .map(|(n, _)| n.as_str())
+                            .unwrap_or("<unknown>");
+                        panic!(
+                            "GetArrayElem OOB index {} (len {}) in caller {}",
+                            index_int, len, caller
+                        );
+                    }
+                    let start = index_int * elem_word_size;
+                    let end = start + elem_word_size;
+                    let buffer = &adata.data[start..end];
                     set_vec_range(
                         &mut self.stack,
                         (self.base_pointer + dst as u64) as usize,
@@ -1236,18 +1287,40 @@ impl Machine {
                     let array = self.get_stack(arr as i64);
                     let index = self.get_stack(idx as i64);
                     let index_val = Self::get_as::<f64>(index);
+                    if !index_val.is_finite() || index_val < 0.0 {
+                        let caller = self
+                            .prog
+                            .global_fn_table
+                            .get(func_i)
+                            .map(|(n, _)| n.as_str())
+                            .unwrap_or("<unknown>");
+                        panic!(
+                            "SetArrayElem invalid index {} in caller {}",
+                            index_val, caller
+                        );
+                    }
                     let index_int = index_val as usize;
+                    let elem_word_size = self.arrays.get_array(array).elem_word_size as usize;
+                    let len = self.arrays.get_array(array).get_length_array() as usize;
+                    if index_int >= len {
+                        let caller = self
+                            .prog
+                            .global_fn_table
+                            .get(func_i)
+                            .map(|(n, _)| n.as_str())
+                            .unwrap_or("<unknown>");
+                        panic!(
+                            "SetArrayElem OOB index {} (len {}) in caller {}",
+                            index_int, len, caller
+                        );
+                    }
+                    let (_range2, buf_src2) = self.get_stack_range(val as _, elem_word_size as _);
+                    let src_words = buf_src2.to_vec();
                     let adata = self.arrays.get_array_mut(array);
-                    let elem_word_size = adata.elem_word_size as usize;
-                    let buffer = unsafe {
-                        let address = adata
-                            .data
-                            .as_mut_ptr()
-                            .wrapping_add(index_int * elem_word_size);
-                        std::slice::from_raw_parts_mut(address, elem_word_size)
-                    };
-                    let (_range, buf_src) = self.get_stack_range(val as _, elem_word_size as _);
-                    buffer.copy_from_slice(buf_src);
+                    let start = index_int * elem_word_size;
+                    let end = start + elem_word_size;
+                    let buffer = &mut adata.data[start..end];
+                    buffer.copy_from_slice(&src_words);
                 }
                 Instruction::GetState(dst, size) => {
                     //force borrow because state storage and stack never collisions
@@ -1305,6 +1378,26 @@ impl Machine {
     pub fn install_extern_cls(&mut self, name: Symbol, f: ExtClsType) -> usize {
         self.ext_cls_table.push((name, f));
         self.ext_cls_table.len() - 1
+    }
+
+    /// Store a code value (AST fragment) and return a `RawVal` index.
+    ///
+    /// The returned value can later be passed to [`get_code`] to recover the
+    /// original `ExprNodeId`.
+    pub fn alloc_code(&mut self, expr: ExprNodeId) -> RawVal {
+        let idx = self.code_values.len();
+        self.code_values.push(expr);
+        idx as RawVal
+    }
+
+    /// Retrieve a previously stored code value by its `RawVal` index.
+    pub fn get_code(&self, val: RawVal) -> ExprNodeId {
+        self.code_values[val as usize]
+    }
+
+    /// Try retrieving a previously stored code value by its `RawVal` index.
+    pub fn try_get_code(&self, val: RawVal) -> Option<ExprNodeId> {
+        self.code_values.get(val as usize).copied()
     }
 
     fn link_functions(&mut self) {
@@ -1540,19 +1633,12 @@ impl Machine {
                         .get(heap_idx)
                         .map(|obj| obj.refcount <= 1)
                         .unwrap_or(false);
-                    if should_release_inner {
-                        if let Some(inner_ty) = resolved_sum {
-                            let inner_data = heap
-                                .get(heap_idx)
-                                .map(|obj| obj.data.clone())
-                                .unwrap_or_default();
-                            Self::release_usersum_recursive(
-                                &inner_data,
-                                inner_ty,
-                                heap,
-                                type_table,
-                            );
-                        }
+                    if should_release_inner && let Some(inner_ty) = resolved_sum {
+                        let inner_data = heap
+                            .get(heap_idx)
+                            .map(|obj| obj.data.clone())
+                            .unwrap_or_default();
+                        Self::release_usersum_recursive(&inner_data, inner_ty, heap, type_table);
                     }
                     heap::heap_release(heap, heap_idx);
                 }

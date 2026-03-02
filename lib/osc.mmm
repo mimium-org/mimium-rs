@@ -1,23 +1,20 @@
-include("math.mmm")
-
-fn phasor(freq){
-    (self + freq/samplerate)%1.0
-}
-
-fn phasor_shift(freq,phase_shift){
+use math::*
+pub fn phasor(freq,phase_shift=0){
     (self + freq/samplerate + phase_shift)%1.0
 }
-
-fn saw(freq,phase){
-    phasor_shift(freq,phase) * 2.0 -1.0
+pub fn lfsaw(freq,phase=0){
+    phasor(freq,phase) * 2.0 -1.0
 }
-
-fn triangle(freq,phase){
-    let p = phasor_shift(freq,phase);
+//for now
+pub fn saw(freq,phase=0){
+    lfsaw(freq,phase)
+}
+pub fn tri(freq,phase=0){
+    let p = phasor(freq,phase);
     let raw = if (p < 0.25) p* -1.0+0.5 else if (p>0.75) p * -1.0+1.50 else p
     (raw-0.5)*4.0
 }
 
-fn sinwave(freq,phase){
-    phasor_shift(freq,phase)*2.0*PI |> sin
+pub fn sinwave(freq,phase=0){
+    phasor(freq,phase)*2.0*PI() |> sin
 }
