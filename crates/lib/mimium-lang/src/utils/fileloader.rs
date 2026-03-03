@@ -176,6 +176,11 @@ pub async fn preload_github_stdlib_cache() -> Result<(), String> {
 }
 
 #[cfg(target_arch = "wasm32")]
+pub fn has_network_api() -> bool {
+    has_network_api_js().unwrap_or(false)
+}
+
+#[cfg(target_arch = "wasm32")]
 pub async fn preload_stdlib_cache_with_base_url(base_url: &str) -> Result<(), String> {
     preload_mimium_lib_cache(base_url)
         .await
@@ -208,12 +213,24 @@ pub fn clear_virtual_file_cache() -> Result<(), String> {
 }
 
 #[cfg(target_arch = "wasm32")]
+pub fn export_virtual_file_cache_json() -> Result<String, String> {
+    export_virtual_file_cache_json_js().map_err(|e| format!("{e:?}"))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn import_virtual_file_cache_json(payload: &str) -> Result<(), String> {
+    import_virtual_file_cache_json_js(payload).map_err(|e| format!("{e:?}"))
+}
+
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen(module = "/src/utils/fileloader.mjs")]
 extern "C" {
     #[wasm_bindgen(catch)]
     fn read_file(path: &str) -> Result<String, JsValue>;
     #[wasm_bindgen(catch)]
     pub fn get_env(key: &str) -> Result<String, JsValue>;
+    #[wasm_bindgen(catch, js_name = has_network_api)]
+    fn has_network_api_js() -> Result<bool, JsValue>;
     #[wasm_bindgen(catch)]
     async fn preload_mimium_lib_cache(base_url: &str) -> Result<(), JsValue>;
     #[wasm_bindgen(catch, js_name = preload_user_module_cache)]
@@ -224,6 +241,10 @@ extern "C" {
     fn __mimium_test_put_cache(path: &str, content: &str) -> Result<(), JsValue>;
     #[wasm_bindgen(catch)]
     fn __mimium_test_clear_cache() -> Result<(), JsValue>;
+    #[wasm_bindgen(catch, js_name = export_virtual_file_cache_json)]
+    fn export_virtual_file_cache_json_js() -> Result<String, JsValue>;
+    #[wasm_bindgen(catch, js_name = import_virtual_file_cache_json)]
+    fn import_virtual_file_cache_json_js(payload: &str) -> Result<(), JsValue>;
     #[wasm_bindgen(catch)]
     fn __mimium_test_get_last_preload_base_url() -> Result<String, JsValue>;
 }

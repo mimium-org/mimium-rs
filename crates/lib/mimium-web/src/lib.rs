@@ -116,10 +116,12 @@ impl Context {
 
     #[wasm_bindgen]
     pub async fn compile(&mut self, src: String) -> Result<(), JsValue> {
-        self.init_github_lib_cache().await?;
-        fileloader::preload_user_module_cache(src.as_str(), self.module_base_url.as_deref())
-            .await
-            .map_err(|e| JsValue::from_str(&e))?;
+        if fileloader::has_network_api() {
+            self.init_github_lib_cache().await?;
+            fileloader::preload_user_module_cache(src.as_str(), self.module_base_url.as_deref())
+                .await
+                .map_err(|e| JsValue::from_str(&e))?;
+        }
         self.compile_inner(src)
     }
 
@@ -165,6 +167,17 @@ impl Context {
         fileloader::clear_virtual_file_cache().map_err(|e| JsValue::from_str(&e))
     }
 
+    #[wasm_bindgen]
+    pub fn export_virtual_file_cache_json(&self) -> Result<String, JsValue> {
+        fileloader::export_virtual_file_cache_json().map_err(|e| JsValue::from_str(&e))
+    }
+
+    #[wasm_bindgen]
+    pub fn import_virtual_file_cache_json(&self, payload: String) -> Result<(), JsValue> {
+        fileloader::import_virtual_file_cache_json(payload.as_str())
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
     fn recompile_inner(&mut self, src: String) -> Result<(), JsValue> {
         let mut ctx = get_default_context();
         let driver = LocalBufferDriver::new(self.config.buffer_size as usize);
@@ -198,10 +211,12 @@ impl Context {
 
     #[wasm_bindgen]
     pub async fn recompile(&mut self, src: String) -> Result<(), JsValue> {
-        self.init_github_lib_cache().await?;
-        fileloader::preload_user_module_cache(src.as_str(), self.module_base_url.as_deref())
-            .await
-            .map_err(|e| JsValue::from_str(&e))?;
+        if fileloader::has_network_api() {
+            self.init_github_lib_cache().await?;
+            fileloader::preload_user_module_cache(src.as_str(), self.module_base_url.as_deref())
+                .await
+                .map_err(|e| JsValue::from_str(&e))?;
+        }
         self.recompile_inner(src)
     }
 
@@ -215,7 +230,7 @@ impl Context {
     }
     #[wasm_bindgen]
     pub fn get_output_channels(&self) -> u32 {
-        self.config.output_channels
+        self.config.output_channels.max(1)
     }
     /// .
     ///

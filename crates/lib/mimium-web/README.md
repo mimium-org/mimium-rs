@@ -67,3 +67,21 @@ E2E tests are in `crates/lib/mimium-web/e2e` and can be run with:
 cd crates/lib/mimium-web
 npm run test:e2e
 ```
+
+## Chrome AudioWorklet note (network loading)
+
+In Chrome, `AudioWorkletGlobalScope` may not provide `fetch` / `XMLHttpRequest`.
+For network-based library loading, use this flow:
+
+1. Main thread: preload over network
+2. Main thread: export virtual cache JSON
+3. Send JSON to AudioWorklet via `postMessage`
+4. Worklet: import virtual cache JSON
+5. Worklet: call `compile_direct(...)` / `recompile_direct(...)`
+
+APIs for this flow:
+
+- `Context::export_virtual_file_cache_json()`
+- `Context::import_virtual_file_cache_json(payload)`
+
+This keeps network access on the main thread while still allowing module/include loading in AudioWorklet.

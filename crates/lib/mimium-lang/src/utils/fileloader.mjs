@@ -82,6 +82,10 @@ function normalizeBaseUrlCandidate(baseUrlCandidate) {
   }
 }
 
+function has_network_api() {
+  return typeof globalThis.fetch === 'function' || typeof XMLHttpRequest !== 'undefined';
+}
+
 function putMemoryAliases(filename, content) {
   const normalized = normalizePath(filename);
   if (!normalized) {
@@ -172,13 +176,42 @@ async function writeToOpfs(filename, content) {
   await writable.close();
 }
 
+async function requestText(url) {
+  if (typeof globalThis.fetch === 'function') {
+    const response = await globalThis.fetch(url, { cache: 'no-cache' });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
+    }
+    return response.text();
+  }
+
+  if (typeof XMLHttpRequest !== 'undefined') {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', url, true);
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState !== 4) {
+          return;
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(xhr.responseText);
+          return;
+        }
+        reject(new Error(`Failed to fetch ${url}: ${xhr.status} ${xhr.statusText}`));
+      };
+      xhr.onerror = () => reject(new Error(`Failed to fetch ${url}: network error`));
+      xhr.send();
+    });
+  }
+
+  throw new Error(
+    'Network API is unavailable: neither fetch nor XMLHttpRequest exists in this runtime.'
+  );
+}
+
 async function fetchLibFile(baseUrl, filename) {
   const url = `${baseUrl}${filename}`;
-  const response = await fetch(url, { cache: 'no-cache' });
-  if (!response.ok) {
-    throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
-  }
-  return response.text();
+  return requestText(url);
 }
 
 function collectDependencies(source) {
@@ -206,11 +239,7 @@ function getModuleBaseUrl(base_url) {
 
 async function fetchSourceFromBaseUrl(baseUrl, relativePath) {
   const url = new URL(relativePath, baseUrl).toString();
-  const response = await fetch(url, { cache: 'no-cache' });
-  if (!response.ok) {
-    throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
-  }
-  return response.text();
+  return requestText(url);
 }
 
 async function preload_user_module_cache(source, base_url) {
@@ -306,6 +335,37 @@ function __mimium_test_get_last_module_preload_base_url() {
   return lastModulePreloadBaseUrl;
 }
 
+function export_virtual_file_cache_json() {
+  const entries = [];
+  const seen = new Set();
+  for (const [key, value] of memoryCache.entries()) {
+    const normalized = normalizePath(key);
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    entries.push([normalized, value]);
+  }
+  return JSON.stringify(entries);
+}
+
+function import_virtual_file_cache_json(payload) {
+  const parsed = JSON.parse(payload);
+  if (!Array.isArray(parsed)) {
+    throw new Error('Invalid cache payload: expected array entries');
+  }
+  parsed.forEach((entry) => {
+    if (!Array.isArray(entry) || entry.length !== 2) {
+      throw new Error('Invalid cache payload entry');
+    }
+    const [path, content] = entry;
+    if (typeof path !== 'string' || typeof content !== 'string') {
+      throw new Error('Invalid cache payload types');
+    }
+    putMemoryAliases(path, content);
+  });
+}
+
 function set_module_base_url(base_url) {
   const normalized = getModuleBaseUrl(base_url);
   if (!normalized) {
@@ -318,9 +378,12 @@ function set_module_base_url(base_url) {
 export {
   read_file,
   get_env,
+  has_network_api,
   preload_mimium_lib_cache,
   preload_user_module_cache,
   set_module_base_url,
+  export_virtual_file_cache_json,
+  import_virtual_file_cache_json,
   __mimium_test_put_cache,
   __mimium_test_clear_cache,
   __mimium_test_get_last_preload_base_url,
