@@ -17,6 +17,7 @@ use wasmtime::{
 ///
 /// Must match compiler-side import declarations in `compiler/wasmgen.rs`.
 const MAX_SPECIALIZED_BUILTIN_ARITY: usize = 16;
+const MAX_WASM_DELAY_SAMPLES: usize = 16 * 1024 * 1024;
 
 /// WASM-side analogue of [`SystemPluginAudioWorker`](crate::plugin::SystemPluginAudioWorker).
 ///
@@ -452,6 +453,43 @@ impl WasmRuntime {
                 log::warn!("Plugin '{}' has non-function type, skipping", name.as_str());
                 continue;
             };
+
+            if name.as_str() == "__probe_value_intercept$arity1" {
+                let func_type = FuncType::new(
+                    linker.engine(),
+                    vec![ValType::F64, ValType::F64],
+                    vec![ValType::F64],
+                );
+
+                let plugin_name = name.as_str().to_string();
+                let handler: Option<WasmPluginFn> = plugin_fns
+                    .as_ref()
+                    .and_then(|map| map.get(name.as_str()).cloned());
+
+                linker
+                    .func_new(
+                        "plugin",
+                        name.as_str(),
+                        func_type,
+                        move |_caller, params, results| {
+                            log::trace!("Plugin trampoline called: {plugin_name}({params:?})");
+
+                            let args = decode_trampoline_args(params);
+
+                            let passthrough = if let Some(ref func) = handler {
+                                func(&args).unwrap_or_else(|| args.first().copied().unwrap_or(0.0))
+                            } else {
+                                args.first().copied().unwrap_or(0.0)
+                            };
+
+                            results[0] = Val::F64(passthrough.to_bits());
+                            Ok(())
+                        },
+                    )
+                    .map_err(|e| format!("Failed to register plugin '{}': {e}", name.as_str()))?;
+
+                continue;
+            }
 
             // Build wasmtime FuncType matching wasmgen's setup_plugin_imports.
             // Flatten tuple arguments into separate WASM parameters
@@ -1157,7 +1195,14 @@ fn state_push_host(mut caller: Caller<'_, RuntimeState>, offset: i64) {
     log::trace!("state_push_host: offset={offset}");
     let state = caller.data_mut();
     let current = state.get_current_state();
-    current.pos += offset as usize;
+    if offset >= 0 {
+        let delta = usize::try_from(offset).unwrap_or(usize::MAX);
+        current.pos = current.pos.saturating_add(delta);
+    } else {
+        let delta_u64 = offset.unsigned_abs();
+        let delta = usize::try_from(delta_u64).unwrap_or(usize::MAX);
+        current.pos = current.pos.saturating_sub(delta);
+    }
 }
 
 /// Pop the state position cursor back by `offset` words.
@@ -1166,7 +1211,14 @@ fn state_pop_host(mut caller: Caller<'_, RuntimeState>, offset: i64) {
     log::trace!("state_pop_host: offset={offset}");
     let state = caller.data_mut();
     let current = state.get_current_state();
-    current.pos -= offset as usize;
+    if offset >= 0 {
+        let delta = usize::try_from(offset).unwrap_or(usize::MAX);
+        current.pos = current.pos.saturating_sub(delta);
+    } else {
+        let delta_u64 = offset.unsigned_abs();
+        let delta = usize::try_from(delta_u64).unwrap_or(usize::MAX);
+        current.pos = current.pos.saturating_add(delta);
+    }
 }
 
 /// Read state data from the current state storage and write to WASM linear memory.
@@ -1247,16 +1299,21 @@ fn state_delay_host(
     let state = caller.data_mut();
     let current = state.get_current_state();
     let pos = current.pos;
-    let buf_size = max_len as usize;
-    let total_needed = pos + 2 + buf_size;
+    let Some(buf_size) = usize::try_from(max_len).ok() else {
+        return 0.0;
+    };
+
+    if buf_size == 0 || buf_size > MAX_WASM_DELAY_SAMPLES {
+        return 0.0;
+    }
+
+    let Some(total_needed) = pos.checked_add(2).and_then(|v| v.checked_add(buf_size)) else {
+        return 0.0;
+    };
 
     // Ensure data is large enough
     if total_needed > current.data.len() {
         current.data.resize(total_needed, 0);
-    }
-
-    if buf_size == 0 {
-        return 0.0;
     }
 
     let len = buf_size as u64;
@@ -1338,6 +1395,14 @@ fn array_get_elem_host(
         "array_get_elem_host: dst_ptr={dst_ptr}, array={array}, index={index}, elem_size={elem_size}"
     );
 
+    if index < 0 {
+        panic!("array_get_elem: invalid negative index {index}");
+    }
+
+    if elem_size <= 0 {
+        panic!("array_get_elem: invalid elem_size {elem_size}");
+    }
+
     let idx = index as usize;
     let elem_words = elem_size as usize;
 
@@ -1348,8 +1413,13 @@ fn array_get_elem_host(
             .arrays
             .get(&(array as Word))
             .expect("array_get_elem: invalid array ID");
-        let base = idx * elem_words;
-        if base + elem_words > array_data.len() {
+        let base = idx
+            .checked_mul(elem_words)
+            .expect("array_get_elem: index multiplication overflow");
+        let end = base
+            .checked_add(elem_words)
+            .expect("array_get_elem: index addition overflow");
+        if end > array_data.len() {
             panic!(
                 "array_get_elem: index {} out of bounds (base={}, elem_words={}, len={})",
                 idx,
@@ -1358,7 +1428,7 @@ fn array_get_elem_host(
                 array_data.len()
             );
         }
-        array_data[base..base + elem_words].to_vec()
+        array_data[base..end].to_vec()
     };
 
     // Write element data to linear memory at dst_ptr
@@ -1385,6 +1455,14 @@ fn array_set_elem_host(
         "array_set_elem_host: array={array}, index={index}, src_ptr={src_ptr}, elem_size={elem_size}"
     );
 
+    if index < 0 {
+        panic!("array_set_elem: invalid negative index {index}");
+    }
+
+    if elem_size <= 0 {
+        panic!("array_set_elem: invalid elem_size {elem_size}");
+    }
+
     let idx = index as usize;
     let elem_words = elem_size as usize;
 
@@ -1407,11 +1485,16 @@ fn array_set_elem_host(
         .arrays
         .get_mut(&(array as Word))
         .expect("array_set_elem: invalid array ID");
-    let base = idx * elem_words;
-    if base + elem_words > array_data.len() {
+    let base = idx
+        .checked_mul(elem_words)
+        .expect("array_set_elem: index multiplication overflow");
+    let end = base
+        .checked_add(elem_words)
+        .expect("array_set_elem: index addition overflow");
+    if end > array_data.len() {
         panic!("array_set_elem: index out of bounds");
     }
-    array_data[base..base + elem_words].copy_from_slice(&buffer);
+    array_data[base..end].copy_from_slice(&buffer);
 }
 
 // Runtime globals

@@ -310,6 +310,10 @@ impl SkipPhi {
 }
 
 impl WasmGenerator {
+    fn is_probe_value_intercept_arity1(name: Symbol) -> bool {
+        name.as_str() == "__probe_value_intercept$arity1"
+    }
+
     fn ext_function_uses_dest_ptr(name: Symbol) -> bool {
         let s = name.as_str();
         s == "split_head"
@@ -683,6 +687,17 @@ impl WasmGenerator {
         for type_info in ext_fns {
             let name = type_info.name;
             let fn_ty = type_info.ty.to_type();
+
+            if Self::is_probe_value_intercept_arity1(name) {
+                let type_idx = self.type_section.len();
+                self.type_section.ty().function(
+                    vec![ValType::F64, ValType::F64],
+                    vec![ValType::F64],
+                );
+                let fn_idx = self.add_import_from("plugin", name.as_str(), type_idx);
+                self.plugin_fns.functions.insert(name, fn_idx);
+                continue;
+            }
 
             let Type::Function { arg, ret } = fn_ty else {
                 log::warn!(
@@ -1888,17 +1903,23 @@ impl WasmGenerator {
                         }
                         // Function calls and memory operations
                         I::Call(fn_ptr, _, ret_ty) => {
-                            let ret = ret_ty.to_type();
-                            if ret.contains_unresolved()
-                                || Self::allows_scalar_inference_override(&ret)
+                            if let mir::Value::ExtFunction(name, _) = fn_ptr.as_ref()
+                                && Self::is_probe_value_intercept_arity1(*name)
                             {
-                                self.resolve_mir_fn_idx(fn_ptr.as_ref())
-                                    .and_then(|idx| self.mir.functions.get(idx))
-                                    .and_then(|f| f.return_type.get())
-                                    .map(|ty| Self::type_to_valtype(&ty.to_type()))
-                                    .unwrap_or_else(|| Self::type_to_valtype(&ret))
+                                ValType::F64
                             } else {
-                                Self::type_to_valtype(&ret)
+                                let ret = ret_ty.to_type();
+                                if ret.contains_unresolved()
+                                    || Self::allows_scalar_inference_override(&ret)
+                                {
+                                    self.resolve_mir_fn_idx(fn_ptr.as_ref())
+                                        .and_then(|idx| self.mir.functions.get(idx))
+                                        .and_then(|f| f.return_type.get())
+                                        .map(|ty| Self::type_to_valtype(&ty.to_type()))
+                                        .unwrap_or_else(|| Self::type_to_valtype(&ret))
+                                } else {
+                                    Self::type_to_valtype(&ret)
+                                }
                             }
                         }
                         I::CallIndirect(_, _, ret_ty) | I::CallCls(_, _, ret_ty) => {
@@ -2804,7 +2825,8 @@ impl WasmGenerator {
                 // state_delay(input: f64, time: f64, max_len: i64) -> f64
                 self.emit_value_load_typed(input, ValType::F64, func);
                 self.emit_value_load_typed(time, ValType::F64, func);
-                func.instruction(&W::I64Const(*len as i64));
+                let max_len_i64 = i64::try_from(*len).unwrap_or(i64::MAX);
+                func.instruction(&W::I64Const(max_len_i64));
                 func.instruction(&W::Call(self.rt.state_delay));
             }
 
@@ -4058,6 +4080,10 @@ impl WasmGenerator {
                 // Scheduler ABI: second arg is closure pointer word.
                 if ext_name.as_str() == "_mimium_schedule_at" && arg_idx == 1 {
                     expected = ValType::I64;
+                }
+
+                if ext_name.as_str() == "__probe_value_intercept$arity1" {
+                    expected = ValType::F64;
                 }
 
                 self.emit_value_load_typed(arg, expected, func);
