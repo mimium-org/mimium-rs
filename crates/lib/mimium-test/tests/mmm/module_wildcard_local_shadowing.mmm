@@ -1,0 +1,8 @@
+// @test {"times":1,"stereo":false,"expected":[0.25],"web":true}
+// Local binding should shadow names introduced via wildcard import.
+use core::*
+
+fn dsp(){
+    let mix = 0.25
+    mix
+}
