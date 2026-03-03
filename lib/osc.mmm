@@ -1,6 +1,9 @@
 use math::*
+fn phasor_zero(freq){
+    (self + freq/samplerate)%1.0
+}
 pub fn phasor(freq,phase_shift=0){
-    (self + freq/samplerate + phase_shift)%1.0
+   (phasor_zero(freq) + phase_shift)%1.0
 }
 pub fn lfsaw(freq,phase=0){
     phasor(freq,phase) * 2.0 -1.0

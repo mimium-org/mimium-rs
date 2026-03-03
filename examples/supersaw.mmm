@@ -1,0 +1,68 @@
+use core::*
+use osc::*
+use env::adsr
+use filter::lowpass
+use drive::*
+use noise::*
+use delay::pingpong_delay
+#stage(macro)
+fn randomphase(){
+    `|gate|{
+    let is_pos_edge = gate > mem(gate)
+    if (is_pos_edge) unoise!() else self
+    }
+}
+fn map(fun,array){
+    let (head,rest) = array |> split_head
+    if ((rest |> length_array) > 0){
+        prepend(fun(head),map(fun,rest))
+    }else{
+        [fun(head)]
+    }
+}
+let detune_table = [0,128,-128,408,-417,704,720]
+let detunepitches = map(|x| x /(2^7),detune_table)
+fn supersaw(n){
+    if (n>0){
+        `|freq,m:float,detune,gate|{
+            let detunepitch = $(detunepitches[n]|>lift) * detune
+            let f = freq + detunepitch
+            let gain  = scale(m,0.0,1.0,0,1/7)
+            supersaw!(n-1)(freq,m,detune,gate)+   saw(f,randomphase!()(gate)) * gain
+        }
+    }else{
+        `|freq,m,detune,gate|{
+            let gain = scale(m,0.0,1.0,1,1/7)
+            saw(freq,randomphase!()(gate)) * gain
+        }
+    }
+}
+
+#stage(main)
+let pitches = [0, 4, 7, 12, 16, 19, 24]
+fn source(){
+    let rate= Slider!("rate",1,0.01,25)
+    let f = sah(unoise!()*6,phasor(rate,0)) |>floor 
+    let freq = pitches[f] + 48 |> midi_to_hz
+    {freq = freq, gate = phasor(rate,0)<0.2}
+}
+fn myfilt(input,gate){
+    let fbase = Slider!("filt",1000,0,2000)
+    let filt = adsr(0.05,0.2,0.7,0.5,gate)*2000 + fbase
+    lowpass(input,filt,12.0)
+}
+fn dsp(){
+    let src = source()
+
+    let params = SliderValue!("param",{
+        mix = 1,
+        detune = 1,
+    })
+    let amp = adsr(0.01,0.2,0.7,0.2,src.gate)
+    let out = (supersaw!(6))(src.freq,params.mix,params.detune,src.gate) * amp
+    // randomphase(gate) 
+    let out = myfilt(out,src.gate)*2|> saturate |> (|x| (x,x))
+
+    pingpong_delay(out*0.7,0.8,0.6,0.8,0.6)
+    |> ProbeValue!("out")
+}
