@@ -2302,7 +2302,7 @@ impl InferContext {
                                 RecordTypeField {
                                     key: id.id,
                                     ty: ity,
-                                    has_default: false,
+                                    has_default: id.default_value.is_some(),
                                 }
                             })
                             .collect::<Vec<_>>();
@@ -2311,8 +2311,7 @@ impl InferContext {
                         } else if pvec.len() == 1 {
                             pvec[0].ty
                         } else {
-                            Type::Tuple(pvec.iter().map(|f| f.ty).collect())
-                                .into_id_with_location(loc.clone())
+                            Type::Record(pvec).into_id_with_location(loc.clone())
                         };
                         let bty = if let Some(r) = rtype {
                             let annotated_ret =
@@ -2468,6 +2467,41 @@ impl InferContext {
                     );
                     if arg_is_tuple && self.is_numeric_to_numeric_function_for_auto_spread(fnl) {
                         return self.infer_auto_spread_type(fnl, arg_ty, loc_f.clone());
+                    }
+
+                    let try_record_default_pack = || -> Result<Option<TypeNodeId>, Vec<Error>> {
+                        let fn_ty = self.peel_to_inner(fnl);
+                        let arg_ty_resolved = self.peel_to_inner(arg_ty);
+                        let (fn_arg, fn_ret) = match fn_ty.to_type() {
+                            Type::Function { arg, ret } => (arg, ret),
+                            _ => return Ok(None),
+                        };
+                        let fn_arg_resolved = self.peel_to_inner(fn_arg);
+                        let (param_fields, provided_fields) =
+                            match (fn_arg_resolved.to_type(), arg_ty_resolved.to_type()) {
+                                (Type::Record(param_fields), Type::Record(provided_fields)) => {
+                                    (param_fields, provided_fields)
+                                }
+                                _ => return Ok(None),
+                            };
+
+                        let mut matched_any = false;
+                        for param in param_fields.iter() {
+                            if let Some(provided) =
+                                provided_fields.iter().find(|field| field.key == param.key)
+                            {
+                                matched_any = true;
+                                let _ = self.unify_types(param.ty, provided.ty)?;
+                            } else if !param.has_default {
+                                return Ok(None);
+                            }
+                        }
+
+                        Ok(matched_any.then_some(fn_ret))
+                    };
+
+                    if let Some(ret_ty) = try_record_default_pack()? {
+                        return Ok(ret_ty);
                     }
                 }
 

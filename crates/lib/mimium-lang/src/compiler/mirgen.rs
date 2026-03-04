@@ -474,6 +474,45 @@ impl Context {
         )
     }
 
+    fn substitute_failure_type(ty: TypeNodeId, replacement: TypeNodeId) -> TypeNodeId {
+        let root = ty.get_root();
+        if matches!(root.to_type(), Type::Failure) {
+            return replacement;
+        }
+        match ty.to_type() {
+            Type::Failure => replacement,
+            Type::Intermediate(tv) => {
+                let tv = tv.read().unwrap();
+                if let Some(parent) = tv.parent {
+                    Self::substitute_failure_type(parent, replacement)
+                } else if matches!(tv.bound.lower.get_root().to_type(), Type::Failure) {
+                    replacement
+                } else {
+                    ty
+                }
+            }
+            Type::Tuple(elems) => {
+                let mapped = elems
+                    .iter()
+                    .map(|elem| Self::substitute_failure_type(*elem, replacement))
+                    .collect::<Vec<_>>();
+                Type::Tuple(mapped).into_id()
+            }
+            Type::Record(fields) => {
+                let mapped = fields
+                    .iter()
+                    .map(|field| RecordTypeField {
+                        key: field.key,
+                        ty: Self::substitute_failure_type(field.ty, replacement),
+                        has_default: field.has_default,
+                    })
+                    .collect::<Vec<_>>();
+                Type::Record(mapped).into_id()
+            }
+            _ => ty,
+        }
+    }
+
     fn make_uniop_intrinsic(
         &mut self,
         label: Symbol,
@@ -2507,6 +2546,32 @@ impl Context {
                     _ => f_to_call,
                 };
 
+                let callee_fid = match f_to_call.as_ref() {
+                    Value::Function(fid) => Some(*fid),
+                    Value::Global(inner) => match inner.as_ref() {
+                        Value::Function(fid) => Some(*fid),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+
+                if let Some(fid) = callee_fid
+                    && let Some(func) = self.program.functions.get(fid)
+                {
+                    if matches!(call_arg_ty.to_type(), Type::Failure) {
+                        call_arg_ty = match func.args.as_slice() {
+                            [] => unit!(),
+                            [arg] => arg.1,
+                            args => Type::Tuple(args.iter().map(|arg| arg.1).collect()).into_id(),
+                        };
+                    }
+                    if matches!(monomorphized_rt.to_type(), Type::Failure)
+                        && let Some(ret_ty) = func.return_type.get()
+                    {
+                        monomorphized_rt = *ret_ty;
+                    }
+                }
+
                 // Handle parameter packing/unpacking if needed
                 // How can we distinguish when the function takes a single tuple and argument is just a single tuple
                 let (evaluated_args, arg_states) = self.eval_args(args);
@@ -2622,6 +2687,10 @@ impl Context {
                 let raw_atvvec = atvvec.clone();
                 let atvvec = self.coerce_args_for_call(atvvec, call_arg_ty);
 
+                if atvvec.len() == 1 {
+                    monomorphized_rt = Self::substitute_failure_type(monomorphized_rt, atvvec[0].1);
+                }
+
                 let (res, state) =
                     self.emit_call_to_value(&f_to_call, &raw_atvvec, &atvvec, monomorphized_rt);
                 (
@@ -2662,7 +2731,12 @@ impl Context {
                 let name = self.consume_fnlabel();
                 let (c_idx, f, _astates) =
                     self.do_in_child_ctx(name, &binds, vec![], |ctx, c_idx| {
-                        let (res, _, states) = ctx.eval_expr(*body);
+                        let (res, body_ty, states) = ctx.eval_expr(*body);
+                        let effective_rt = if matches!(rt.to_type(), Type::Failure) {
+                            body_ty
+                        } else {
+                            rt
+                        };
 
                         let child = ctx.program.functions.get_mut(c_idx.0 as usize).unwrap();
                         //todo set skeleton not by modifying but in initialization
@@ -2677,13 +2751,13 @@ impl Context {
                                 Instruction::PopStateOffset(push_sum),
                             )); //todo:offset size
                         }
-                        match (res.as_ref(), rt.to_type()) {
+                        match (res.as_ref(), effective_rt.to_type()) {
                             (_, Type::Primitive(PType::Unit)) => {
                                 let _ =
-                                    ctx.push_inst(Instruction::Return(Arc::new(Value::None), rt));
+                                    ctx.push_inst(Instruction::Return(Arc::new(Value::None), effective_rt));
                             }
                             (Value::State(v), _) => {
-                                let _ = ctx.push_inst(Instruction::ReturnFeed(v.clone(), rt));
+                                let _ = ctx.push_inst(Instruction::ReturnFeed(v.clone(), effective_rt));
                             }
                             (Value::Function(i), _) => {
                                 let idx = ctx.push_inst(Instruction::Uinteger(*i as u64));
@@ -2692,24 +2766,27 @@ impl Context {
                                     fn_proto: idx,
                                     size: 64,
                                 });
-                                ctx.insert_close_closures_recursively(cls.clone(), rt);
-                                ctx.insert_clone_recursively(cls.clone(), rt);
-                                let _ = ctx.push_inst(Instruction::Return(cls, rt));
+                                ctx.insert_close_closures_recursively(cls.clone(), effective_rt);
+                                ctx.insert_clone_recursively(cls.clone(), effective_rt);
+                                let _ = ctx.push_inst(Instruction::Return(cls, effective_rt));
                             }
                             (_, _) => {
-                                if rt.to_type().contains_function() || rt.to_type().contains_boxed()
+                                if effective_rt.to_type().contains_function()
+                                    || effective_rt.to_type().contains_boxed()
                                 {
-                                    ctx.insert_close_closures_recursively(res.clone(), rt);
-                                    ctx.insert_clone_recursively(res.clone(), rt);
-                                    let _ = ctx.push_inst(Instruction::Return(res.clone(), rt));
+                                    ctx.insert_close_closures_recursively(res.clone(), effective_rt);
+                                    ctx.insert_clone_recursively(res.clone(), effective_rt);
+                                    let _ =
+                                        ctx.push_inst(Instruction::Return(res.clone(), effective_rt));
                                 } else {
-                                    let _ = ctx.push_inst(Instruction::Return(res.clone(), rt));
+                                    let _ =
+                                        ctx.push_inst(Instruction::Return(res.clone(), effective_rt));
                                 }
                             }
                         };
 
                         let f = Arc::new(Value::Function(c_idx.0 as usize));
-                        (f, rt, states)
+                        (f, effective_rt, states)
                     });
                 let child = self.program.functions.get_mut(c_idx.0 as usize).unwrap();
                 let res = if child.upindexes.is_empty() {
