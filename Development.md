@@ -21,7 +21,7 @@ We uses several additional tools to improve developing experience and automate a
 You can install them with the command below.
 
 ```sh
-cargo install clippy cargo-dist cargo-release
+cargo install clippy cargo-release
 ```
 
 ### Install IDE
@@ -111,7 +111,7 @@ npm publish ./crates/lib/mimium-web/pkg --access public
 
 If tagged commit is pushed to github, the another workflow is triggered.
 
-The workflow uses `cargo-dist` to publish binary on a github release.
+The release workflow builds and packages binaries/plugins on GitHub Actions and uploads zip assets directly to GitHub Release.
 
 Do not forget re-merge commits on `main` into `dev` branch after main release is done.
 
