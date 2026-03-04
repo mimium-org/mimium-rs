@@ -248,7 +248,10 @@ impl<'a> ResolveContext<'a> {
     }
 
     fn bind_pattern_locals(&mut self, pat: &Pattern) {
-        collect_names_from_pattern(pat, self.local_bindings.last_mut().expect("scope must exist"));
+        collect_names_from_pattern(
+            pat,
+            self.local_bindings.last_mut().expect("scope must exist"),
+        );
     }
 
     fn is_locally_bound(&self, name: Symbol) -> bool {

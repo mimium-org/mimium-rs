@@ -863,15 +863,55 @@ impl Context {
         (fid, states)
     }
     fn get_default_arg_call(&mut self, name: Symbol, fid: FunctionId) -> Option<VPtr> {
-        let args = self.default_args_map.get(&fid);
-        args.cloned().and_then(|defv_fn_ids| {
-            defv_fn_ids
-                .iter()
-                .find(|default_arg_data| default_arg_data.name == name)
-                .map(|default_arg_data| {
-                    let fid = self.push_inst(Instruction::Uinteger(default_arg_data.fid.0));
-                    self.push_inst(Instruction::Call(fid, vec![], default_arg_data.ty))
+        let default_arg_data = self
+            .default_args_map
+            .get(&fid)
+            .and_then(|defv_fn_ids| {
+                defv_fn_ids
+                    .iter()
+                    .find(|default_arg_data| default_arg_data.name == name)
+                    .cloned()
+            })
+            .or_else(|| {
+                let target_label = self
+                    .program
+                    .functions
+                    .get(fid.0 as usize)
+                    .map(|func| func.label)?;
+
+                self.default_args_map.iter().find_map(|(candidate_fid, defaults)| {
+                    let candidate_label = self
+                        .program
+                        .functions
+                        .get(candidate_fid.0 as usize)
+                        .map(|func| func.label);
+
+                    (candidate_label == Some(target_label)).then_some(())?;
+                    defaults
+                        .iter()
+                        .find(|default_arg_data| default_arg_data.name == name)
+                        .cloned()
                 })
+            })
+            .or_else(|| {
+                let mut candidates = self
+                    .default_args_map
+                    .values()
+                    .flat_map(|defaults| defaults.iter())
+                    .filter(|default_arg_data| default_arg_data.name == name)
+                    .cloned();
+
+                let first = candidates.next();
+                if candidates.next().is_some() {
+                    None
+                } else {
+                    first
+                }
+            });
+
+        default_arg_data.map(|default_arg_data| {
+            let fid = self.push_inst(Instruction::Uinteger(default_arg_data.fid.0));
+            self.push_inst(Instruction::Call(fid, vec![], default_arg_data.ty))
         })
     }
     fn lookup(&self, key: &Symbol) -> LookupRes<VPtr> {
@@ -1018,6 +1058,9 @@ impl Context {
         }
 
         self.program.functions.push(specialized_fn);
+        if let Some(default_args) = self.default_args_map.get(&original_fid).cloned() {
+            self.default_args_map.insert(new_fid, default_args);
+        }
         self.monomorph_map.insert(key, new_fid);
 
         new_fid
@@ -1968,7 +2011,35 @@ impl Context {
                                 return (field_val, kv.ty);
                             }
 
-                            panic!("parameter pack failed, possible type inference bug")
+                            panic!(
+                                "parameter pack failed: missing argument for key='{}' at index {} (arg_record_fields={:?}, param_fields={:?}, fid={:?}, callee_label={:?}, fid_defaults={:?}, available_default_keys={:?})",
+                                param.key,
+                                param_index,
+                                kvs.iter().map(|kv| kv.key.to_string()).collect::<Vec<_>>(),
+                                param_types
+                                    .iter()
+                                    .map(|p| format!("{}(default={})", p.key, p.has_default))
+                                    .collect::<Vec<_>>(),
+                                fid_opt,
+                                fid_opt
+                                    .and_then(|fid| {
+                                        self.program
+                                            .functions
+                                            .get(fid.0 as usize)
+                                            .map(|f| f.label.to_string())
+                                    }),
+                                fid_opt.and_then(|fid| {
+                                    self.default_args_map.get(&fid).map(|defs| {
+                                        defs.iter()
+                                            .map(|d| d.name.to_string())
+                                            .collect::<Vec<_>>()
+                                    })
+                                }),
+                                self.default_args_map
+                                    .values()
+                                    .flat_map(|defs| defs.iter().map(|d| d.name.to_string()))
+                                    .collect::<Vec<_>>(),
+                            )
                         })
                         .collect::<Vec<_>>()
                 } else {
@@ -2028,6 +2099,26 @@ impl Context {
                 );
             }
 
+            let has_default_for = |arg_name: Symbol| {
+                self.default_args_map
+                    .get(&FunctionId(fid as u64))
+                    .map(|defaults| defaults.iter().any(|d| d.name == arg_name))
+                    .or_else(|| {
+                        let target_label = self.program.functions.get(fid).map(|f| f.label)?;
+                        self.default_args_map.iter().find_map(|(candidate_fid, defaults)| {
+                            let candidate_label = self
+                                .program
+                                .functions
+                                .get(candidate_fid.0 as usize)
+                                .map(|f| f.label)?;
+                            (candidate_label == target_label).then_some(
+                                defaults.iter().any(|d| d.name == arg_name),
+                            )
+                        })
+                    })
+                    .unwrap_or(false)
+            };
+
             Some(
                 func.args
                     .iter()
@@ -2035,7 +2126,7 @@ impl Context {
                     .map(|(arg, elem_ty)| RecordTypeField {
                         key: arg.0,
                         ty: *elem_ty,
-                        has_default: false,
+                        has_default: has_default_for(arg.0),
                     })
                     .collect(),
             )
@@ -2466,7 +2557,7 @@ impl Context {
                         && callee_expects_aggregate_fields
                         && ty.to_type().can_be_unpacked()
                     {
-                        self.unpack_argument(f_val, arg_val, call_arg_ty, ty)
+                        self.unpack_argument(f_to_call.clone(), arg_val, call_arg_ty, ty)
                     } else if should_unpack_single_arg
                         && matches!(call_arg_ty.to_type(), Type::Record(ref fields) if fields.len() > 1)
                     {
@@ -2514,7 +2605,7 @@ impl Context {
                     if let Some((first_val, first_ty)) = iter.next() {
                         if expected_arity > args.len() && first_ty.to_type().can_be_unpacked() {
                             packed.extend(self.unpack_argument(
-                                f_val.clone(),
+                                f_to_call.clone(),
                                 first_val,
                                 call_arg_ty,
                                 first_ty,

@@ -8,8 +8,8 @@ use mimium_audiodriver::driver::{Driver, RuntimeData};
 use mimium_lang::ExecContext;
 use mimium_lang::log;
 use mimium_lang::runtime::{ProgramPayload, vm};
-use mimium_lang::utils::fileloader;
 use mimium_lang::utils::error::{dump_to_string, report};
+use mimium_lang::utils::fileloader;
 use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 #[derive(Default)]
@@ -137,7 +137,8 @@ impl Context {
         } else {
             Some(base_url)
         };
-        fileloader::set_module_base_url(normalized.as_deref()).map_err(|e| JsValue::from_str(&e))?;
+        fileloader::set_module_base_url(normalized.as_deref())
+            .map_err(|e| JsValue::from_str(&e))?;
         self.module_base_url = normalized;
         Ok(())
     }
@@ -203,9 +204,13 @@ impl Context {
         self.config.output_channels = prog.iochannels.map_or(0, |io| io.output);
         self.swap_channel
             .as_mut()
-            .ok_or_else(|| JsValue::from_str("Compiler context is not initialized. Call compile() first."))?
+            .ok_or_else(|| {
+                JsValue::from_str("Compiler context is not initialized. Call compile() first.")
+            })?
             .send(prog)
-            .map_err(|e| JsValue::from_str(&format!("Failed to send program to audio thread: {e}")))?;
+            .map_err(|e| {
+                JsValue::from_str(&format!("Failed to send program to audio thread: {e}"))
+            })?;
         Ok(())
     }
 
@@ -268,8 +273,13 @@ mod test {
     #[wasm_bindgen_test(async)]
     async fn test_compile_error_returns_err() {
         let mut ctx = Context::new(Config::default());
-        let result = ctx.compile("fn dsp(input:float){(0,input)".to_string()).await;
-        assert!(result.is_err(), "compile should return Err on invalid source");
+        let result = ctx
+            .compile("fn dsp(input:float){(0,input)".to_string())
+            .await;
+        assert!(
+            result.is_err(),
+            "compile should return Err on invalid source"
+        );
     }
 
     #[wasm_bindgen_test]

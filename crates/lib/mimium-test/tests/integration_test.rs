@@ -33,7 +33,6 @@ fn assert_with_spec(res: &[f64], spec: &AnnotatedFileTestSpec) {
     }
 }
 
-
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn run_all_annotated_fixtures() {
@@ -65,8 +64,8 @@ fn run_all_annotated_fixtures() {
     assert!(!fixture_names.is_empty());
 
     fixture_names.iter().for_each(|name| {
-        let (res, spec) = run_annotated_file_test(name)
-            .unwrap_or_else(|e| panic!("{name} failed to run: {e}"));
+        let (res, spec) =
+            run_annotated_file_test(name).unwrap_or_else(|e| panic!("{name} failed to run: {e}"));
         assert_with_spec(&res, &spec);
     });
 }
@@ -92,7 +91,6 @@ fn simple_arithmetic() {
     run_simple_test("hoge*10.0+hoge/10.0+1.0", 21.2, 3);
     run_simple_test("1.0+hoge^2.0*1.5", 7.0, 3);
 }
-
 
 #[wasm_bindgen_test(unsupported = test)]
 #[cfg(not(target_arch = "wasm32"))]
@@ -153,9 +151,7 @@ fn mininotation_alternate_grouping() {
     }
 }
 
-
 // implement one-sample delay on mimium with `self`
-
 
 #[wasm_bindgen_test(unsupported = test)]
 fn fb_mem3_state_size() {
@@ -164,7 +160,6 @@ fn fb_mem3_state_size() {
         [("counter", 1), ("mem_by_hand", 4), ("dsp", 5)],
     );
 }
-
 
 #[wasm_bindgen_test(unsupported = test)]
 fn many_errors() {
@@ -202,7 +197,6 @@ fn type_param_reserved_name_fail() {
     }));
 }
 
-
 #[wasm_bindgen_test(unsupported = test)]
 fn block_local_scope_fail() {
     let res = run_error_test("block_local_scope_fail.mmm", false);
@@ -225,7 +219,6 @@ fn fail_invalid_stage() {
     )
 }
 
-
 #[test]
 fn parameter_pack_tuple_fail() {
     let res = run_error_test("parameter_pack_tuple_fail.mmm", false);
@@ -241,7 +234,6 @@ fn parameter_pack_record_fail2() {
     let res = run_error_test("parameter_pack_record_fail2.mmm", false);
     assert_eq!(res.len(), 1);
 }
-
 
 #[test]
 fn tuple_binop_len_mismatch_fail() {
@@ -261,13 +253,11 @@ fn tuple_binop_arity_over16_fail() {
     assert_eq!(res.len(), 1);
 }
 
-
 #[test]
 fn tuple_binop_nested_shape_mismatch_fail() {
     let res = run_error_test("tuple_binop_nested_shape_mismatch_fail.mmm", false);
     assert_eq!(res.len(), 1);
 }
-
 
 #[test]
 fn probe_macro() {
@@ -355,7 +345,6 @@ fn slider_value_record_macro() {
     assert_eq!(res, ans);
 }
 
-
 #[wasm_bindgen_test(unsupported = test)]
 fn module_visibility_fail() {
     // Test that private module members cannot be accessed from outside
@@ -367,7 +356,6 @@ fn module_visibility_fail() {
         res[0].get_message()
     );
 }
-
 
 #[wasm_bindgen_test(unsupported = test)]
 fn module_use_private_fail() {
@@ -381,7 +369,6 @@ fn module_use_private_fail() {
     );
 }
 
-
 // #[wasm_bindgen_test(unsupported = test)]
 // fn map_record() {
 //     let res = run_file_test_stereo("map_record.mmm", 1).unwrap();
@@ -392,7 +379,6 @@ fn module_use_private_fail() {
 //     let ans = vec![6000.0, 22.0];
 //     assert_eq!(res, ans);
 // }
-
 
 // ============ Match Exhaustiveness Tests (should fail) ============
 
