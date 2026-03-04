@@ -1112,12 +1112,10 @@ impl WasmGenerator {
             self.alloc_base_local = self.closure_save_local + 1;
 
             // Detect entry-point functions that need alloc pointer save/restore.
-            // Only `dsp` resets the allocator each call — `_mimium_global` runs
-            // once and its allocations (closures stored in globals) must persist.
-            // Temporarily disable per-call allocator rewind for entry functions.
-            // Rewinding currently invalidates closure addresses that must live
-            // across samples (e.g. scheduler callbacks).
-            let is_entry = false;
+            // `dsp` is called per sample/frame; rewinding its temporary linear-memory
+            // allocations at function boundaries prevents unbounded growth.
+            // `_mimium_global` runs once and must keep its allocations alive.
+            let is_entry = func.label.as_str() == "dsp";
             self.is_entry_function = is_entry;
 
             // Extra i32 local for saving alloc pointer at entry function start

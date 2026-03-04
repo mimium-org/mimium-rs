@@ -1244,34 +1244,25 @@ impl Machine {
                     let array = self.get_stack(arr as i64);
                     let index = self.get_stack(idx as i64);
                     let index_val = Self::get_as::<f64>(index);
-                    if !index_val.is_finite() || index_val < 0.0 {
-                        let caller = self
-                            .prog
-                            .global_fn_table
-                            .get(func_i)
-                            .map(|(n, _)| n.as_str())
-                            .unwrap_or("<unknown>");
-                        panic!(
-                            "GetArrayElem invalid index {} in caller {}",
-                            index_val, caller
-                        );
-                    }
                     let adata = self.arrays.get_array(array);
                     let elem_word_size = adata.elem_word_size as usize;
-                    let index_int = index_val as usize;
                     let len = adata.get_length_array() as usize;
-                    if index_int >= len {
-                        let caller = self
-                            .prog
-                            .global_fn_table
-                            .get(func_i)
-                            .map(|(n, _)| n.as_str())
-                            .unwrap_or("<unknown>");
-                        panic!(
-                            "GetArrayElem OOB index {} (len {}) in caller {}",
-                            index_int, len, caller
+                    if len == 0 {
+                        let zeros = vec![0; elem_word_size];
+                        set_vec_range(
+                            &mut self.stack,
+                            (self.base_pointer + dst as u64) as usize,
+                            &zeros,
                         );
+                        continue;
                     }
+                    let max_idx = len.saturating_sub(1);
+                    let index_int = if !index_val.is_finite() {
+                        0
+                    } else {
+                        let raw_idx = index_val as i64;
+                        raw_idx.clamp(0, max_idx as i64) as usize
+                    };
                     let start = index_int * elem_word_size;
                     let end = start + elem_word_size;
                     let buffer = &adata.data[start..end];
@@ -1280,40 +1271,24 @@ impl Machine {
                         (self.base_pointer + dst as u64) as usize,
                         buffer,
                     );
-                    // todo: implement automatic interpolation and out-of-bounds handling for primitive arrays.
                 }
                 Instruction::SetArrayElem(arr, idx, val) => {
                     // Get the array, index, and value
                     let array = self.get_stack(arr as i64);
                     let index = self.get_stack(idx as i64);
                     let index_val = Self::get_as::<f64>(index);
-                    if !index_val.is_finite() || index_val < 0.0 {
-                        let caller = self
-                            .prog
-                            .global_fn_table
-                            .get(func_i)
-                            .map(|(n, _)| n.as_str())
-                            .unwrap_or("<unknown>");
-                        panic!(
-                            "SetArrayElem invalid index {} in caller {}",
-                            index_val, caller
-                        );
-                    }
-                    let index_int = index_val as usize;
                     let elem_word_size = self.arrays.get_array(array).elem_word_size as usize;
                     let len = self.arrays.get_array(array).get_length_array() as usize;
-                    if index_int >= len {
-                        let caller = self
-                            .prog
-                            .global_fn_table
-                            .get(func_i)
-                            .map(|(n, _)| n.as_str())
-                            .unwrap_or("<unknown>");
-                        panic!(
-                            "SetArrayElem OOB index {} (len {}) in caller {}",
-                            index_int, len, caller
-                        );
+                    if len == 0 {
+                        continue;
                     }
+                    let max_idx = len.saturating_sub(1);
+                    let index_int = if !index_val.is_finite() {
+                        0
+                    } else {
+                        let raw_idx = index_val as i64;
+                        raw_idx.clamp(0, max_idx as i64) as usize
+                    };
                     let (_range2, buf_src2) = self.get_stack_range(val as _, elem_word_size as _);
                     let src_words = buf_src2.to_vec();
                     let adata = self.arrays.get_array_mut(array);
