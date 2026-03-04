@@ -2443,7 +2443,7 @@ impl WasmGenerator {
             // Type cast operations
             I::CastFtoI(a) => {
                 self.emit_value_load_typed(a, ValType::F64, func);
-                func.instruction(&W::I64TruncF64S);
+                func.instruction(&W::I64TruncSatF64S);
             }
             I::CastItoF(a) => {
                 self.emit_value_load_typed(a, ValType::I64, func);
