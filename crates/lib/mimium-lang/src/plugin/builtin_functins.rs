@@ -503,6 +503,72 @@ mod prepend {
     }
 }
 
+mod append {
+    use super::*;
+    use crate::interpreter::Value;
+    use crate::plugin::CommonFunction;
+    use crate::types::{Type, TypeSchemeId};
+    use crate::{function, interner::TypeNodeId};
+
+    fn machine_function(
+        machine: &mut crate::runtime::vm::Machine,
+    ) -> crate::runtime::vm::ReturnCode {
+        let arr_idx = machine.get_stack(0);
+        let array = machine.arrays.get_array(arr_idx);
+        let len = array.get_length_array() as usize;
+        let elem_size = array.get_elem_word_size() as usize;
+
+        if elem_size != 1 {
+            panic!(
+                "append runtime base implementation expects elem word size 1, found {elem_size}. use monomorphized append$arityN"
+            );
+        }
+
+        let new_arr_idx = machine
+            .arrays
+            .alloc_array((len + 1) as u64, elem_size as u64);
+        let copy_len = len * elem_size;
+        let elem_words = vec![machine.get_stack(1)];
+        let arr_data = machine.arrays.get_array(arr_idx).get_data().to_vec();
+
+        {
+            let dst = machine.arrays.get_array_mut(new_arr_idx).get_data_mut();
+            dst[..copy_len].copy_from_slice(&arr_data[..copy_len]);
+            dst[copy_len..copy_len + elem_size].copy_from_slice(&elem_words);
+        }
+
+        machine.set_stack(0, new_arr_idx);
+        1
+    }
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 2);
+        let (arr, _) = &args[0];
+        let (elem, _) = &args[1];
+        match (arr, elem) {
+            (Value::Array(array), elem) => {
+                let mut new_vec = array.clone();
+                new_vec.push(elem.clone());
+                Value::Array(new_vec)
+            }
+            _ => panic!("Invalid argument types for function append"),
+        }
+    }
+
+    pub(super) fn signature() -> CommonFunction {
+        let ty_var = Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id();
+        CommonFunction {
+            name: "append".to_symbol(),
+            ty: function!(
+                vec![Type::Array(ty_var).into_id(), ty_var],
+                Type::Array(ty_var).into_id()
+            ),
+            macro_fun: macro_function,
+            fun: machine_function,
+        }
+    }
+}
+
 fn parse_arity_specialized_name(name: Symbol, base: &str) -> Option<usize> {
     name.as_str()
         .strip_prefix(base)
@@ -529,6 +595,8 @@ pub(crate) fn try_get_monomorphized_ext_fn_name(
             "__probe_value_intercept"
         } else if name == "prepend" || name.starts_with("prepend$arity") {
             "prepend"
+        } else if name == "append" || name.starts_with("append$arity") {
+            "append"
         } else if name == "split_head" || name.starts_with("split_head$arity") {
             "split_head"
         } else if name == "split_tail" || name.starts_with("split_tail$arity") {
@@ -547,6 +615,14 @@ pub(crate) fn try_get_monomorphized_ext_fn_name(
         }
         "prepend" => match concrete_arg_ty.to_type() {
             crate::types::Type::Tuple(args) if args.len() == 2 => match args[1].to_type() {
+                crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
+                _ => return None,
+            },
+            crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
+            _ => return None,
+        },
+        "append" => match concrete_arg_ty.to_type() {
+            crate::types::Type::Tuple(args) if args.len() == 2 => match args[0].to_type() {
                 crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
                 _ => return None,
             },
@@ -600,6 +676,36 @@ pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Optio
                 dst[..elem_size].copy_from_slice(&elem_words);
                 dst[elem_size..elem_size + len * elem_size]
                     .copy_from_slice(&src[..len * elem_size]);
+                machine.set_stack(0, new_arr_idx);
+                1
+            },
+        ));
+        ExtClsInfo::new(name, ty, f)
+    };
+
+    let make_append = |elem_size: usize| {
+        let f = Rc::new(RefCell::new(
+            move |machine: &mut crate::runtime::vm::Machine| -> crate::runtime::vm::ReturnCode {
+                let arr_idx = machine.get_stack(0);
+                let arr = machine.arrays.get_array(arr_idx);
+                if arr.get_elem_word_size() as usize != elem_size {
+                    panic!(
+                        "append$arity{} called with array elem size {}",
+                        elem_size,
+                        arr.get_elem_word_size()
+                    );
+                }
+                let len = arr.get_length_array() as usize;
+                let src = arr.get_data().to_vec();
+                let new_arr_idx = machine
+                    .arrays
+                    .alloc_array((len + 1) as u64, elem_size as u64);
+                let elem_words = (0..elem_size)
+                    .map(|i| machine.get_stack((i + 1) as i64))
+                    .collect::<Vec<_>>();
+                let dst = machine.arrays.get_array_mut(new_arr_idx).get_data_mut();
+                dst[..len * elem_size].copy_from_slice(&src[..len * elem_size]);
+                dst[len * elem_size..(len + 1) * elem_size].copy_from_slice(&elem_words);
                 machine.set_stack(0, new_arr_idx);
                 1
             },
@@ -679,6 +785,9 @@ pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Optio
 
     if let Some(arity) = parse_arity_specialized_name(name, "prepend") {
         return Some(make_prepend(arity));
+    }
+    if let Some(arity) = parse_arity_specialized_name(name, "append") {
+        return Some(make_append(arity));
     }
     if let Some(arity) = parse_arity_specialized_name(name, "split_head") {
         return Some(make_split_head(arity));
@@ -1050,6 +1159,7 @@ fn generate_builtin_functions() -> impl ExactSizeIterator<Item = CommonFunction>
         atan2::signature(),
         pow::signature(),
         length_array::signature(),
+        append::signature(),
         prepend::signature(),
         split_tail::signature(),
         split_head::signature(),

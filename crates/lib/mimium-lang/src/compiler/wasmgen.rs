@@ -25,7 +25,7 @@ use wasm_encoder::{
 /// Upper bound of `$arityN` builtin specializations imported for WASM.
 ///
 /// We predeclare a finite set of imports (`split_head$arityN`, `split_tail$arityN`,
-/// `prepend$arityN`) to avoid generating unbounded host import symbols while still
+/// `prepend$arityN`, `append$arityN`) to avoid generating unbounded host import symbols while still
 /// covering practical aggregate element sizes used by current codegen.
 ///
 /// Keep this value in sync with runtime registration in `runtime/wasm.rs`.
@@ -94,9 +94,11 @@ struct RuntimeFunctionIndices {
     builtin_split_head: u32,
     builtin_split_tail: u32,
     builtin_prepend: u32,
+    builtin_append: u32,
     builtin_split_head_specialized: HashMap<usize, u32>,
     builtin_split_tail_specialized: HashMap<usize, u32>,
     builtin_prepend_specialized: HashMap<usize, u32>,
+    builtin_append_specialized: HashMap<usize, u32>,
 }
 
 /// Linear memory layout manager
@@ -660,19 +662,23 @@ impl WasmGenerator {
                 .insert(arity, split_tail_idx);
         }
 
-        // Type: (i64, i64) -> i64 for prepend/prepend$arityN
+        // Type: (i64, i64) -> i64 for prepend/prepend$arityN and append/append$arityN
         let type_idx_prepend = self.type_section.len();
         self.type_section
             .ty()
             .function(vec![ValType::I64, ValType::I64], vec![ValType::I64]);
         self.rt.builtin_prepend = self.add_import_from("builtin", "prepend", type_idx_prepend);
+        self.rt.builtin_append = self.add_import_from("builtin", "append", type_idx_prepend);
 
         for arity in 1..=MAX_SPECIALIZED_BUILTIN_ARITY {
             let prepend_name = format!("prepend$arity{arity}");
+            let append_name = format!("append$arity{arity}");
             let prepend_idx = self.add_import_from("builtin", &prepend_name, type_idx_prepend);
+            let append_idx = self.add_import_from("builtin", &append_name, type_idx_prepend);
             self.rt
                 .builtin_prepend_specialized
                 .insert(arity, prepend_idx);
+            self.rt.builtin_append_specialized.insert(arity, append_idx);
         }
     }
 
@@ -4203,13 +4209,20 @@ impl WasmGenerator {
             if flat_types.len() <= 1 {
                 let mut expected = flat_types.first().copied().unwrap_or(ValType::I64);
 
-                if (ext_name.as_str() == "prepend"
+                if ((ext_name.as_str() == "prepend"
                     || ext_name
                         .as_str()
                         .strip_prefix("prepend$arity")
                         .and_then(|n| n.parse::<usize>().ok())
                         .is_some())
-                    && arg_idx == 0
+                    && arg_idx == 0)
+                    || ((ext_name.as_str() == "append"
+                        || ext_name
+                            .as_str()
+                            .strip_prefix("append$arity")
+                            .and_then(|n| n.parse::<usize>().ok())
+                            .is_some())
+                        && arg_idx == 1)
                 {
                     expected = ValType::I64;
                 }
@@ -4225,15 +4238,22 @@ impl WasmGenerator {
 
                 self.emit_value_load_typed(arg, expected, func);
             } else {
-                // prepend/prepend$arityN always takes the first argument as a packed i64 word
-                // (tuple pointer/handle), not flattened scalar fields.
-                if (ext_name.as_str() == "prepend"
+                // prepend/prepend$arityN and append/append$arityN take aggregate element
+                // arguments as packed i64 words (tuple pointer/handle), not flattened fields.
+                if ((ext_name.as_str() == "prepend"
                     || ext_name
                         .as_str()
                         .strip_prefix("prepend$arity")
                         .and_then(|n| n.parse::<usize>().ok())
                         .is_some())
-                    && arg_idx == 0
+                    && arg_idx == 0)
+                    || ((ext_name.as_str() == "append"
+                        || ext_name
+                            .as_str()
+                            .strip_prefix("append$arity")
+                            .and_then(|n| n.parse::<usize>().ok())
+                            .is_some())
+                        && arg_idx == 1)
                 {
                     self.emit_value_load_typed(arg, ValType::I64, func);
                     continue;
@@ -4495,6 +4515,17 @@ impl WasmGenerator {
                 .and_then(|n| n.parse::<usize>().ok())
                 .and_then(|arity| self.rt.builtin_prepend_specialized.get(&arity).copied());
         }
+        if name_str
+            .strip_prefix("append$arity")
+            .and_then(|n| n.parse::<usize>().ok())
+            .and_then(|arity| self.rt.builtin_append_specialized.get(&arity).copied())
+            .is_some()
+        {
+            return name_str
+                .strip_prefix("append$arity")
+                .and_then(|n| n.parse::<usize>().ok())
+                .and_then(|arity| self.rt.builtin_append_specialized.get(&arity).copied());
+        }
 
         match name.as_str() {
             "_mimium_getsamplerate" => Some(self.rt.runtime_get_samplerate),
@@ -4505,6 +4536,7 @@ impl WasmGenerator {
             "split_head" => Some(self.rt.builtin_split_head),
             "split_tail" => Some(self.rt.builtin_split_tail),
             "prepend" => Some(self.rt.builtin_prepend),
+            "append" => Some(self.rt.builtin_append),
             "sin" => Some(self.rt.math_sin),
             "cos" => Some(self.rt.math_cos),
             "tan" => Some(self.rt.math_tan),

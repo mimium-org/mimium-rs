@@ -375,6 +375,22 @@ impl WasmRuntime {
             )
             .map_err(|e| format!("Failed to register builtin::prepend: {e}"))?;
 
+        linker
+            .func_new(
+                "builtin",
+                "append",
+                FuncType::new(
+                    linker.engine(),
+                    vec![ValType::I64, ValType::I64],
+                    vec![ValType::I64],
+                ),
+                move |caller, params, results| {
+                    builtin_append_arity_host(caller, params, results, 1);
+                    Ok(())
+                },
+            )
+            .map_err(|e| format!("Failed to register builtin::append: {e}"))?;
+
         for arity in 1..=MAX_SPECIALIZED_BUILTIN_ARITY {
             let split_head_name = format!("split_head$arity{arity}");
             linker
@@ -414,6 +430,23 @@ impl WasmRuntime {
                     },
                 )
                 .map_err(|e| format!("Failed to register builtin::prepend$arity{arity}: {e}"))?;
+
+            let append_name = format!("append$arity{arity}");
+            linker
+                .func_new(
+                    "builtin",
+                    append_name.as_str(),
+                    FuncType::new(
+                        linker.engine(),
+                        vec![ValType::I64, ValType::I64],
+                        vec![ValType::I64],
+                    ),
+                    move |caller, params, results| {
+                        builtin_append_arity_host(caller, params, results, arity);
+                        Ok(())
+                    },
+                )
+                .map_err(|e| format!("Failed to register builtin::append$arity{arity}: {e}"))?;
         }
 
         Ok(())
@@ -1760,6 +1793,85 @@ fn builtin_prepend_arity_host(
         }
         new_array.extend_from_slice(old);
     }
+
+    let new_id = {
+        let state = caller.data_mut();
+        let new_id = (state.arrays.len() + 1) as Word;
+        state.arrays.insert(new_id, new_array);
+        new_id
+    };
+
+    if let Some(slot) = results.get_mut(0) {
+        *slot = Val::I64(new_id as i64);
+    }
+}
+
+fn builtin_append_arity_host(
+    mut caller: Caller<'_, RuntimeState>,
+    params: &[Val],
+    results: &mut [Val],
+    elem_words: usize,
+) {
+    let expected_params = 2;
+    if params.len() != expected_params {
+        panic!(
+            "append$arity{} expected {} params, got {}",
+            elem_words,
+            expected_params,
+            params.len()
+        );
+    }
+
+    let array_handle = match params[0] {
+        Val::I64(i) => i as Word,
+        Val::F64(bits) => i64::from_le_bytes(bits.to_le_bytes()) as Word,
+        ref other => {
+            panic!("append$arity{elem_words}: expected array handle as I64/F64, got {other:?}")
+        }
+    };
+
+    let elem_or_ptr = match params[1] {
+        Val::I64(i) => i as u64,
+        Val::F64(bits) => bits,
+        ref other => {
+            panic!("append$arity{elem_words}: expected second arg as I64/F64, got {other:?}")
+        }
+    };
+
+    let elem_bits = if elem_words == 1 {
+        vec![elem_or_ptr]
+    } else {
+        let mut words = vec![0u64; elem_words];
+        let memory = caller.data().memory.expect("Memory not initialized");
+        let src_ptr = elem_or_ptr as usize;
+        let bytes = unsafe {
+            std::slice::from_raw_parts_mut(
+                words.as_mut_ptr() as *mut u8,
+                elem_words * std::mem::size_of::<Word>(),
+            )
+        };
+        memory
+            .read(&caller, src_ptr, bytes)
+            .expect("append$arityN: failed to read element words from memory");
+        words
+    };
+
+    let mut new_array = {
+        let state = caller.data();
+        let old = state
+            .arrays
+            .get(&array_handle)
+            .unwrap_or_else(|| panic!("append: invalid array ID {array_handle}"));
+        if old.len() % elem_words != 0 {
+            panic!(
+                "append$arity{}: array length {} is not divisible by elem_words",
+                elem_words,
+                old.len()
+            );
+        }
+        old.to_vec()
+    };
+    new_array.extend_from_slice(&elem_bits);
 
     let new_id = {
         let state = caller.data_mut();
