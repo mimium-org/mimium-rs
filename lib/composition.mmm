@@ -1,0 +1,56 @@
+use core::{join,map}
+mod scale{
+    #stage(macro)
+    fn rotate(arr,n){
+        if (n>0 && length_array(arr)>1){
+            let (head,rest) = split_head(arr)
+            rotate(append(rest,head),n-1)
+        }else{
+            arr
+        }
+    }
+    fn rotate_shift(arr,n){
+        map(|x| (x+12-n)%12, rotate(arr,n))
+    }
+    pub fn major(){
+        [0,2,4,5,7,9,11]
+    }
+    pub fn dorian(){
+        rotate_shift(major(),2)
+    }
+    pub fn phrygian(){
+        rotate_shift(major(),4)
+    }
+    pub fn lydian(){
+        rotate_shift(major(),5)
+    }
+    pub fn mixolydian(){
+        rotate_shift(major(),7)
+    }
+    pub fn minor(){
+        rotate_shift(major(),9)
+    }
+    pub fn aeorian(){
+        minor()
+    }
+    pub fn locrian(){
+        rotate_shift(major(),11)
+    }
+    pub fn expand(arr:[float],n:float)->[float]{
+        if (n>1){
+            let next = expand(arr,n-1)
+            let shifted = map(|x| x*n, arr)
+            join(next,shifted)
+        }else{
+            arr
+        }
+    }
+    pub fn take(arr,n){
+        if (length_array(arr)>n){
+            let (rest,tail) = split_tail(arr)
+            take(rest,n)
+        }else{
+            arr
+        }
+    }
+}

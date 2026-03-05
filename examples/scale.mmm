@@ -1,0 +1,14 @@
+use core::*
+use osc::saw
+use composition::scale::*
+use noise::perlin
+use drive::sah_auto
+let scale = $(mixolydian()|> expand(_,3)|> take(_,30)|>lift)
+let len = length_array(scale)
+fn dsp(){
+    let notes = scale[perlin!(5,200)*len] |> floor |> _+36 
+    let freq = sah_auto(notes,10)
+                |> midi_to_hz
+
+    saw(freq,0)|>ProbeValue!("out")
+}

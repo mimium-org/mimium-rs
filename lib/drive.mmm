@@ -13,18 +13,18 @@ pub fn bitcrush(input,res=8){
   |> (_ / steps)
 }
 fn trigger_fallng(input){
-    (input-mem(input))<0
+    input < mem(input)
 }
 pub fn sah(input,trigger){
   let t = trigger |> trigger_fallng
-  let last = self
-  if (t) input else last
+  if (t) input else self
 }
 use osc::phasor
 pub fn sah_auto(input,freq=1000){
-    let trigger = phasor({freq=freq, ..})
+    let trigger = phasor({freq=freq, ..})>0.5
     sah(input,trigger)
 }
+
 pub fn degrade(input,freq=1000,res=8){
     sah_auto(input,freq)
     |> bitcrush(_,res)

@@ -45,7 +45,14 @@ pub fn stereo_fx(processor:`(float)->float)->`(float,float)->(float,float){
         (($processor)(left),($processor)(right))
     }
 }
-
+pub fn join(arr1,arr2){
+    if (length_array(arr2)>0){
+        let (head2,rest2) = split_head(arr2)
+        join(append(arr1,head2),rest2)
+    }else{
+        arr1
+    }
+}
 pub fn map(fun,array) {
     let (head,rest) = array |> split_head
     if ((rest |> length_array) > 0){
