@@ -918,19 +918,21 @@ impl Context {
                     .get(fid.0 as usize)
                     .map(|func| func.label)?;
 
-                self.default_args_map.iter().find_map(|(candidate_fid, defaults)| {
-                    let candidate_label = self
-                        .program
-                        .functions
-                        .get(candidate_fid.0 as usize)
-                        .map(|func| func.label);
+                self.default_args_map
+                    .iter()
+                    .find_map(|(candidate_fid, defaults)| {
+                        let candidate_label = self
+                            .program
+                            .functions
+                            .get(candidate_fid.0 as usize)
+                            .map(|func| func.label);
 
-                    (candidate_label == Some(target_label)).then_some(())?;
-                    defaults
-                        .iter()
-                        .find(|default_arg_data| default_arg_data.name == name)
-                        .cloned()
-                })
+                        (candidate_label == Some(target_label)).then_some(())?;
+                        defaults
+                            .iter()
+                            .find(|default_arg_data| default_arg_data.name == name)
+                            .cloned()
+                    })
             })
             .or_else(|| {
                 let mut candidates = self
@@ -2144,16 +2146,17 @@ impl Context {
                     .map(|defaults| defaults.iter().any(|d| d.name == arg_name))
                     .or_else(|| {
                         let target_label = self.program.functions.get(fid).map(|f| f.label)?;
-                        self.default_args_map.iter().find_map(|(candidate_fid, defaults)| {
-                            let candidate_label = self
-                                .program
-                                .functions
-                                .get(candidate_fid.0 as usize)
-                                .map(|f| f.label)?;
-                            (candidate_label == target_label).then_some(
-                                defaults.iter().any(|d| d.name == arg_name),
-                            )
-                        })
+                        self.default_args_map
+                            .iter()
+                            .find_map(|(candidate_fid, defaults)| {
+                                let candidate_label = self
+                                    .program
+                                    .functions
+                                    .get(candidate_fid.0 as usize)
+                                    .map(|f| f.label)?;
+                                (candidate_label == target_label)
+                                    .then_some(defaults.iter().any(|d| d.name == arg_name))
+                            })
                     })
                     .unwrap_or(false)
             };
@@ -2753,11 +2756,14 @@ impl Context {
                         }
                         match (res.as_ref(), effective_rt.to_type()) {
                             (_, Type::Primitive(PType::Unit)) => {
-                                let _ =
-                                    ctx.push_inst(Instruction::Return(Arc::new(Value::None), effective_rt));
+                                let _ = ctx.push_inst(Instruction::Return(
+                                    Arc::new(Value::None),
+                                    effective_rt,
+                                ));
                             }
                             (Value::State(v), _) => {
-                                let _ = ctx.push_inst(Instruction::ReturnFeed(v.clone(), effective_rt));
+                                let _ =
+                                    ctx.push_inst(Instruction::ReturnFeed(v.clone(), effective_rt));
                             }
                             (Value::Function(i), _) => {
                                 let idx = ctx.push_inst(Instruction::Uinteger(*i as u64));
@@ -2774,13 +2780,16 @@ impl Context {
                                 if effective_rt.to_type().contains_function()
                                     || effective_rt.to_type().contains_boxed()
                                 {
-                                    ctx.insert_close_closures_recursively(res.clone(), effective_rt);
+                                    ctx.insert_close_closures_recursively(
+                                        res.clone(),
+                                        effective_rt,
+                                    );
                                     ctx.insert_clone_recursively(res.clone(), effective_rt);
-                                    let _ =
-                                        ctx.push_inst(Instruction::Return(res.clone(), effective_rt));
+                                    let _ = ctx
+                                        .push_inst(Instruction::Return(res.clone(), effective_rt));
                                 } else {
-                                    let _ =
-                                        ctx.push_inst(Instruction::Return(res.clone(), effective_rt));
+                                    let _ = ctx
+                                        .push_inst(Instruction::Return(res.clone(), effective_rt));
                                 }
                             }
                         };

@@ -373,7 +373,11 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
                 let default_masks: Vec<ExprNodeId> = params
                     .iter()
                     .map(|p| {
-                        let v = if p.default_value.is_some() { "1.0" } else { "0.0" };
+                        let v = if p.default_value.is_some() {
+                            "1.0"
+                        } else {
+                            "0.0"
+                        };
                         Expr::Literal(Literal::Float(v.to_symbol())).into_id_without_span()
                     })
                     .collect();
