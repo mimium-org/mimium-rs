@@ -1,3 +1,4 @@
+// @test {"times":1,"stereo":false,"expected":[18.0],"web":true}
 fn gen_tup1(){
     (5.0,2.0,3.0)
 }

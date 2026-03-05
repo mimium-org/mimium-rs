@@ -1,3 +1,4 @@
+// @test {"times":1,"stereo":false,"expected":[100.0],"web":true}
 //order of keys for record type does not matters.
 //In this assignment of swapped-ordered record,the key should be automatically unpacked and re-packed in order to be matched
 

@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[70.0],"web":true}
+
 //mimium test for array literals and array access
 
 // Create an array with 3 elements

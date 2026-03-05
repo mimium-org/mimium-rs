@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[213.0],"web":true}
+
 // Multi-scrutinee pattern matching test
 // Match on tuple of enums simultaneously
 

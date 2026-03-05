@@ -1,3 +1,4 @@
+// @test {"times":1,"stereo":false,"expected":[123.0],"web":true}
 fn foo(x, y, z) {
     100.0 * x + 10.0 * y + z
 }

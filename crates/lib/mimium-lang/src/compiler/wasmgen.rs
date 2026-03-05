@@ -310,6 +310,10 @@ impl SkipPhi {
 }
 
 impl WasmGenerator {
+    fn is_probe_value_intercept_arity1(name: Symbol) -> bool {
+        name.as_str() == "__probe_value_intercept$arity1"
+    }
+
     fn ext_function_uses_dest_ptr(name: Symbol) -> bool {
         let s = name.as_str();
         s == "split_head"
@@ -683,6 +687,16 @@ impl WasmGenerator {
         for type_info in ext_fns {
             let name = type_info.name;
             let fn_ty = type_info.ty.to_type();
+
+            if Self::is_probe_value_intercept_arity1(name) {
+                let type_idx = self.type_section.len();
+                self.type_section
+                    .ty()
+                    .function(vec![ValType::F64, ValType::F64], vec![ValType::F64]);
+                let fn_idx = self.add_import_from("plugin", name.as_str(), type_idx);
+                self.plugin_fns.functions.insert(name, fn_idx);
+                continue;
+            }
 
             let Type::Function { arg, ret } = fn_ty else {
                 log::warn!(
@@ -1098,12 +1112,10 @@ impl WasmGenerator {
             self.alloc_base_local = self.closure_save_local + 1;
 
             // Detect entry-point functions that need alloc pointer save/restore.
-            // Only `dsp` resets the allocator each call — `_mimium_global` runs
-            // once and its allocations (closures stored in globals) must persist.
-            // Temporarily disable per-call allocator rewind for entry functions.
-            // Rewinding currently invalidates closure addresses that must live
-            // across samples (e.g. scheduler callbacks).
-            let is_entry = false;
+            // `dsp` is called per sample/frame; rewinding its temporary linear-memory
+            // allocations at function boundaries prevents unbounded growth.
+            // `_mimium_global` runs once and must keep its allocations alive.
+            let is_entry = func.label.as_str() == "dsp";
             self.is_entry_function = is_entry;
 
             // Extra i32 local for saving alloc pointer at entry function start
@@ -1714,8 +1726,10 @@ impl WasmGenerator {
             }
         };
 
+        let mut load_arg_sources: HashMap<mir::VReg, usize> = HashMap::new();
+
         for block in &func.body {
-            for (_dest, instr) in &block.0 {
+            for (dest, instr) in &block.0 {
                 match instr {
                     // Float arithmetic: operands must be F64
                     I::AddF(a, b)
@@ -1768,6 +1782,57 @@ impl WasmGenerator {
                         ty,
                         tuple_offset,
                     } => {
+                        let arg_source = match value.as_ref() {
+                            V::Argument(idx) => Some(*idx),
+                            V::Register(reg) => load_arg_sources.get(reg).copied(),
+                            _ => None,
+                        };
+                        if let Some(arg_idx) = arg_source {
+                            let declared_base = func
+                                .args
+                                .get(arg_idx)
+                                .map(|arg| Self::flatten_type_to_valtypes(&arg.1.to_type()))
+                                .and_then(|flat| flat.first().copied())
+                                .unwrap_or(ValType::I64);
+                            let min_words = (*tuple_offset as usize) + 1;
+                            let mut inferred_flat = match ty.to_type() {
+                                Type::Tuple(elems) => elems
+                                    .iter()
+                                    .map(|e| {
+                                        let elem_ty = e.to_type();
+                                        if elem_ty.contains_unresolved()
+                                            || Self::allows_scalar_inference_override(&elem_ty)
+                                        {
+                                            declared_base
+                                        } else {
+                                            Self::type_to_valtype(&elem_ty)
+                                        }
+                                    })
+                                    .collect::<Vec<_>>(),
+                                Type::Record(fields) => fields
+                                    .iter()
+                                    .map(|f| {
+                                        let elem_ty = f.ty.to_type();
+                                        if elem_ty.contains_unresolved()
+                                            || Self::allows_scalar_inference_override(&elem_ty)
+                                        {
+                                            declared_base
+                                        } else {
+                                            Self::type_to_valtype(&elem_ty)
+                                        }
+                                    })
+                                    .collect::<Vec<_>>(),
+                                _ => Vec::new(),
+                            };
+                            if inferred_flat.len() < min_words {
+                                inferred_flat.resize(min_words, declared_base);
+                            }
+                            if inferred_flat.len() > 1 {
+                                record_arg(&Arc::new(V::Argument(arg_idx)), inferred_flat);
+                                continue;
+                            }
+                        }
+
                         let scalar_aggregate = ty.word_size() <= 1 && *tuple_offset == 0;
                         if scalar_aggregate {
                             let elem_vtype = match ty.to_type() {
@@ -1794,6 +1859,12 @@ impl WasmGenerator {
                     }
                     // Load: detect multi-word types to expand argument params
                     I::Load(val, ty) => {
+                        if let (mir::Value::Register(dest_reg), V::Argument(arg_idx)) =
+                            (dest.as_ref(), val.as_ref())
+                        {
+                            load_arg_sources.insert(*dest_reg, *arg_idx);
+                        }
+
                         let word_size = ty.word_size();
                         if word_size > 1 {
                             // Multi-word load reveals the actual aggregate shape
@@ -1880,25 +1951,41 @@ impl WasmGenerator {
                         }
                         // Logical operations -> f64 (0.0/1.0) in mimium
                         I::And(..) | I::Or(..) | I::Not(..) => ValType::F64,
-                        // Load - depends on type annotation
-                        I::Load(_, ty) => {
-                            // Use type_to_valtype for consistent handling
-                            // (e.g., single-field records unwrap to their field type)
-                            Self::type_to_valtype(&ty.to_type())
+                        // Load - depends on type annotation and source shape
+                        I::Load(ptr, ty) => {
+                            // For multi-word arguments (tuple/record flattened at call boundary),
+                            // `Load` must preserve the aggregate pointer. Field extraction is
+                            // performed explicitly by subsequent GetElement/Load operations.
+                            if let mir::Value::Argument(arg_idx) = ptr.as_ref()
+                                && let Some(&(_, word_count)) = self.current_arg_map.get(*arg_idx)
+                                && word_count > 1
+                            {
+                                ValType::I64
+                            } else {
+                                // Use type_to_valtype for consistent handling
+                                // (e.g., single-field records unwrap to their field type)
+                                Self::type_to_valtype(&ty.to_type())
+                            }
                         }
                         // Function calls and memory operations
                         I::Call(fn_ptr, _, ret_ty) => {
-                            let ret = ret_ty.to_type();
-                            if ret.contains_unresolved()
-                                || Self::allows_scalar_inference_override(&ret)
+                            if let mir::Value::ExtFunction(name, _) = fn_ptr.as_ref()
+                                && Self::is_probe_value_intercept_arity1(*name)
                             {
-                                self.resolve_mir_fn_idx(fn_ptr.as_ref())
-                                    .and_then(|idx| self.mir.functions.get(idx))
-                                    .and_then(|f| f.return_type.get())
-                                    .map(|ty| Self::type_to_valtype(&ty.to_type()))
-                                    .unwrap_or_else(|| Self::type_to_valtype(&ret))
+                                ValType::F64
                             } else {
-                                Self::type_to_valtype(&ret)
+                                let ret = ret_ty.to_type();
+                                if ret.contains_unresolved()
+                                    || Self::allows_scalar_inference_override(&ret)
+                                {
+                                    self.resolve_mir_fn_idx(fn_ptr.as_ref())
+                                        .and_then(|idx| self.mir.functions.get(idx))
+                                        .and_then(|f| f.return_type.get())
+                                        .map(|ty| Self::type_to_valtype(&ty.to_type()))
+                                        .unwrap_or_else(|| Self::type_to_valtype(&ret))
+                                } else {
+                                    Self::type_to_valtype(&ret)
+                                }
                             }
                         }
                         I::CallIndirect(_, _, ret_ty) | I::CallCls(_, _, ret_ty) => {
@@ -1943,9 +2030,9 @@ impl WasmGenerator {
                                 _ => ValType::I64,
                             };
                             let base_vtype = self.infer_value_type(value);
-                            let scalar_aggregate = ty.word_size() <= 1 && *tuple_offset == 0;
-                            if scalar_aggregate && base_vtype != ValType::I64 {
-                                // GetElement on a scalar-represented aggregate is identity.
+                            if base_vtype != ValType::I64 {
+                                // Base is already a scalar value. Preserve scalar semantics
+                                // to avoid reinterpreting floating values as pointers.
                                 element_vtype
                             } else {
                                 self.getelement_registers.insert(*reg_idx, element_vtype);
@@ -2356,7 +2443,7 @@ impl WasmGenerator {
             // Type cast operations
             I::CastFtoI(a) => {
                 self.emit_value_load_typed(a, ValType::F64, func);
-                func.instruction(&W::I64TruncF64S);
+                func.instruction(&W::I64TruncSatF64S);
             }
             I::CastItoF(a) => {
                 self.emit_value_load_typed(a, ValType::I64, func);
@@ -2804,7 +2891,8 @@ impl WasmGenerator {
                 // state_delay(input: f64, time: f64, max_len: i64) -> f64
                 self.emit_value_load_typed(input, ValType::F64, func);
                 self.emit_value_load_typed(time, ValType::F64, func);
-                func.instruction(&W::I64Const(*len as i64));
+                let max_len_i64 = i64::try_from(*len).unwrap_or(i64::MAX);
+                func.instruction(&W::I64Const(max_len_i64));
                 func.instruction(&W::Call(self.rt.state_delay));
             }
 
@@ -2948,24 +3036,10 @@ impl WasmGenerator {
                             .get(*arg_idx)
                             .is_some_and(|&(_, wc)| wc > 1);
                         if is_multi_word {
-                            // Multi-word arg was materialized to a pointer by emit_value_load;
-                            // if we're loading a scalar from the tuple, dereference the pointer.
-                            if is_scalar {
-                                self.emit_value_load_typed(ptr, ValType::I64, func);
-                                func.instruction(&W::I32WrapI64);
-                                let memarg = MemArg {
-                                    offset: 0,
-                                    align: 3,
-                                    memory_index: 0,
-                                };
-                                match Self::type_to_valtype(&ty.to_type()) {
-                                    ValType::F64 => func.instruction(&W::F64Load(memarg)),
-                                    _ => func.instruction(&W::I64Load(memarg)),
-                                };
-                            } else {
-                                // Loading the entire tuple — return the pointer as-is
-                                self.emit_value_load_typed(ptr, ValType::I64, func);
-                            }
+                            // Multi-word args are represented as aggregate pointers.
+                            // Preserve the pointer here; element extraction is handled by
+                            // explicit GetElement/Load chains in MIR.
+                            self.emit_value_load_typed(ptr, ValType::I64, func);
                         } else {
                             // Single-word arg: the value is direct
                             let expected_type = Self::type_to_valtype(&ty.to_type());
@@ -3091,14 +3165,14 @@ impl WasmGenerator {
                     _ => ValType::I64,
                 };
                 let base_vtype = self.infer_value_type(value);
-                let scalar_aggregate = ty.word_size() <= 1 && *tuple_offset == 0;
-                if scalar_aggregate && base_vtype != ValType::I64 {
-                    // Single-word aggregate values are passed directly.
-                    // `getelement(value, 0)` is therefore identity.
+                if base_vtype != ValType::I64 {
+                    // Base is scalar-typed; keep scalar projection semantics for all offsets.
+                    // This avoids treating floating-point bit patterns as memory addresses.
                     self.emit_value_load_typed(value, element_vtype, func);
-                } else {
-                    self.emit_value_load_typed(value, ValType::I64, func);
+                    return Ok(());
                 }
+
+                self.emit_value_load_typed(value, ValType::I64, func);
                 if *tuple_offset > 0 {
                     let offset_bytes = match &composite_ty {
                         Type::Tuple(elems) => {
@@ -3195,8 +3269,23 @@ impl WasmGenerator {
                         _ => self.current_fn_idx,
                     };
 
-                    // Load arguments with tuple flattening and make the call
-                    self.emit_call_args_flattened(args, func);
+                    // Load arguments using callee-side parameter shapes when available.
+                    // This avoids ABI drift when call-site argument annotations are
+                    // under-specified around aggregates.
+                    if let Some(callee_idx) = called_mir_fn_idx {
+                        let use_callee_abi = self
+                            .mir
+                            .functions
+                            .get(callee_idx)
+                            .is_some_and(|f| f.label.as_str().starts_with("delay$"));
+                        if use_callee_abi {
+                            self.emit_call_args_for_callee(args, callee_idx, func);
+                        } else {
+                            self.emit_call_args_flattened(args, func);
+                        }
+                    } else {
+                        self.emit_call_args_flattened(args, func);
+                    }
                     func.instruction(&W::Call(wasm_fn_idx));
 
                     // Reconcile return stack type when function declaration and
@@ -4028,6 +4117,76 @@ impl WasmGenerator {
         }
     }
 
+    /// Emit direct-call arguments using the callee's inferred parameter ABI.
+    fn emit_call_args_for_callee(
+        &mut self,
+        args: &[(VPtr, TypeNodeId)],
+        callee_fn_idx: usize,
+        func: &mut Function,
+    ) {
+        use wasm_encoder::Instruction as W;
+
+        let Some(callee) = self.mir.functions.get(callee_fn_idx) else {
+            self.emit_call_args_flattened(args, func);
+            return;
+        };
+
+        let inferred_arg_types = Self::infer_argument_types(callee);
+        let callee_expected_flats: Vec<Vec<ValType>> = callee
+            .args
+            .iter()
+            .enumerate()
+            .map(|(arg_idx, callee_arg)| {
+                let mut flat = Self::flatten_type_to_valtypes(&callee_arg.1.to_type());
+                if let Some(inferred) = inferred_arg_types.get(&arg_idx) {
+                    if inferred.len() > flat.len() {
+                        flat = inferred.clone();
+                    } else if flat.len() == 1
+                        && inferred.len() == 1
+                        && flat[0] != inferred[0]
+                        && Self::allows_scalar_inference_override(&callee_arg.1.to_type())
+                    {
+                        flat[0] = inferred[0];
+                    }
+                }
+                flat
+            })
+            .collect();
+
+        for (arg_idx, (arg, arg_ty)) in args.iter().enumerate() {
+            let expected_flat = callee_expected_flats
+                .get(arg_idx)
+                .cloned()
+                .unwrap_or_else(|| Self::flatten_type_to_valtypes(&arg_ty.to_type()));
+
+            if expected_flat.len() <= 1 {
+                let expected = expected_flat.first().copied().unwrap_or(ValType::I64);
+                self.emit_value_load_typed(arg, expected, func);
+            } else {
+                let actual_vtype = self.infer_value_type(arg);
+                for (i, vtype) in expected_flat.iter().enumerate() {
+                    if actual_vtype == ValType::I64 {
+                        self.emit_value_load(arg, func);
+                        func.instruction(&W::I32WrapI64);
+                        let load_memarg = MemArg {
+                            offset: (i * 8) as u64,
+                            align: 3,
+                            memory_index: 0,
+                        };
+                        match vtype {
+                            ValType::F64 => func.instruction(&W::F64Load(load_memarg)),
+                            _ => func.instruction(&W::I64Load(load_memarg)),
+                        };
+                    } else {
+                        // Scalar actual value used where callee expects a multi-word aggregate.
+                        // Duplicate/coerce the scalar per expected slot to keep ABI consistent.
+                        self.emit_value_load_typed(arg, *vtype, func);
+                    }
+                }
+            }
+        }
+    }
+
     /// Emit call arguments for external functions with per-function ABI overrides.
     fn emit_call_args_flattened_for_ext(
         &mut self,
@@ -4058,6 +4217,10 @@ impl WasmGenerator {
                 // Scheduler ABI: second arg is closure pointer word.
                 if ext_name.as_str() == "_mimium_schedule_at" && arg_idx == 1 {
                     expected = ValType::I64;
+                }
+
+                if ext_name.as_str() == "__probe_value_intercept$arity1" {
+                    expected = ValType::F64;
                 }
 
                 self.emit_value_load_typed(arg, expected, func);

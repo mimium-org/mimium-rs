@@ -1,3 +1,4 @@
+// @test {"times":1,"stereo":false,"expected":[12.5],"web":true}
 // Test union types with multiple argument syntax (implicitly treated as tuple)
 type Shape = Circle(float) | Rectangle(float, float)
 

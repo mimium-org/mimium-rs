@@ -1,3 +1,4 @@
+// @test {"times":1,"stereo":false,"expected":[2.0],"web":true}
 //answer should be 2
 fn dsp(){
     let phase = 1.0

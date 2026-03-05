@@ -1,3 +1,4 @@
+// @test {"times":1,"stereo":false,"expected":[24.0],"web":true}
 //answer:24
 fn hof(f:(float)->float,y){
     f(y*2.0)

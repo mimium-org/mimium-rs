@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[52.0],"web":false}
+
 
 use parser::*
 

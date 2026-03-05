@@ -208,6 +208,8 @@ struct ResolveContext<'a> {
     file_path: PathBuf,
     /// Accumulated errors
     errors: Vec<Error>,
+    /// Lexically scoped local bindings (innermost scope at the end)
+    local_bindings: Vec<HashSet<Symbol>>,
 }
 
 impl<'a> ResolveContext<'a> {
@@ -222,12 +224,41 @@ impl<'a> ResolveContext<'a> {
             current_module_context: Vec::new(),
             file_path,
             errors: Vec::new(),
+            local_bindings: Vec::new(),
         }
     }
 
     /// Check if a name exists in the known names set.
     fn name_exists(&self, name: &Symbol) -> bool {
         self.known_names.contains(name)
+    }
+
+    fn push_scope(&mut self) {
+        self.local_bindings.push(HashSet::new());
+    }
+
+    fn pop_scope(&mut self) {
+        let _ = self.local_bindings.pop();
+    }
+
+    fn bind_local(&mut self, symbol: Symbol) {
+        if let Some(scope) = self.local_bindings.last_mut() {
+            scope.insert(symbol);
+        }
+    }
+
+    fn bind_pattern_locals(&mut self, pat: &Pattern) {
+        collect_names_from_pattern(
+            pat,
+            self.local_bindings.last_mut().expect("scope must exist"),
+        );
+    }
+
+    fn is_locally_bound(&self, name: Symbol) -> bool {
+        self.local_bindings
+            .iter()
+            .rev()
+            .any(|scope| scope.contains(&name))
     }
 
     /// Try to resolve a simple variable name through wildcard imports.
@@ -311,6 +342,9 @@ fn convert_expr(ctx: &mut ResolveContext, e_id: ExprNodeId) -> ExprNodeId {
             // Save current context
             let prev_context = std::mem::take(&mut ctx.current_module_context);
 
+            ctx.push_scope();
+            ctx.bind_local(name);
+
             // Update context if this function has a module context
             if let Some(new_context) = ctx.module_info.module_context_map.get(&name) {
                 ctx.current_module_context = new_context.clone();
@@ -322,6 +356,7 @@ fn convert_expr(ctx: &mut ResolveContext, e_id: ExprNodeId) -> ExprNodeId {
             ctx.current_module_context = prev_context;
 
             let new_then = then.map(|t| convert_expr(ctx, t));
+            ctx.pop_scope();
             Expr::LetRec(id, new_body, new_then).into_id(loc)
         }
 
@@ -343,13 +378,24 @@ fn convert_expr(ctx: &mut ResolveContext, e_id: ExprNodeId) -> ExprNodeId {
             }
 
             let new_body = convert_expr(ctx, body);
-            let new_then = then.map(|t| convert_expr(ctx, t));
+            let new_then = then.map(|t| {
+                ctx.push_scope();
+                ctx.bind_pattern_locals(&pat.pat);
+                let converted = convert_expr(ctx, t);
+                ctx.pop_scope();
+                converted
+            });
 
             ctx.current_module_context = prev_context;
             Expr::Let(pat, new_body, new_then).into_id(loc)
         }
         Expr::Lambda(params, r_type, body) => {
+            ctx.push_scope();
+            for param in &params {
+                ctx.bind_local(param.id);
+            }
             let new_body = convert_expr(ctx, body);
+            ctx.pop_scope();
             Expr::Lambda(params, r_type, new_body).into_id(loc)
         }
         Expr::Apply(fun, args) => {
@@ -455,9 +501,15 @@ fn convert_expr(ctx: &mut ResolveContext, e_id: ExprNodeId) -> ExprNodeId {
             let new_scrutinee = convert_expr(ctx, scrutinee);
             let new_arms = arms
                 .into_iter()
-                .map(|arm| crate::ast::MatchArm {
-                    pattern: arm.pattern,
-                    body: convert_expr(ctx, arm.body),
+                .map(|arm| {
+                    ctx.push_scope();
+                    bind_match_pattern_locals(ctx, &arm.pattern);
+                    let body = convert_expr(ctx, arm.body);
+                    ctx.pop_scope();
+                    crate::ast::MatchArm {
+                        pattern: arm.pattern,
+                        body,
+                    }
                 })
                 .collect();
             Expr::Match(new_scrutinee, new_arms).into_id(loc)
@@ -481,6 +533,27 @@ fn find_pattern_module_context(
             .iter()
             .find_map(|(_, item)| find_pattern_module_context(ctx, item)),
         Pattern::Placeholder | Pattern::Error => None,
+    }
+}
+
+fn bind_match_pattern_locals(ctx: &mut ResolveContext, pat: &crate::ast::MatchPattern) {
+    use crate::ast::MatchPattern;
+    match pat {
+        MatchPattern::Variable(id) => {
+            ctx.bind_local(*id);
+        }
+        MatchPattern::Tuple(items) => {
+            items
+                .iter()
+                .for_each(|item| bind_match_pattern_locals(ctx, item));
+        }
+        MatchPattern::Constructor(_, inner) => {
+            inner
+                .as_ref()
+                .iter()
+                .for_each(|inner_pat| bind_match_pattern_locals(ctx, inner_pat));
+        }
+        MatchPattern::Wildcard | MatchPattern::Literal(_) => {}
     }
 }
 
@@ -520,6 +593,11 @@ fn is_core_intrinsic_name(name: Symbol) -> bool {
 
 /// Convert a simple variable reference, resolving explicit `use` aliases and wildcards.
 fn convert_var(ctx: &mut ResolveContext, name: Symbol, loc: Location) -> ExprNodeId {
+    // Lexical local bindings must take precedence over imported aliases or wildcards.
+    if ctx.is_locally_bound(name) {
+        return Expr::Var(name).into_id(loc);
+    }
+
     // Check if this is a use alias (explicit `use foo::bar` or `use foo::bar as alias`)
     if ctx.module_info.use_alias_map.contains_key(&name) {
         let mangled_name = resolve_alias_chain(ctx.module_info, name);
@@ -549,7 +627,7 @@ fn convert_var(ctx: &mut ResolveContext, name: Symbol, loc: Location) -> ExprNod
         return Expr::Var(mangled).into_id(loc);
     }
 
-    if ctx.name_exists(&name) && is_core_intrinsic_name(name) {
+    if is_core_intrinsic_name(name) {
         return Expr::Var(name).into_id(loc);
     }
 
@@ -569,12 +647,6 @@ fn convert_var(ctx: &mut ResolveContext, name: Symbol, loc: Location) -> ExprNod
                 return Expr::Var(relative_mangled).into_id(loc);
             }
         }
-    }
-
-    // If the unqualified name already exists (e.g. local binding or builtin),
-    // keep it as-is.
-    if ctx.name_exists(&name) {
-        return Expr::Var(name).into_id(loc);
     }
 
     // Keep as-is - will be resolved by type checker (local variable or error)
@@ -733,6 +805,41 @@ mod tests {
         assert!(errors.is_empty());
         // Now the variable SHOULD be resolved through wildcard
         assert!(matches!(result.to_expr(), Expr::Var(name) if name.as_str() == "mymod$helper"));
+    }
+
+    #[test]
+    fn test_local_binding_shadows_wildcard_import() {
+        let loc = make_loc();
+        let mut module_info = ModuleInfo::default();
+        module_info.wildcard_imports.push("core".to_symbol());
+        module_info
+            .visibility_map
+            .insert("core$mix".to_symbol(), true);
+
+        // let mix = 0.5; mix
+        let unknownty = Type::Unknown.into_id_with_location(loc.clone());
+        let expr = Expr::Let(
+            TypedPattern {
+                pat: Pattern::Single("mix".to_symbol()),
+                ty: unknownty,
+                default_value: None,
+            },
+            Expr::Literal(crate::ast::Literal::Float("0.5".to_symbol())).into_id(loc.clone()),
+            Some(Expr::Var("mix".to_symbol()).into_id(loc.clone())),
+        )
+        .into_id(loc.clone());
+
+        let builtin_names = vec!["core$mix".to_symbol()];
+        let (result, errors) =
+            convert_qualified_names(expr, &module_info, &builtin_names, PathBuf::from("/test"));
+
+        assert!(errors.is_empty());
+        match result.to_expr() {
+            Expr::Let(_, _, Some(then)) => {
+                assert!(matches!(then.to_expr(), Expr::Var(name) if name.as_str() == "mix"));
+            }
+            _ => panic!("expected let expression with then branch"),
+        }
     }
 
     #[test]

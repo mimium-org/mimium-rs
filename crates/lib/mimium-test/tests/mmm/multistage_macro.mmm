@@ -1,3 +1,4 @@
+// @test {"times":1,"stereo":false,"expected":[8.0],"web":true}
 
 ${
 let genpower  = |n:float|{

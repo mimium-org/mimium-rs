@@ -474,6 +474,45 @@ impl Context {
         )
     }
 
+    fn substitute_failure_type(ty: TypeNodeId, replacement: TypeNodeId) -> TypeNodeId {
+        let root = ty.get_root();
+        if matches!(root.to_type(), Type::Failure) {
+            return replacement;
+        }
+        match ty.to_type() {
+            Type::Failure => replacement,
+            Type::Intermediate(tv) => {
+                let tv = tv.read().unwrap();
+                if let Some(parent) = tv.parent {
+                    Self::substitute_failure_type(parent, replacement)
+                } else if matches!(tv.bound.lower.get_root().to_type(), Type::Failure) {
+                    replacement
+                } else {
+                    ty
+                }
+            }
+            Type::Tuple(elems) => {
+                let mapped = elems
+                    .iter()
+                    .map(|elem| Self::substitute_failure_type(*elem, replacement))
+                    .collect::<Vec<_>>();
+                Type::Tuple(mapped).into_id()
+            }
+            Type::Record(fields) => {
+                let mapped = fields
+                    .iter()
+                    .map(|field| RecordTypeField {
+                        key: field.key,
+                        ty: Self::substitute_failure_type(field.ty, replacement),
+                        has_default: field.has_default,
+                    })
+                    .collect::<Vec<_>>();
+                Type::Record(mapped).into_id()
+            }
+            _ => ty,
+        }
+    }
+
     fn make_uniop_intrinsic(
         &mut self,
         label: Symbol,
@@ -863,15 +902,55 @@ impl Context {
         (fid, states)
     }
     fn get_default_arg_call(&mut self, name: Symbol, fid: FunctionId) -> Option<VPtr> {
-        let args = self.default_args_map.get(&fid);
-        args.cloned().and_then(|defv_fn_ids| {
-            defv_fn_ids
-                .iter()
-                .find(|default_arg_data| default_arg_data.name == name)
-                .map(|default_arg_data| {
-                    let fid = self.push_inst(Instruction::Uinteger(default_arg_data.fid.0));
-                    self.push_inst(Instruction::Call(fid, vec![], default_arg_data.ty))
+        let default_arg_data = self
+            .default_args_map
+            .get(&fid)
+            .and_then(|defv_fn_ids| {
+                defv_fn_ids
+                    .iter()
+                    .find(|default_arg_data| default_arg_data.name == name)
+                    .cloned()
+            })
+            .or_else(|| {
+                let target_label = self
+                    .program
+                    .functions
+                    .get(fid.0 as usize)
+                    .map(|func| func.label)?;
+
+                self.default_args_map.iter().find_map(|(candidate_fid, defaults)| {
+                    let candidate_label = self
+                        .program
+                        .functions
+                        .get(candidate_fid.0 as usize)
+                        .map(|func| func.label);
+
+                    (candidate_label == Some(target_label)).then_some(())?;
+                    defaults
+                        .iter()
+                        .find(|default_arg_data| default_arg_data.name == name)
+                        .cloned()
                 })
+            })
+            .or_else(|| {
+                let mut candidates = self
+                    .default_args_map
+                    .values()
+                    .flat_map(|defaults| defaults.iter())
+                    .filter(|default_arg_data| default_arg_data.name == name)
+                    .cloned();
+
+                let first = candidates.next();
+                if candidates.next().is_some() {
+                    None
+                } else {
+                    first
+                }
+            });
+
+        default_arg_data.map(|default_arg_data| {
+            let fid = self.push_inst(Instruction::Uinteger(default_arg_data.fid.0));
+            self.push_inst(Instruction::Call(fid, vec![], default_arg_data.ty))
         })
     }
     fn lookup(&self, key: &Symbol) -> LookupRes<VPtr> {
@@ -1018,6 +1097,9 @@ impl Context {
         }
 
         self.program.functions.push(specialized_fn);
+        if let Some(default_args) = self.default_args_map.get(&original_fid).cloned() {
+            self.default_args_map.insert(new_fid, default_args);
+        }
         self.monomorph_map.insert(key, new_fid);
 
         new_fid
@@ -1968,7 +2050,35 @@ impl Context {
                                 return (field_val, kv.ty);
                             }
 
-                            panic!("parameter pack failed, possible type inference bug")
+                            panic!(
+                                "parameter pack failed: missing argument for key='{}' at index {} (arg_record_fields={:?}, param_fields={:?}, fid={:?}, callee_label={:?}, fid_defaults={:?}, available_default_keys={:?})",
+                                param.key,
+                                param_index,
+                                kvs.iter().map(|kv| kv.key.to_string()).collect::<Vec<_>>(),
+                                param_types
+                                    .iter()
+                                    .map(|p| format!("{}(default={})", p.key, p.has_default))
+                                    .collect::<Vec<_>>(),
+                                fid_opt,
+                                fid_opt
+                                    .and_then(|fid| {
+                                        self.program
+                                            .functions
+                                            .get(fid.0 as usize)
+                                            .map(|f| f.label.to_string())
+                                    }),
+                                fid_opt.and_then(|fid| {
+                                    self.default_args_map.get(&fid).map(|defs| {
+                                        defs.iter()
+                                            .map(|d| d.name.to_string())
+                                            .collect::<Vec<_>>()
+                                    })
+                                }),
+                                self.default_args_map
+                                    .values()
+                                    .flat_map(|defs| defs.iter().map(|d| d.name.to_string()))
+                                    .collect::<Vec<_>>(),
+                            )
                         })
                         .collect::<Vec<_>>()
                 } else {
@@ -2028,6 +2138,26 @@ impl Context {
                 );
             }
 
+            let has_default_for = |arg_name: Symbol| {
+                self.default_args_map
+                    .get(&FunctionId(fid as u64))
+                    .map(|defaults| defaults.iter().any(|d| d.name == arg_name))
+                    .or_else(|| {
+                        let target_label = self.program.functions.get(fid).map(|f| f.label)?;
+                        self.default_args_map.iter().find_map(|(candidate_fid, defaults)| {
+                            let candidate_label = self
+                                .program
+                                .functions
+                                .get(candidate_fid.0 as usize)
+                                .map(|f| f.label)?;
+                            (candidate_label == target_label).then_some(
+                                defaults.iter().any(|d| d.name == arg_name),
+                            )
+                        })
+                    })
+                    .unwrap_or(false)
+            };
+
             Some(
                 func.args
                     .iter()
@@ -2035,7 +2165,7 @@ impl Context {
                     .map(|(arg, elem_ty)| RecordTypeField {
                         key: arg.0,
                         ty: *elem_ty,
-                        has_default: false,
+                        has_default: has_default_for(arg.0),
                     })
                     .collect(),
             )
@@ -2416,6 +2546,32 @@ impl Context {
                     _ => f_to_call,
                 };
 
+                let callee_fid = match f_to_call.as_ref() {
+                    Value::Function(fid) => Some(*fid),
+                    Value::Global(inner) => match inner.as_ref() {
+                        Value::Function(fid) => Some(*fid),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+
+                if let Some(fid) = callee_fid
+                    && let Some(func) = self.program.functions.get(fid)
+                {
+                    if matches!(call_arg_ty.to_type(), Type::Failure) {
+                        call_arg_ty = match func.args.as_slice() {
+                            [] => unit!(),
+                            [arg] => arg.1,
+                            args => Type::Tuple(args.iter().map(|arg| arg.1).collect()).into_id(),
+                        };
+                    }
+                    if matches!(monomorphized_rt.to_type(), Type::Failure)
+                        && let Some(ret_ty) = func.return_type.get()
+                    {
+                        monomorphized_rt = *ret_ty;
+                    }
+                }
+
                 // Handle parameter packing/unpacking if needed
                 // How can we distinguish when the function takes a single tuple and argument is just a single tuple
                 let (evaluated_args, arg_states) = self.eval_args(args);
@@ -2466,7 +2622,7 @@ impl Context {
                         && callee_expects_aggregate_fields
                         && ty.to_type().can_be_unpacked()
                     {
-                        self.unpack_argument(f_val, arg_val, call_arg_ty, ty)
+                        self.unpack_argument(f_to_call.clone(), arg_val, call_arg_ty, ty)
                     } else if should_unpack_single_arg
                         && matches!(call_arg_ty.to_type(), Type::Record(ref fields) if fields.len() > 1)
                     {
@@ -2514,7 +2670,7 @@ impl Context {
                     if let Some((first_val, first_ty)) = iter.next() {
                         if expected_arity > args.len() && first_ty.to_type().can_be_unpacked() {
                             packed.extend(self.unpack_argument(
-                                f_val.clone(),
+                                f_to_call.clone(),
                                 first_val,
                                 call_arg_ty,
                                 first_ty,
@@ -2530,6 +2686,10 @@ impl Context {
                 // Coerce arguments based on subtype relationships (union wrapping, int->float, etc.)
                 let raw_atvvec = atvvec.clone();
                 let atvvec = self.coerce_args_for_call(atvvec, call_arg_ty);
+
+                if atvvec.len() == 1 {
+                    monomorphized_rt = Self::substitute_failure_type(monomorphized_rt, atvvec[0].1);
+                }
 
                 let (res, state) =
                     self.emit_call_to_value(&f_to_call, &raw_atvvec, &atvvec, monomorphized_rt);
@@ -2571,7 +2731,12 @@ impl Context {
                 let name = self.consume_fnlabel();
                 let (c_idx, f, _astates) =
                     self.do_in_child_ctx(name, &binds, vec![], |ctx, c_idx| {
-                        let (res, _, states) = ctx.eval_expr(*body);
+                        let (res, body_ty, states) = ctx.eval_expr(*body);
+                        let effective_rt = if matches!(rt.to_type(), Type::Failure) {
+                            body_ty
+                        } else {
+                            rt
+                        };
 
                         let child = ctx.program.functions.get_mut(c_idx.0 as usize).unwrap();
                         //todo set skeleton not by modifying but in initialization
@@ -2586,13 +2751,13 @@ impl Context {
                                 Instruction::PopStateOffset(push_sum),
                             )); //todo:offset size
                         }
-                        match (res.as_ref(), rt.to_type()) {
+                        match (res.as_ref(), effective_rt.to_type()) {
                             (_, Type::Primitive(PType::Unit)) => {
                                 let _ =
-                                    ctx.push_inst(Instruction::Return(Arc::new(Value::None), rt));
+                                    ctx.push_inst(Instruction::Return(Arc::new(Value::None), effective_rt));
                             }
                             (Value::State(v), _) => {
-                                let _ = ctx.push_inst(Instruction::ReturnFeed(v.clone(), rt));
+                                let _ = ctx.push_inst(Instruction::ReturnFeed(v.clone(), effective_rt));
                             }
                             (Value::Function(i), _) => {
                                 let idx = ctx.push_inst(Instruction::Uinteger(*i as u64));
@@ -2601,24 +2766,27 @@ impl Context {
                                     fn_proto: idx,
                                     size: 64,
                                 });
-                                ctx.insert_close_closures_recursively(cls.clone(), rt);
-                                ctx.insert_clone_recursively(cls.clone(), rt);
-                                let _ = ctx.push_inst(Instruction::Return(cls, rt));
+                                ctx.insert_close_closures_recursively(cls.clone(), effective_rt);
+                                ctx.insert_clone_recursively(cls.clone(), effective_rt);
+                                let _ = ctx.push_inst(Instruction::Return(cls, effective_rt));
                             }
                             (_, _) => {
-                                if rt.to_type().contains_function() || rt.to_type().contains_boxed()
+                                if effective_rt.to_type().contains_function()
+                                    || effective_rt.to_type().contains_boxed()
                                 {
-                                    ctx.insert_close_closures_recursively(res.clone(), rt);
-                                    ctx.insert_clone_recursively(res.clone(), rt);
-                                    let _ = ctx.push_inst(Instruction::Return(res.clone(), rt));
+                                    ctx.insert_close_closures_recursively(res.clone(), effective_rt);
+                                    ctx.insert_clone_recursively(res.clone(), effective_rt);
+                                    let _ =
+                                        ctx.push_inst(Instruction::Return(res.clone(), effective_rt));
                                 } else {
-                                    let _ = ctx.push_inst(Instruction::Return(res.clone(), rt));
+                                    let _ =
+                                        ctx.push_inst(Instruction::Return(res.clone(), effective_rt));
                                 }
                             }
                         };
 
                         let f = Arc::new(Value::Function(c_idx.0 as usize));
-                        (f, rt, states)
+                        (f, effective_rt, states)
                     });
                 let child = self.program.functions.get_mut(c_idx.0 as usize).unwrap();
                 let res = if child.upindexes.is_empty() {

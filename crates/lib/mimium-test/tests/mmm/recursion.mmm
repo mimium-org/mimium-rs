@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[5.0],"web":true}
+
 fn sum(n){
     if (n>0.0){
         sum(n - 1.0)+1.0

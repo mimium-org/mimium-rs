@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[440.0],"web":true}
+
 type alias Freq = float
 type alias Gain = float  
 type alias Sample = float

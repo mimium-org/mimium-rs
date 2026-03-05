@@ -366,16 +366,50 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
         // -- Lambda ---------------------------------------------------------
         Expr::Lambda(params, _rtype, body) => {
             let translated_body = translate_code(body);
-            match params.len() {
-                1 => {
-                    let name_lit = sym_to_string_literal(params[0].id);
-                    make_apply("code_lam1_finish", vec![name_lit, translated_body])
-                }
-                _ => {
-                    let name_lits: Vec<ExprNodeId> =
-                        params.iter().map(|p| sym_to_string_literal(p.id)).collect();
-                    let names_arr = Expr::ArrayLiteral(name_lits).into_id_without_span();
-                    make_apply("code_lam_finish", vec![names_arr, translated_body])
+            let has_default_params = params.iter().any(|p| p.default_value.is_some());
+            if has_default_params {
+                let name_lits: Vec<ExprNodeId> =
+                    params.iter().map(|p| sym_to_string_literal(p.id)).collect();
+                let default_masks: Vec<ExprNodeId> = params
+                    .iter()
+                    .map(|p| {
+                        let v = if p.default_value.is_some() { "1.0" } else { "0.0" };
+                        Expr::Literal(Literal::Float(v.to_symbol())).into_id_without_span()
+                    })
+                    .collect();
+                let default_codes: Vec<ExprNodeId> = params
+                    .iter()
+                    .map(|p| {
+                        p.default_value.map_or_else(
+                            || {
+                                let zero = Expr::Literal(Literal::Float("0.0".to_symbol()))
+                                    .into_id_without_span();
+                                make_apply1("code_lit_f", zero)
+                            },
+                            translate_code,
+                        )
+                    })
+                    .collect();
+
+                let names_arr = Expr::ArrayLiteral(name_lits).into_id_without_span();
+                let mask_arr = Expr::ArrayLiteral(default_masks).into_id_without_span();
+                let defaults_arr = Expr::ArrayLiteral(default_codes).into_id_without_span();
+                make_apply(
+                    "code_lam_finish_defaults",
+                    vec![names_arr, mask_arr, defaults_arr, translated_body],
+                )
+            } else {
+                match params.len() {
+                    1 => {
+                        let name_lit = sym_to_string_literal(params[0].id);
+                        make_apply("code_lam1_finish", vec![name_lit, translated_body])
+                    }
+                    _ => {
+                        let name_lits: Vec<ExprNodeId> =
+                            params.iter().map(|p| sym_to_string_literal(p.id)).collect();
+                        let names_arr = Expr::ArrayLiteral(name_lits).into_id_without_span();
+                        make_apply("code_lam_finish", vec![names_arr, translated_body])
+                    }
                 }
             }
         }

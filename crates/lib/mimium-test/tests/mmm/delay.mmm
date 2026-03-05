@@ -1,3 +1,4 @@
+// @test {"times":10,"stereo":false,"expected":[0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0],"web":true}
 fn counter(){
     self+1.0
 }

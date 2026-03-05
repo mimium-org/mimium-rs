@@ -1,3 +1,4 @@
+// @test {"times":1,"stereo":false,"expected":[3.0],"web":true}
 //Curly brace creates local scope. should be 3.0
 fn dsp(){
     let test = 0

@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[0.3010299956639812],"web":true}
+
 //log primitive is x.ln() in rust
 fn log10(x){
     log(x) / log(10.0)

@@ -1,3 +1,4 @@
+// @test {"times":3,"stereo":false,"expected":[2.0, 2.0, 2.0],"web":true}
 mod test{
     #stage(macro)
     pub fn macrofn1(x){

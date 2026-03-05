@@ -1,3 +1,4 @@
+// @test {"times":5,"stereo":false,"expected":[1.0, 2.0, 3.0, 4.0, 5.0],"web":true}
 // open closure "inner" should be closed and escaped at the end of 'outer' context.
 fn outer(){
   let x = 0.0

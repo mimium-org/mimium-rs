@@ -856,13 +856,7 @@ impl SystemPlugin for GuiToolPlugin {
         let probe_value_intercept_arity1 = SysPluginSignature::new(
             Self::PROBE_VALUE_INTERCEPT_ARITY1,
             probe_value_intercept_arity1f,
-            function!(
-                vec![
-                    Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id(),
-                    numeric!()
-                ],
-                Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id()
-            ),
+            function!(vec![numeric!(), numeric!()], numeric!()),
         );
 
         let mut interfaces = vec![

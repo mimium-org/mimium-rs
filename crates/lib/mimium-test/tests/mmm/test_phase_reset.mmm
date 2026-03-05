@@ -1,3 +1,4 @@
+// @test {"times":10,"stereo":true,"expected":[0.0, 1.0, 0.0, 2.0, 0.0, 3.0, 0.0, 4.0, 0.0, 5.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0],"web":true}
 // run this test with self_eval_mode=simplestate.
 // ch0: 0,0,0,0,0,1,1,1,1,1
 // ch1: 1,2,3,4,5,0,0,0,0,0

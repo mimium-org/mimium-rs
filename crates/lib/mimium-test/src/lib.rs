@@ -14,6 +14,7 @@ use mimium_lang::{
         metadata::Location,
     },
 };
+use serde::Deserialize;
 
 #[cfg(not(target_arch = "wasm32"))]
 use mimium_lang::runtime::wasm::WasmRuntime;
@@ -190,7 +191,7 @@ pub fn run_error_test_rich(path: &'static str, stereo: bool) -> Vec<RichError> {
         .collect()
 }
 
-pub fn load_src(path: &'static str) -> (PathBuf, String) {
+pub fn load_src(path: &str) -> (PathBuf, String) {
     #[cfg(not(target_arch = "wasm32"))]
     let file = {
         let crate_root =
@@ -222,6 +223,87 @@ pub fn run_file_test_mono(path: &'static str, times: u64) -> Option<Vec<f64>> {
 
 pub fn run_file_test_stereo(path: &'static str, times: u64) -> Option<Vec<f64>> {
     run_file_test(path, times, true)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnnotatedFileTestSpec {
+    pub times: u64,
+    pub stereo: bool,
+    pub expected: Vec<f64>,
+    pub web: bool,
+    pub tol: Option<f64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AnnotatedFileTestSpecRaw {
+    times: u64,
+    #[serde(default)]
+    stereo: bool,
+    expected: Vec<f64>,
+    #[serde(default)]
+    web: bool,
+    #[serde(default)]
+    tol: Option<f64>,
+}
+
+const TEST_META_PREFIX: &str = "// @test ";
+
+fn parse_annotated_file_test_spec(src: &str) -> Result<AnnotatedFileTestSpec, String> {
+    let metadata_line = src
+        .lines()
+        .take(8)
+        .map(str::trim)
+        .find(|line| line.starts_with(TEST_META_PREFIX))
+        .ok_or_else(|| "Missing `// @test {...}` metadata in first 8 lines".to_string())?;
+
+    let raw_json = metadata_line.trim_start_matches(TEST_META_PREFIX);
+    let raw: AnnotatedFileTestSpecRaw =
+        serde_json::from_str(raw_json).map_err(|e| format!("Invalid @test metadata JSON: {e}"))?;
+
+    Ok(AnnotatedFileTestSpec {
+        times: raw.times,
+        stereo: raw.stereo,
+        expected: raw.expected,
+        web: raw.web,
+        tol: raw.tol,
+    })
+}
+
+pub fn run_annotated_file_test(path: &str) -> Result<(Vec<f64>, AnnotatedFileTestSpec), String> {
+    let (file, src) = load_src(path);
+    let spec = parse_annotated_file_test_spec(&src)?;
+
+    let result = run_source_test(&src, spec.times, spec.stereo, Some(file.clone()));
+    match result {
+        Ok(samples) => Ok((samples, spec)),
+        Err(errs) => {
+            report(&src, file, &errs);
+            Err("Compilation/runtime failed for annotated file test".to_string())
+        }
+    }
+}
+
+pub fn run_annotated_file_test_with_plugins(
+    path: &str,
+    with_scheduler: bool,
+) -> Result<(Vec<f64>, AnnotatedFileTestSpec), String> {
+    let (file, src) = load_src(path);
+    let spec = parse_annotated_file_test_spec(&src)?;
+
+    let result = run_source_with_plugins(
+        &src,
+        Some(&file.to_string_lossy()),
+        spec.times,
+        [].into_iter(),
+        with_scheduler,
+    );
+    match result {
+        Ok(samples) => Ok((samples, spec)),
+        Err(errs) => {
+            report(&src, file, &errs);
+            Err("Compilation/runtime failed for annotated file test with plugins".to_string())
+        }
+    }
 }
 
 pub fn test_state_sizes<T: IntoIterator<Item = (&'static str, u64)>>(path: &'static str, ans: T) {

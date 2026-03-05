@@ -1,3 +1,4 @@
+// @test {"times":1,"stereo":false,"expected":[900.0],"web":true}
 // Test for integer match expression (Phase 1)
 // Tests multiple cases and wildcard pattern
 

@@ -233,6 +233,51 @@ fn code_lam_finish(machine: &mut Machine) -> ReturnCode {
     1
 }
 
+/// `code_lam_finish_defaults(names: [string], mask: [float], defaults: [Code], body_code: Code(b)) -> Code(a->b)`
+///
+/// Multi-parameter lambda construction with optional default values.
+/// `mask[i] != 0.0` means `defaults[i]` should be used as the default expression
+/// for `names[i]`.
+fn code_lam_finish_defaults(machine: &mut Machine) -> ReturnCode {
+    let names_raw = machine.get_stack(0);
+    let mask_raw = machine.get_stack(1);
+    let defaults_raw = machine.get_stack(2);
+    let body_raw = machine.get_stack(3);
+    let body_expr = machine.get_code(body_raw);
+
+    let names_arr = machine.arrays.get_array(names_raw);
+    let names_len = names_arr.get_length_array() as usize;
+    let names_data = names_arr.get_data().to_vec();
+
+    let mask_arr = machine.arrays.get_array(mask_raw);
+    let mask_data = mask_arr.get_data().to_vec();
+
+    let defaults_arr = machine.arrays.get_array(defaults_raw);
+    let defaults_data = defaults_arr.get_data().to_vec();
+
+    let params: Vec<TypedId> = (0..names_len)
+        .map(|i| {
+            let sym = raw_to_symbol(machine, names_data[i]);
+            let mut param = TypedId::new(sym, Type::Unknown.into_id());
+
+            let has_default = mask_data
+                .get(i)
+                .map(|raw| Machine::get_as::<f64>(*raw) != 0.0)
+                .unwrap_or(false);
+            if has_default && let Some(default_raw) = defaults_data.get(i) {
+                param.default_value = Some(machine.get_code(*default_raw));
+            }
+
+            param
+        })
+        .collect();
+
+    let expr = expr_to_id(Expr::Lambda(params, None, body_expr));
+    let code_val = machine.alloc_code(expr);
+    machine.set_stack(0, code_val);
+    1
+}
+
 /// `code_let(name: string, val_code: Code(a), body_code: Code(b)) -> Code(b)`
 fn code_let(machine: &mut Machine) -> ReturnCode {
     let name_raw = machine.get_stack(0);
@@ -717,6 +762,11 @@ pub fn codegen_combinator_signatures() -> Vec<ExtClsInfo> {
         mk_cls("code_app2", code_app2, fty(vec![f, f, f], f)),
         mk_cls("code_lam1_finish", code_lam1_finish, fty(vec![s, f], f)),
         mk_cls("code_lam_finish", code_lam_finish, fty(vec![as_, f], f)),
+        mk_cls(
+            "code_lam_finish_defaults",
+            code_lam_finish_defaults,
+            fty(vec![as_, af, af, f], f),
+        ),
         mk_cls("code_let", code_let, fty(vec![s, f, f], f)),
         mk_cls("code_let_tuple", code_let_tuple, fty(vec![as_, f, f], f)),
         mk_cls("code_letrec", code_letrec, fty(vec![s, f, f], f)),

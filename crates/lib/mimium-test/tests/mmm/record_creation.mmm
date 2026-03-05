@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[79.0],"web":true}
+
 let myrec:{test:float,testb:(float,float)} = {test = 100.0, testb = (2000.0,79.0)}
 
 let elem1 = myrec.testb.1 // should be 79

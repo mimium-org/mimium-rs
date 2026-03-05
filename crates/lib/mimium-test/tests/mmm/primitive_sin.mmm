@@ -1,3 +1,5 @@
+// @test {"times":1,"stereo":false,"expected":[0.0],"web":true}
+
 fn dsp(){
     sin(3.1415926535897932384626433832795)
 }

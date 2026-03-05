@@ -1,3 +1,4 @@
+// @test {"times":1,"stereo":true,"expected":[1.0, 2.0],"web":true}
 #stage(macro)
 fn makecounter(){
   let x = 0.0

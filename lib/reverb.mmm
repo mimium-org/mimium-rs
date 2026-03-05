@@ -1,6 +1,5 @@
 use filter::*
-
-
+use core
 #stage(main)
 fn gain_tr60(time_samps,rev_time_sec){
     let time_sec = time_samps / samplerate
@@ -21,9 +20,9 @@ fn lp_fb_comb(input,time,damp,roomsize){
 
 
 fn allpass_inner(input,gain,N){
-        let (_ffpath,fbpath) = self
-        let delsig = input+fbpath*gain
-        (delsig, delay(2000,delsig,N))
+    let (_ffpath,fbpath) = self
+    let delsig = input+fbpath*gain
+    (delsig, delay(2000,delsig,N))
 }
 fn allpass(input,gain,N){
     let (ff_path,fb_path) = allpass_inner(input,gain,N)
@@ -49,25 +48,9 @@ mod jcrev{
     fn allpass_rev(line_time_samps:`float)->`(float,float)->float{
         embed_time(line_time_samps,`allpass)
     }
-    fn map(fun,array){
-        let (head,rest) = array |> split_head
-        if ((rest |> length_array) > 0){
-            prepend(fun(head),map(fun,rest))
-        }else{
-            [fun(head)]
-        }
-    }
-    fn foldl(array,init, folder){
-        let (head_f,rest) = array |> split_head
-        if ((rest |> length_array) > 0){
-            let restf = foldl(rest,init,folder)
-            folder(head_f , restf) 
-        }else{
-            folder(head_f,init)
-        }
-    }
+
     fn parallel_filters(line_times:[float]){
-        foldl(
+        core::foldl(
             line_times,
             `|_input,_time| 0,
             |head,rest| {
@@ -78,7 +61,7 @@ mod jcrev{
         )
     }
     fn seq_filters(line_times:[float]){
-        foldl(
+        core::foldl(
             line_times,
             `|input,_time| {input},
             |head,rest| {
@@ -115,7 +98,7 @@ mod freeverb{
             [fun(head)]
         }
     }
-    fn foldl(array,init, folder){
+    fn foldl(array,init,folder){
         let (head_f,rest) = array |> split_head
         if ((rest |> length_array) > 0){
             let restf = foldl(rest,init,folder)

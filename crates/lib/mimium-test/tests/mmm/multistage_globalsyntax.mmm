@@ -1,3 +1,4 @@
+// @test {"times":1,"stereo":false,"expected":[8.0],"web":true}
 #stage(macro)
 fn genpower(n:float){
     letrec aux = |n:float,x| {

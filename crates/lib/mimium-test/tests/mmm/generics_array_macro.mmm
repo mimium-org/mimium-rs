@@ -1,3 +1,4 @@
+// @test {"times":1,"stereo":false,"expected":[24.0],"web":true}
 #stage(macro)
 fn map(arr:[a],func:(a)->b)->[b]{
     if ((arr |> length_array) > 1){

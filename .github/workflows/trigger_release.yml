@@ -1,6 +1,6 @@
 # This action is triggered by a manual workflow_dispatch event.
 # It takes input of release version number like "2.3.4".
-# This action executes `cargo-release` and `wasm-pack publish` and pushes the changes to the repository.
+# This action executes `cargo-release` and web package publish (`wasm-pack build` + `npm publish`) and pushes the changes to the repository.
 name: Trigger Release
 on:
   workflow_dispatch:
@@ -71,6 +71,12 @@ jobs:
         run: |
           which wasm-pack || cargo install wasm-pack
           wasm-pack build crates/lib/mimium-web --target web
-          wasm-pack publish crates/lib/mimium-web --target web
+          npm pkg set --prefix crates/lib/mimium-web/pkg \
+            'files[0]=mimium_web_bg.wasm' \
+            'files[1]=mimium_web.js' \
+            'files[2]=mimium_web.d.ts' \
+            'files[3]=snippets' \
+            'files[4]=snippets/**'
+          npm publish ./crates/lib/mimium-web/pkg --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}

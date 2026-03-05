@@ -17,6 +17,7 @@ use wasmtime::{
 ///
 /// Must match compiler-side import declarations in `compiler/wasmgen.rs`.
 const MAX_SPECIALIZED_BUILTIN_ARITY: usize = 16;
+const MAX_WASM_DELAY_SAMPLES: usize = 16 * 1024 * 1024;
 
 /// WASM-side analogue of [`SystemPluginAudioWorker`](crate::plugin::SystemPluginAudioWorker).
 ///
@@ -452,6 +453,43 @@ impl WasmRuntime {
                 log::warn!("Plugin '{}' has non-function type, skipping", name.as_str());
                 continue;
             };
+
+            if name.as_str() == "__probe_value_intercept$arity1" {
+                let func_type = FuncType::new(
+                    linker.engine(),
+                    vec![ValType::F64, ValType::F64],
+                    vec![ValType::F64],
+                );
+
+                let plugin_name = name.as_str().to_string();
+                let handler: Option<WasmPluginFn> = plugin_fns
+                    .as_ref()
+                    .and_then(|map| map.get(name.as_str()).cloned());
+
+                linker
+                    .func_new(
+                        "plugin",
+                        name.as_str(),
+                        func_type,
+                        move |_caller, params, results| {
+                            log::trace!("Plugin trampoline called: {plugin_name}({params:?})");
+
+                            let args = decode_trampoline_args(params);
+
+                            let passthrough = if let Some(ref func) = handler {
+                                func(&args).unwrap_or_else(|| args.first().copied().unwrap_or(0.0))
+                            } else {
+                                args.first().copied().unwrap_or(0.0)
+                            };
+
+                            results[0] = Val::F64(passthrough.to_bits());
+                            Ok(())
+                        },
+                    )
+                    .map_err(|e| format!("Failed to register plugin '{}': {e}", name.as_str()))?;
+
+                continue;
+            }
 
             // Build wasmtime FuncType matching wasmgen's setup_plugin_imports.
             // Flatten tuple arguments into separate WASM parameters
@@ -1157,7 +1195,14 @@ fn state_push_host(mut caller: Caller<'_, RuntimeState>, offset: i64) {
     log::trace!("state_push_host: offset={offset}");
     let state = caller.data_mut();
     let current = state.get_current_state();
-    current.pos += offset as usize;
+    if offset >= 0 {
+        let delta = usize::try_from(offset).unwrap_or(usize::MAX);
+        current.pos = current.pos.saturating_add(delta);
+    } else {
+        let delta_u64 = offset.unsigned_abs();
+        let delta = usize::try_from(delta_u64).unwrap_or(usize::MAX);
+        current.pos = current.pos.saturating_sub(delta);
+    }
 }
 
 /// Pop the state position cursor back by `offset` words.
@@ -1166,7 +1211,14 @@ fn state_pop_host(mut caller: Caller<'_, RuntimeState>, offset: i64) {
     log::trace!("state_pop_host: offset={offset}");
     let state = caller.data_mut();
     let current = state.get_current_state();
-    current.pos -= offset as usize;
+    if offset >= 0 {
+        let delta = usize::try_from(offset).unwrap_or(usize::MAX);
+        current.pos = current.pos.saturating_sub(delta);
+    } else {
+        let delta_u64 = offset.unsigned_abs();
+        let delta = usize::try_from(delta_u64).unwrap_or(usize::MAX);
+        current.pos = current.pos.saturating_add(delta);
+    }
 }
 
 /// Read state data from the current state storage and write to WASM linear memory.
@@ -1203,15 +1255,50 @@ fn state_get_host(mut caller: Caller<'_, RuntimeState>, dst_ptr: i32, size_words
 fn state_set_host(mut caller: Caller<'_, RuntimeState>, src_ptr: i32, size_words: i32) {
     log::trace!("state_set_host: src_ptr={src_ptr}, size_words={size_words}");
 
+    if size_words < 0 {
+        panic!("state_set_host: negative size_words={size_words}, src_ptr={src_ptr}");
+    }
+
     let size = size_words as usize;
 
     // Read from WASM linear memory
     let state_values: Vec<u64> = {
         let memory = caller.data().memory.expect("Memory not initialized");
-        let mut bytes = vec![0u8; size * std::mem::size_of::<Word>()];
-        memory
-            .read(&caller, src_ptr as usize, &mut bytes)
-            .expect("Failed to read from WASM memory");
+        let byte_len = size
+            .checked_mul(std::mem::size_of::<Word>())
+            .expect("state_set_host: byte length overflow");
+        let offset = src_ptr as u32 as usize;
+        let memory_size = memory.data_size(&caller);
+        let end = offset
+            .checked_add(byte_len)
+            .expect("state_set_host: address overflow");
+        if end > memory_size {
+            let state = caller.data();
+            let active_pos = if let Some(&closure_addr) = state.state_stack.last() {
+                state
+                    .closure_states
+                    .get(&closure_addr)
+                    .map(|s| s.pos)
+                    .unwrap_or(0)
+            } else {
+                state.global_state.pos
+            };
+            panic!(
+                "state_set_host OOB read: src_ptr(i32)={src_ptr}, src_ptr(u32)={}, size_words={size}, byte_len={byte_len}, offset={offset}, end={end}, memory_size={memory_size}, state_stack_depth={}, active_state_pos={}, current_time={}",
+                src_ptr as u32,
+                state.state_stack.len(),
+                active_pos,
+                state.current_time,
+            );
+        }
+
+        let mut bytes = vec![0u8; byte_len];
+        if let Err(err) = memory.read(&caller, offset, &mut bytes) {
+            panic!(
+                "state_set_host failed to read WASM memory: src_ptr(i32)={src_ptr}, src_ptr(u32)={}, size_words={size}, byte_len={byte_len}, offset={offset}, memory_size={memory_size}, err={err:?}",
+                src_ptr as u32,
+            );
+        }
         bytes
             .chunks(std::mem::size_of::<Word>())
             .map(|chunk| {
@@ -1247,16 +1334,21 @@ fn state_delay_host(
     let state = caller.data_mut();
     let current = state.get_current_state();
     let pos = current.pos;
-    let buf_size = max_len as usize;
-    let total_needed = pos + 2 + buf_size;
+    let Some(buf_size) = usize::try_from(max_len).ok() else {
+        return 0.0;
+    };
+
+    if buf_size == 0 || buf_size > MAX_WASM_DELAY_SAMPLES {
+        return 0.0;
+    }
+
+    let Some(total_needed) = pos.checked_add(2).and_then(|v| v.checked_add(buf_size)) else {
+        return 0.0;
+    };
 
     // Ensure data is large enough
     if total_needed > current.data.len() {
         current.data.resize(total_needed, 0);
-    }
-
-    if buf_size == 0 {
-        return 0.0;
     }
 
     let len = buf_size as u64;
@@ -1338,8 +1430,15 @@ fn array_get_elem_host(
         "array_get_elem_host: dst_ptr={dst_ptr}, array={array}, index={index}, elem_size={elem_size}"
     );
 
-    let idx = index as usize;
+    if elem_size <= 0 {
+        panic!("array_get_elem: invalid elem_size {elem_size}");
+    }
+
     let elem_words = elem_size as usize;
+
+    if elem_words == 0 {
+        panic!("array_get_elem: invalid zero elem_words");
+    }
 
     // Get element data from array storage (multi-word aware)
     let data = {
@@ -1348,17 +1447,28 @@ fn array_get_elem_host(
             .arrays
             .get(&(array as Word))
             .expect("array_get_elem: invalid array ID");
-        let base = idx * elem_words;
-        if base + elem_words > array_data.len() {
-            panic!(
-                "array_get_elem: index {} out of bounds (base={}, elem_words={}, len={})",
-                idx,
-                base,
-                elem_words,
-                array_data.len()
-            );
+        let len_elems = array_data.len() / elem_words;
+        if len_elems == 0 {
+            vec![0; elem_words]
+        } else {
+            let max_idx = len_elems - 1;
+            let idx = index.clamp(0, max_idx as i64) as usize;
+            if idx as i64 != index {
+                log::trace!(
+                    "array_get_elem: clamped index {} -> {} (len={})",
+                    index,
+                    idx,
+                    len_elems
+                );
+            }
+            let base = idx
+                .checked_mul(elem_words)
+                .expect("array_get_elem: index multiplication overflow");
+            let end = base
+                .checked_add(elem_words)
+                .expect("array_get_elem: index addition overflow");
+            array_data[base..end].to_vec()
         }
-        array_data[base..base + elem_words].to_vec()
     };
 
     // Write element data to linear memory at dst_ptr
@@ -1385,8 +1495,15 @@ fn array_set_elem_host(
         "array_set_elem_host: array={array}, index={index}, src_ptr={src_ptr}, elem_size={elem_size}"
     );
 
-    let idx = index as usize;
+    if elem_size <= 0 {
+        panic!("array_set_elem: invalid elem_size {elem_size}");
+    }
+
     let elem_words = elem_size as usize;
+
+    if elem_words == 0 {
+        panic!("array_set_elem: invalid zero elem_words");
+    }
 
     // Read element from linear memory
     let mut buffer = vec![0u64; elem_words];
@@ -1407,11 +1524,27 @@ fn array_set_elem_host(
         .arrays
         .get_mut(&(array as Word))
         .expect("array_set_elem: invalid array ID");
-    let base = idx * elem_words;
-    if base + elem_words > array_data.len() {
-        panic!("array_set_elem: index out of bounds");
+    let len_elems = array_data.len() / elem_words;
+    if len_elems == 0 {
+        return;
     }
-    array_data[base..base + elem_words].copy_from_slice(&buffer);
+    let max_idx = len_elems - 1;
+    let idx = index.clamp(0, max_idx as i64) as usize;
+    if idx as i64 != index {
+        log::trace!(
+            "array_set_elem: clamped index {} -> {} (len={})",
+            index,
+            idx,
+            len_elems
+        );
+    }
+    let base = idx
+        .checked_mul(elem_words)
+        .expect("array_set_elem: index multiplication overflow");
+    let end = base
+        .checked_add(elem_words)
+        .expect("array_set_elem: index addition overflow");
+    array_data[base..end].copy_from_slice(&buffer);
 }
 
 // Runtime globals

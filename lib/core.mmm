@@ -39,3 +39,27 @@ pub fn stereo_synth(processor:()->`float)->`(float,float){
         ($left,$right)
     }
 }
+pub fn stereo_fx(processor:`(float)->float)->`(float,float)->(float,float){
+    `|input|{
+        let (left,right) = input
+        (($processor)(left),($processor)(right))
+    }
+}
+
+pub fn map(fun,array) {
+    let (head,rest) = array |> split_head
+    if ((rest |> length_array) > 0){
+        prepend(fun(head),map(fun,rest))
+    }else{
+        [fun(head)]
+    }
+}
+pub fn foldl(array,init, folder){
+    let (head_f,rest) = array |> split_head
+    if ((rest |> length_array) > 0){
+        let rest_folded = foldl(rest,init,folder)
+        folder(head_f , rest_folded) 
+    }else{
+        folder(head_f,init)
+    }
+}

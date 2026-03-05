@@ -21,7 +21,7 @@ We uses several additional tools to improve developing experience and automate a
 You can install them with the command below.
 
 ```sh
-cargo install clippy cargo-dist cargo-release
+cargo install clippy cargo-release
 ```
 
 ### Install IDE
@@ -94,11 +94,24 @@ Note that this command will modify the version in the root `Cargo.toml` and make
 
 Also it internally executes `cargo publish` to upload crates into crate.io, so make sure you have a write permission token to publish. (Set `CRATEIO_TOKEN` for repository secrets.)
 
-For the wasm build, it executes `wasm-pack publish --target web`. It also requires npm publish token. (Set `NPM_PUBLISH_TOKEN` secret.)
+For the wasm build, it executes `wasm-pack build --target web`, updates `crates/lib/mimium-web/pkg/package.json` `files` to include `snippets`, and publishes with `npm publish`. It also requires npm publish token. (Set `NPM_PUBLISH_TOKEN` secret.)
+
+If you need to run the wasm package publish manually, use the same sequence as CI:
+
+```sh
+wasm-pack build crates/lib/mimium-web --target web
+npm pkg set --prefix crates/lib/mimium-web/pkg \
+  'files[0]=mimium_web_bg.wasm' \
+  'files[1]=mimium_web.js' \
+  'files[2]=mimium_web.d.ts' \
+  'files[3]=snippets' \
+  'files[4]=snippets/**'
+npm publish ./crates/lib/mimium-web/pkg --access public
+```
 
 If tagged commit is pushed to github, the another workflow is triggered.
 
-The workflow uses `cargo-dist` to publish binary on a github release.
+The release workflow builds and packages binaries/plugins on GitHub Actions and uploads zip assets directly to GitHub Release.
 
 Do not forget re-merge commits on `main` into `dev` branch after main release is done.
 
