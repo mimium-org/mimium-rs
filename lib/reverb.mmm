@@ -35,56 +35,81 @@ fn comb_fb(input,gain,time_samps){
 
 mod jcrev{
     #stage(macro)
-    fn embed_time(line_time_samps:`float,filter:`(float,float,float)->float){
+    let allpass_gain = 0.7
+    fn scale_samples(base_samples:float)->`float{
+        `{ $(base_samples |> lift_f) * samplerate / 44100.0 }
+    }
+    fn comb_fb_for_rev(line_time_samps:`float)->`(float,float)->float{
         `|input,rev_time| {
             let time = $line_time_samps
             let gain = gain_tr60(time, rev_time)
-            (input,gain,time) |> $filter
+            comb_fb(input,gain,time)
         }
     }
-    fn comb_fb_for_rev(line_time_samps:`float)->`(float,float)->float{
-        embed_time(line_time_samps,`comb_fb)
+    fn allpass_rev(line_time_samps:`float)->`(float)->float{
+        `|input| {
+            allpass(input,$(allpass_gain |> lift_f),$line_time_samps)
+        }
     }
-    fn allpass_rev(line_time_samps:`float)->`(float,float)->float{
-        embed_time(line_time_samps,`allpass)
+    fn output_delay(line_time_samps:`float)->`(float)->float{
+        `|input| {
+            delay(512,input,$line_time_samps)
+        }
     }
 
-    fn parallel_filters(line_times:[float]){
+    fn parallel_combs(line_times:[float]){
         core::foldl(
             line_times,
             `|_input,_time| 0,
             |head,rest| {
-                let time_samps = `{ $(head / 1000.0|> lift_f) * samplerate  }
+                let time_samps = scale_samples(head)
                 let head_filter = comb_fb_for_rev(time_samps)
                 `|input,time| ($head_filter)(input,time) + ($rest)(input,time)
             },
         )
     }
-    fn seq_filters(line_times:[float]){
+    fn seq_allpasses(line_times:[float]){
         core::foldl(
             line_times,
-            `|input,_time| {input},
+            `|input| {input},
             |head,rest| {
-                let time_samps = `{ $(head |> lift_f) * samplerate / 1000.0 }
+                let time_samps = scale_samples(head)
                 let head_filter = allpass_rev(time_samps)
-                `|input,time| ($rest)(($head_filter)(input,time),time)
+                `|input| ($rest)(($head_filter)(input))
             },
         )
     }
     pub fn jcrev_wet(){
-        let comb_times_ms =  [39.85,36.10,33.27,30.15]
-        let allpass_ms = [100,100/3,100/9]
-        let com_par = parallel_filters(comb_times_ms)
-        let all_par = seq_filters(allpass_ms)
+        let comb_times = [1116,1356,1422,1617]
+        let allpass_times = [225,341,441]
+        let com_par = parallel_combs(comb_times)
+        let all_par = seq_allpasses(allpass_times)
         `|input,rev_time| {
-            let ap_out = (input,rev_time) |> $all_par
+            let ap_out = input |> $all_par
             (ap_out,rev_time) |> $com_par
+        }
+    }
+    pub fn jcrev_stereo_wet(){
+        let left_delay = output_delay(scale_samples(211))
+        let right_delay = output_delay(scale_samples(179))
+        let left_wet = jcrev_wet()
+        let right_wet = jcrev_wet()
+        `|left,right,rev_time| {
+            let wet_l = ($left_wet)(left,rev_time)
+            let wet_r = ($right_wet)(right,rev_time)
+            (($left_delay)(wet_l),($right_delay)(wet_r))
         }
     }
     #stage(main)
     pub fn jcrev(input,time,mix){
         let wet = (input,time) |> jcrev_wet!()
         input * (1-mix) + wet * mix
+    }
+    pub fn jcrev_stereo(input:(float,float),time,mix){
+        let (left_in,right_in) = input
+        let (left_wet,right_wet) = jcrev_stereo_wet!()(left_in,right_in,time)
+        let dry = input * (1-mix)
+        (left_wet * mix + dry.0,right_wet * mix + dry.1)
     }
 }
 mod freeverb{
@@ -158,5 +183,5 @@ mod freeverb{
 }
 
 pub use freeverb::{freeverb_stereo,freeverb_mono}
-pub use jcrev::{jcrev_wet,jcrev}
+pub use jcrev::{jcrev_wet,jcrev_stereo_wet,jcrev,jcrev_stereo}
 
