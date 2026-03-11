@@ -4397,8 +4397,7 @@ fn compile_and_execute_stage0(
 
     // Filter builtin types: skip entries whose names are overridden by
     // combinator signatures (e.g. lift_f, lift_arrayf, lift) or by macro
-    // bridge closures (e.g. Probe, Slider) so that the Code()-stripped
-    // types take precedence.
+    // bridge closures so that the Code()-stripped types take precedence.
     let all_types: Vec<(Symbol, TypeNodeId)> = builtin_types
         .iter()
         .filter(|(name, _)| !combinator_names.contains(name) && !macro_names.contains(name))

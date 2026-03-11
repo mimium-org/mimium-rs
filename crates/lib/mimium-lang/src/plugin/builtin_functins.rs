@@ -93,6 +93,32 @@ mod lift_arrayf {
     }
 }
 
+mod lift_array_code {
+    use super::*;
+    use crate::code;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::{
+        function,
+        types::{Type, TypeSchemeId},
+    };
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 1);
+        super::lift_value_to_code(args[0].0.clone())
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        let t = Type::TypeScheme(TypeSchemeId(u64::MAX - 2)).into_id();
+        let array_type = Type::Array(code!(t)).into_id();
+        MacroInfo {
+            name: "lift_array_code".to_symbol(),
+            ty: function!(vec![array_type], code!(Type::Array(t).into_id())),
+            fun: std::rc::Rc::new(std::cell::RefCell::new(macro_function)),
+        }
+    }
+}
+
 mod length_array {
     use super::*;
     use crate::interner::TypeNodeId;
@@ -1173,6 +1199,7 @@ fn generate_default_macros() -> impl ExactSizeIterator<Item = MacroInfo> {
         lift::signature(),
         lift_f::signature(),
         lift_arrayf::signature(),
+        lift_array_code::signature(),
         map::signature(),
         // String primitives (Stage 0 only)
         str_length::signature(),
@@ -1201,11 +1228,15 @@ pub fn get_builtin_fns_as_plugins() -> Box<dyn Plugin> {
 
 #[cfg(test)]
 mod tests {
-    use super::try_get_monomorphized_ext_fn_name;
+    use super::{get_builtin_fns_as_plugins, try_get_monomorphized_ext_fn_name};
     use crate::{
+        compiler,
         interner::ToSymbol,
         numeric,
+        plugin,
+        plugin::Plugin,
         types::{PType, Type},
+        Config, ExecContext,
     };
 
     #[test]
@@ -1249,5 +1280,100 @@ mod tests {
         );
 
         assert_eq!(resolved, Some("__probe_value_intercept$arity1".to_symbol()));
+    }
+
+    #[test]
+    fn builtin_plugin_exposes_lift_array_code() {
+        let plugin = get_builtin_fns_as_plugins();
+        let type_infos = plugin.get_type_infos();
+        let macro_functions = plugin.get_macro_functions();
+
+        assert!(
+            type_infos
+                .iter()
+                .any(|info| info.name == "lift_array_code".to_symbol()),
+            "type infos should contain lift_array_code"
+        );
+        assert!(
+            macro_functions
+                .iter()
+                .any(|fun| fun.get_name() == "lift_array_code".to_symbol()),
+            "macro functions should contain lift_array_code"
+        );
+    }
+
+    #[test]
+    fn compiler_context_keeps_lift_array_code() {
+        let plugin = get_builtin_fns_as_plugins();
+        let plugins = [plugin];
+        let ext_fns = plugin::get_extfun_types(&plugins).collect::<Vec<_>>();
+        let macros = plugin::get_macro_functions(&plugins).collect::<Vec<_>>();
+        let ctx = compiler::Context::new(ext_fns, macros, None, compiler::Config::default());
+
+        assert!(
+            ctx.get_ext_typeinfos()
+                .iter()
+                .any(|(name, _)| *name == "lift_array_code".to_symbol()),
+            "compiler context should contain lift_array_code"
+        );
+    }
+
+    #[test]
+    fn exec_context_compiles_lift_array_code_source() {
+        let src = r#"
+// @test {"times":1,"stereo":false,"expected":[31.0],"web":true}
+
+#stage(macro)
+fn mk_functions(){
+   let funcs = [
+      `|x| x + 1.0,
+      `|x| x * 2.0,
+   ]
+   funcs |> lift_array_code
+}
+
+#stage(main)
+fn dsp(){
+  let funcs = mk_functions!()
+  funcs[0](10.0) + funcs[1](10.0)
+}
+"#;
+        let mut ctx = ExecContext::new(std::iter::empty(), None, Config::default());
+        let result = ctx.prepare_machine(src);
+        assert!(result.is_ok(), "prepare_machine failed: {result:?}");
+    }
+
+    #[test]
+    fn compiler_with_file_path_compiles_lift_array_code_source() {
+        let src = r#"
+// @test {"times":1,"stereo":false,"expected":[31.0],"web":true}
+
+#stage(macro)
+fn mk_functions(){
+   let funcs = [
+      `|x| x + 1.0,
+      `|x| x * 2.0,
+   ]
+   funcs |> lift_array_code
+}
+
+#stage(main)
+fn dsp(){
+  let funcs = mk_functions!()
+  funcs[0](10.0) + funcs[1](10.0)
+}
+"#;
+        let plugin = get_builtin_fns_as_plugins();
+        let plugins = [plugin];
+        let ext_fns = plugin::get_extfun_types(&plugins).collect::<Vec<_>>();
+        let macros = plugin::get_macro_functions(&plugins).collect::<Vec<_>>();
+        let ctx = compiler::Context::new(
+            ext_fns,
+            macros,
+            Some(std::path::PathBuf::from("tmp/lift_array_code_test.mmm")),
+            compiler::Config::default(),
+        );
+        let result = ctx.emit_mir(src);
+        assert!(result.is_ok(), "emit_mir failed: {result:?}");
     }
 }

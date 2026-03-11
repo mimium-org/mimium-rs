@@ -1267,3 +1267,40 @@ pub fn lib_main() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::get_default_context;
+    use mimium_lang::Config;
+    use std::path::PathBuf;
+
+    #[test]
+    fn default_cli_context_compiles_lift_array_code_source() {
+        let src = r#"
+// @test {"times":1,"stereo":false,"expected":[31.0],"web":true}
+
+#stage(macro)
+fn mk_functions(){
+   let funcs = [
+      `|x| x + 1.0,
+      `|x| x * 2.0,
+   ]
+   funcs |> lift_array_code
+}
+
+#stage(main)
+fn dsp(){
+  let funcs = mk_functions!()
+  funcs[0](10.0) + funcs[1](10.0)
+}
+"#;
+        let mut ctx = get_default_context(
+            Some(PathBuf::from("tmp/lift_array_code_test.mmm")),
+            false,
+            Config::default(),
+        );
+        ctx.prepare_compiler();
+        let result = ctx.get_compiler().unwrap().emit_mir(src);
+        assert!(result.is_ok(), "emit_mir failed: {result:?}");
+    }
+}

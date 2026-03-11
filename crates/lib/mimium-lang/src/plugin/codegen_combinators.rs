@@ -389,7 +389,7 @@ fn code_proj(machine: &mut Machine) -> ReturnCode {
 }
 
 /// `code_array(elems: [Code(a)]) -> Code([a])`
-fn code_array(machine: &mut Machine) -> ReturnCode {
+pub(super) fn code_array(machine: &mut Machine) -> ReturnCode {
     let arr_raw = machine.get_stack(0);
     let arr = machine.arrays.get_array(arr_raw);
     let len = arr.get_length_array();

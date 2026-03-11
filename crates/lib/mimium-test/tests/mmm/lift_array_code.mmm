@@ -1,0 +1,16 @@
+// @test {"times":1,"stereo":false,"expected":[31.0],"web":true}
+
+#stage(macro)
+fn mk_functions(){
+   let funcs = [
+      `|x| x + 1.0,
+      `|x| x * 2.0,
+   ]
+   funcs |> lift_array_code
+}
+
+#stage(main)
+fn dsp(){
+  let funcs = mk_functions!()
+  funcs[0](10.0) + funcs[1](10.0)
+}
