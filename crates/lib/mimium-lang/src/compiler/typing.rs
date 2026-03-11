@@ -1705,6 +1705,9 @@ impl InferContext {
         let resolved = Self::substitute_type(ty);
         match resolved.to_type() {
             Type::TypeAlias(name) => {
+                if Self::is_explicit_type_param_name(name) {
+                    return None;
+                }
                 let resolved_name = self.resolve_type_alias_symbol_fallback(name);
                 // Check if this type alias is private
                 if self.is_private(&resolved_name) {
@@ -1891,6 +1894,7 @@ impl InferContext {
             _ => t.apply_fn(|t| self.generalize(t)),
         }
     }
+
     fn instantiate(&mut self, t: TypeNodeId) -> TypeNodeId {
         match t.to_type() {
             Type::TypeScheme(id) => {

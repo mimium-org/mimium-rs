@@ -216,19 +216,23 @@ impl ByteCodeGenerator {
         faddress: &Arc<mir::Value>,
         args: &[(Arc<mir::Value>, TypeNodeId)],
     ) -> (Reg, TypeSize) {
-        let mut aoffsets = vec![];
-        let mut offset: TypeSize = 0;
-        for (a, ty) in args.iter() {
-            let src = self.find(a);
-            let size = Self::word_size_for_type(*ty);
-            aoffsets.push((offset, src, size));
-            offset = offset.checked_add(size).unwrap_or_else(|| {
-                panic!(
-                    "bytecodegen: offset overflow in prepare_function: offset={}, size={}, type={:?}",
-                    offset, size, ty.to_type()
-                )
+        let (aoffsets, offset): (Vec<(TypeSize, Reg, TypeSize)>, TypeSize) = args
+            .iter()
+            .filter_map(|(a, ty)| {
+                let size = Self::word_size_for_type(*ty);
+                (size != 0 && !matches!(a.as_ref(), mir::Value::None)).then_some((a, ty, size))
+            })
+            .fold((vec![], 0 as TypeSize), |(mut aoffsets, offset), (a, ty, size)| {
+                let src = self.find(a);
+                let next_offset = offset.checked_add(size).unwrap_or_else(|| {
+                    panic!(
+                        "bytecodegen: offset overflow in prepare_function: offset={}, size={}, type={:?}",
+                        offset, size, ty.to_type()
+                    )
+                });
+                aoffsets.push((offset, src, size));
+                (aoffsets, next_offset)
             });
-        }
         let faddress = self.find_keep(faddress);
         let placements: Vec<(TypeSize, Reg, TypeSize)> = aoffsets
             .iter()

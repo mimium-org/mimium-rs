@@ -1388,11 +1388,13 @@ impl Context {
                     if let Some(resolved) =
                         resolve_monomorphized_ext_fn_name(*name, ext_arg_ty, ext_ret_ty)
                     {
-                        let concrete_fn_ty = typeenv
-                            .env
-                            .lookup(&resolved)
-                            .map(|(ty, _)| *ty)
-                            .unwrap_or(fallback_fn_ty);
+                        // Builtin arity-specialized runtime symbols can legitimately be shared
+                        // by multiple concrete source-level function types (for example `number`
+                        // and `[number]` both lower to one machine word). Keep the call's
+                        // concrete function type derived from the instruction itself instead of
+                        // consulting the type environment by symbol name, which may contain a
+                        // different same-arity instantiation.
+                        let concrete_fn_ty = fallback_fn_ty;
                         *fn_ptr = Arc::new(Value::ExtFunction(resolved, concrete_fn_ty));
                     } else {
                         let concrete_fn_ty = {
@@ -2531,17 +2533,12 @@ impl Context {
                             monomorphized_rt,
                         );
                         if let Some(specialized_name) = resolved {
-                            if let Some((specialized_fn_ty, _stage)) =
-                                self.typeenv.env.lookup(&specialized_name).cloned()
-                            {
-                                if let Type::Function { arg, ret } = specialized_fn_ty.to_type() {
-                                    call_arg_ty = arg;
-                                    monomorphized_rt = ret;
-                                }
-                                Arc::new(Value::ExtFunction(specialized_name, specialized_fn_ty))
-                            } else {
-                                Arc::new(Value::ExtFunction(specialized_name, *fn_ty))
+                            let specialized_fn_ty = Type::Function {
+                                arg: monomorphized_at,
+                                ret: monomorphized_rt,
                             }
+                            .into_id();
+                            Arc::new(Value::ExtFunction(specialized_name, specialized_fn_ty))
                         } else {
                             f_to_call
                         }

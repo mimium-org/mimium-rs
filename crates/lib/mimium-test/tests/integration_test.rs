@@ -259,6 +259,19 @@ fn tuple_binop_nested_shape_mismatch_fail() {
     assert_eq!(res.len(), 1);
 }
 
+#[wasm_bindgen_test(unsupported = test)]
+fn monomorph_builtin_array_ops_same_arity_nested_array() {
+    let (res, spec) =
+        run_annotated_file_test("monomorph_builtin_array_ops_same_arity_nested_array.mmm").unwrap();
+    assert_with_spec(&res, &spec);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn imported_core_generic_nested_array() {
+    let (res, spec) = run_annotated_file_test("imported_core_generic_nested_array.mmm").unwrap();
+    assert_with_spec(&res, &spec);
+}
+
 #[test]
 fn probe_macro() {
     let (_, src) = load_src("probe_macro.mmm");
