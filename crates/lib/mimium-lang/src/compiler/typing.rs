@@ -24,6 +24,9 @@ pub enum Error {
         left: (TypeNodeId, Location),
         right: (TypeNodeId, Location),
     },
+    EscapeRequiresCodeType {
+        found: (TypeNodeId, Location),
+    },
     LengthMismatch {
         left: (usize, Location),
         right: (usize, Location),
@@ -124,6 +127,12 @@ impl ReportableError for Error {
     fn get_message(&self) -> String {
         match self {
             Error::TypeMismatch { .. } => format!("Type mismatch"),
+            Error::EscapeRequiresCodeType { found: (ty, ..) } => {
+                format!(
+                    "Escape requires a code value, but found {}",
+                    ty.to_type().to_string_for_error()
+                )
+            }
             Error::PatternMismatch(..) => format!("Pattern mismatch"),
             Error::LengthMismatch { .. } => format!("Length of the elements are different"),
             Error::NonFunctionForLetRec(_, _) => format!("`letrec` can take only function type."),
@@ -315,6 +324,13 @@ impl ReportableError for Error {
                     ]
                 }
             }
+            Error::EscapeRequiresCodeType { found: (ty, loc) } => vec![(
+                loc.clone(),
+                format!(
+                    "escape expects `Code(T)`, but found {}. Escaping nested code containers such as arrays of quoted values is not supported",
+                    ty.to_type().to_string_for_error()
+                ),
+            )],
             Error::PatternMismatch((ty, loct), (pat, locp)) => vec![
                 (loct.clone(), ty.to_type().to_string_for_error()),
                 (locp.clone(), pat.to_string()),
@@ -2571,6 +2587,13 @@ impl InferContext {
                 self.stage = prev_stage;
                 if matches!(res.get_root().to_type(), Type::Primitive(PType::Unit)) {
                     return Ok(Type::Primitive(PType::Unit).into_id_with_location(loc_e));
+                }
+                if !matches!(res.get_root().to_type(), Type::Code(_))
+                    && res.get_root().to_type().contains_code()
+                {
+                    return Err(vec![Error::EscapeRequiresCodeType {
+                        found: (res.get_root(), loc_e),
+                    }]);
                 }
                 let intermediate = self.gen_intermediate_type_with_location(loc_e.clone());
                 let rel = self.unify_types(

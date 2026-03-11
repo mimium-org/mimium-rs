@@ -211,10 +211,15 @@ impl Type {
     pub fn contains_code(&self) -> bool {
         match self {
             Type::Code(_) => true,
+            Type::Array(t) => t.to_type().contains_code(),
             Type::Tuple(t) => t.iter().any(|t| t.to_type().contains_code()),
             Type::Record(t) => t
                 .iter()
                 .any(|RecordTypeField { ty, .. }| ty.to_type().contains_code()),
+            Type::Function { arg, ret } => {
+                arg.to_type().contains_code() || ret.to_type().contains_code()
+            }
+            Type::Ref(t) => t.to_type().contains_code(),
             Type::Union(t) => t.iter().any(|t| t.to_type().contains_code()),
             Type::Boxed(t) => t.to_type().contains_code(),
             _ => false,

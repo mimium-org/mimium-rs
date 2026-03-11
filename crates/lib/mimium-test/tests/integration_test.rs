@@ -272,6 +272,12 @@ fn imported_core_generic_nested_array() {
     assert_with_spec(&res, &spec);
 }
 
+#[wasm_bindgen_test(unsupported = test)]
+fn macro_quote_imported_global_function() {
+    let (res, spec) = run_annotated_file_test("macro_quote_imported_global_function.mmm").unwrap();
+    assert_with_spec(&res, &spec);
+}
+
 #[test]
 fn probe_macro() {
     let (_, src) = load_src("probe_macro.mmm");
