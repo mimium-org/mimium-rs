@@ -19,7 +19,7 @@ use crate::{
     plugin::{ExtClsInfo, ExtFunTypeInfo},
     runtime::vm::{Machine, ReturnCode},
     string_t,
-    types::Type,
+    types::{PType, Type},
 };
 
 use super::EvalStage;
@@ -41,6 +41,139 @@ fn raw_to_symbol(machine: &Machine, raw: u64) -> Symbol {
     let idx = raw as usize;
     let s = &machine.prog.strings[idx];
     s.to_symbol()
+}
+
+fn lookup_extfun_arg_types(machine: &Machine, name: Symbol) -> Option<Vec<TypeNodeId>> {
+    machine
+        .prog
+        .ext_fun_table
+        .iter()
+        .filter(|(n, _)| n.as_str() == name.as_str())
+        .filter_map(|(_, ty)| match ty.to_type() {
+            Type::Function { arg, .. } => Some(match arg.to_type() {
+                Type::Tuple(types) => types,
+                _ => vec![arg],
+            }),
+            _ => None,
+        })
+        .max_by_key(|arg_tys| {
+            arg_tys
+                .iter()
+                .filter(|t| !t.to_type().contains_unresolved())
+                .count()
+        })
+}
+
+fn raw_words_to_code_expr(machine: &Machine, words: &[u64], ty: TypeNodeId) -> Option<ExprNodeId> {
+    match ty.to_type() {
+        Type::Primitive(PType::Numeric) => {
+            let value = f64::from_bits(words.first().copied().unwrap_or_default());
+            Some(expr_to_id(Expr::Literal(Literal::Float(
+                format!("{value}").to_symbol(),
+            ))))
+        }
+        Type::Primitive(PType::Int) => Some(expr_to_id(Expr::Literal(Literal::Int(
+            words.first().copied().unwrap_or_default() as i64,
+        )))),
+        Type::Primitive(PType::String) => Some(expr_to_id(Expr::Literal(Literal::String(
+            raw_to_symbol(machine, words.first().copied().unwrap_or_default()),
+        )))),
+        Type::Code(_) => Some(machine.get_code(words.first().copied().unwrap_or_default())),
+        Type::Array(elem_ty) => {
+            let array_handle = words.first().copied().unwrap_or_default();
+            let array = machine.arrays.try_get_array(array_handle)?;
+            let elem_word_size = elem_ty.word_size() as usize;
+            let data = array.get_data().to_vec();
+            let elems = (0..array.get_length_array() as usize)
+                .map(|idx| {
+                    let start = idx * elem_word_size;
+                    let end = start + elem_word_size;
+                    raw_words_to_code_expr(machine, &data[start..end], elem_ty)
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(expr_to_id(Expr::ArrayLiteral(elems)))
+        }
+        Type::Tuple(elem_tys) => {
+            let mut offset = 0usize;
+            let elems = elem_tys
+                .iter()
+                .map(|elem_ty| {
+                    let size = elem_ty.word_size() as usize;
+                    let expr =
+                        raw_words_to_code_expr(machine, &words[offset..offset + size], *elem_ty);
+                    offset += size;
+                    expr
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(expr_to_id(Expr::Tuple(elems)))
+        }
+        Type::Record(fields) => {
+            let mut offset = 0usize;
+            let fields = fields
+                .iter()
+                .map(|field| {
+                    let size = field.ty.word_size() as usize;
+                    let expr =
+                        raw_words_to_code_expr(machine, &words[offset..offset + size], field.ty);
+                    offset += size;
+                    expr.map(|expr| RecordField {
+                        name: field.key,
+                        expr,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(expr_to_id(Expr::RecordLiteral(fields)))
+        }
+        Type::Intermediate(cell) => {
+            let tv = cell.read().ok()?;
+            tv.parent
+                .as_ref()
+                .and_then(|parent| raw_words_to_code_expr(machine, words, *parent))
+        }
+        _ => None,
+    }
+}
+
+fn raw_stack_value_to_code_expr(
+    machine: &Machine,
+    stack_offset: i64,
+    ty: TypeNodeId,
+) -> Option<ExprNodeId> {
+    let word_size = ty.word_size() as usize;
+    let words = (0..word_size)
+        .map(|idx| machine.get_stack(stack_offset + idx as i64))
+        .collect::<Vec<_>>();
+    raw_words_to_code_expr(machine, &words, ty)
+}
+
+fn heuristic_word_to_code_expr(machine: &Machine, raw: u64) -> ExprNodeId {
+    if let Some(array) = machine.arrays.try_get_array(raw) {
+        let elem_word_size = array.get_elem_word_size() as usize;
+        let data = array.get_data().to_vec();
+        let elems = (0..array.get_length_array() as usize)
+            .map(|idx| {
+                let start = idx * elem_word_size;
+                let end = start + elem_word_size;
+                if elem_word_size == 1 {
+                    heuristic_word_to_code_expr(machine, data[start])
+                } else {
+                    let tuple_elems = data[start..end]
+                        .iter()
+                        .map(|word| heuristic_word_to_code_expr(machine, *word))
+                        .collect::<Vec<_>>();
+                    expr_to_id(Expr::Tuple(tuple_elems))
+                }
+            })
+            .collect::<Vec<_>>();
+        expr_to_id(Expr::ArrayLiteral(elems))
+    } else if let Some(expr) = machine.try_get_code(raw) {
+        expr
+    } else {
+        let value = f64::from_bits(raw);
+        expr_to_id(Expr::Literal(Literal::Float(
+            format!("{value}").to_symbol(),
+        )))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -659,11 +792,27 @@ fn code_lift_arrayf(machine: &mut Machine) -> ReturnCode {
 /// Otherwise the value is treated as a float and lifted via `code_lit_f`.
 fn code_lift(machine: &mut Machine) -> ReturnCode {
     let nargs = machine.get_current_ext_call_nargs() as usize;
+    let concrete_arg_types =
+        lookup_extfun_arg_types(machine, "lift".to_symbol()).unwrap_or_default();
     if nargs > 1 {
         let elems: Vec<ExprNodeId> = (0..nargs)
             .map(|i| {
-                let f = f64::from_bits(machine.get_stack(i as i64));
-                expr_to_id(Expr::Literal(Literal::Float(format!("{f}").to_symbol())))
+                let raw = machine.get_stack(i as i64);
+                concrete_arg_types
+                    .get(i)
+                    .copied()
+                    .and_then(|ty| match ty.to_type() {
+                        Type::Primitive(PType::Numeric)
+                            if machine.arrays.try_get_array(raw).is_some() =>
+                        {
+                            Some(heuristic_word_to_code_expr(machine, raw))
+                        }
+                        _ => raw_stack_value_to_code_expr(machine, i as i64, ty),
+                    })
+                    .unwrap_or_else(|| {
+                        let f = f64::from_bits(raw);
+                        expr_to_id(Expr::Literal(Literal::Float(format!("{f}").to_symbol())))
+                    })
             })
             .collect();
         let expr = expr_to_id(Expr::Tuple(elems));
@@ -672,37 +821,19 @@ fn code_lift(machine: &mut Machine) -> ReturnCode {
         return 1;
     }
 
-    let val = machine.get_stack(0);
-    if let Some(arr) = machine.arrays.try_get_array(val) {
-        let len = arr.get_length_array();
-        let elem_word_size = arr.get_elem_word_size() as usize;
-        let data = arr.get_data().to_vec();
-        let elems: Vec<ExprNodeId> = (0..len as usize)
-            .map(|i| {
-                let start = i * elem_word_size;
-                let end = start + elem_word_size;
-                let words = &data[start..end];
-                if elem_word_size == 1 {
-                    let f = f64::from_bits(words[0]);
-                    expr_to_id(Expr::Literal(Literal::Float(format!("{f}").to_symbol())))
-                } else {
-                    let tuple_elems = words
-                        .iter()
-                        .map(|w| {
-                            let f = f64::from_bits(*w);
-                            expr_to_id(Expr::Literal(Literal::Float(format!("{f}").to_symbol())))
-                        })
-                        .collect::<Vec<_>>();
-                    expr_to_id(Expr::Tuple(tuple_elems))
-                }
-            })
-            .collect();
-        let expr = expr_to_id(Expr::ArrayLiteral(elems));
-        let code_val = machine.alloc_code(expr);
-        machine.set_stack(0, code_val);
-    } else {
-        code_lit_f(machine);
-    }
+    let raw = machine.get_stack(0);
+    let expr = concrete_arg_types
+        .first()
+        .copied()
+        .and_then(|arg_ty| match arg_ty.to_type() {
+            Type::Primitive(PType::Numeric) if machine.arrays.try_get_array(raw).is_some() => {
+                Some(heuristic_word_to_code_expr(machine, raw))
+            }
+            _ => raw_stack_value_to_code_expr(machine, 0, arg_ty),
+        })
+        .unwrap_or_else(|| heuristic_word_to_code_expr(machine, raw));
+    let code_val = machine.alloc_code(expr);
+    machine.set_stack(0, code_val);
     1
 }
 

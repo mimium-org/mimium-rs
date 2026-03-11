@@ -767,3 +767,14 @@ fn wasm_record_default_adsr() {
         );
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_stateful_array_self_zero_init() {
+    let res = run_file_test_wasm("stateful_array_self_zero_init.mmm", 3, false).unwrap();
+    let ans = vec![1.0, 2.0, 3.0];
+    assert_eq!(
+        res, ans,
+        "WASM backend: array-valued self should start from zero"
+    );
+}

@@ -18,6 +18,12 @@ use wasmtime::{
 /// Must match compiler-side import declarations in `compiler/wasmgen.rs`.
 const MAX_SPECIALIZED_BUILTIN_ARITY: usize = 16;
 const MAX_WASM_DELAY_SAMPLES: usize = 16 * 1024 * 1024;
+/// Raw array handle used as a sentinel for zero-initialized array-valued state.
+///
+/// This mirrors the native VM workaround: array-valued `self` may be observed
+/// as raw handle `0` before any real array has been allocated, so the runtime
+/// treats it as an empty / all-zero array instead of failing immediately.
+const UNINITIALIZED_ARRAY_HANDLE_SENTINEL: i64 = 0;
 
 /// WASM-side analogue of [`SystemPluginAudioWorker`](crate::plugin::SystemPluginAudioWorker).
 ///
@@ -1473,6 +1479,21 @@ fn array_get_elem_host(
         panic!("array_get_elem: invalid zero elem_words");
     }
 
+    if array == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+        let data = vec![0; elem_words];
+        let memory = caller.data().memory.expect("Memory not initialized");
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                data.as_ptr() as *const u8,
+                elem_words * std::mem::size_of::<Word>(),
+            )
+        };
+        memory
+            .write(&mut caller, dst_ptr as usize, bytes)
+            .expect("Failed to write to WASM memory");
+        return;
+    }
+
     // Get element data from array storage (multi-word aware)
     let data = {
         let state = caller.data();
@@ -1608,6 +1629,9 @@ fn builtin_probe_host(_caller: Caller<'_, RuntimeState>, x: f64) -> f64 {
 
 fn builtin_length_array_host(caller: Caller<'_, RuntimeState>, array: i64) -> f64 {
     log::trace!("builtin_length_array_host: array={array}");
+    if array == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+        return 0.0;
+    }
     let state = caller.data();
     let array_data = state
         .arrays
@@ -1623,6 +1647,44 @@ fn builtin_split_head_arity_host(
     elem_words: usize,
 ) {
     log::trace!("builtin_split_head$arity{elem_words}: array={array}, dst_ptr={dst_ptr}");
+
+    if array == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+        let memory = caller.data().memory.expect("Memory not initialized");
+        (0..elem_words).for_each(|idx| {
+            memory
+                .write(
+                    &mut caller,
+                    (dst_ptr as usize) + idx * std::mem::size_of::<Word>(),
+                    &0i64.to_le_bytes(),
+                )
+                .expect("split_head: failed to write zero head word");
+        });
+        memory
+            .write(
+                &mut caller,
+                (dst_ptr as usize) + elem_words * std::mem::size_of::<Word>(),
+                &0i64.to_le_bytes(),
+            )
+            .expect("split_head: failed to write zero rest array handle");
+        return;
+    }
+
+    if array == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+        let memory = caller.data().memory.expect("Memory not initialized");
+        memory
+            .write(&mut caller, dst_ptr as usize, &0i64.to_le_bytes())
+            .expect("split_tail: failed to write zero rest array handle");
+        (0..elem_words).for_each(|idx| {
+            memory
+                .write(
+                    &mut caller,
+                    (dst_ptr as usize) + (idx + 1) * std::mem::size_of::<Word>(),
+                    &0i64.to_le_bytes(),
+                )
+                .expect("split_tail: failed to write zero tail word");
+        });
+        return;
+    }
 
     let (head_words, rest_data) = {
         let state = caller.data();

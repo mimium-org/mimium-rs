@@ -4,6 +4,17 @@ use crate::{
 };
 use std::{cell::RefCell, rc::Rc};
 
+/// Raw array handle used as a sentinel for zero-initialized array-valued state.
+///
+/// Array-valued `self` currently starts life as raw word `0` before any real
+/// array handle has been allocated. The runtime interprets that value as an
+/// empty / all-zero array as a compatibility workaround so user code does not
+/// need to spell out an explicit `[0, 0, ...]` initializer.
+///
+/// This is intentionally a workaround-level convention rather than a full
+/// typed-state initialization solution.
+const UNINITIALIZED_ARRAY_HANDLE_SENTINEL: crate::runtime::vm::RawVal = 0;
+
 fn lift_value_to_code(value: crate::interpreter::Value) -> crate::interpreter::Value {
     match value.try_into() {
         Ok(expr) => crate::interpreter::Value::Code(expr),
@@ -134,6 +145,13 @@ mod length_array {
         machine: &mut crate::runtime::vm::Machine,
     ) -> crate::runtime::vm::ReturnCode {
         let arr = machine.get_stack(0);
+        if arr == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+            // Treat the zero handle as the temporary "uninitialized array
+            // state" sentinel described above.
+            let res = 0.0;
+            machine.set_stack(0, crate::runtime::vm::Machine::to_value(res));
+            return 1;
+        }
         let array = machine.arrays.get_array(arr);
         let res = array.get_length_array() as f64;
         machine.set_stack(0, crate::runtime::vm::Machine::to_value(res));
@@ -177,6 +195,13 @@ mod split_tail {
         machine: &mut crate::runtime::vm::Machine,
     ) -> crate::runtime::vm::ReturnCode {
         let arr_idx = machine.get_stack(0);
+        if arr_idx == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+            // Workaround: interpret zero-initialized array-valued `self` as an
+            // empty/all-zero array instead of crashing on an invalid handle.
+            machine.set_stack(0, 0);
+            machine.set_stack(1, 0);
+            return 2;
+        }
         let array = machine.arrays.get_array(arr_idx);
         let len = array.get_length_array();
 
@@ -260,6 +285,13 @@ mod split_head {
         machine: &mut crate::runtime::vm::Machine,
     ) -> crate::runtime::vm::ReturnCode {
         let arr_idx = machine.get_stack(0);
+        if arr_idx == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+            // Workaround: interpret zero-initialized array-valued `self` as an
+            // empty/all-zero array instead of crashing on an invalid handle.
+            machine.set_stack(0, 0);
+            machine.set_stack(1, 0);
+            return 2;
+        }
         let array = machine.arrays.get_array(arr_idx);
         let len = array.get_length_array();
 
@@ -743,6 +775,13 @@ pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Optio
         let f = Rc::new(RefCell::new(
             move |machine: &mut crate::runtime::vm::Machine| -> crate::runtime::vm::ReturnCode {
                 let arr_idx = machine.get_stack(0);
+                if arr_idx == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+                    // Workaround: preserve the zero-array sentinel semantics
+                    // for monomorphized `split_head$arityN` as well.
+                    (0..elem_size).for_each(|i| machine.set_stack(i as i64, 0));
+                    machine.set_stack(elem_size as i64, 0);
+                    return elem_size as i64 + 1;
+                }
                 let arr = machine.arrays.get_array(arr_idx);
                 let actual_elem_size = arr.get_elem_word_size() as usize;
                 if actual_elem_size != elem_size {
@@ -778,6 +817,13 @@ pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Optio
         let f = Rc::new(RefCell::new(
             move |machine: &mut crate::runtime::vm::Machine| -> crate::runtime::vm::ReturnCode {
                 let arr_idx = machine.get_stack(0);
+                if arr_idx == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+                    // Workaround: preserve the zero-array sentinel semantics
+                    // for monomorphized `split_tail$arityN` as well.
+                    machine.set_stack(0, 0);
+                    (0..elem_size).for_each(|i| machine.set_stack((i + 1) as i64, 0));
+                    return elem_size as i64 + 1;
+                }
                 let arr = machine.arrays.get_array(arr_idx);
                 let actual_elem_size = arr.get_elem_word_size() as usize;
                 if actual_elem_size != elem_size {
