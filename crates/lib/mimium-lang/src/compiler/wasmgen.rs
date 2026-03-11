@@ -2762,11 +2762,25 @@ impl WasmGenerator {
                             self.emit_value_load(upindex, func);
                         }
                         mir::Value::Register(reg_idx)
-                            if self.alloc_registers.contains_key(reg_idx) =>
+                            if self.alloc_registers.get(reg_idx).copied().unwrap_or(0) > 1 =>
                         {
                             // Multi-word alloc (tuple etc.): the alloc address
                             // IS the data address; store as-is, no indirection.
                             self.emit_value_load(upindex, func);
+                        }
+                        mir::Value::Register(reg_idx)
+                            if self.alloc_registers.contains_key(reg_idx) =>
+                        {
+                            // Single-word direct alloc (e.g. array/function handle,
+                            // single-word record): capture the cell contents, not the
+                            // alloc-cell address.
+                            self.emit_value_load(upindex, func);
+                            func.instruction(&W::I32WrapI64);
+                            func.instruction(&W::I64Load(MemArg {
+                                offset: 0,
+                                align: 3,
+                                memory_index: 0,
+                            }));
                         }
                         _ => {
                             // Direct value (non-alloc register, argument, etc.)
@@ -2912,10 +2926,8 @@ impl WasmGenerator {
             I::Array(values, ty) => {
                 // array_alloc(src_ptr: i64, size_words: i32) -> i64
                 // Reads `size_words` words from linear memory at `src_ptr` and creates an array.
-                let elem_ty = match ty.to_type() {
-                    Type::Array(elem) => elem,
-                    _ => *ty, // fallback
-                };
+                // MIR stores the array element type here, not the full array type.
+                let elem_ty = *ty;
                 let elem_size = elem_ty.word_size() as u32;
                 let total_words = values.len() as u32 * elem_size.max(1);
                 let total_bytes = total_words * 8;
@@ -3652,10 +3664,23 @@ impl WasmGenerator {
                             self.emit_value_load(upindex, func);
                         }
                         mir::Value::Register(reg_idx)
-                            if self.alloc_registers.contains_key(reg_idx) =>
+                            if self.alloc_registers.get(reg_idx).copied().unwrap_or(0) > 1 =>
                         {
                             // Multi-word alloc (tuple etc.): store pointer as-is
                             self.emit_value_load(upindex, func);
+                        }
+                        mir::Value::Register(reg_idx)
+                            if self.alloc_registers.contains_key(reg_idx) =>
+                        {
+                            // Single-word direct allocs keep their value in the alloc cell.
+                            // Capture that word rather than the alloc-cell address.
+                            self.emit_value_load(upindex, func);
+                            func.instruction(&W::I32WrapI64);
+                            func.instruction(&W::I64Load(MemArg {
+                                offset: 0,
+                                align: 3,
+                                memory_index: 0,
+                            }));
                         }
                         _ => {
                             let val_type = self.infer_value_type(upindex);
@@ -4822,32 +4847,8 @@ impl WasmGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ExecContext;
     use crate::interner::ToSymbol;
-
-    /// Helper: Create a path to write WASM output file in tmp directory
-    fn get_wasm_output_path(filename: &str) -> std::path::PathBuf {
-        let mut wasm_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        wasm_path.pop(); // Remove mimium-lang
-        wasm_path.pop(); // Remove lib
-        wasm_path.pop(); // Remove crates
-        wasm_path.push("tmp");
-        std::fs::create_dir_all(&wasm_path).ok(); // Ensure tmp directory exists
-        wasm_path.push(filename);
-        wasm_path
-    }
-
-    /// Helper: Compile source code to MIR
-    fn compile_to_mir(src: &str) -> Arc<Mir> {
-        let mut ctx = ExecContext::new(std::iter::empty(), None, crate::Config::default());
-        ctx.prepare_compiler();
-        let mir = ctx
-            .get_compiler()
-            .unwrap()
-            .emit_mir(src)
-            .expect("MIR generation failed");
-        Arc::new(mir)
-    }
+    use crate::test_utils::{compile_to_mir, repo_tmp_path, run_wasm_dsp_f64};
 
     #[test]
     fn test_wasmgen_create() {
@@ -4893,7 +4894,7 @@ mod tests {
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
         // Write to tmp directory for inspection
-        let wasm_path = get_wasm_output_path("test_simple_return_from_test.wasm");
+        let wasm_path = repo_tmp_path("test_simple_return_from_test.wasm");
         std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
 
         eprintln!(
@@ -4970,7 +4971,7 @@ fn dsp() -> float { helper(21.0) }
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
         // Write to tmp directory for inspection
-        let wasm_path = get_wasm_output_path("test_function_call_from_test.wasm");
+        let wasm_path = repo_tmp_path("test_function_call_from_test.wasm");
         std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
 
         eprintln!(
@@ -5002,7 +5003,7 @@ fn dsp() -> float {
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
         // Write to tmp directory (3 levels up from crates/lib/mimium-lang)
-        let wasm_path = get_wasm_output_path("test_integration.wasm");
+        let wasm_path = repo_tmp_path("test_integration.wasm");
         std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
 
         eprintln!(
@@ -5019,7 +5020,7 @@ fn dsp() -> float {
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
         // Write to tmp for inspection
-        let wasm_path = get_wasm_output_path(&format!("{test_name}.wasm"));
+        let wasm_path = repo_tmp_path(&format!("{test_name}.wasm"));
         std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
 
         let engine = wasmtime::Engine::default();
@@ -5199,5 +5200,68 @@ fn apply_gain(x: float) -> float { x * GAIN }
 fn dsp() -> float { apply_gain(1.0) }
 "#;
         compile_and_validate(src, "test_global_in_function");
+    }
+
+    #[test]
+    fn test_wasmgen_regression_nested_array_split_head_wasm_execution() {
+        let src = r#"
+fn f(arrs){
+    let (head, rest) = split_head(arrs)
+    if length_array(rest) > 0 {
+        let (head2, rest2) = split_head(rest)
+        length_array(head) + length_array(head2) + length_array(rest2)
+    } else {
+        length_array(head)
+    }
+}
+
+fn dsp(){
+    f([[1.0, 2.0], [3.0, 4.0]])
+}
+"#;
+
+        let value = run_wasm_dsp_f64(
+            src,
+            Some(repo_tmp_path("nested_array_split_head_regression.mmm")),
+        );
+        assert_eq!(value, 4.0);
+    }
+
+    #[test]
+    fn test_wasmgen_regression_closure_captures_array_handle_wasm_execution() {
+        let src = r#"
+fn dot(left, right){
+    let (left_head, left_rest) = split_head(left)
+    let (right_head, right_rest) = split_head(right)
+    let head_product = left_head * right_head
+    if length_array(left_rest) > 0 {
+        head_product + dot(left_rest, right_rest)
+    } else {
+        head_product
+    }
+}
+
+fn map_rows(fun, matrix){
+    let (head, rest) = split_head(matrix)
+    if length_array(rest) > 0 {
+        prepend(fun(head), map_rows(fun, rest))
+    } else {
+        [fun(head)]
+    }
+}
+
+fn dsp(){
+    let input = [3.0, 4.0]
+    let out = map_rows(|row| dot(row, input), [[1.0, 2.0], [5.0, 6.0]])
+    let (head, _) = split_head(out)
+    head
+}
+"#;
+
+        let value = run_wasm_dsp_f64(
+            src,
+            Some(repo_tmp_path("closure_capture_array_regression.mmm")),
+        );
+        assert_eq!(value, 11.0);
     }
 }

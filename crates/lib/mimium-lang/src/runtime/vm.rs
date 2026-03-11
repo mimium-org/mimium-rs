@@ -1061,23 +1061,45 @@ impl Machine {
                     Self::release_usersum_recursive(&value_vec, &ty, &mut self.heap, tt);
                 }
                 Instruction::CallIndirect(func, nargs, nret_req) => {
-                    // Get heap index from the register
-                    let heap_addr = self.get_stack(func as i64);
-                    let heap_idx = Self::get_as::<heap::HeapIdx>(heap_addr);
+                    let callable = self.get_stack(func as i64);
+                    let heap_idx = Self::get_as::<heap::HeapIdx>(callable);
 
-                    // Extract the ClosureIdx from the heap object
-                    let heap_obj = self.heap.get(heap_idx).unwrap_or_else(|| {
-                        panic!("Invalid heap index: {heap_idx:?} (heap_len={}, func_i={func_i}, pc={pcounter})", self.heap.len());
+                    let maybe_heap_closure = self.heap.get(heap_idx).and_then(|heap_obj| {
+                        heap_obj.data.first().and_then(|&closure_raw| {
+                            let cls_i = Self::get_as::<ClosureIdx>(closure_raw);
+                            self.closures.contains_key(cls_i.0).then_some(cls_i)
+                        })
                     });
-                    let cls_i = Self::get_as::<ClosureIdx>(heap_obj.data[0]);
 
-                    let cls = self.get_closure(cls_i);
-                    let pos_of_f = cls.fn_proto_pos;
-                    self.states_stack.push(cls_i);
-                    self.call_function(func, nargs, nret_req, move |machine| {
-                        machine.execute(pos_of_f, Some(cls_i))
-                    });
-                    self.states_stack.pop();
+                    if let Some(cls_i) = maybe_heap_closure {
+                        let cls = self.get_closure(cls_i);
+                        let pos_of_f = cls.fn_proto_pos;
+                        self.states_stack.push(cls_i);
+                        self.call_function(func, nargs, nret_req, move |machine| {
+                            machine.execute(pos_of_f, Some(cls_i))
+                        });
+                        self.states_stack.pop();
+                    } else {
+                        let closure_idx = ClosureIdx(DefaultKey::from(KeyData::from_ffi(callable)));
+                        if self.closures.contains_key(closure_idx.0) {
+                            let cls = self.get_closure(closure_idx);
+                            let pos_of_f = cls.fn_proto_pos;
+                            self.states_stack.push(closure_idx);
+                            self.call_function(func, nargs, nret_req, move |machine| {
+                                machine.execute(pos_of_f, Some(closure_idx))
+                            });
+                            self.states_stack.pop();
+                        } else {
+                            let pos_of_f = callable as usize;
+                            assert!(
+                                pos_of_f < self.prog.global_fn_table.len(),
+                                "Invalid indirect callable: raw={callable}, heap={heap_idx:?}, func_i={func_i}, pc={pcounter}"
+                            );
+                            self.call_function(func, nargs, nret_req, move |machine| {
+                                machine.execute(pos_of_f, None)
+                            });
+                        }
+                    }
                 }
                 Instruction::Return0 => {
                     self.stack.truncate((self.base_pointer - 1) as usize);

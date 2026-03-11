@@ -799,6 +799,7 @@ pub fn codegen_combinator_signatures() -> Vec<ExtClsInfo> {
         // lift variants — shadow builtin macro types with VM-compatible types
         mk_cls("lift_f", code_lift_f, fty(vec![f], f)),
         mk_cls("lift_arrayf", code_lift_arrayf, fty(vec![af], f)),
+        mk_cls("lift_array_code", code_array, fty(vec![af], f)),
         // Polymorphic lift: (T) -> Numeric where T is instantiated by the type
         // checker. The return is always a code-value index (Numeric) regardless
         // of input type. At the VM level, both floats and arrays are 1-word

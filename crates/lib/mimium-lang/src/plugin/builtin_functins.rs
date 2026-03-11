@@ -1230,14 +1230,52 @@ pub fn get_builtin_fns_as_plugins() -> Box<dyn Plugin> {
 mod tests {
     use super::{get_builtin_fns_as_plugins, try_get_monomorphized_ext_fn_name};
     use crate::{
-        compiler,
+        Config, ExecContext, compiler,
         interner::ToSymbol,
-        numeric,
-        plugin,
+        numeric, plugin,
         plugin::Plugin,
+        test_utils::{compile_to_mir_with_path, repo_tmp_path},
         types::{PType, Type},
-        Config, ExecContext,
     };
+
+    const LIFT_ARRAY_CODE_SOURCE: &str = r#"
+// @test {"times":1,"stereo":false,"expected":[31.0],"web":true}
+
+#stage(macro)
+fn mk_functions(){
+    let funcs = [
+        `|x| x + 1.0,
+        `|x| x * 2.0,
+    ]
+    funcs |> lift_array_code
+}
+
+#stage(main)
+fn dsp(){
+  let funcs = mk_functions!()
+  funcs[0](10.0) + funcs[1](10.0)
+}
+"#;
+
+    const LOCAL_LIFT_ARRAY_CODE_BINDING_SOURCE: &str = r#"
+#stage(macro)
+fn make_id(){
+    let delays = [
+        `|x| x + 1.0,
+        `|x| x + 2.0,
+    ] |> lift_array_code
+    `|input:[float]| {
+        input
+    }
+}
+
+#stage(main)
+fn dsp(){
+  let f = make_id!()
+  let out = f([1.0,2.0])
+  out[0]
+}
+"#;
 
     #[test]
     fn probe_value_monomorphized_name_uses_return_word_size() {
@@ -1320,60 +1358,24 @@ mod tests {
 
     #[test]
     fn exec_context_compiles_lift_array_code_source() {
-        let src = r#"
-// @test {"times":1,"stereo":false,"expected":[31.0],"web":true}
-
-#stage(macro)
-fn mk_functions(){
-   let funcs = [
-      `|x| x + 1.0,
-      `|x| x * 2.0,
-   ]
-   funcs |> lift_array_code
-}
-
-#stage(main)
-fn dsp(){
-  let funcs = mk_functions!()
-  funcs[0](10.0) + funcs[1](10.0)
-}
-"#;
         let mut ctx = ExecContext::new(std::iter::empty(), None, Config::default());
-        let result = ctx.prepare_machine(src);
+        let result = ctx.prepare_machine(LIFT_ARRAY_CODE_SOURCE);
         assert!(result.is_ok(), "prepare_machine failed: {result:?}");
     }
 
     #[test]
     fn compiler_with_file_path_compiles_lift_array_code_source() {
-        let src = r#"
-// @test {"times":1,"stereo":false,"expected":[31.0],"web":true}
-
-#stage(macro)
-fn mk_functions(){
-   let funcs = [
-      `|x| x + 1.0,
-      `|x| x * 2.0,
-   ]
-   funcs |> lift_array_code
-}
-
-#stage(main)
-fn dsp(){
-  let funcs = mk_functions!()
-  funcs[0](10.0) + funcs[1](10.0)
-}
-"#;
-        let plugin = get_builtin_fns_as_plugins();
-        let plugins = [plugin];
-        let ext_fns = plugin::get_extfun_types(&plugins).collect::<Vec<_>>();
-        let macros = plugin::get_macro_functions(&plugins).collect::<Vec<_>>();
-        let ctx = compiler::Context::new(
-            ext_fns,
-            macros,
-            Some(std::path::PathBuf::from("tmp/lift_array_code_test.mmm")),
-            compiler::Config::default(),
+        compile_to_mir_with_path(
+            LIFT_ARRAY_CODE_SOURCE,
+            Some(repo_tmp_path("lift_array_code_test.mmm")),
         );
-        let result = ctx.emit_mir(src);
-        assert!(result.is_ok(), "emit_mir failed: {result:?}");
+    }
+
+    #[test]
+    fn compiler_with_file_path_compiles_local_lift_array_code_binding() {
+        compile_to_mir_with_path(
+            LOCAL_LIFT_ARRAY_CODE_BINDING_SOURCE,
+            Some(repo_tmp_path("lift_array_code_local_binding_test.mmm")),
+        );
     }
 }

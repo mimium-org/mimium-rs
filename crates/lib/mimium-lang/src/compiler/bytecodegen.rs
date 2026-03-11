@@ -1232,21 +1232,66 @@ impl ByteCodeGenerator {
 
             mir::Instruction::Array(values, ty) => {
                 let elem_ty_size = Self::word_size_for_type(ty);
+                let elem_is_function = ty.to_type().is_function();
                 let size = values.len();
-                // Move each value into the array
-                let bytecodes_dst = bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut());
                 let dst_reg = self.get_destination(dst.clone(), 1 as _); //address for array is always 1 word;
-                bytecodes_dst.push(VmInstruction::AllocArray(dst_reg, size as _, elem_ty_size));
-                for (i, val) in values.iter().enumerate() {
-                    let tmp_idx_ref = Arc::new(mir::Value::None);
-                    let idx = self.vregister.add_newvalue(&tmp_idx_ref);
-                    bytecodes_dst.push(VmInstruction::MoveImmF(
-                        idx,
-                        HFloat::try_from(i as f64).unwrap(),
-                    ));
-                    let idx = self.find(&tmp_idx_ref);
-                    let src = self.find(val);
-                    bytecodes_dst.push(VmInstruction::SetArrayElem(dst_reg, idx, src));
+
+                let emit_array_init =
+                    |this: &mut Self,
+                     bytecodes_dst: &mut Vec<VmInstruction>,
+                     add_const: &mut dyn FnMut(vm::RawVal) -> ConstPos| {
+                        bytecodes_dst.push(VmInstruction::AllocArray(
+                            dst_reg,
+                            size as _,
+                            elem_ty_size,
+                        ));
+                        for (i, val) in values.iter().enumerate() {
+                            let tmp_idx_ref = Arc::new(mir::Value::None);
+                            let idx = this.vregister.add_newvalue(&tmp_idx_ref);
+                            bytecodes_dst.push(VmInstruction::MoveImmF(
+                                idx,
+                                HFloat::try_from(i as f64).unwrap(),
+                            ));
+                            let idx = this.find(&tmp_idx_ref);
+                            let src = if elem_is_function {
+                                match val.as_ref() {
+                                    mir::Value::Function(fn_idx) => {
+                                        let fn_reg_ref = Arc::new(mir::Value::None);
+                                        let fn_reg = this.vregister.add_newvalue(&fn_reg_ref);
+                                        bytecodes_dst.push(VmInstruction::MoveConst(
+                                            fn_reg,
+                                            add_const(*fn_idx as vm::RawVal),
+                                        ));
+
+                                        let cls_reg_ref = Arc::new(mir::Value::None);
+                                        let cls_reg = this.vregister.add_newvalue(&cls_reg_ref);
+                                        bytecodes_dst.push(VmInstruction::MakeHeapClosure(
+                                            cls_reg, fn_reg, 0,
+                                        ));
+                                        cls_reg
+                                    }
+                                    _ => this.find(val),
+                                }
+                            } else {
+                                this.find(val)
+                            };
+                            bytecodes_dst.push(VmInstruction::SetArrayElem(dst_reg, idx, src));
+                        }
+                    };
+
+                if let Some(bytecodes_dst) = bytecodes_dst {
+                    let mut add_const = |cval: vm::RawVal| funcproto.add_new_constant(cval);
+                    emit_array_init(self, bytecodes_dst, &mut add_const);
+                } else {
+                    let bytecodes_dst = &mut funcproto.bytecodes;
+                    let constants = &mut funcproto.constants;
+                    let mut add_const = |cval: vm::RawVal| {
+                        constants.binary_search(&cval).unwrap_or_else(|_err| {
+                            constants.push(cval);
+                            constants.len() - 1
+                        }) as ConstPos
+                    };
+                    emit_array_init(self, bytecodes_dst, &mut add_const);
                 }
                 self.varray.push(dst);
                 None // Instructions already added to bytecodes_dst

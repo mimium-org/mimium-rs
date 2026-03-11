@@ -379,6 +379,75 @@ impl ExecContext {
         res
     }
 }
+
+#[cfg(test)]
+pub(crate) mod test_utils {
+    use std::{path::PathBuf, sync::Arc};
+
+    use crate::{Config, ExecContext, compiler, mir::Mir};
+
+    fn format_errors(errors: Vec<Box<dyn crate::utils::error::ReportableError>>) -> String {
+        errors
+            .into_iter()
+            .map(|err| err.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    pub(crate) fn repo_tmp_path(filename: &str) -> PathBuf {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.pop(); // Remove mimium-lang
+        path.pop(); // Remove lib
+        path.pop(); // Remove crates
+        path.push("tmp");
+        std::fs::create_dir_all(&path).expect("Failed to create tmp directory");
+        path.push(filename);
+        path
+    }
+
+    pub(crate) fn compile_to_mir(src: &str) -> Arc<Mir> {
+        compile_to_mir_with_path(src, None)
+    }
+
+    pub(crate) fn compile_to_mir_with_path(src: &str, path: Option<PathBuf>) -> Arc<Mir> {
+        let mut ctx = ExecContext::new(std::iter::empty(), path, Config::default());
+        ctx.prepare_compiler();
+        let mir = ctx
+            .get_compiler()
+            .expect("Compiler should be prepared")
+            .emit_mir(src)
+            .unwrap_or_else(|errors| panic!("MIR generation failed: {}", format_errors(errors)));
+        Arc::new(mir)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn compile_to_wasm_with_path(
+        src: &str,
+        path: Option<PathBuf>,
+    ) -> compiler::WasmOutput {
+        let mut ctx = ExecContext::new(std::iter::empty(), path, Config::default());
+        ctx.prepare_compiler();
+        ctx.get_compiler()
+            .expect("Compiler should be prepared")
+            .emit_wasm(src)
+            .unwrap_or_else(|errors| panic!("WASM generation failed: {}", format_errors(errors)))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn run_wasm_dsp_f64(src: &str, path: Option<PathBuf>) -> f64 {
+        let wasm_output = compile_to_wasm_with_path(src, path);
+        let mut engine = crate::runtime::wasm::engine::WasmEngine::new(&wasm_output.ext_fns, None)
+            .expect("Failed to create WASM engine");
+        engine
+            .load_module(&wasm_output.bytes)
+            .expect("Failed to load generated WASM module");
+        let result = engine
+            .execute_dsp(&[])
+            .expect("Failed to execute generated DSP");
+        assert_eq!(result.len(), 1, "Expected a single DSP return value");
+        f64::from_bits(result[0])
+    }
+}
 //todo: remove
 // pub mod ast_interpreter;
 // pub mod repl;
