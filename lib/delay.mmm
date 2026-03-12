@@ -22,6 +22,9 @@ fn mix_stereo(processor:`(float,float)->(float,float)){
 fn _delay(input,time){
     fdelay!(48000)(input,time)
 }
+pub fn fbdelay(input,time_sec,fb){
+    fdelay!(48000)(input+self*fb,time_sec*samplerate)
+}
 
 fn stereo_delay_inner(input:(float,float),time_sec,fb)->(float,float){
     let (left,right) = self
@@ -48,7 +51,8 @@ fn pingpong_delay_inner(input:(float,float),time_sec,fb,width){
     (_delay(fb_l,time_sec*samplerate),_delay(fb_r,time_sec*samplerate))
 }
 pub fn pingpong_delay(input:(float,float),time_sec:float=0.5,fb:float=0.2,width:float=1.0,mix_amt:float=0.5)->(float,float){
-    let wet = pingpong_delay_inner(input,time_sec,fb,width)
+    let (left,right) = pingpong_delay_inner(input,time_sec,fb,width)
+    let wet = (left*mix_amt,right*mix_amt)
     let mix_inv = 1.0-mix_amt
     let dry = input * mix_inv
     dry + wet
