@@ -1090,6 +1090,10 @@ impl Machine {
                             });
                             self.states_stack.pop();
                         } else {
+                            // TODO: Give direct function refs and closures distinct runtime
+                            // representations. The VM currently falls back from heap-closure
+                            // handle -> ClosureIdx -> raw function index, which mirrors the
+                            // migration-era callable encoding but keeps the distinction implicit.
                             let pos_of_f = callable as usize;
                             assert!(
                                 pos_of_f < self.prog.global_fn_table.len(),

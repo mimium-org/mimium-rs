@@ -131,6 +131,20 @@ impl Default for MemoryLayout {
     }
 }
 
+// TODO: Replace this runtime threshold heuristic with an explicit callable
+// representation in MIR/WASM lowering.
+//
+// Today, higher-order values are all carried as raw `i64`, so at a `call_indirect`
+// site the WASM backend cannot statically distinguish:
+// - a direct function-table index, from
+// - a pointer to a closure object in linear memory.
+//
+// The current workaround relies on the fact that runtime allocations start at
+// `alloc_offset = 1024`, so smaller values are treated as direct function refs.
+// Directionally, the better design is to represent these as distinct callable
+// kinds in MIR/lowering rather than recovering that distinction at runtime.
+const DIRECT_FUNCTION_REF_MAX_EXCLUSIVE: i64 = 1024;
+
 impl MemoryLayout {
     /// Allocate a linear memory offset for a global variable, or return existing one.
     fn get_or_alloc_global_offset(&mut self, global: &VPtr) -> u32 {
@@ -3366,6 +3380,44 @@ impl WasmGenerator {
                         }
                     }
                     _ => {
+                        let return_types: Vec<ValType> = {
+                            let ty = ret_ty.to_type();
+                            if matches!(ty, Type::Primitive(PType::Unit)) {
+                                vec![]
+                            } else {
+                                vec![ValType::I64]
+                            }
+                        };
+                        let block_type = return_types
+                            .first()
+                            .copied()
+                            .map(wasm_encoder::BlockType::Result)
+                            .unwrap_or(wasm_encoder::BlockType::Empty);
+                        let param_types: Vec<ValType> = vec![ValType::I64; args.len()];
+                        let type_idx = self.get_or_create_call_type(param_types, return_types);
+
+                        // TODO: This branch is a compatibility workaround for the current
+                        // callable encoding. We should decide direct-function-ref vs closure
+                        // statically during lowering, not by inspecting the runtime value.
+                        self.emit_value_load_typed(closure_ptr, ValType::I64, func);
+                        func.instruction(&W::I64Const(DIRECT_FUNCTION_REF_MAX_EXCLUSIVE));
+                        func.instruction(&W::I64LtU);
+                        func.instruction(&W::If(block_type));
+
+                        // Raw function values (e.g. functions stored in arrays) are
+                        // represented as direct function-table indices on both MIR and VM.
+                        // They are not heap/linear-memory closures, so call them directly
+                        // without switching closure state.
+                        self.emit_call_args_word_packed(args, func);
+                        self.emit_value_load_typed(closure_ptr, ValType::I64, func);
+                        func.instruction(&W::I32WrapI64);
+                        func.instruction(&W::CallIndirect {
+                            type_index: type_idx,
+                            table_index: 0,
+                        });
+
+                        func.instruction(&W::Else);
+
                         // Closure call via WASM call_indirect through the function table
                         let memarg = MemArg {
                             offset: 0,
@@ -3401,29 +3453,10 @@ impl WasmGenerator {
                         func.instruction(&W::I64Load(memarg));
                         func.instruction(&W::I32WrapI64); // table index must be i32
 
-                        // Compute call_indirect type from the call site signature
-                        let param_types: Vec<ValType> = vec![ValType::I64; args.len()];
-                        let return_types: Vec<ValType> = {
-                            let ty = ret_ty.to_type();
-                            if matches!(ty, Type::Primitive(PType::Unit)) {
-                                vec![]
-                            } else {
-                                vec![ValType::I64]
-                            }
-                        };
-                        let type_idx = self.get_or_create_call_type(param_types, return_types);
                         func.instruction(&W::CallIndirect {
                             type_index: type_idx,
                             table_index: 0,
                         });
-
-                        // Indirect adapters normalize non-Unit returns to i64.
-                        // Reinterpret back to f64 at numeric call sites.
-                        if !matches!(ret_ty.to_type(), Type::Primitive(PType::Unit))
-                            && Self::type_to_valtype(&ret_ty.to_type()) == ValType::F64
-                        {
-                            func.instruction(&W::F64ReinterpretI64);
-                        }
 
                         // Restore the previous closure_self_ptr
                         func.instruction(&W::I32Const(0)); // CLOSURE_SELF_PTR_ADDR
@@ -3432,6 +3465,15 @@ impl WasmGenerator {
 
                         // Pop closure state from the state stack
                         self.emit_closure_state_pop(func);
+                        func.instruction(&W::End);
+
+                        // Indirect adapters normalize non-Unit returns to i64.
+                        // Reinterpret back to f64 at numeric call sites.
+                        if !matches!(ret_ty.to_type(), Type::Primitive(PType::Unit))
+                            && Self::type_to_valtype(&ret_ty.to_type()) == ValType::F64
+                        {
+                            func.instruction(&W::F64ReinterpretI64);
+                        }
                     }
                 }
             }
@@ -3721,6 +3763,42 @@ impl WasmGenerator {
                         }
                     }
                     _ => {
+                        let return_types: Vec<ValType> = {
+                            let ty = ret_ty.to_type();
+                            if matches!(ty, Type::Primitive(PType::Unit)) {
+                                vec![]
+                            } else {
+                                vec![ValType::I64]
+                            }
+                        };
+                        let block_type = return_types
+                            .first()
+                            .copied()
+                            .map(wasm_encoder::BlockType::Result)
+                            .unwrap_or(wasm_encoder::BlockType::Empty);
+                        let param_types: Vec<ValType> = vec![ValType::I64; args.len()];
+                        let type_idx = self.get_or_create_call_type(param_types, return_types);
+
+                        // TODO: Same as `CallIndirect` above: remove this runtime check once
+                        // direct function refs and closures have distinct lowered forms.
+                        self.emit_value_load_typed(fn_ptr, ValType::I64, func);
+                        func.instruction(&W::I64Const(DIRECT_FUNCTION_REF_MAX_EXCLUSIVE));
+                        func.instruction(&W::I64LtU);
+                        func.instruction(&W::If(block_type));
+
+                        // Raw function references use the same direct-table representation
+                        // as the VM's indirect-call path. Only heap/linear-memory closures
+                        // need closure-state switching in WASM.
+                        self.emit_call_args_word_packed(args, func);
+                        self.emit_value_load_typed(fn_ptr, ValType::I64, func);
+                        func.instruction(&W::I32WrapI64);
+                        func.instruction(&W::CallIndirect {
+                            type_index: type_idx,
+                            table_index: 0,
+                        });
+
+                        func.instruction(&W::Else);
+
                         // Closure call via WASM call_indirect (same as CallIndirect)
                         let memarg = MemArg {
                             offset: 0,
@@ -3756,29 +3834,10 @@ impl WasmGenerator {
                         func.instruction(&W::I64Load(memarg));
                         func.instruction(&W::I32WrapI64);
 
-                        // Compute call_indirect type
-                        let param_types: Vec<ValType> = vec![ValType::I64; args.len()];
-                        let return_types: Vec<ValType> = {
-                            let ty = ret_ty.to_type();
-                            if matches!(ty, Type::Primitive(PType::Unit)) {
-                                vec![]
-                            } else {
-                                vec![ValType::I64]
-                            }
-                        };
-                        let type_idx = self.get_or_create_call_type(param_types, return_types);
                         func.instruction(&W::CallIndirect {
                             type_index: type_idx,
                             table_index: 0,
                         });
-
-                        // Indirect adapters normalize non-Unit returns to i64.
-                        // Reinterpret back to f64 at numeric call sites.
-                        if !matches!(ret_ty.to_type(), Type::Primitive(PType::Unit))
-                            && Self::type_to_valtype(&ret_ty.to_type()) == ValType::F64
-                        {
-                            func.instruction(&W::F64ReinterpretI64);
-                        }
 
                         // Restore closure_self_ptr
                         func.instruction(&W::I32Const(0));
@@ -3787,6 +3846,15 @@ impl WasmGenerator {
 
                         // Pop closure state from the state stack
                         self.emit_closure_state_pop(func);
+                        func.instruction(&W::End);
+
+                        // Indirect adapters normalize non-Unit returns to i64.
+                        // Reinterpret back to f64 at numeric call sites.
+                        if !matches!(ret_ty.to_type(), Type::Primitive(PType::Unit))
+                            && Self::type_to_valtype(&ret_ty.to_type()) == ValType::F64
+                        {
+                            func.instruction(&W::F64ReinterpretI64);
+                        }
                     }
                 }
             }
