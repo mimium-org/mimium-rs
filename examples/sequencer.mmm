@@ -1,0 +1,239 @@
+use core::*
+use osc::*
+use env::adsr
+use filter::*
+use noise::*
+use delay::*
+
+/// Detect positive and negative changes on a sampled control signal.
+fn changed(input){
+    input != mem(input)
+}
+
+/// Hold a fresh random value for one sequencer step.
+fn rand_on_trig(trig){
+    if (trig) unoise!() else self
+}
+
+fn maybe(prob, rand){
+    if (rand < prob) 1.0 else 0.0
+}
+
+/// A small phasor-based monophonic step sequencer.
+///
+/// Assumptions:
+/// - `notes`, `gates`, and `accents` have the same length.
+/// - `step_per_sec` is the number of sequencer steps advanced per second.
+/// - `gate_ratio` is the gate length inside one step, normalized to 0.0..1.0.
+fn seq(step_per_sec, notes:[float], gates:[float], accents:[float], gate_ratio:float){
+    let step_count = length_array(notes)
+    let phase = phasor(step_per_sec / step_count, 0.0) * step_count
+    let step = floor(phase)
+    let local_phase = phase - step
+    let trig = changed(step)
+    let note = notes[step]
+    let accent = accents[step]
+    let is_on = gates[step] > 0.0
+    let gate = if (is_on && local_phase < gate_ratio) 1.0 else 0.0
+    {
+        step = step,
+        trig = trig,
+        gate = gate,
+        note = note,
+        accent = accent,
+    }
+}
+
+fn voice(note, gate, accent){
+    let freq = midi_to_hz(note)
+    let amp_env = adsr({
+        gate = gate,
+        attack = 0.001,
+        decay = 0.08,
+        sustain = 0.15 + accent * 0.35,
+        release = 0.15,
+    })
+    let filt_env = adsr({
+        gate = gate,
+        attack = 0.0,
+        decay = 0.05,
+        sustain = 0.0,
+        release = 0.05,
+    })
+    let cutoff = 300.0 + accent * 1600.0 + filt_env * 4200.0
+    let src = saw(freq, 0.0) * 0.5 + tri(freq * 0.5, 0.0) * 0.25
+    lowpass(src, cutoff, 8.0) * amp_env * (0.18 + accent * 0.08)
+}
+
+fn hihat_voice(gate, accent){
+    let amp_env = adsr({
+        gate = gate,
+        attack = 0.0005,
+        decay = 0.015 + accent * 0.03,
+        sustain = 0.0,
+        release = 0.02 + accent * 0.04,
+    })
+    let noise = white!()
+    let metallic = highpass(tri(7800.0 + accent * 1200.0, 0.0), 6000.0, 0.8) * 0.15
+    let body = highpass(noise, 7000.0 + accent * 1800.0, 0.7)
+    (body + metallic) * amp_env * (0.07 + accent * 0.04)
+}
+
+fn kick_voice(gate, accent){
+    let pitch_env = adsr({
+        gate = gate,
+        attack = 0.0,
+        decay = 0.03,
+        sustain = 0.0,
+        release = 0.0,
+    })
+    let amp_env = adsr({
+        gate = gate,
+        attack = 0.0005,
+        decay = 0.12 + accent * 0.08,
+        sustain = 0.0,
+        release = 0.05,
+    })
+    let freq = 42.0 + pitch_env * (110.0 + accent * 40.0)
+    let body = sinwave(freq, 0.0)
+    let click = lowpass(white!(), 1800.0 + accent * 1200.0, 0.8) * 0.08
+    (body + click) * amp_env * (0.35 + accent * 0.12)
+}
+
+fn snare_voice(gate, accent){
+    let noise_env = adsr({
+        gate = gate,
+        attack = 0.0005,
+        decay = 0.09 + accent * 0.05,
+        sustain = 0.0,
+        release = 0.04,
+    })
+    let tone_env = adsr({
+        gate = gate,
+        attack = 0.0005,
+        decay = 0.05,
+        sustain = 0.0,
+        release = 0.03,
+    })
+    let noise = bandpass(white!(), 2200.0 + accent * 900.0, 0.9)
+    let tone = sinwave(180.0 + accent * 40.0, 0.0) * 0.25
+    (noise * noise_env + tone * tone_env) * (0.22 + accent * 0.08)
+}
+
+fn pad_voice(note, gate, accent){
+    let freq = midi_to_hz(note)
+    let amp_env = adsr({
+        gate = gate,
+        attack = 0.35,
+        decay = 0.6,
+        sustain = 0.45 + accent * 0.2,
+        release = 1.4,
+    })
+    let filt_env = adsr({
+        gate = gate,
+        attack = 0.5,
+        decay = 0.8,
+        sustain = 0.2,
+        release = 1.2,
+    })
+    let pad_fx = Slider!("pad_fx",10,0,127)/127
+    let pad_on = Slider!("pad_on",1,0,1)
+
+    let detune = 1.003 + accent * 0.002
+    let root = saw(freq, 0.0) * 0.28
+    let fifth = tri(freq * 1.5, 0.17) * 0.18 * pad_fx
+    let octave = saw(freq * 2.0 * detune, 0.31) * 0.14 * pad_fx
+    let ninth = sinwave(freq * 2.0^(14.0/12.0), 0.0) * 0.12 * pad_fx
+    let shimmer = sinwave(freq * 0.5, 0.0) * 0.08 * pad_fx
+    let cutoff = 700.0 + filt_env * 2400.0 + accent * 900.0
+    let mono = lowpass(root + fifth + octave + ninth + shimmer, cutoff, 0.75) * amp_env * 0.45 
+    let left = lowpass(mono + tri(freq * detune, 0.41) * 0.04, cutoff * 0.95, 0.7)
+    let right = lowpass(mono + tri(freq / detune, 0.79) * 0.04, cutoff * 1.05, 0.7)
+    pingpong_delay((left,right)* pad_on,0.8,0.25,pad_fx,pad_fx)
+
+}
+
+#stage(macro)
+fn makenotes(){
+    let notes = [36, 36, 43, 36, 48, 43, 36, 31]
+    join(notes,map(|x| x+7 , notes)) |>lift
+}
+
+#stage(main)
+let bass_notes = makenotes!()
+let bass_gates = [1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1]
+let bass_accents = [1.0, 0.0, 0.4, 0.7, 0.9, 0.0, 0.5, 0.8, 0.8, 0.3, 0.0, 0.6, 0.7, 0.0, 0.5, 1.0]
+let kick_notes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+let kick_gates = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0]
+let kick_accents = [1.0, 0.0, 0.0, 0.0, 0.8, 0.0, 0.0, 0.0, 0.9, 0.0, 0.0, 0.5, 0.8, 0.0, 0.0, 0.0]
+let snare_notes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+let snare_gates = [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1]
+let snare_accents = [0.0, 0.0, 0.0, 0.0, 0.95, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.9, 0.0, 0.0, 0.45]
+let hat_notes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+let hat_gates = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+let hat_accents = [1.0, 0.25, 0.55, 0.25, 0.8, 0.25, 0.55, 0.25, 1.0, 0.25, 0.55, 0.25, 0.8, 0.25, 0.55, 0.35]
+let pad_notes = [55, 60, 48, 53]
+let pad_gates = [1, 1, 1, 1]
+let pad_accents = [0.6, 0.9, 0.55, 0.8]
+let bpm = 124.0
+let steps_per_beat = 4.0
+let step_per_sec = bpm / 60.0 * steps_per_beat
+
+fn dsp(){
+
+    let k = seq(step_per_sec, kick_notes, kick_gates, kick_accents, 0.3)
+    let kick_rand = rand_on_trig(k.trig)
+    let kick_gate = k.gate * maybe(0.96, kick_rand)
+
+    let sn = seq(step_per_sec, snare_notes, snare_gates, snare_accents, 0.24)
+    let snare_rand = rand_on_trig(sn.trig)
+    let snare_gate = sn.gate * maybe(0.93, snare_rand)
+
+    let h = seq(step_per_sec, hat_notes, hat_gates, hat_accents, 0.18)
+    let hat_skip_rand = rand_on_trig(h.trig)
+    let hat_accent_rand = rand_on_trig(h.trig)
+    let hat_gate = h.gate * maybe(0.92, hat_skip_rand)
+    let hat_accent = min(h.accent + hat_accent_rand * 0.25, 1.0)
+    let pad_rate = Slider!("pad_rate",16,1,16) |> ceil
+    let p = seq(step_per_sec/pad_rate , pad_notes, pad_gates, pad_accents, 0.98)
+    let pad_note_rand = rand_on_trig(p.trig)
+    let pad_accent_rand = rand_on_trig(p.trig)
+    let pad_shift = if (pad_note_rand > 0.84) 7.0 else 0.0
+    let pad_note = p.note + pad_shift
+    let pad_accent = min(p.accent + pad_accent_rand * 0.2, 1.0)
+    let bass_rate = Slider!("bass_rate",1,1,16) |> ceil
+
+    let b = seq(step_per_sec/bass_rate, bass_notes, bass_gates, bass_accents, 0.62)
+    let gate_rand = rand_on_trig(b.trig)
+    let octave_rand = rand_on_trig(b.trig)
+    let accent_rand = rand_on_trig(b.trig)
+
+    let gate_prob = Slider!("bass_prob",100,0,127)/127
+    let octave_prob = 0.24
+    let octave_down_prob = 0.08
+    let octave_shift = if (octave_rand < octave_down_prob) {
+        -12.0
+    } else if (octave_rand > 1.0 - octave_prob) {
+        12.0
+    } else {
+        0.0
+    }
+    let note = b.note + octave_shift
+    let gate = b.gate * maybe(gate_prob, gate_rand)
+    let accent = min(b.accent + accent_rand * 0.35, 1.0)
+    let bass = voice(note, gate, accent)
+    let bass = lowpass(bass, 1200.0 + accent * 1200.0, 2.0)
+                |>(|x|(x,x))
+    let bass_on = smooth(Slider!("bass_on",1,0,1))
+    let bass= pingpong_delay(bass,0.1,0.3,1.0,0.4)*bass_on
+    let kick = kick_voice(kick_gate, k.accent)
+    let snare = snare_voice(snare_gate, sn.accent)
+    let hat = hihat_voice(hat_gate, hat_accent)
+    let drum_on = smooth(Slider!("drum_on",1,0,1))
+    let drum = kick + snare + hat|> (_* drum_on) |> (|x|(x,x))
+    let pad = pad_voice(pad_note, p.gate, pad_accent)
+    let out = drum + bass + pad
+    let mute = smooth(Slider!("mute",1,0,1))
+    let out = out*mute
+    out |> ProbeValue!("out")
+}
