@@ -70,6 +70,35 @@ fn run_all_annotated_fixtures() {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn run_all_web_annotated_fixtures_wasm() {
+    use std::fs;
+    use std::path::Path;
+
+    let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mmm");
+    let mut fixture_names = fs::read_dir(&fixture_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("mmm"))
+        .filter_map(|path| {
+            let name = path.file_name()?.to_str()?.to_string();
+            let spec = read_annotated_file_test_spec(&name).ok()?;
+            spec.web.then_some(name)
+        })
+        .collect::<Vec<_>>();
+
+    fixture_names.sort();
+    assert!(!fixture_names.is_empty());
+
+    fixture_names.iter().for_each(|name| {
+        let (res, spec) = run_annotated_file_test_wasm(name)
+            .unwrap_or_else(|e| panic!("{name} failed to run on WASM: {e}"));
+        assert_with_spec(&res, &spec);
+    });
+}
+
 #[wasm_bindgen_test(unsupported = test)]
 fn simple_arithmetic() {
     // unary

@@ -269,6 +269,11 @@ fn parse_annotated_file_test_spec(src: &str) -> Result<AnnotatedFileTestSpec, St
     })
 }
 
+pub fn read_annotated_file_test_spec(path: &str) -> Result<AnnotatedFileTestSpec, String> {
+    let (_file, src) = load_src(path);
+    parse_annotated_file_test_spec(&src)
+}
+
 pub fn run_annotated_file_test(path: &str) -> Result<(Vec<f64>, AnnotatedFileTestSpec), String> {
     let (file, src) = load_src(path);
     let spec = parse_annotated_file_test_spec(&src)?;
@@ -279,6 +284,23 @@ pub fn run_annotated_file_test(path: &str) -> Result<(Vec<f64>, AnnotatedFileTes
         Err(errs) => {
             report(&src, file, &errs);
             Err("Compilation/runtime failed for annotated file test".to_string())
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_annotated_file_test_wasm(
+    path: &str,
+) -> Result<(Vec<f64>, AnnotatedFileTestSpec), String> {
+    let (file, src) = load_src(path);
+    let spec = parse_annotated_file_test_spec(&src)?;
+
+    let result = run_wasm_test(&src, spec.times, spec.stereo, Some(file.clone()));
+    match result {
+        Ok(samples) => Ok((samples, spec)),
+        Err(errs) => {
+            report(&src, file, &errs);
+            Err("Compilation/runtime failed for annotated WASM file test".to_string())
         }
     }
 }
