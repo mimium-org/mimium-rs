@@ -771,12 +771,34 @@ impl WasmModule {
         func: &wasmtime::Func,
         args: &[Word],
     ) -> Result<Vec<Word>, String> {
-        // Convert args to wasmtime values
-        let wasm_args: Vec<wasmtime::Val> =
-            args.iter().map(|&w| wasmtime::Val::I64(w as i64)).collect();
+        let func_ty = func.ty(&self.store);
+        let param_types = func_ty.params().collect::<Vec<_>>();
+        if param_types.len() != args.len() {
+            return Err(format!(
+                "Failed to call function: argument count mismatch: expected {}, found {}",
+                param_types.len(),
+                args.len()
+            ));
+        }
+
+        // Convert args to wasmtime values using the callee's actual signature.
+        let wasm_args: Vec<wasmtime::Val> = args
+            .iter()
+            .zip(param_types.iter())
+            .map(|(&word, ty)| match ty {
+                ValType::F64 => wasmtime::Val::F64(word),
+                ValType::F32 => wasmtime::Val::F32(word as u32),
+                ValType::I64 => wasmtime::Val::I64(word as i64),
+                ValType::I32 => wasmtime::Val::I32(word as i32),
+                _ => wasmtime::Val::I64(word as i64),
+            })
+            .collect();
 
         // Prepare results buffer
-        let mut results = vec![wasmtime::Val::I64(0); func.ty(&self.store).results().len()];
+        let mut results = func_ty
+            .results()
+            .map(default_val_for_valtype)
+            .collect::<Vec<_>>();
 
         // Call function
         func.call(&mut self.store, &wasm_args, &mut results)
