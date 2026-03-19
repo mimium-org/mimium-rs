@@ -18,7 +18,7 @@ fn dsp(){
 ## Current status
 
 - The `Sampler_mono!` macro loads audio files at compile time and caches them in the plugin instance.
-- An argument for `Sampler_mono!` is a path relative to the current working directory (typically the crate root during compilation), or an absolute path.
+- An argument for `Sampler_mono!` is a path relative to the `.mmm` source file that contains the macro call, or an absolute path.
  - Currently only string literals are supported as arguments (parametric file loading is not supported).
 - Supported file formats are the same as [what `symphonia` can decode](https://github.com/pdeljanov/Symphonia?tab=readme-ov-file#codecs-decoders)
 - Currently, only mono files are supported (other formats will cause panic on runtime).

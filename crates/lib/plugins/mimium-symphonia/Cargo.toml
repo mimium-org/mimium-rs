@@ -11,7 +11,7 @@ build = "build.rs"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = []
+default = ["dynamic-plugin-abi"]
 dynamic-plugin-abi = []
 
 
@@ -19,7 +19,7 @@ dynamic-plugin-abi = []
 
 mimium-lang = { workspace = true }
 mimium-plugin-macros = { workspace = true }
-symphonia = { version = "0.5.4", features = ["all-codecs"] }
+symphonia = { version = "0.5.4", features = ["all-codecs", "aiff"] }
 bincode = { workspace = true }
 [dev-dependencies]
 mimium-test = { workspace = true }

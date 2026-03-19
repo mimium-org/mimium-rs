@@ -1,0 +1,9 @@
+// Sampler paths should resolve relative to this source file.
+fn counter(){
+    self+1.0
+}
+
+fn dsp(){
+    let sampler = Sampler_mono!("../../assets/count_100_by_0_01_f32_48000Hz.wav")
+    counter()-1.0 |> sampler
+}

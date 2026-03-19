@@ -4444,7 +4444,9 @@ fn compile_and_execute_stage0(
             let vm_fun: crate::plugin::ExtClsType = Rc::new(RefCell::new(
                 move |machine: &mut vm::Machine| -> vm::ReturnCode {
                     let concrete_arg_types =
-                        lookup_extfun_arg_types(machine, name).unwrap_or_else(|| arg_types.clone());
+                        lookup_current_extfun_arg_types(machine)
+                            .or_else(|| lookup_extfun_arg_types(machine, name))
+                            .unwrap_or_else(|| arg_types.clone());
 
                     // Convert each argument from VM representation to interpreter Value.
                     let mut offset: i64 = 0;
@@ -4530,6 +4532,7 @@ fn compile_and_execute_stage0(
                 .map(|cls| Box::new(cls) as Box<dyn MachineFunction>),
         );
     let mut machine = vm::Machine::new(program, [].into_iter(), ext_closures);
+    let _macro_file_env_guard = MacroFileEnvGuard::new(file_path.as_deref());
     let retcode = machine.execute_main();
 
     if retcode <= 0 {
@@ -4543,6 +4546,36 @@ fn compile_and_execute_stage0(
     let result_raw = machine.get_top_n(1)[0];
     let result_expr = machine.get_code(result_raw);
     Ok(result_expr)
+}
+
+struct MacroFileEnvGuard {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl MacroFileEnvGuard {
+    const KEY: &'static str = "MIMIUM_CURRENT_MACRO_FILE";
+
+    fn new(file_path: Option<&std::path::Path>) -> Self {
+        let previous = std::env::var_os(Self::KEY);
+        match file_path {
+            Some(path) => {
+                unsafe { std::env::set_var(Self::KEY, path) };
+            }
+            None => {
+                unsafe { std::env::remove_var(Self::KEY) };
+            }
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for MacroFileEnvGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => unsafe { std::env::set_var(Self::KEY, value) },
+            None => unsafe { std::env::remove_var(Self::KEY) },
+        }
+    }
 }
 
 fn lookup_extfun_arg_types(
@@ -4568,6 +4601,20 @@ fn lookup_extfun_arg_types(
                 .filter(|t| !t.to_type().contains_unresolved())
                 .count()
         })
+}
+
+fn lookup_current_extfun_arg_types(
+    machine: &crate::runtime::vm::Machine,
+) -> Option<Vec<TypeNodeId>> {
+    let ext_fun_idx = machine.get_current_ext_call_idx()?;
+    let (_, ty) = machine.prog.ext_fun_table.get(ext_fun_idx)?;
+    match ty.to_type() {
+        Type::Function { arg, .. } => Some(match arg.to_type() {
+            Type::Tuple(types) => types,
+            _ => vec![arg],
+        }),
+        _ => None,
+    }
 }
 
 /// Strip `Code(T)` wrapper from a function's return type, replacing it with

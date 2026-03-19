@@ -25,6 +25,25 @@ type DecoderSet = (Box<dyn Decoder>, ProbeResult, u32);
 mod filemanager;
 use filemanager::FileManager;
 
+fn resolve_sample_path(path: &str) -> std::io::Result<std::path::PathBuf> {
+    let raw_path = std::path::PathBuf::from(path);
+    if raw_path.is_absolute() {
+        return raw_path.canonicalize();
+    }
+
+    if let Some(macro_file) = std::env::var_os("MIMIUM_CURRENT_MACRO_FILE") {
+        let macro_file_path = std::path::PathBuf::from(macro_file);
+        if let Some(base_dir) = macro_file_path.parent() {
+            let candidate = base_dir.join(&raw_path);
+            if let Ok(resolved) = candidate.canonicalize() {
+                return Ok(resolved);
+            }
+        }
+    }
+
+    raw_path.canonicalize()
+}
+
 fn get_default_decoder(path: &str) -> Result<DecoderSet, Box<dyn std::error::Error>> {
     let flmgr = filemanager::get_global_file_manager();
     let src = flmgr.open_file_stream(path).expect("failed to open file");
@@ -183,9 +202,9 @@ impl SamplerPlugin {
             }
         };
 
-        // Resolve the path (absolute or relative to CWD)
+        // Resolve the path relative to the current source file when available.
         log::debug!("Attempting to canonicalize path: {rel_path_str}");
-        let abs_path = match std::fs::canonicalize(&rel_path_str) {
+        let abs_path = match resolve_sample_path(&rel_path_str) {
             Ok(p) => {
                 let path_str = p.to_string_lossy().to_string();
                 log::debug!("Canonicalized path: {path_str}");
