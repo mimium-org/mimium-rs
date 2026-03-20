@@ -175,6 +175,20 @@ impl ByteCodeGenerator {
     fn get_destination(&mut self, dst: Arc<mir::Value>, size: TypeSize) -> Reg {
         self.vregister.push_stack(&dst, size as _)
     }
+
+    fn emit_function_value_into_register(
+        &mut self,
+        bytecodes_dst: &mut Vec<VmInstruction>,
+        fn_const_pos: ConstPos,
+        dst: Reg,
+    ) {
+        let fn_reg_ref = Arc::new(mir::Value::None);
+        let fn_reg = self.vregister.add_newvalue(&fn_reg_ref);
+        bytecodes_dst.push(VmInstruction::MoveConst(fn_reg, fn_const_pos));
+        bytecodes_dst.push(VmInstruction::MakeHeapClosure(dst, fn_reg, 0));
+        bytecodes_dst.push(VmInstruction::CloneHeap(dst));
+    }
+
     fn get_or_insert_global(&mut self, gv: Arc<mir::Value>, ty: TypeNodeId) -> GlobalPos {
         match self.globals.get(&gv) {
             Some(idx) => *idx as GlobalPos,
@@ -416,9 +430,20 @@ impl ByteCodeGenerator {
                 }
             }
             mir::Instruction::Store(dst, src, ty) => {
-                let s = self.find(&src);
                 let d = self.find_keep(&dst);
                 let size = Self::word_size_for_type(ty);
+
+                if matches!(ty.to_type(), Type::Function { .. })
+                    && let mir::Value::Function(fn_idx) = src.as_ref()
+                {
+                    let fn_const_pos = funcproto.add_new_constant(*fn_idx as vm::RawVal) as ConstPos;
+                    let bytecodes_dst =
+                        bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut());
+                    self.emit_function_value_into_register(bytecodes_dst, fn_const_pos, d);
+                    return None;
+                }
+
+                let s = self.find(&src);
                 match (d, s, size) {
                     (d, s, 1) if d != s => Some(VmInstruction::Move(d, s)),
                     (d, s, size) if d != s => Some(VmInstruction::MoveRange(d, s, size)),
@@ -436,6 +461,19 @@ impl ByteCodeGenerator {
             }
             mir::Instruction::SetGlobal(v, src, ty) => {
                 let idx = self.get_or_insert_global(v.clone(), ty);
+
+                if matches!(ty.to_type(), Type::Function { .. })
+                    && let mir::Value::Function(fn_idx) = src.as_ref()
+                {
+                    let tmp_ref = Arc::new(mir::Value::None);
+                    let tmp_reg = self.vregister.add_newvalue(&tmp_ref);
+                    let fn_const_pos = funcproto.add_new_constant(*fn_idx as vm::RawVal) as ConstPos;
+                    let bytecodes_dst =
+                        bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut());
+                    self.emit_function_value_into_register(bytecodes_dst, fn_const_pos, tmp_reg);
+                    return Some(VmInstruction::SetGlobal(idx, tmp_reg, 1));
+                }
+
                 let s = self.find(&src);
                 Some(VmInstruction::SetGlobal(
                     idx,
@@ -1268,6 +1306,7 @@ impl ByteCodeGenerator {
                                         bytecodes_dst.push(VmInstruction::MakeHeapClosure(
                                             cls_reg, fn_reg, 0,
                                         ));
+                                        bytecodes_dst.push(VmInstruction::CloneHeap(cls_reg));
                                         cls_reg
                                     }
                                     _ => this.find(val),

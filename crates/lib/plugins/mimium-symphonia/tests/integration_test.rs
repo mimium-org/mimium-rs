@@ -86,3 +86,9 @@ fn test_readwav_relative_to_source_file() {
     ans.push(0);
     assert_eq!(res_int, ans);
 }
+
+#[test]
+fn test_sampler_length() {
+    let res = run_file_with_symphonia("loadwav_length.mmm", 1).expect("failed to evaluate");
+    assert_eq!(res, vec![100.0]);
+}

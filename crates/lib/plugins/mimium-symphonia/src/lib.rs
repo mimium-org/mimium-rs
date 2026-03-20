@@ -1,4 +1,4 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use mimium_lang::ast::{Expr, Literal, RecordField};
@@ -168,8 +168,8 @@ impl SamplerPlugin {
 
     fn sampler_result_type() -> TypeNodeId {
         Type::Record(vec![
-            RecordTypeField::new("player".to_symbol(), Self::sampler_player_type(), false),
             RecordTypeField::new("length".to_symbol(), numeric!(), false),
+            RecordTypeField::new("player".to_symbol(), Self::sampler_player_type(), false),
         ])
         .into_id()
     }
@@ -197,13 +197,13 @@ impl SamplerPlugin {
     fn sampler_record_expr(sample_idx: usize, length: f64) -> mimium_lang::interner::ExprNodeId {
         Expr::RecordLiteral(vec![
             RecordField {
-                name: "player".to_symbol(),
-                expr: Self::sampler_player_expr(sample_idx),
-            },
-            RecordField {
                 name: "length".to_symbol(),
                 expr: Expr::Literal(Literal::Float(length.to_string().to_symbol()))
                     .into_id_without_span(),
+            },
+            RecordField {
+                name: "player".to_symbol(),
+                expr: Self::sampler_player_expr(sample_idx),
             },
         ])
         .into_id_without_span()
@@ -222,7 +222,10 @@ impl SamplerPlugin {
         SysPluginSignature::new_macro(
             "Sampler_mono",
             sampler_macrof,
-            function!(vec![string_t!()], Type::Code(Self::sampler_result_type()).into_id()),
+            function!(
+                vec![string_t!()],
+                Type::Code(Self::sampler_result_type()).into_id()
+            ),
         )
     }
 
@@ -329,7 +332,10 @@ impl SystemPlugin for SamplerPlugin {
         let sampler_macro = SysPluginSignature::new_macro(
             "Sampler_mono",
             sampler_macrof,
-            function!(vec![string_t!()], Type::Code(Self::sampler_result_type()).into_id()),
+            function!(
+                vec![string_t!()],
+                Type::Code(Self::sampler_result_type()).into_id()
+            ),
         );
 
         let get_samplerf: SystemPluginFnType<Self> = Self::get_sampler;

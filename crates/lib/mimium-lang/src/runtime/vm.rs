@@ -1011,6 +1011,14 @@ impl Machine {
                     let heap_addr = self.get_stack(src as i64);
                     let heap_idx = Self::get_as::<heap::HeapIdx>(heap_addr);
                     heap::heap_retain(&mut self.heap, heap_idx);
+                    if let Some(heap_obj) = self.heap.get(heap_idx)
+                        && let Some(&closure_raw) = heap_obj.data.first()
+                    {
+                        let closure_idx = Self::get_as::<ClosureIdx>(closure_raw);
+                        if let Some(closure) = self.closures.get_mut(closure_idx.0) {
+                            closure.refcount += 1;
+                        }
+                    }
                 }
                 Instruction::BoxAlloc(dst, src, inner_size) => {
                     // Allocate a heap object and copy data from stack

@@ -5,15 +5,18 @@ An external function implementation to read audio files in mimium using [Symphon
 ## Example
 
 ```rust
-//Sampler_mono! macro returns a closure that takes playback position in samples as an argument
+// Sampler_mono! returns a record { player, length }
 let sampler = Sampler_mono!("test.wav")
 fn counter(){
     self+1
 }
 fn dsp(){
-    counter() |> sampler
+    let player = sampler.player
+    player(counter())
 }
 ```
+
+The returned `length` field is the number of samples loaded from the source file.
 
 ## Current status
 

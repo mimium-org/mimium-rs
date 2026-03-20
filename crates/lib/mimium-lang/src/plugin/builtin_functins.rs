@@ -1346,6 +1346,19 @@ fn dsp(){
 }
 "#;
 
+    const RECORD_CONTAINING_FUNCTION_SOURCE: &str = r#"
+fn player(pos){ pos + 1.0 }
+
+fn mk(){
+    {length = 10.0, player = player}
+}
+
+fn dsp(){
+    let sampler = mk()
+    sampler.player(41.0)
+}
+"#;
+
     fn run_vm_dsp_f64(src: &str, path: Option<PathBuf>) -> f64 {
         fn runtime_get_samplerate(machine: &mut Machine) -> crate::runtime::vm::ReturnCode {
             machine.set_stack(0, Machine::to_value(44_100.0f64));
@@ -1526,5 +1539,19 @@ fn dsp(){
         });
 
         assert_eq!(value, 0.0);
+    }
+
+    #[test]
+    fn record_can_store_function_value() {
+        let value = run_with_large_stack(|| {
+            run_vm_dsp_f64(
+                RECORD_CONTAINING_FUNCTION_SOURCE,
+                Some(repo_test_artifact_path(
+                    "record_containing_function_regression_test.mmm",
+                )),
+            )
+        });
+
+        assert_eq!(value, 42.0);
     }
 }
