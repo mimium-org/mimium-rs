@@ -394,13 +394,11 @@ pub(crate) mod test_utils {
             .join("\n")
     }
 
-    pub(crate) fn repo_tmp_path(filename: &str) -> PathBuf {
+    pub(crate) fn repo_test_artifact_path(filename: &str) -> PathBuf {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.pop(); // Remove mimium-lang
-        path.pop(); // Remove lib
-        path.pop(); // Remove crates
-        path.push("tmp");
-        std::fs::create_dir_all(&path).expect("Failed to create tmp directory");
+        path.push("testdata");
+        path.push("generated");
+        std::fs::create_dir_all(&path).expect("Failed to create test artifact directory");
         path.push(filename);
         path
     }

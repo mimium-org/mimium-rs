@@ -136,7 +136,7 @@ impl Default for AudioSetting {
         Self {
             input_device: String::new(),
             output_device: String::new(),
-            buffer_size: 4096,
+            buffer_size: 512,
             sample_rate: 48000,
         }
     }
@@ -405,7 +405,12 @@ impl RunOptions {
 }
 
 /// Construct an [`ExecContext`] with the default set of plugins.
-pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config) -> ExecContext {
+pub fn get_default_context(
+    path: Option<PathBuf>,
+    with_gui: bool,
+    use_wasm_backend: bool,
+    config: Config,
+) -> ExecContext {
     let plugins: Vec<Box<dyn Plugin>> = vec![];
     let mut ctx = ExecContext::new(plugins.into_iter(), path, config);
 
@@ -423,7 +428,13 @@ pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config
         {
             // Load all plugins except guitools when GUI is requested as SystemPlugin
             // (guitools will be loaded as SystemPlugin to avoid duplicates)
-            loaded_count = loader.load_plugins_from_dir(exe_dir).unwrap_or(0);
+            loaded_count = if use_wasm_backend {
+                loader
+                    .load_plugins_from_dir_with_skip_substrings(exe_dir, &["symphonia"])
+                    .unwrap_or(0)
+            } else {
+                loader.load_plugins_from_dir(exe_dir).unwrap_or(0)
+            };
 
             if loaded_count > 0 {
                 log::debug!("Loaded {loaded_count} plugin(s) from executable directory");
@@ -440,13 +451,25 @@ pub fn get_default_context(path: Option<PathBuf>, with_gui: bool, config: Config
 
         // If no plugins loaded from exe directory, try standard plugin directory
         if loaded_count == 0
-            && let Err(e) = ctx.load_builtin_dynamic_plugins()
+            && let Err(e) = if let Some(loader) = ctx.get_plugin_loader_mut() {
+                if use_wasm_backend {
+                    loader.load_builtin_plugins_with_skip_substrings(&["symphonia"])
+                } else {
+                    loader.load_builtin_plugins()
+                }
+            } else {
+                Ok(())
+            }
         {
             log::debug!("No builtin dynamic plugins found: {e:?}");
         }
     }
 
     ctx.add_system_plugin(mimium_scheduler::get_default_scheduler_plugin());
+
+    if use_wasm_backend {
+        ctx.add_system_plugin(mimium_symphonia::SamplerPlugin::default());
+    }
 
     // Always add guitools as SystemPlugin so Slider/Probe macros are available
     // on every backend. Use headless mode when GUI is disabled.
@@ -886,6 +909,7 @@ pub fn run_file(
     let mut ctx = get_default_context(
         Some(PathBuf::from(fullpath)),
         options.with_gui,
+        options.use_wasm || matches!(options.mode, RunMode::EmitWasm { .. }),
         options.config,
     );
 
@@ -1296,6 +1320,7 @@ fn dsp(){
 "#;
         let mut ctx = get_default_context(
             Some(PathBuf::from("tmp/lift_array_code_test.mmm")),
+            false,
             false,
             Config::default(),
         );

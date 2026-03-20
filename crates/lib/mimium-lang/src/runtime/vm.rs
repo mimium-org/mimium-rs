@@ -234,6 +234,7 @@ pub struct Machine {
     global_vals: Vec<RawVal>,
     debug_stacktype: Vec<RawValType>,
     current_ext_call_nargs: u8,
+    current_ext_call_idx: Option<usize>,
     /// Storage for code values (AST fragments) produced by codegen combinators.
     /// Each entry is an interned `ExprNodeId`; the index into this vec is
     /// stored as a `RawVal` on the VM stack.
@@ -412,6 +413,7 @@ impl Machine {
             global_vals: vec![],
             debug_stacktype: vec![RawValType::Int; 255],
             current_ext_call_nargs: 0,
+            current_ext_call_idx: None,
             code_values: vec![],
         };
         extfns.for_each(|ExtFunInfo { name, fun, .. }| {
@@ -442,6 +444,7 @@ impl Machine {
             global_vals: vec![],
             debug_stacktype: vec![RawValType::Int; 255],
             current_ext_call_nargs: 0,
+            current_ext_call_idx: None,
             code_values: vec![],
         };
         //expect there are no change changes in external function use for now
@@ -553,6 +556,10 @@ impl Machine {
     /// Number of argument words for the currently executing external function call.
     pub fn get_current_ext_call_nargs(&self) -> u8 {
         self.current_ext_call_nargs
+    }
+
+    pub fn get_current_ext_call_idx(&self) -> Option<usize> {
+        self.current_ext_call_idx
     }
     /// Extract the [`ClosureIdx`] stored inside a heap-allocated closure object.
     ///
@@ -947,7 +954,9 @@ impl Machine {
                     let ext_fn_idx = self.get_stack(func as i64) as usize;
                     let fidx = self.fn_map.get(&ext_fn_idx).unwrap();
                     let prev_nargs = self.current_ext_call_nargs;
+                    let prev_ext_call_idx = self.current_ext_call_idx;
                     self.current_ext_call_nargs = nargs;
+                    self.current_ext_call_idx = Some(ext_fn_idx);
                     let _nret = match fidx {
                         ExtFnIdx::Fun(fi) => {
                             let f = self.ext_fun_table[*fi].1;
@@ -962,6 +971,7 @@ impl Machine {
                         }
                     };
                     self.current_ext_call_nargs = prev_nargs;
+                    self.current_ext_call_idx = prev_ext_call_idx;
 
                     // Shift return values one position left so they start at
                     // register `func` (the slot that held the function ref).

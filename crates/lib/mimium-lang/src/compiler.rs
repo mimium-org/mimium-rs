@@ -251,11 +251,7 @@ pub struct WasmOutput {
 
 #[cfg(test)]
 mod test {
-    use crate::{
-        function,
-        interner::ToSymbol,
-        numeric,
-    };
+    use crate::{function, interner::ToSymbol, numeric};
 
     use super::*;
     fn get_source() -> &'static str {

@@ -4916,7 +4916,7 @@ impl WasmGenerator {
 mod tests {
     use super::*;
     use crate::interner::ToSymbol;
-    use crate::test_utils::{compile_to_mir, repo_tmp_path, run_wasm_dsp_f64};
+    use crate::test_utils::{compile_to_mir, repo_test_artifact_path, run_wasm_dsp_f64};
 
     #[test]
     fn test_wasmgen_create() {
@@ -4961,8 +4961,8 @@ mod tests {
         let mut generator = WasmGenerator::new_without_plugins(mir);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
-        // Write to tmp directory for inspection
-        let wasm_path = repo_tmp_path("test_simple_return_from_test.wasm");
+        // Write to tracked testdata directory for inspection
+        let wasm_path = repo_test_artifact_path("test_simple_return_from_test.wasm");
         std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
 
         eprintln!(
@@ -5038,8 +5038,8 @@ fn dsp() -> float { helper(21.0) }
         let mut generator = WasmGenerator::new_without_plugins(mir);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
-        // Write to tmp directory for inspection
-        let wasm_path = repo_tmp_path("test_function_call_from_test.wasm");
+        // Write to tracked testdata directory for inspection
+        let wasm_path = repo_test_artifact_path("test_function_call_from_test.wasm");
         std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
 
         eprintln!(
@@ -5070,8 +5070,8 @@ fn dsp() -> float {
         let mut generator = WasmGenerator::new_without_plugins(mir);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
-        // Write to tmp directory (3 levels up from crates/lib/mimium-lang)
-        let wasm_path = repo_tmp_path("test_integration.wasm");
+        // Write to tracked testdata directory for inspection
+        let wasm_path = repo_test_artifact_path("test_integration.wasm");
         std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
 
         eprintln!(
@@ -5087,8 +5087,8 @@ fn dsp() -> float {
         let mut generator = WasmGenerator::new_without_plugins(mir);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
-        // Write to tmp for inspection
-        let wasm_path = repo_tmp_path(&format!("{test_name}.wasm"));
+        // Write to tracked testdata directory for inspection
+        let wasm_path = repo_test_artifact_path(&format!("{test_name}.wasm"));
         std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
 
         let engine = wasmtime::Engine::default();
@@ -5290,7 +5290,9 @@ fn dsp(){
 
         let value = run_wasm_dsp_f64(
             src,
-            Some(repo_tmp_path("nested_array_split_head_regression.mmm")),
+            Some(repo_test_artifact_path(
+                "nested_array_split_head_regression.mmm",
+            )),
         );
         assert_eq!(value, 4.0);
     }
@@ -5328,7 +5330,9 @@ fn dsp(){
 
         let value = run_wasm_dsp_f64(
             src,
-            Some(repo_tmp_path("closure_capture_array_regression.mmm")),
+            Some(repo_test_artifact_path(
+                "closure_capture_array_regression.mmm",
+            )),
         );
         assert_eq!(value, 11.0);
     }

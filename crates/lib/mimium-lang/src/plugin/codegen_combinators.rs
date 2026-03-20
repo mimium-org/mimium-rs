@@ -64,6 +64,18 @@ fn lookup_extfun_arg_types(machine: &Machine, name: Symbol) -> Option<Vec<TypeNo
         })
 }
 
+fn lookup_current_extfun_arg_types(machine: &Machine) -> Option<Vec<TypeNodeId>> {
+    let ext_fun_idx = machine.get_current_ext_call_idx()?;
+    let (_, ty) = machine.prog.ext_fun_table.get(ext_fun_idx)?;
+    match ty.to_type() {
+        Type::Function { arg, .. } => Some(match arg.to_type() {
+            Type::Tuple(types) => types,
+            _ => vec![arg],
+        }),
+        _ => None,
+    }
+}
+
 fn raw_words_to_code_expr(machine: &Machine, words: &[u64], ty: TypeNodeId) -> Option<ExprNodeId> {
     match ty.to_type() {
         Type::Primitive(PType::Numeric) => {
@@ -792,8 +804,9 @@ fn code_lift_arrayf(machine: &mut Machine) -> ReturnCode {
 /// Otherwise the value is treated as a float and lifted via `code_lit_f`.
 fn code_lift(machine: &mut Machine) -> ReturnCode {
     let nargs = machine.get_current_ext_call_nargs() as usize;
-    let concrete_arg_types =
-        lookup_extfun_arg_types(machine, "lift".to_symbol()).unwrap_or_default();
+    let concrete_arg_types = lookup_current_extfun_arg_types(machine)
+        .or_else(|| lookup_extfun_arg_types(machine, "lift".to_symbol()))
+        .unwrap_or_default();
     if nargs > 1 {
         let elems: Vec<ExprNodeId> = (0..nargs)
             .map(|i| {

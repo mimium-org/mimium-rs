@@ -4443,10 +4443,9 @@ fn compile_and_execute_stage0(
 
             let vm_fun: crate::plugin::ExtClsType = Rc::new(RefCell::new(
                 move |machine: &mut vm::Machine| -> vm::ReturnCode {
-                    let concrete_arg_types =
-                        lookup_current_extfun_arg_types(machine)
-                            .or_else(|| lookup_extfun_arg_types(machine, name))
-                            .unwrap_or_else(|| arg_types.clone());
+                    let concrete_arg_types = lookup_current_extfun_arg_types(machine)
+                        .or_else(|| lookup_extfun_arg_types(machine, name))
+                        .unwrap_or_else(|| arg_types.clone());
 
                     // Convert each argument from VM representation to interpreter Value.
                     let mut offset: i64 = 0;
