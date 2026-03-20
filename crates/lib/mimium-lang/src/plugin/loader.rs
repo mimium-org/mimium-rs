@@ -31,8 +31,6 @@ use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
 use libloading::{Library, Symbol};
 
-use super::system_plugin::SystemPlugin;
-
 // -------------------------------------------------------------------------
 // Plugin interface types
 // -------------------------------------------------------------------------
@@ -640,6 +638,16 @@ impl PluginLoader {
         &mut self,
         dir: P,
     ) -> Result<usize, PluginLoaderError> {
+        self.load_plugins_from_dir_with_skip_substrings(dir, &[])
+    }
+
+    /// Load all plugins from a specific directory, skipping files whose names
+    /// contain any of the provided substrings.
+    pub fn load_plugins_from_dir_with_skip_substrings<P: AsRef<Path>>(
+        &mut self,
+        dir: P,
+        skip_substrings: &[&str],
+    ) -> Result<usize, PluginLoaderError> {
         let plugin_dir = dir.as_ref();
 
         if !plugin_dir.exists() {
@@ -664,6 +672,14 @@ impl PluginLoader {
                         "Skipping guitools plugin (should be loaded as SystemPlugin only): {}",
                         path.display()
                     );
+                    continue;
+                }
+
+                if skip_substrings
+                    .iter()
+                    .any(|needle| file_name.contains(needle))
+                {
+                    crate::log::debug!("Skipping plugin by filter: {}", path.display());
                     continue;
                 }
 
@@ -703,6 +719,17 @@ impl PluginLoader {
     pub fn load_builtin_plugins(&mut self) -> Result<(), PluginLoaderError> {
         let plugin_dir = get_plugin_directory()?;
         self.load_plugins_from_dir(plugin_dir)?;
+        Ok(())
+    }
+
+    /// Load all plugins from the standard plugin directory, skipping files whose
+    /// names contain any of the provided substrings.
+    pub fn load_builtin_plugins_with_skip_substrings(
+        &mut self,
+        skip_substrings: &[&str],
+    ) -> Result<(), PluginLoaderError> {
+        let plugin_dir = get_plugin_directory()?;
+        self.load_plugins_from_dir_with_skip_substrings(plugin_dir, skip_substrings)?;
         Ok(())
     }
 
