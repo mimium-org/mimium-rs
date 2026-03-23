@@ -163,7 +163,7 @@ impl eframe::App for PlotApp {
         egui::TopBottomPanel::bottom("parameters")
             .resizable(true)
             .default_height(220.0)
-            .min_height(120.0)
+            .min_height(10.0)
             .show(ctx, |ui| {
                 if !self.sliders.is_empty() {
                     ui.label("Parameters");
