@@ -488,16 +488,9 @@ impl Machine {
         self.get_stack_range(offset, 1).1[0]
     }
     pub fn get_stack_range(&self, offset: i64, word_size: TypeSize) -> (Range<usize>, &[RawVal]) {
-        let addr_start = self.base_pointer as usize + offset as usize;
+        let addr_start = (self.base_pointer as i64 + offset) as usize;
         let addr_end = addr_start + word_size as usize;
-        let start = self.stack.as_slice().as_ptr();
-        let slice = unsafe {
-            // w/ unstable feature
-            // let (_,snd) = self.stack.as_slice().split_at_unchecked(offset as usize);
-            // snd.split_at_unchecked(n as usize)
-            let vstart = start.add(addr_start);
-            slice::from_raw_parts(vstart, word_size as usize)
-        };
+        let slice = &self.stack[addr_start..addr_end];
         (addr_start..addr_end, slice)
     }
     pub fn get_stack_range_mut(
@@ -505,16 +498,9 @@ impl Machine {
         offset: i64,
         word_size: TypeSize,
     ) -> (Range<usize>, &mut [RawVal]) {
-        let addr_start = self.base_pointer as usize + offset as usize;
+        let addr_start = (self.base_pointer as i64 + offset) as usize;
         let addr_end = addr_start + word_size as usize;
-        let start = self.stack.as_mut_ptr();
-        let slice = unsafe {
-            // w/ unstable feature
-            // let (_,snd) = self.stack.as_slice().split_at_unchecked(offset as usize);
-            // snd.split_at_unchecked(n as usize)
-            let vstart = start.add(addr_start);
-            slice::from_raw_parts_mut(vstart, word_size as usize)
-        };
+        let slice = &mut self.stack[addr_start..addr_end];
         (addr_start..addr_end, slice)
     }
     pub fn set_stack(&mut self, offset: i64, v: RawVal) {
@@ -647,7 +633,7 @@ impl Machine {
         self.delaysizes_pos_stack.push(0);
         self.base_pointer += offset;
 
-        let snapshot_words = std::cmp::max(nargs as usize, nret_req as usize);
+        let snapshot_words = nargs as usize;
         let arg_snapshot = (0..snapshot_words)
             .map(|i| self.get_stack(i as i64))
             .collect::<Vec<_>>();
@@ -1060,21 +1046,21 @@ impl Machine {
                     heap_obj.data[..inner_size as usize].copy_from_slice(&data);
                 }
                 Instruction::CloneUserSum(value_reg, value_size, type_idx) => {
-                    let (_, value_data) = self.get_stack_range(value_reg as i64, value_size);
-                    let value_vec = value_data.to_vec();
                     let ty = self
                         .prog
                         .get_type_from_table(type_idx)
                         .expect("Invalid type table index in CloneUserSum");
+                    let (_, value_data) = self.get_stack_range(value_reg as i64, value_size);
+                    let value_vec = value_data.to_vec();
                     Self::clone_usersum_recursive(&value_vec, &ty, &mut self.heap);
                 }
                 Instruction::ReleaseUserSum(value_reg, value_size, type_idx) => {
-                    let (_, value_data) = self.get_stack_range(value_reg as i64, value_size);
-                    let value_vec = value_data.to_vec();
                     let ty = self
                         .prog
                         .get_type_from_table(type_idx)
                         .expect("Invalid type table index in ReleaseUserSum");
+                    let (_, value_data) = self.get_stack_range(value_reg as i64, value_size);
+                    let value_vec = value_data.to_vec();
                     let tt = &self.prog.type_table;
                     Self::release_usersum_recursive(&value_vec, &ty, &mut self.heap, tt);
                 }

@@ -1,0 +1,7 @@
+// @test {"times":1,"stereo":false,"expected":[60.0],"web":false,"plugins":true}
+
+use pattern::*
+
+fn dsp(){
+    run!(pure(60.0), 1.0)
+}

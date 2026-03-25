@@ -1524,7 +1524,7 @@ fn dsp(){
             )
         });
 
-        assert_eq!(value, 0.0);
+        assert_eq!(value, 60.0);
     }
 
     #[test]
@@ -1538,7 +1538,7 @@ fn dsp(){
             )
         });
 
-        assert_eq!(value, 0.0);
+        assert_eq!(value, 60.0);
     }
 
     #[test]

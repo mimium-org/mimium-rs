@@ -10,10 +10,12 @@
 
 use std::{cell::RefCell, rc::Rc};
 
+use slotmap::KeyData;
+
 use crate::{
     ast::{Expr, Literal, RecordField},
     integer,
-    interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId},
+    interner::{ExprNodeId, Symbol, ToSymbol, TypeKey, TypeNodeId},
     numeric,
     pattern::{Pattern, TypedId, TypedPattern},
     plugin::{ExtClsInfo, ExtFunTypeInfo},
@@ -41,6 +43,18 @@ fn raw_to_symbol(machine: &Machine, raw: u64) -> Symbol {
     let idx = raw as usize;
     let s = &machine.prog.strings[idx];
     s.to_symbol()
+}
+
+fn raw_to_type_node_id(raw: u64) -> TypeNodeId {
+    TypeNodeId(TypeKey::from(KeyData::from_ffi(raw)))
+}
+
+fn raw_array_to_type_node_ids(machine: &Machine, raw: u64) -> Vec<TypeNodeId> {
+    let arr = machine.arrays.get_array(raw);
+    arr.get_data()
+        .iter()
+        .map(|raw| raw_to_type_node_id(Machine::get_as::<i64>(*raw) as u64))
+        .collect()
 }
 
 fn lookup_extfun_arg_types(machine: &Machine, name: Symbol) -> Option<Vec<TypeNodeId>> {
@@ -354,6 +368,23 @@ fn code_lam1_finish(machine: &mut Machine) -> ReturnCode {
     1
 }
 
+/// `code_lam1_finish_typed(name_str: string, param_ty: int, ret_ty: int, body_code: Code(b)) -> Code(a->b)`
+fn code_lam1_finish_typed(machine: &mut Machine) -> ReturnCode {
+    let name_raw = machine.get_stack(0);
+    let param_ty_raw = Machine::get_as::<i64>(machine.get_stack(1)) as u64;
+    let ret_ty_raw = Machine::get_as::<i64>(machine.get_stack(2)) as u64;
+    let body_raw = machine.get_stack(3);
+    let name_sym = raw_to_symbol(machine, name_raw);
+    let body_expr = machine.get_code(body_raw);
+
+    let param = TypedId::new(name_sym, raw_to_type_node_id(param_ty_raw));
+    let rtype = raw_to_type_node_id(ret_ty_raw);
+    let expr = expr_to_id(Expr::Lambda(vec![param], Some(rtype), body_expr));
+    let code_val = machine.alloc_code(expr);
+    machine.set_stack(0, code_val);
+    1
+}
+
 /// `code_lam_finish(names: [string], body_code: Code(b)) -> Code(a->b)`
 ///
 /// Multi-parameter lambda construction.
@@ -373,6 +404,36 @@ fn code_lam_finish(machine: &mut Machine) -> ReturnCode {
         .collect();
 
     let expr = expr_to_id(Expr::Lambda(params, None, body_expr));
+    let code_val = machine.alloc_code(expr);
+    machine.set_stack(0, code_val);
+    1
+}
+
+/// `code_lam_finish_typed(names: [string], param_tys: [int], ret_ty: int, body_code: Code(b)) -> Code(a->b)`
+fn code_lam_finish_typed(machine: &mut Machine) -> ReturnCode {
+    let names_raw = machine.get_stack(0);
+    let param_tys_raw = machine.get_stack(1);
+    let ret_ty_raw = Machine::get_as::<i64>(machine.get_stack(2)) as u64;
+    let body_raw = machine.get_stack(3);
+    let body_expr = machine.get_code(body_raw);
+
+    let arr = machine.arrays.get_array(names_raw);
+    let len = arr.get_length_array();
+    let data = arr.get_data().to_vec();
+    let param_tys = raw_array_to_type_node_ids(machine, param_tys_raw);
+    let params: Vec<TypedId> = (0..len as usize)
+        .map(|i| {
+            let sym = raw_to_symbol(machine, data[i]);
+            let ty = param_tys.get(i).copied().unwrap_or_else(|| Type::Unknown.into_id());
+            TypedId::new(sym, ty)
+        })
+        .collect();
+
+    let expr = expr_to_id(Expr::Lambda(
+        params,
+        Some(raw_to_type_node_id(ret_ty_raw)),
+        body_expr,
+    ));
     let code_val = machine.alloc_code(expr);
     machine.set_stack(0, code_val);
     1
@@ -418,6 +479,59 @@ fn code_lam_finish_defaults(machine: &mut Machine) -> ReturnCode {
         .collect();
 
     let expr = expr_to_id(Expr::Lambda(params, None, body_expr));
+    let code_val = machine.alloc_code(expr);
+    machine.set_stack(0, code_val);
+    1
+}
+
+/// `code_lam_finish_defaults_typed(names: [string], param_tys: [int], mask: [float], defaults: [Code], ret_ty: int, body_code: Code(b)) -> Code(a->b)`
+///
+/// `mask[i] != 0.0` means `defaults[i]` is the default expression for
+/// `names[i]`; `mask[i] == 0.0` means the corresponding entry in `defaults`
+/// is ignored and the parameter is treated as required.
+fn code_lam_finish_defaults_typed(machine: &mut Machine) -> ReturnCode {
+    let names_raw = machine.get_stack(0);
+    let param_tys_raw = machine.get_stack(1);
+    let mask_raw = machine.get_stack(2);
+    let defaults_raw = machine.get_stack(3);
+    let ret_ty_raw = Machine::get_as::<i64>(machine.get_stack(4)) as u64;
+    let body_raw = machine.get_stack(5);
+    let body_expr = machine.get_code(body_raw);
+
+    let names_arr = machine.arrays.get_array(names_raw);
+    let names_len = names_arr.get_length_array() as usize;
+    let names_data = names_arr.get_data().to_vec();
+    let param_tys = raw_array_to_type_node_ids(machine, param_tys_raw);
+
+    let mask_arr = machine.arrays.get_array(mask_raw);
+    let mask_data = mask_arr.get_data().to_vec();
+
+    let defaults_arr = machine.arrays.get_array(defaults_raw);
+    let defaults_data = defaults_arr.get_data().to_vec();
+
+    let params: Vec<TypedId> = (0..names_len)
+        .map(|i| {
+            let sym = raw_to_symbol(machine, names_data[i]);
+            let ty = param_tys.get(i).copied().unwrap_or_else(|| Type::Unknown.into_id());
+            let mut param = TypedId::new(sym, ty);
+
+            let has_default = mask_data
+                .get(i)
+                .map(|raw| Machine::get_as::<f64>(*raw) != 0.0)
+                .unwrap_or(false);
+            if has_default && let Some(default_raw) = defaults_data.get(i) {
+                param.default_value = Some(machine.get_code(*default_raw));
+            }
+
+            param
+        })
+        .collect();
+
+    let expr = expr_to_id(Expr::Lambda(
+        params,
+        Some(raw_to_type_node_id(ret_ty_raw)),
+        body_expr,
+    ));
     let code_val = machine.alloc_code(expr);
     machine.set_stack(0, code_val);
     1
@@ -483,6 +597,24 @@ fn code_letrec(machine: &mut Machine) -> ReturnCode {
     let body_expr = machine.get_code(body_raw);
 
     let id = TypedId::new(name_sym, Type::Unknown.into_id());
+    let expr = expr_to_id(Expr::LetRec(id, val_expr, Some(body_expr)));
+    let code_val = machine.alloc_code(expr);
+    machine.set_stack(0, code_val);
+    1
+}
+
+/// `code_letrec_typed(name: string, type_id: int, val_code: Code(a), body_code: Code(b)) -> Code(b)`
+fn code_letrec_typed(machine: &mut Machine) -> ReturnCode {
+    let name_raw = machine.get_stack(0);
+    let ty_raw = Machine::get_as::<i64>(machine.get_stack(1)) as u64;
+    let val_raw = machine.get_stack(2);
+    let body_raw = machine.get_stack(3);
+
+    let name_sym = raw_to_symbol(machine, name_raw);
+    let val_expr = machine.get_code(val_raw);
+    let body_expr = machine.get_code(body_raw);
+    let id = TypedId::new(name_sym, raw_to_type_node_id(ty_raw));
+
     let expr = expr_to_id(Expr::LetRec(id, val_expr, Some(body_expr)));
     let code_val = machine.alloc_code(expr);
     machine.set_stack(0, code_val);
@@ -905,15 +1037,23 @@ pub fn codegen_combinator_signatures() -> Vec<ExtClsInfo> {
         mk_cls("code_app1", code_app1, fty(vec![f, f], f)),
         mk_cls("code_app2", code_app2, fty(vec![f, f, f], f)),
         mk_cls("code_lam1_finish", code_lam1_finish, fty(vec![s, f], f)),
+        mk_cls("code_lam1_finish_typed", code_lam1_finish_typed, fty(vec![s, i, i, f], f)),
         mk_cls("code_lam_finish", code_lam_finish, fty(vec![as_, f], f)),
+        mk_cls("code_lam_finish_typed", code_lam_finish_typed, fty(vec![as_, Type::Array(i).into_id(), i, f], f)),
         mk_cls(
             "code_lam_finish_defaults",
             code_lam_finish_defaults,
             fty(vec![as_, af, af, f], f),
         ),
+        mk_cls(
+            "code_lam_finish_defaults_typed",
+            code_lam_finish_defaults_typed,
+            fty(vec![as_, Type::Array(i).into_id(), af, af, i, f], f),
+        ),
         mk_cls("code_let", code_let, fty(vec![s, f, f], f)),
         mk_cls("code_let_tuple", code_let_tuple, fty(vec![as_, f, f], f)),
         mk_cls("code_letrec", code_letrec, fty(vec![s, f, f], f)),
+        mk_cls("code_letrec_typed", code_letrec_typed, fty(vec![s, i, f, f], f)),
         mk_cls("code_if", code_if, fty(vec![f, f, f], f)),
         mk_cls("code_tuple", code_tuple, fty(vec![af], f)),
         mk_cls("code_proj", code_proj, fty(vec![f, i], f)),

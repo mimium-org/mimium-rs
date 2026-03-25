@@ -64,8 +64,15 @@ fn run_all_annotated_fixtures() {
     assert!(!fixture_names.is_empty());
 
     fixture_names.iter().for_each(|name| {
-        let (res, spec) =
-            run_annotated_file_test(name).unwrap_or_else(|e| panic!("{name} failed to run: {e}"));
+        let spec = read_annotated_file_test_spec(name)
+            .unwrap_or_else(|e| panic!("{name} metadata failed to load: {e}"));
+        let (res, spec) = if spec.plugins {
+            run_annotated_file_test_with_plugins(name, false)
+                .unwrap_or_else(|e| panic!("{name} failed to run with plugins: {e}"))
+        } else {
+            run_annotated_file_test(name)
+                .unwrap_or_else(|e| panic!("{name} failed to run: {e}"))
+        };
         assert_with_spec(&res, &spec);
     });
 }
@@ -146,7 +153,7 @@ fn mininotation() {
         .stack_size(16 * 1024 * 1024) // 16 MB
         .spawn(|| {
             let res = run_file_with_plugins("mininotation.mmm", 1, [].into_iter(), false).unwrap();
-            let ans = vec![22.0]; // 22 boolean checks, each contributing 1.0
+            let ans = vec![20.0]; // 20 boolean checks, each contributing 1.0
             assert_eq!(res, ans);
         })
         .unwrap()

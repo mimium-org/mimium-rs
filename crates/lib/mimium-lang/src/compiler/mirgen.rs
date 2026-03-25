@@ -173,11 +173,17 @@ impl Context {
     ) -> (VPtr, TypeNodeId, Vec<StateSkeleton>) {
         let alloc_ty = self.canonical_record_type_id(ty);
         if let Type::Record(type_fields) = alloc_ty.to_type() {
+            let field_exprs_by_name = fields
+                .iter()
+                .map(|field| (field.name, field.expr))
+                .collect::<BTreeMap<_, _>>();
             let ordered_exprs = type_fields
                 .iter()
-                .filter_map(|tf| fields.iter().find(|f| f.name == tf.key).map(|f| f.expr))
-                .collect::<Vec<_>>();
-            if ordered_exprs.len() == fields.len() {
+                .map(|type_field| field_exprs_by_name.get(&type_field.key).copied())
+                .collect::<Option<Vec<_>>>();
+            if let Some(ordered_exprs) = ordered_exprs
+                && ordered_exprs.len() == fields.len()
+            {
                 return self.alloc_aggregates(&ordered_exprs, alloc_ty);
             }
         }
@@ -1519,6 +1525,7 @@ impl Context {
         }
     }
     fn eval_rvar(&mut self, e: ExprNodeId, t: TypeNodeId) -> VPtr {
+        let t = canonicalize_record_layout_type(t);
         // After convert_qualified_names, all module names are resolved to simple Var.
         // QualifiedVar should have been converted to Var with mangled name.
         let name = match e.to_expr() {
@@ -1977,8 +1984,8 @@ impl Context {
         ty: TypeNodeId,
     ) -> Vec<(VPtr, TypeNodeId)> {
         // Resolve any remaining intermediate type variables before matching.
-        let at = InferContext::substitute_type(at);
-        let ty = InferContext::substitute_type(ty);
+        let at = canonicalize_record_layout_type(InferContext::substitute_type(at));
+        let ty = canonicalize_record_layout_type(InferContext::substitute_type(ty));
         log::trace!("Unpacking argument {ty} for {at}");
         // Check if the argument is a tuple or record that we need to unpack
         match ty.to_type() {
@@ -4649,11 +4656,31 @@ fn raw_to_interpreter_value_at(
     raw_words_to_interpreter_value(machine, &words, ty)
 }
 
+fn canonicalize_record_layout_type(ty: TypeNodeId) -> TypeNodeId {
+    let ty = InferContext::substitute_type(ty);
+    match ty.to_type() {
+        Type::Record(fields) => {
+            let mut normalized_fields = fields
+                .iter()
+                .map(|field| RecordTypeField {
+                    key: field.key,
+                    ty: canonicalize_record_layout_type(field.ty),
+                    has_default: field.has_default,
+                })
+                .collect::<Vec<_>>();
+            normalized_fields.sort_by(|a, b| a.key.as_str().cmp(b.key.as_str()));
+            Type::Record(normalized_fields).into_id_with_location(ty.to_loc())
+        }
+        _ => ty.apply_fn(canonicalize_record_layout_type),
+    }
+}
+
 fn raw_words_to_interpreter_value(
     machine: &crate::runtime::vm::Machine,
     words: &[crate::runtime::vm::RawVal],
     ty: TypeNodeId,
 ) -> crate::interpreter::Value {
+    let ty = canonicalize_record_layout_type(ty);
     match ty.to_type() {
         Type::Primitive(PType::String) => {
             let idx = words.first().copied().unwrap_or_default() as usize;
