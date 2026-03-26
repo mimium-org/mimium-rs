@@ -39,7 +39,12 @@ jobs:
       - name: Build binaries
         run: |
           cargo build -p mimium-bintools --release --bins
-          cargo build --release -p mimium-midi -p mimium-symphonia -p mimium-guitools
+          cargo build --release \
+            -p mimium-midi \
+            -p mimium-symphonia \
+            -p mimium-guitools \
+            -F mimium-midi/dynamic-plugin-abi \
+            -F mimium-symphonia/dynamic-plugin-abi
 
       - name: Package release (Linux/macOS)
         if: runner.os != 'Windows'

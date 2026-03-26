@@ -4557,7 +4557,11 @@ fn compile_and_execute_stage0(
     Ok(result_expr)
 }
 
+// Tracks the source file currently being macro-expanded so native plugins can
+// resolve paths relative to that file. On wasm32 this becomes a no-op because
+// the runtime cannot mutate process environment variables.
 struct MacroFileEnvGuard {
+    #[cfg(not(target_arch = "wasm32"))]
     previous: Option<std::ffi::OsString>,
 }
 
@@ -4565,6 +4569,14 @@ impl MacroFileEnvGuard {
     const KEY: &'static str = "MIMIUM_CURRENT_MACRO_FILE";
 
     fn new(file_path: Option<&std::path::Path>) -> Self {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = file_path;
+            Self {}
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
         let previous = std::env::var_os(Self::KEY);
         match file_path {
             Some(path) => {
@@ -4575,14 +4587,23 @@ impl MacroFileEnvGuard {
             }
         }
         Self { previous }
+        }
     }
 }
 
 impl Drop for MacroFileEnvGuard {
     fn drop(&mut self) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            return;
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
         match &self.previous {
             Some(value) => unsafe { std::env::set_var(Self::KEY, value) },
             None => unsafe { std::env::remove_var(Self::KEY) },
+        }
         }
     }
 }
