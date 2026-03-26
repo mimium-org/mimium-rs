@@ -122,25 +122,25 @@ ScheduleExpr    ::= OrExpr { "@" OrExpr }
 /* Precedence 3: Logical OR (left associative) */
 OrExpr          ::= AndExpr { "||" AndExpr }
 
-/* Precedence 3: Logical AND (left associative) */
+/* Precedence 4: Logical AND (left associative) */
 AndExpr         ::= EqExpr { "&&" EqExpr }
 
-/* Precedence 4: Equality (left associative) */
+/* Precedence 5: Equality (left associative) */
 EqExpr          ::= RelExpr { ("==" | "!=") RelExpr }
 
-/* Precedence 5: Relational (left associative) */
+/* Precedence 6: Relational (left associative) */
 RelExpr         ::= AddExpr { ("<" | "<=" | ">" | ">=") AddExpr }
 
-/* Precedence 6: Additive (left associative) */
+/* Precedence 7: Additive (left associative) */
 AddExpr         ::= MultExpr { ("+" | "-") MultExpr }
 
-/* Precedence 7: Multiplicative (left associative) */
+/* Precedence 8: Multiplicative (left associative) */
 MultExpr        ::= ExponentExpr { ("*" | "/" | "%") ExponentExpr }
 
-/* Precedence 8: Exponentiation (right associative) */
+/* Precedence 9: Exponentiation (right associative) */
 ExponentExpr    ::= UnaryExpr [ "^" ExponentExpr ]
 
-/* Precedence 9: Unary operators */
+/* Precedence 10: Unary operators */
 UnaryExpr       ::= { "-" | "`" | "$" } DotExpr
 
 /* Precedence 10: Field access (left associative) */

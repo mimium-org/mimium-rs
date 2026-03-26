@@ -420,10 +420,12 @@ fn convert_placeholder(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
                 .map(|(i, e)| {
                     if matches!(e.to_expr(), Expr::Literal(Literal::PlaceHolder)) {
                         let loc = Location::new(e_id.to_span().clone(), file_path.clone());
+                        let escaped_loc = loc.clone();
                         let id = format!("__lambda_arg_{i}").to_symbol();
                         let ty = Type::Unknown.into_id_with_location(loc.clone());
                         let newid = TypedId::new(id, ty);
-                        let e = Expr::Escape(Expr::Var(id).into_id(loc.clone())).into_id(loc);
+                        let e = Expr::Escape(Expr::Var(id).into_id(escaped_loc.clone()))
+                            .into_id(escaped_loc);
                         (Some(newid), e)
                     } else {
                         (None, convert_placeholder(e, file_path.clone()))
@@ -431,8 +433,9 @@ fn convert_placeholder(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
                 })
                 .unzip();
             let lambda_args = lambda_args_sparse.into_iter().flatten().collect();
-            let body =
-                Expr::Bracket(Expr::Apply(fun, new_args).into_id(loc.clone())).into_id(loc.clone());
+            let body_loc = loc.clone();
+            let body = Expr::Bracket(Expr::Apply(fun, new_args).into_id(body_loc.clone()))
+                .into_id(body_loc);
             Expr::Lambda(lambda_args, None, body).into_id(loc.clone())
         }
         _ => convert_recursively_pure(
