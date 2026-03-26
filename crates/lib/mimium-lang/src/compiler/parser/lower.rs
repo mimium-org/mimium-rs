@@ -2437,30 +2437,32 @@ fn dsp() { add(1.0, 2.0) }
     }
 
     #[test]
-    fn test_parse_macro_pipe_has_lower_precedence_than_pipe() {
+    fn test_parse_pipe_and_macro_pipe_share_precedence_and_associate_left() {
         let source = "fn test(a, b, c) { a ||> b |> c }";
         let prog = parse_source(source);
 
         let stmt = &prog.statements[0].0;
         match stmt {
             ProgramStatement::FnDefinition { body, .. } => match body.to_expr() {
-                Expr::BinOp(lhs, (Op::PipeMacro, _), rhs) => {
-                    assert!(matches!(lhs.to_expr(), Expr::Var(name) if name.as_str() == "a"));
-                    match rhs.to_expr() {
-                        Expr::BinOp(rhs_lhs, (Op::Pipe, _), rhs_rhs) => {
-                            assert!(
-                                matches!(rhs_lhs.to_expr(), Expr::Var(name) if name.as_str() == "b")
-                            );
-                            assert!(
-                                matches!(rhs_rhs.to_expr(), Expr::Var(name) if name.as_str() == "c")
-                            );
+                Expr::BinOp(lhs, (Op::Pipe, _), rhs) => {
+                    assert!(matches!(rhs.to_expr(), Expr::Var(name) if name.as_str() == "c"));
+                    match lhs.to_expr() {
+                        Expr::BinOp(inner_lhs, (Op::PipeMacro, _), inner_rhs) => {
+                            assert!(matches!(
+                                inner_lhs.to_expr(),
+                                Expr::Var(name) if name.as_str() == "a"
+                            ));
+                            assert!(matches!(
+                                inner_rhs.to_expr(),
+                                Expr::Var(name) if name.as_str() == "b"
+                            ));
                         }
-                        other => panic!("Expected nested Pipe on RHS, got {other:?}"),
+                        other => panic!("Expected nested PipeMacro on LHS, got {other:?}"),
                     }
                 }
-                other => panic!("Expected top-level PipeMacro, got {other:?}"),
+                other => panic!("Expected top-level Pipe, got {other:?}"),
             },
-            _ => panic!("Expected FnDefinition, got {:?}", stmt),
+            _ => panic!("Expected FnDefinition, got {stmt:?}"),
         }
     }
 }

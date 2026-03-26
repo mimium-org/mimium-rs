@@ -838,11 +838,9 @@ impl<'a> Parser<'a> {
     /// Get precedence of an infix operator (None means not an infix operator)
     fn get_infix_precedence(&self, token_kind: TokenKind) -> Option<usize> {
         match token_kind {
-            // Macro-pipe should have the lowest precedence.
-            TokenKind::OpPipeMacro => Some(1),
-            // Pipe should be lower than ordinary operators while staying above macro-pipe.
+            // Pipe operators share the same precedence and associate to the left.
             // but must be > 0 to avoid infinite loop in statement context (min_prec == 0)
-            TokenKind::OpPipe => Some(2),
+            TokenKind::OpPipeMacro | TokenKind::OpPipe => Some(2),
             TokenKind::OpOr => Some(3),
             TokenKind::OpAnd => Some(4),
             TokenKind::OpEqual | TokenKind::OpNotEqual => Some(5),
