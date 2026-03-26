@@ -66,6 +66,23 @@ fn get_parent_dir(current_file: &str) -> Result<PathBuf, Error> {
     }
 }
 
+fn normalize_lexical_path(path: &std::path::Path) -> PathBuf {
+    use std::path::Component;
+
+    path.components().fold(PathBuf::new(), |mut acc, component| {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                acc.pop();
+            }
+            Component::RootDir | Component::Prefix(_) | Component::Normal(_) => {
+                acc.push(component.as_os_str())
+            }
+        }
+        acc
+    })
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn find_workspace_lib_path(
     current_file_or_dir: &str,
@@ -84,9 +101,17 @@ fn find_workspace_lib_path(
 #[cfg(target_arch = "wasm32")]
 fn find_workspace_lib_path(
     _current_file_or_dir: &str,
-    _relpath: &std::path::Path,
+    relpath: &std::path::Path,
 ) -> Option<PathBuf> {
-    None
+    let test_root = get_env("TEST_ROOT")
+        .ok()
+        .or_else(|| Some(env!("TEST_ROOT").to_string()))?;
+    let workspace_root = PathBuf::from(test_root)
+        .parent()?
+        .parent()?
+        .parent()?
+        .to_path_buf();
+    Some(workspace_root.join("lib").join(relpath))
 }
 
 /// Get additional library search paths from the `MIMIUM_LIB_PATH` environment variable.
@@ -137,7 +162,9 @@ pub fn load_mmmlibfile(current_file_or_dir: &str, path: &str) -> Result<(String,
         }
     };
     let cpath = get_canonical_path(current_file_or_dir, &path.to_string_lossy())?;
-    if current_file_or_dir == cpath.to_string_lossy() {
+    if normalize_lexical_path(std::path::Path::new(current_file_or_dir))
+        == normalize_lexical_path(&cpath)
+    {
         return Err(Error::SelfReference {
             path: cpath.clone(),
         });
@@ -256,16 +283,22 @@ mod test {
 
     // wasm_bindgen_test_configure!(run_in_browser);
 
+    fn normalize_test_path(path: &str) -> String {
+        normalize_lexical_path(std::path::Path::new(path))
+            .to_string_lossy()
+            .into_owned()
+    }
+
     fn setup_file() -> (String, String) {
         let ans = r#"include("error_include_itself.mmm")
 fn dsp(){
     0.0
 }"#;
-        let file = format!(
+        let file = normalize_test_path(&format!(
             "{}/../mimium-test/tests/mmm/{}",
             get_env("TEST_ROOT").expect("TEST_ROOT is not set"),
             "error_include_itself.mmm"
-        );
+        ));
         (ans.to_string(), file)
     }
     #[wasm_bindgen_test] //wasm only test
@@ -285,7 +318,8 @@ fn dsp(){
     fn loadlib_test_selfinclude() {
         use super::*;
         let (_, file) = setup_file();
-        let err = load_mmmlibfile(&file, &file).expect_err("should be an error");
+        let err = load_mmmlibfile(&file, "error_include_itself.mmm")
+            .expect_err("should be an error");
 
         assert!(matches!(err, Error::SelfReference { .. }));
     }
