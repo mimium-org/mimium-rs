@@ -108,15 +108,18 @@ ExprGroup       ::= Block
                   | Expr
 
 /* Expression with operator precedence (lowest to highest) */
-Expr            ::= PipeExpr
+Expr            ::= MacroPipeExpr
 
-/* Precedence 0: Pipe (left associative) */
+/* Precedence 0: Macro pipe (left associative) */
+MacroPipeExpr   ::= PipeExpr { "||>" PipeExpr }
+
+/* Precedence 1: Pipe (left associative) */
 PipeExpr        ::= ScheduleExpr { "|>" ScheduleExpr }
 
-/* Precedence 1: Schedule (left associative) */
+/* Precedence 2: Schedule (left associative) */
 ScheduleExpr    ::= OrExpr { "@" OrExpr }
 
-/* Precedence 2: Logical OR (left associative) */
+/* Precedence 3: Logical OR (left associative) */
 OrExpr          ::= AndExpr { "||" AndExpr }
 
 /* Precedence 3: Logical AND (left associative) */

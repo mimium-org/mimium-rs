@@ -71,6 +71,7 @@ fn token_kind_to_semantic_index(kind: TokenKind) -> Option<usize> {
         }
         TokenKind::Assign
         | TokenKind::OpPipe
+        | TokenKind::OpPipeMacro
         | TokenKind::OpAt
         | TokenKind::OpSum
         | TokenKind::OpMinus
@@ -216,7 +217,10 @@ impl<'a> SemanticContext<'a> {
     fn contains_pipe(&self, node_id: GreenNodeId) -> bool {
         match self.arena.get(node_id) {
             GreenNode::Token { token_index, .. } => {
-                self.tokens[*token_index].kind == TokenKind::OpPipe
+                matches!(
+                    self.tokens[*token_index].kind,
+                    TokenKind::OpPipe | TokenKind::OpPipeMacro
+                )
             }
             GreenNode::Internal { children, .. } => {
                 children.iter().any(|child| self.contains_pipe(*child))

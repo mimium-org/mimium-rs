@@ -27,7 +27,8 @@ pub enum Op {
 
     At, // @
 
-    Pipe, // |>
+    Pipe,      // |>
+    PipeMacro, // ||>
 
     Unknown(String),
 }
@@ -50,7 +51,7 @@ impl Op {
             Op::And => intrinsics::AND,
             Op::Or => intrinsics::OR,
             Op::At => "_mimium_schedule_at",
-            Op::Pipe => unreachable!(), // pipe is a syntax sugar, not a function
+            Op::Pipe | Op::PipeMacro => unreachable!(), // pipe operators are syntax sugar, not a function
             Op::Unknown(x) => x.as_str(),
         }
         .to_symbol()
@@ -76,6 +77,7 @@ impl fmt::Display for Op {
             Op::Or => write!(f, "||"),
             Op::At => write!(f, "@"),
             Op::Pipe => write!(f, "|>"),
+            Op::PipeMacro => write!(f, "||>"),
             Op::Unknown(x) => write!(f, "{x}"),
         }
     }

@@ -1782,6 +1782,7 @@ impl<'a> Lowerer<'a> {
                     TokenKind::OpOr => Some(Op::Or),
                     TokenKind::OpAt => Some(Op::At),
                     TokenKind::OpPipe => Some(Op::Pipe),
+                    TokenKind::OpPipeMacro => Some(Op::PipeMacro),
                     _ => None,
                 };
                 if let Some(op) = op {
@@ -2431,6 +2432,34 @@ fn dsp() { add(1.0, 2.0) }
                     other => panic!("Expected Match expr, got {:?}", other),
                 }
             }
+            _ => panic!("Expected FnDefinition, got {:?}", stmt),
+        }
+    }
+
+    #[test]
+    fn test_parse_macro_pipe_has_lower_precedence_than_pipe() {
+        let source = "fn test(a, b, c) { a ||> b |> c }";
+        let prog = parse_source(source);
+
+        let stmt = &prog.statements[0].0;
+        match stmt {
+            ProgramStatement::FnDefinition { body, .. } => match body.to_expr() {
+                Expr::BinOp(lhs, (Op::PipeMacro, _), rhs) => {
+                    assert!(matches!(lhs.to_expr(), Expr::Var(name) if name.as_str() == "a"));
+                    match rhs.to_expr() {
+                        Expr::BinOp(rhs_lhs, (Op::Pipe, _), rhs_rhs) => {
+                            assert!(
+                                matches!(rhs_lhs.to_expr(), Expr::Var(name) if name.as_str() == "b")
+                            );
+                            assert!(
+                                matches!(rhs_rhs.to_expr(), Expr::Var(name) if name.as_str() == "c")
+                            );
+                        }
+                        other => panic!("Expected nested Pipe on RHS, got {other:?}"),
+                    }
+                }
+                other => panic!("Expected top-level PipeMacro, got {other:?}"),
+            },
             _ => panic!("Expected FnDefinition, got {:?}", stmt),
         }
     }

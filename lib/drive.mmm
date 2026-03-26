@@ -3,14 +3,14 @@ pub fn saturate(input){
 }
 pub fn clamp(input,vmin=-0.7,vmax=0.7){
     max(input,vmin)
-    |> min(_,vmax)
+    ||> min(_,vmax)
 }
 //expect input -1~1
 pub fn bitcrush(input,res=8){
   let steps = 2^res
   input * steps
   |> round
-  |> (_ / steps)
+  ||> (_ / steps)
 }
 fn trigger_fallng(input){
     input < mem(input)
@@ -27,5 +27,5 @@ pub fn sah_auto(input,freq=1000){
 
 pub fn degrade(input,freq=1000,res=8){
     sah_auto(input,freq)
-    |> bitcrush(_,res)
+    ||> bitcrush(_,res)
 }

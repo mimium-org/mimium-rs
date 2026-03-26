@@ -70,8 +70,7 @@ fn run_all_annotated_fixtures() {
             run_annotated_file_test_with_plugins(name, false)
                 .unwrap_or_else(|e| panic!("{name} failed to run with plugins: {e}"))
         } else {
-            run_annotated_file_test(name)
-                .unwrap_or_else(|e| panic!("{name} failed to run: {e}"))
+            run_annotated_file_test(name).unwrap_or_else(|e| panic!("{name} failed to run: {e}"))
         };
         assert_with_spec(&res, &spec);
     });

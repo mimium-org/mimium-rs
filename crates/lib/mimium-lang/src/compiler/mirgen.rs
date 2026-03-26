@@ -2007,16 +2007,17 @@ impl Context {
                 // directly.  Otherwise (e.g. after VM staging which produces
                 // Tuple-typed function args), recover parameter names from the
                 // MIR function definition.
-                let param_fields: Option<Vec<RecordTypeField>> =
-                    if let Type::Record(param_types) = at.to_type() {
-                        let tuple_tys = param_types.iter().map(|field| field.ty).collect::<Vec<_>>();
-                        self.get_function_param_fields(&f_val, &tuple_tys)
-                            .or(Some(param_types))
-                    } else if let Type::Tuple(tuple_tys) = at.to_type() {
-                        self.get_function_param_fields(&f_val, &tuple_tys)
-                    } else {
-                        None
-                    };
+                let param_fields: Option<Vec<RecordTypeField>> = if let Type::Record(param_types) =
+                    at.to_type()
+                {
+                    let tuple_tys = param_types.iter().map(|field| field.ty).collect::<Vec<_>>();
+                    self.get_function_param_fields(&f_val, &tuple_tys)
+                        .or(Some(param_types))
+                } else if let Type::Tuple(tuple_tys) = at.to_type() {
+                    self.get_function_param_fields(&f_val, &tuple_tys)
+                } else {
+                    None
+                };
 
                 if let Some(param_types) = param_fields {
                     let fid_opt = match f_val.as_ref() {

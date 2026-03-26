@@ -154,10 +154,10 @@ mod freeverb{
     pub fn freeverb_mono_wet(is_right){
         `|input,damp,roomsize|{
             gen_lfc_bank!(is_right)(input,damp,roomsize)
-                |> allpass(_,0.5,225)
-                |> allpass(_,0.5,556)
-                |> allpass(_,0.5,441)
-                |> allpass(_,0.5,341)
+                ||> allpass(_,0.5,225)
+                ||> allpass(_,0.5,556)
+                ||> allpass(_,0.5,441)
+                ||> allpass(_,0.5,341)
         }
     }
     #stage(main)
@@ -277,4 +277,3 @@ mod fdn{
 pub use freeverb::{freeverb_stereo,freeverb_mono}
 pub use jcrev::{jcrev_wet,jcrev_stereo_wet,jcrev,jcrev_stereo}
 pub use fdn::{fdn_rev}
-
