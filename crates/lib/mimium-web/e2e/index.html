@@ -46,6 +46,10 @@
           return response.text();
         }
 
+        function getStdlibBaseUrl(tag = 'e2e-fixtures') {
+          return `${location.origin}/raw.githubusercontent.com/mimium-org/mimium-rs/${tag}/lib/`;
+        }
+
         function collectDependencies(source) {
           const moduleDeps = [...source.matchAll(/^\s*mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/gm)].map(
             (match) => `${match[1]}.mmm`
@@ -91,6 +95,7 @@
           const ctx = new Context(config);
           ctx.clear_virtual_file_cache();
           await preloadDependenciesToCache(ctx, source);
+          await ctx.init_lib_cache_with_base_url(getStdlibBaseUrl());
 
           ctx.compile_direct(source);
 
@@ -130,7 +135,7 @@
         window.runFixtureIntegrationWithNetwork = async ({
           fixtureName,
           moduleBaseUrl = '/fixtures/',
-          stdlibBaseUrl = `${location.origin}/raw.githubusercontent.com/mimium-org/mimium-rs/e2e-network/lib/`
+          stdlibBaseUrl = getStdlibBaseUrl('e2e-network')
         }) => {
           await ensureInit();
 
