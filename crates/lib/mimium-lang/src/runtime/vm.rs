@@ -355,36 +355,56 @@ where
 }
 
 impl Machine {
+    fn try_get_heap_backed_closure(&self, raw: RawVal) -> Option<(heap::HeapIdx, ClosureIdx)> {
+        let heap_idx = Self::get_as::<heap::HeapIdx>(raw);
+        self.heap.get(heap_idx).and_then(|obj| {
+            obj.data
+                .first()
+                .map(|&closure_raw| (heap_idx, Self::get_as::<ClosureIdx>(closure_raw)))
+        })
+    }
+
+    fn try_get_direct_closure(&self, raw: RawVal) -> Option<ClosureIdx> {
+        let clsidx = Self::get_as::<ClosureIdx>(raw);
+        self.closures.contains_key(clsidx.0).then_some(clsidx)
+    }
+
     /// Drop a closure by decrementing its reference count.
     /// When refcount reaches 0, recursively drops captured closures and removes the closure.
     pub fn drop_closure(&mut self, id: ClosureIdx) {
         let cls = self.closures.get_mut(id.0).unwrap();
         cls.refcount -= 1;
         if cls.refcount == 0 {
-            let refs = self
+            let raw_refs = self
                 .closures
-                .get_mut(id.0)
+                .get(id.0)
                 .unwrap()
                 .upvalues
                 .iter()
-                .map(|v| {
+                .filter_map(|v| {
                     let v = v.borrow();
                     match &*v {
-                        UpValue::Closed(data, true) => {
-                            // Closure-typed upvalue: value is a HeapIdx
-                            let heap_idx = Self::get_as::<heap::HeapIdx>(data[0]);
-                            self.heap.get(heap_idx).and_then(|obj| {
-                                (!obj.data.is_empty())
-                                    .then_some((heap_idx, Self::get_as::<ClosureIdx>(obj.data[0])))
-                            })
-                        }
+                        UpValue::Closed(data, true) => Some(data[0]),
                         _ => None,
                     }
                 })
                 .collect::<Vec<_>>();
-            refs.iter().filter_map(|i| *i).for_each(|(heap_idx, clsi)| {
-                self.drop_closure(clsi);
-                heap::heap_release(&mut self.heap, heap_idx);
+            let refs = raw_refs
+                .into_iter()
+                .filter_map(|raw| {
+                    self.try_get_heap_backed_closure(raw)
+                        .map(|(heap_idx, closure_idx)| (Some(heap_idx), closure_idx))
+                        .or_else(|| {
+                            self.try_get_direct_closure(raw)
+                                .map(|closure_idx| (None, closure_idx))
+                        })
+                })
+                .collect::<Vec<_>>();
+            refs.iter().for_each(|(heap_idx, clsi)| {
+                self.drop_closure(*clsi);
+                if let Some(heap_idx) = heap_idx {
+                    heap::heap_release(&mut self.heap, *heap_idx);
+                }
             });
             self.closures.remove(id.0);
         }
@@ -809,50 +829,43 @@ impl Machine {
     fn close_upvalues_by_idx(&mut self, clsidx: ClosureIdx) {
         let closure_base_ptr = self.get_closure(clsidx).base_ptr as usize;
 
-        // Collect (ClosureIdx-to-retain, Option<HeapIdx-to-retain>) pairs for
-        // each upvalue that holds a closure reference.
-        let refs = self
+        // Collect closure references to retain. Function-typed upvalues may be
+        // stored either as heap-backed closures or as direct closure refs.
+        let raw_refs = self
             .get_closure(clsidx)
             .upvalues
             .iter()
-            .map(|upv| {
+            .filter_map(|upv| {
                 let upv = &mut *upv.borrow_mut();
                 match upv {
                     UpValue::Open(ov) => {
                         let (_range, ov_raw) = self.get_open_upvalue(closure_base_ptr, *ov);
                         let is_closure = ov.is_closure;
                         *upv = UpValue::Closed(ov_raw.to_vec(), is_closure);
-                        if is_closure {
-                            // The raw value is a HeapIdx wrapping a ClosureIdx
-                            let heap_idx = Self::get_as::<heap::HeapIdx>(ov_raw[0]);
-                            Some(heap_idx)
-                        } else {
-                            None
-                        }
+                        is_closure.then_some(ov_raw[0])
                     }
                     UpValue::Closed(v, is_closure) => {
-                        if *is_closure {
-                            Some(Self::get_as::<heap::HeapIdx>(v[0]))
-                        } else {
-                            None
-                        }
+                        (*is_closure).then_some(v[0])
                     }
                 }
             })
             .collect::<Vec<_>>();
-        // Retain each captured HeapObject and increment the underlying Closure refcount
-        refs.iter().for_each(|heap_opt| {
-            if let Some(heap_idx) = heap_opt {
-                // Retain the HeapObject so it is not freed when its creator exits
+        let refs = raw_refs
+            .into_iter()
+            .filter_map(|raw| {
+                self.try_get_heap_backed_closure(raw)
+                    .map(|(heap_idx, closure_idx)| (Some(heap_idx), closure_idx))
+                    .or_else(|| {
+                        self.try_get_direct_closure(raw)
+                            .map(|closure_idx| (None, closure_idx))
+                    })
+            })
+            .collect::<Vec<_>>();
+        refs.iter().for_each(|(heap_idx, closure_idx)| {
+            if let Some(heap_idx) = heap_idx {
                 heap::heap_retain(&mut self.heap, *heap_idx);
-                // Also bump the underlying Closure refcount for the existing drop_closure chain
-                if let Some(heap_obj) = self.heap.get(*heap_idx) {
-                    if !heap_obj.data.is_empty() {
-                        let ci = Self::get_as::<ClosureIdx>(heap_obj.data[0]);
-                        self.get_closure_mut(ci).refcount += 1;
-                    }
-                }
             }
+            self.get_closure_mut(*closure_idx).refcount += 1;
         });
         let cls = self.get_closure_mut(clsidx);
         cls.is_closed = true;
@@ -990,17 +1003,22 @@ impl Machine {
                 }
                 Instruction::CloseHeapClosure(src) => {
                     let heap_addr = self.get_stack(src as i64);
-                    let heap_idx = Self::get_as::<heap::HeapIdx>(heap_addr);
-                    self.close_heap_upvalues(heap_idx);
+                    if let Some((heap_idx, _)) = self.try_get_heap_backed_closure(heap_addr) {
+                        self.close_heap_upvalues(heap_idx);
+                    } else if let Some(closure_idx) = self.try_get_direct_closure(heap_addr) {
+                        self.close_upvalues_by_idx(closure_idx);
+                    }
                 }
                 Instruction::CloneHeap(src) => {
                     let heap_addr = self.get_stack(src as i64);
-                    let heap_idx = Self::get_as::<heap::HeapIdx>(heap_addr);
-                    heap::heap_retain(&mut self.heap, heap_idx);
-                    if let Some(heap_obj) = self.heap.get(heap_idx)
-                        && let Some(&closure_raw) = heap_obj.data.first()
+                    if let Some((heap_idx, closure_idx)) =
+                        self.try_get_heap_backed_closure(heap_addr)
                     {
-                        let closure_idx = Self::get_as::<ClosureIdx>(closure_raw);
+                        heap::heap_retain(&mut self.heap, heap_idx);
+                        if let Some(closure) = self.closures.get_mut(closure_idx.0) {
+                            closure.refcount += 1;
+                        }
+                    } else if let Some(closure_idx) = self.try_get_direct_closure(heap_addr) {
                         if let Some(closure) = self.closures.get_mut(closure_idx.0) {
                             closure.refcount += 1;
                         }

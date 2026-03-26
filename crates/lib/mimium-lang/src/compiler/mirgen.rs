@@ -1984,7 +1984,7 @@ impl Context {
         ty: TypeNodeId,
     ) -> Vec<(VPtr, TypeNodeId)> {
         // Resolve any remaining intermediate type variables before matching.
-        let at = canonicalize_record_layout_type(InferContext::substitute_type(at));
+        let at = InferContext::substitute_type(at);
         let ty = canonicalize_record_layout_type(InferContext::substitute_type(ty));
         log::trace!("Unpacking argument {ty} for {at}");
         // Check if the argument is a tuple or record that we need to unpack
@@ -2009,7 +2009,9 @@ impl Context {
                 // MIR function definition.
                 let param_fields: Option<Vec<RecordTypeField>> =
                     if let Type::Record(param_types) = at.to_type() {
-                        Some(param_types)
+                        let tuple_tys = param_types.iter().map(|field| field.ty).collect::<Vec<_>>();
+                        self.get_function_param_fields(&f_val, &tuple_tys)
+                            .or(Some(param_types))
                     } else if let Type::Tuple(tuple_tys) = at.to_type() {
                         self.get_function_param_fields(&f_val, &tuple_tys)
                     } else {
@@ -2131,24 +2133,6 @@ impl Context {
         fid.and_then(|fid| {
             let func = self.program.functions.get(fid)?;
 
-            if let Some((fn_ty, _stage)) = self.typeenv.env.lookup(&func.label).cloned()
-                && let Type::Function { arg, .. } = fn_ty.to_type()
-                && let Type::Record(fields) = arg.to_type()
-                && fields.len() == tuple_tys.len()
-            {
-                return Some(
-                    fields
-                        .iter()
-                        .enumerate()
-                        .map(|(i, field)| RecordTypeField {
-                            key: field.key,
-                            ty: tuple_tys.get(i).copied().unwrap_or(field.ty),
-                            has_default: field.has_default,
-                        })
-                        .collect(),
-                );
-            }
-
             let has_default_for = |arg_name: Symbol| {
                 self.default_args_map
                     .get(&FunctionId(fid as u64))
@@ -2173,10 +2157,10 @@ impl Context {
             Some(
                 func.args
                     .iter()
-                    .zip(tuple_tys.iter())
-                    .map(|(arg, elem_ty)| RecordTypeField {
+                    .enumerate()
+                    .map(|(index, arg)| RecordTypeField {
                         key: arg.0,
-                        ty: *elem_ty,
+                        ty: tuple_tys.get(index).copied().unwrap_or(arg.1),
                         has_default: has_default_for(arg.0),
                     })
                     .collect(),
@@ -2720,18 +2704,37 @@ impl Context {
                         vec![(label, atype, id.default_value)]
                     }
                     _ => {
-                        let tys = atype
-                            .to_type()
-                            .get_as_tuple()
-                            .expect("must be tuple or record type. type inference failed");
-                        //multiple arguments
-                        ids.iter()
-                            .zip(tys.iter())
-                            .map(|(id, ty)| {
-                                let label = id.id;
-                                (label, *ty, id.default_value)
-                            })
-                            .collect()
+                        match atype.to_type() {
+                            Type::Record(fields) => ids
+                                .iter()
+                                .map(|id| {
+                                    let label = id.id;
+                                    let ty = fields
+                                        .iter()
+                                        .find(|field| field.key == label)
+                                        .map(|field| field.ty)
+                                        .unwrap_or_else(|| {
+                                            panic!(
+                                                "record argument type is missing field {label} for lambda binding"
+                                            )
+                                        });
+                                    (label, ty, id.default_value)
+                                })
+                                .collect(),
+                            _ => {
+                                let tys = atype
+                                    .to_type()
+                                    .get_as_tuple()
+                                    .expect("must be tuple or record type. type inference failed");
+                                ids.iter()
+                                    .zip(tys.iter())
+                                    .map(|(id, ty)| {
+                                        let label = id.id;
+                                        (label, *ty, id.default_value)
+                                    })
+                                    .collect()
+                            }
+                        }
                     }
                 };
 

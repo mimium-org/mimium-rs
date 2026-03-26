@@ -1300,13 +1300,6 @@ impl ByteCodeGenerator {
                             elem_ty_size,
                         ));
                         for (i, val) in values.iter().enumerate() {
-                            let tmp_idx_ref = Arc::new(mir::Value::None);
-                            let idx = this.vregister.add_newvalue(&tmp_idx_ref);
-                            bytecodes_dst.push(VmInstruction::MoveImmF(
-                                idx,
-                                HFloat::try_from(i as f64).unwrap(),
-                            ));
-                            let idx = this.find(&tmp_idx_ref);
                             let src = if elem_is_function {
                                 match val.as_ref() {
                                     mir::Value::Function(fn_idx) => {
@@ -1330,6 +1323,13 @@ impl ByteCodeGenerator {
                             } else {
                                 this.find(val)
                             };
+                            let tmp_idx_ref = Arc::new(mir::Value::None);
+                            let idx = this.vregister.add_newvalue(&tmp_idx_ref);
+                            bytecodes_dst.push(VmInstruction::MoveImmF(
+                                idx,
+                                HFloat::try_from(i as f64).unwrap(),
+                            ));
+                            let idx = this.find(&tmp_idx_ref);
                             bytecodes_dst.push(VmInstruction::SetArrayElem(dst_reg, idx, src));
                         }
                     };
