@@ -451,8 +451,7 @@ impl ByteCodeGenerator {
                 if matches!(ty.to_type(), Type::Function { .. })
                     && let mir::Value::Function(fn_idx) = src.as_ref()
                 {
-                    let fn_const_pos =
-                        funcproto.add_new_constant(*fn_idx as vm::RawVal) as ConstPos;
+                    let fn_const_pos = funcproto.add_new_constant(*fn_idx as vm::RawVal) as ConstPos;
                     let bytecodes_dst =
                         bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut());
                     self.emit_function_value_into_register(bytecodes_dst, fn_const_pos, d);
@@ -483,8 +482,7 @@ impl ByteCodeGenerator {
                 {
                     let tmp_ref = Arc::new(mir::Value::None);
                     let tmp_reg = self.vregister.add_newvalue(&tmp_ref);
-                    let fn_const_pos =
-                        funcproto.add_new_constant(*fn_idx as vm::RawVal) as ConstPos;
+                    let fn_const_pos = funcproto.add_new_constant(*fn_idx as vm::RawVal) as ConstPos;
                     let bytecodes_dst =
                         bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut());
                     self.emit_function_value_into_register(bytecodes_dst, fn_const_pos, tmp_reg);

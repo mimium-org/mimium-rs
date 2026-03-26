@@ -51,8 +51,7 @@ fn type_id_to_int_literal(ty: TypeNodeId) -> ExprNodeId {
 }
 
 fn type_ids_to_int_array_literal(types: impl IntoIterator<Item = TypeNodeId>) -> ExprNodeId {
-    Expr::ArrayLiteral(types.into_iter().map(type_id_to_int_literal).collect())
-        .into_id_without_span()
+    Expr::ArrayLiteral(types.into_iter().map(type_id_to_int_literal).collect()).into_id_without_span()
 }
 
 // ---------------------------------------------------------------------------
@@ -377,8 +376,7 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
         Expr::Lambda(params, _rtype, body) => {
             let translated_body = translate_code(body);
             let param_types = type_ids_to_int_array_literal(params.iter().map(|p| p.ty));
-            let return_type =
-                type_id_to_int_literal(_rtype.unwrap_or_else(|| Type::Unknown.into_id()));
+            let return_type = type_id_to_int_literal(_rtype.unwrap_or_else(|| Type::Unknown.into_id()));
             let has_default_params = params.iter().any(|p| p.default_value.is_some());
             if has_default_params {
                 let name_lits: Vec<ExprNodeId> =
@@ -413,14 +411,7 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
                 let defaults_arr = Expr::ArrayLiteral(default_codes).into_id_without_span();
                 make_apply(
                     "code_lam_finish_defaults_typed",
-                    vec![
-                        names_arr,
-                        param_types,
-                        mask_arr,
-                        defaults_arr,
-                        return_type,
-                        translated_body,
-                    ],
+                    vec![names_arr, param_types, mask_arr, defaults_arr, return_type, translated_body],
                 )
             } else {
                 match params.len() {

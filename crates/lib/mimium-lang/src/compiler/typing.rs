@@ -1732,10 +1732,9 @@ impl InferContext {
     ) -> TypeNodeId {
         match body.to_expr() {
             Expr::Lambda(params, rtype, _) => {
-                let has_explicit_lambda_signature = params
-                    .iter()
-                    .any(|param| !matches!(param.ty.to_type(), Type::Unknown))
-                    || rtype.is_some();
+                let has_explicit_lambda_signature =
+                    params.iter().any(|param| !matches!(param.ty.to_type(), Type::Unknown))
+                        || rtype.is_some();
 
                 if has_explicit_lambda_signature || matches!(id.ty.to_type(), Type::Unknown) {
                     self.provisional_lambda_function_type(params.as_slice(), rtype, loc)
@@ -3275,8 +3274,8 @@ fn dsp(){
 }
 "#;
 
-        let ext_fns =
-            plugin::get_extfun_types(&[plugin::get_builtin_fns_as_plugins()]).collect::<Vec<_>>();
+        let ext_fns = plugin::get_extfun_types(&[plugin::get_builtin_fns_as_plugins()])
+            .collect::<Vec<_>>();
         let macros = plugin::get_macro_functions(&[plugin::get_builtin_fns_as_plugins()])
             .collect::<Vec<_>>();
         let ctx = compiler::Context::new(
@@ -3371,8 +3370,10 @@ fn dsp(){
         .expect("fixture main should be written");
 
         let src = fs::read_to_string(&fixture_main).expect("fixture main should be readable");
-        let (_ast, module_info, parse_errs) =
-            crate::compiler::parser::parse_to_expr(&src, Some(fixture_main.clone()));
+        let (_ast, module_info, parse_errs) = crate::compiler::parser::parse_to_expr(
+            &src,
+            Some(fixture_main.clone()),
+        );
         assert!(parse_errs.is_empty(), "fixture should parse cleanly");
         assert!(
             module_info
@@ -3386,8 +3387,8 @@ fn dsp(){
                 .map(|name| name.as_str().to_string())
                 .collect::<Vec<_>>()
         );
-        let ext_fns =
-            plugin::get_extfun_types(&[plugin::get_builtin_fns_as_plugins()]).collect::<Vec<_>>();
+        let ext_fns = plugin::get_extfun_types(&[plugin::get_builtin_fns_as_plugins()])
+            .collect::<Vec<_>>();
         let macros = plugin::get_macro_functions(&[plugin::get_builtin_fns_as_plugins()])
             .collect::<Vec<_>>();
         let ctx = compiler::Context::new(
