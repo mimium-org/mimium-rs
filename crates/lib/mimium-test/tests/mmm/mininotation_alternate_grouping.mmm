@@ -39,7 +39,7 @@ fn test_mininotation_alternate_grouping() {
     let c = c + feq(length_array(e2), 6.0)
     let c = c + check_values(e2, [64.0, 74.0, 72.0, 65.0, 65.0, 62.0])
 
-    // 3) Product-style expansion with two alternations in sequence.
+    // 3) Grouped alternations are flattened before outer concatenation.
     // <62 72> <[64 [74 72] 65] [65 62]>
     let p3 = mini("<62 72> <[64 [74 72] 65] [65 62]>")
     let e3 = p3(test_arc)
@@ -47,8 +47,8 @@ fn test_mininotation_alternate_grouping() {
     let c = c + check_values(
         e3,
         [
-            62.0, 64.0, 74.0, 72.0, 65.0,
-            72.0, 65.0, 62.0,
+            62.0, 72.0, 64.0, 74.0, 72.0,
+            65.0, 65.0, 62.0,
         ],
     )
 

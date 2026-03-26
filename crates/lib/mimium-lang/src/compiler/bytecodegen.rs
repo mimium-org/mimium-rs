@@ -137,6 +137,21 @@ impl ByteCodeGenerator {
         ty.word_size()
     }
 
+    fn tagged_union_payload_size(union_type: TypeNodeId, tag: u64) -> TypeSize {
+        match union_type.to_type() {
+            Type::Union(variants) => variants
+                .get(tag as usize)
+                .map(|variant_ty| Self::word_size_for_type(*variant_ty))
+                .unwrap_or(0),
+            Type::UserSum { variants, .. } => variants
+                .get(tag as usize)
+                .and_then(|(_, payload_ty)| *payload_ty)
+                .map(Self::word_size_for_type)
+                .unwrap_or(0),
+            _ => 0,
+        }
+    }
+
     fn get_binop(&mut self, v1: Arc<mir::Value>, v2: Arc<mir::Value>) -> (Reg, Reg) {
         let r1 = self.find(&v1);
         let r2 = self.find(&v2);
@@ -175,6 +190,20 @@ impl ByteCodeGenerator {
     fn get_destination(&mut self, dst: Arc<mir::Value>, size: TypeSize) -> Reg {
         self.vregister.push_stack(&dst, size as _)
     }
+
+    fn emit_function_value_into_register(
+        &mut self,
+        bytecodes_dst: &mut Vec<VmInstruction>,
+        fn_const_pos: ConstPos,
+        dst: Reg,
+    ) {
+        let fn_reg_ref = Arc::new(mir::Value::None);
+        let fn_reg = self.vregister.add_newvalue(&fn_reg_ref);
+        bytecodes_dst.push(VmInstruction::MoveConst(fn_reg, fn_const_pos));
+        bytecodes_dst.push(VmInstruction::MakeHeapClosure(dst, fn_reg, 0));
+        bytecodes_dst.push(VmInstruction::CloneHeap(dst));
+    }
+
     fn get_or_insert_global(&mut self, gv: Arc<mir::Value>, ty: TypeNodeId) -> GlobalPos {
         match self.globals.get(&gv) {
             Some(idx) => *idx as GlobalPos,
@@ -416,9 +445,20 @@ impl ByteCodeGenerator {
                 }
             }
             mir::Instruction::Store(dst, src, ty) => {
-                let s = self.find(&src);
                 let d = self.find_keep(&dst);
                 let size = Self::word_size_for_type(ty);
+
+                if matches!(ty.to_type(), Type::Function { .. })
+                    && let mir::Value::Function(fn_idx) = src.as_ref()
+                {
+                    let fn_const_pos = funcproto.add_new_constant(*fn_idx as vm::RawVal) as ConstPos;
+                    let bytecodes_dst =
+                        bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut());
+                    self.emit_function_value_into_register(bytecodes_dst, fn_const_pos, d);
+                    return None;
+                }
+
+                let s = self.find(&src);
                 match (d, s, size) {
                     (d, s, 1) if d != s => Some(VmInstruction::Move(d, s)),
                     (d, s, size) if d != s => Some(VmInstruction::MoveRange(d, s, size)),
@@ -436,6 +476,19 @@ impl ByteCodeGenerator {
             }
             mir::Instruction::SetGlobal(v, src, ty) => {
                 let idx = self.get_or_insert_global(v.clone(), ty);
+
+                if matches!(ty.to_type(), Type::Function { .. })
+                    && let mir::Value::Function(fn_idx) = src.as_ref()
+                {
+                    let tmp_ref = Arc::new(mir::Value::None);
+                    let tmp_reg = self.vregister.add_newvalue(&tmp_ref);
+                    let fn_const_pos = funcproto.add_new_constant(*fn_idx as vm::RawVal) as ConstPos;
+                    let bytecodes_dst =
+                        bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut());
+                    self.emit_function_value_into_register(bytecodes_dst, fn_const_pos, tmp_reg);
+                    return Some(VmInstruction::SetGlobal(idx, tmp_reg, 1));
+                }
+
                 let s = self.find(&src);
                 Some(VmInstruction::SetGlobal(
                     idx,
@@ -803,34 +856,35 @@ impl ByteCodeGenerator {
                 value,
                 union_type,
             } => {
-                // Get total word size for the tagged union (includes tag + max variant size)
                 let total_size = Self::word_size_for_type(union_type);
-                // Value size is total - 1 (for the tag)
-                let value_size = total_size - 1;
+                let payload_capacity = total_size.saturating_sub(1);
+                let payload_size = Self::tagged_union_payload_size(union_type, tag);
 
-                // Allocate consecutive registers for (tag, value)
                 let dst_reg = self.vregister.push_stack(&dst, total_size as u64);
-
-                // Store tag in first register
                 let tag_pos = funcproto.add_new_constant(tag);
-                bytecodes_dst
-                    .unwrap_or_else(|| funcproto.bytecodes.as_mut())
-                    .push(VmInstruction::MoveConst(dst_reg, tag_pos as ConstPos));
+                let zero_pos = funcproto.add_new_constant(0);
+                let target = bytecodes_dst.unwrap_or_else(|| funcproto.bytecodes.as_mut());
 
-                // For no-payload constructors (Value::None), skip the value copy
-                if matches!(value.as_ref(), mir::Value::None) || value_size == 0 {
-                    None
-                } else {
-                    // Store value in subsequent register(s)
+                target.push(VmInstruction::MoveConst(dst_reg, tag_pos as ConstPos));
+
+                (0..payload_capacity).for_each(|index| {
+                    target.push(VmInstruction::MoveConst(
+                        dst_reg + 1 + index,
+                        zero_pos as ConstPos,
+                    ));
+                });
+
+                if !matches!(value.as_ref(), mir::Value::None) && payload_size > 0 {
                     let val_reg = self.find(&value);
                     let val_dst = dst_reg + 1;
-
-                    if value_size == 1 {
-                        Some(VmInstruction::Move(val_dst, val_reg))
+                    if payload_size == 1 {
+                        target.push(VmInstruction::Move(val_dst, val_reg));
                     } else {
-                        Some(VmInstruction::MoveRange(val_dst, val_reg, value_size))
+                        target.push(VmInstruction::MoveRange(val_dst, val_reg, payload_size));
                     }
                 }
+
+                None
             }
             mir::Instruction::TaggedUnionGetTag(union_val) => {
                 // Extract tag (first register of the tagged union tuple)
@@ -1246,13 +1300,6 @@ impl ByteCodeGenerator {
                             elem_ty_size,
                         ));
                         for (i, val) in values.iter().enumerate() {
-                            let tmp_idx_ref = Arc::new(mir::Value::None);
-                            let idx = this.vregister.add_newvalue(&tmp_idx_ref);
-                            bytecodes_dst.push(VmInstruction::MoveImmF(
-                                idx,
-                                HFloat::try_from(i as f64).unwrap(),
-                            ));
-                            let idx = this.find(&tmp_idx_ref);
                             let src = if elem_is_function {
                                 match val.as_ref() {
                                     mir::Value::Function(fn_idx) => {
@@ -1268,6 +1315,7 @@ impl ByteCodeGenerator {
                                         bytecodes_dst.push(VmInstruction::MakeHeapClosure(
                                             cls_reg, fn_reg, 0,
                                         ));
+                                        bytecodes_dst.push(VmInstruction::CloneHeap(cls_reg));
                                         cls_reg
                                     }
                                     _ => this.find(val),
@@ -1275,6 +1323,13 @@ impl ByteCodeGenerator {
                             } else {
                                 this.find(val)
                             };
+                            let tmp_idx_ref = Arc::new(mir::Value::None);
+                            let idx = this.vregister.add_newvalue(&tmp_idx_ref);
+                            bytecodes_dst.push(VmInstruction::MoveImmF(
+                                idx,
+                                HFloat::try_from(i as f64).unwrap(),
+                            ));
+                            let idx = this.find(&tmp_idx_ref);
                             bytecodes_dst.push(VmInstruction::SetArrayElem(dst_reg, idx, src));
                         }
                     };

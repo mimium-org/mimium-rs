@@ -231,6 +231,7 @@ pub struct AnnotatedFileTestSpec {
     pub stereo: bool,
     pub expected: Vec<f64>,
     pub web: bool,
+    pub plugins: bool,
     pub tol: Option<f64>,
 }
 
@@ -242,6 +243,8 @@ struct AnnotatedFileTestSpecRaw {
     expected: Vec<f64>,
     #[serde(default)]
     web: bool,
+    #[serde(default)]
+    plugins: bool,
     #[serde(default)]
     tol: Option<f64>,
 }
@@ -265,6 +268,7 @@ fn parse_annotated_file_test_spec(src: &str) -> Result<AnnotatedFileTestSpec, St
         stereo: raw.stereo,
         expected: raw.expected,
         web: raw.web,
+        plugins: raw.plugins,
         tol: raw.tol,
     })
 }

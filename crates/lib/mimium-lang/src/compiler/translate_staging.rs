@@ -33,6 +33,7 @@ use crate::ast::{Expr, Literal, MatchArm, MatchPattern, RecordField};
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::types::Type;
+use slotmap::Key;
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -43,6 +44,14 @@ use crate::types::Type;
 /// of `wrap_to_staged_expr` followed by type checking).
 pub fn translate(expr: ExprNodeId) -> ExprNodeId {
     translate_stage0(expr)
+}
+
+fn type_id_to_int_literal(ty: TypeNodeId) -> ExprNodeId {
+    Expr::Literal(Literal::Int(ty.0.data().as_ffi() as i64)).into_id_without_span()
+}
+
+fn type_ids_to_int_array_literal(types: impl IntoIterator<Item = TypeNodeId>) -> ExprNodeId {
+    Expr::ArrayLiteral(types.into_iter().map(type_id_to_int_literal).collect()).into_id_without_span()
 }
 
 // ---------------------------------------------------------------------------
@@ -366,6 +375,8 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
         // -- Lambda ---------------------------------------------------------
         Expr::Lambda(params, _rtype, body) => {
             let translated_body = translate_code(body);
+            let param_types = type_ids_to_int_array_literal(params.iter().map(|p| p.ty));
+            let return_type = type_id_to_int_literal(_rtype.unwrap_or_else(|| Type::Unknown.into_id()));
             let has_default_params = params.iter().any(|p| p.default_value.is_some());
             if has_default_params {
                 let name_lits: Vec<ExprNodeId> =
@@ -399,20 +410,27 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
                 let mask_arr = Expr::ArrayLiteral(default_masks).into_id_without_span();
                 let defaults_arr = Expr::ArrayLiteral(default_codes).into_id_without_span();
                 make_apply(
-                    "code_lam_finish_defaults",
-                    vec![names_arr, mask_arr, defaults_arr, translated_body],
+                    "code_lam_finish_defaults_typed",
+                    vec![names_arr, param_types, mask_arr, defaults_arr, return_type, translated_body],
                 )
             } else {
                 match params.len() {
                     1 => {
                         let name_lit = sym_to_string_literal(params[0].id);
-                        make_apply("code_lam1_finish", vec![name_lit, translated_body])
+                        let param_type = type_id_to_int_literal(params[0].ty);
+                        make_apply(
+                            "code_lam1_finish_typed",
+                            vec![name_lit, param_type, return_type, translated_body],
+                        )
                     }
                     _ => {
                         let name_lits: Vec<ExprNodeId> =
                             params.iter().map(|p| sym_to_string_literal(p.id)).collect();
                         let names_arr = Expr::ArrayLiteral(name_lits).into_id_without_span();
-                        make_apply("code_lam_finish", vec![names_arr, translated_body])
+                        make_apply(
+                            "code_lam_finish_typed",
+                            vec![names_arr, param_types, return_type, translated_body],
+                        )
                     }
                 }
             }
@@ -430,18 +448,22 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
         // -- LetRec ---------------------------------------------------------
         Expr::LetRec(id, val, then) => {
             let name_lit = sym_to_string_literal(id.id);
+            let type_lit = type_id_to_int_literal(id.ty);
             let translated_val = translate_code(val);
             match then {
                 Some(body) => {
                     let translated_body = translate_code(body);
                     make_apply(
-                        "code_letrec",
-                        vec![name_lit, translated_val, translated_body],
+                        "code_letrec_typed",
+                        vec![name_lit, type_lit, translated_val, translated_body],
                     )
                 }
                 None => {
                     let var_ref = make_apply_str("code_var", id.id);
-                    make_apply("code_letrec", vec![name_lit, translated_val, var_ref])
+                    make_apply(
+                        "code_letrec_typed",
+                        vec![name_lit, type_lit, translated_val, var_ref],
+                    )
                 }
             }
         }
@@ -971,7 +993,7 @@ mod tests {
     #[test]
     fn lambda_in_bracket() {
         // Bracket(Lambda([x], _, Var(x)))
-        // => Apply(code_lam1_finish, [Literal::String("x"), Apply(code_var, ["x"])])
+        // => Apply(code_lam1_finish_typed, [Literal::String("x"), param_ty, ret_ty, Apply(code_var, ["x"])])
         let x_id = TypedId::new("x".to_symbol(), unknown_ty());
         let body = Expr::Var("x".to_symbol()).into_id_without_span();
         let lam = Expr::Lambda(vec![x_id], None, body).into_id_without_span();
@@ -980,16 +1002,16 @@ mod tests {
         match result.to_expr() {
             Expr::Apply(func, args) => {
                 assert!(
-                    matches!(func.to_expr(), Expr::Var(name) if name.as_str() == "code_lam1_finish")
+                    matches!(func.to_expr(), Expr::Var(name) if name.as_str() == "code_lam1_finish_typed")
                 );
-                assert_eq!(args.len(), 2);
+                assert_eq!(args.len(), 4);
                 // First arg: string "x"
                 match args[0].to_expr() {
                     Expr::Literal(Literal::String(s)) => assert_eq!(s.as_str(), "x"),
                     other => panic!("expected String literal, got {other:?}"),
                 }
             }
-            other => panic!("expected Apply(code_lam1_finish, ...), got {other:?}"),
+            other => panic!("expected Apply(code_lam1_finish_typed, ...), got {other:?}"),
         }
     }
 

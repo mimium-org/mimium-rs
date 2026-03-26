@@ -73,3 +73,22 @@ fn test_readwav_interp() {
     ans.push(0); //0 should be returned when the index exceeds the boundary
     assert_eq!(res_int, ans);
 }
+
+#[test]
+fn test_readwav_relative_to_source_file() {
+    let res = run_file_with_symphonia("nested/loadwav_relative_to_source_file.mmm", 101)
+        .expect("failed to evaluate");
+    let res_int = res
+        .iter()
+        .map(|f| (*f * 100.0).round() as u32)
+        .collect::<Vec<_>>();
+    let mut ans = (0u32..100).collect::<Vec<_>>();
+    ans.push(0);
+    assert_eq!(res_int, ans);
+}
+
+#[test]
+fn test_sampler_length() {
+    let res = run_file_with_symphonia("loadwav_length.mmm", 1).expect("failed to evaluate");
+    assert_eq!(res, vec![100.0]);
+}

@@ -1,0 +1,12 @@
+// @test {"times":1,"stereo":false,"expected":[0.0],"web":true}
+
+type alias Segment = {seg_start:float, seg_end:float}
+
+fn first_segment_start(segment:Segment)->float {
+    segment.seg_start
+}
+
+fn dsp(){
+    let segment:Segment = {seg_start = 0.0, seg_end = 1.0}
+    first_segment_start(segment)
+}

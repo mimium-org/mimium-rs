@@ -1280,9 +1280,11 @@ mod tests {
         interner::ToSymbol,
         numeric, plugin,
         plugin::Plugin,
-        test_utils::{compile_to_mir_with_path, repo_tmp_path},
+        runtime::vm::Machine,
+        test_utils::{compile_to_mir_with_path, repo_test_artifact_path},
         types::{PType, Type},
     };
+    use std::path::PathBuf;
 
     const LIFT_ARRAY_CODE_SOURCE: &str = r#"
 // @test {"times":1,"stereo":false,"expected":[31.0],"web":true}
@@ -1322,6 +1324,90 @@ fn dsp(){
   out[0]
 }
 "#;
+
+    const MININOTATION_SINGLE_EVENT_SOURCE: &str = r#"
+use mininotation::mini
+use pattern::run_note
+
+fn dsp(){
+    let note = run_note!(mini("60"), 0.5)
+    note.val
+}
+"#;
+
+    const MININOTATION_WITH_CORE_IMPORT_SOURCE: &str = r#"
+use core::*
+use mininotation::mini
+use pattern::{run_note, legato}
+
+fn dsp(){
+    let note = run_note!(mini("60") |> legato(0.2,_), 0.5)
+    note.val
+}
+"#;
+
+    const RECORD_CONTAINING_FUNCTION_SOURCE: &str = r#"
+fn player(pos){ pos + 1.0 }
+
+fn mk(){
+    {length = 10.0, player = player}
+}
+
+fn dsp(){
+    let sampler = mk()
+    sampler.player(41.0)
+}
+"#;
+
+    fn run_vm_dsp_f64(src: &str, path: Option<PathBuf>) -> f64 {
+        fn runtime_get_samplerate(machine: &mut Machine) -> crate::runtime::vm::ReturnCode {
+            machine.set_stack(0, Machine::to_value(44_100.0f64));
+            1
+        }
+
+        fn runtime_get_now(machine: &mut Machine) -> crate::runtime::vm::ReturnCode {
+            machine.set_stack(0, Machine::to_value(0.0f64));
+            1
+        }
+
+        let plugin = get_builtin_fns_as_plugins();
+        let plugins = [plugin];
+        let ext_fns = plugin::get_extfun_types(&plugins).collect::<Vec<_>>();
+        let macros = plugin::get_macro_functions(&plugins).collect::<Vec<_>>();
+        let ctx = compiler::Context::new(ext_fns, macros, path, compiler::Config::default());
+        let prog = ctx
+            .emit_bytecode(src)
+            .expect("bytecode generation should succeed");
+        let extcls = plugin::get_ext_closures(&plugins);
+        let runtime_extfns = vec![
+            plugin::ExtFunInfo::new(
+                "_mimium_getsamplerate".to_symbol(),
+                crate::function!(vec![], crate::numeric!()),
+                runtime_get_samplerate,
+            ),
+            plugin::ExtFunInfo::new(
+                "_mimium_getnow".to_symbol(),
+                crate::function!(vec![], crate::numeric!()),
+                runtime_get_now,
+            ),
+        ];
+        let mut machine = Machine::new(prog, runtime_extfns.into_iter(), extcls);
+        machine.execute_entry("dsp");
+        Machine::get_as::<f64>(machine.get_top_n(1)[0])
+    }
+
+    fn run_with_large_stack<F, T>(f: F) -> T
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(f)
+            .expect("test thread should spawn")
+            .join()
+            .expect("test thread should complete")
+    }
 
     #[test]
     fn probe_value_monomorphized_name_uses_return_word_size() {
@@ -1413,7 +1499,7 @@ fn dsp(){
     fn compiler_with_file_path_compiles_lift_array_code_source() {
         compile_to_mir_with_path(
             LIFT_ARRAY_CODE_SOURCE,
-            Some(repo_tmp_path("lift_array_code_test.mmm")),
+            Some(repo_test_artifact_path("lift_array_code_test.mmm")),
         );
     }
 
@@ -1421,7 +1507,51 @@ fn dsp(){
     fn compiler_with_file_path_compiles_local_lift_array_code_binding() {
         compile_to_mir_with_path(
             LOCAL_LIFT_ARRAY_CODE_BINDING_SOURCE,
-            Some(repo_tmp_path("lift_array_code_local_binding_test.mmm")),
+            Some(repo_test_artifact_path(
+                "lift_array_code_local_binding_test.mmm",
+            )),
         );
+    }
+
+    #[test]
+    fn lift_uses_concrete_array_argument_type_for_current_call() {
+        let value = run_with_large_stack(|| {
+            run_vm_dsp_f64(
+                MININOTATION_SINGLE_EVENT_SOURCE,
+                Some(repo_test_artifact_path(
+                    "lift_overload_array_argument_test.mmm",
+                )),
+            )
+        });
+
+        assert_eq!(value, 60.0);
+    }
+
+    #[test]
+    fn mininotation_still_works_with_core_imports() {
+        let value = run_with_large_stack(|| {
+            run_vm_dsp_f64(
+                MININOTATION_WITH_CORE_IMPORT_SOURCE,
+                Some(repo_test_artifact_path(
+                    "mininotation_core_import_regression_test.mmm",
+                )),
+            )
+        });
+
+        assert_eq!(value, 60.0);
+    }
+
+    #[test]
+    fn record_can_store_function_value() {
+        let value = run_with_large_stack(|| {
+            run_vm_dsp_f64(
+                RECORD_CONTAINING_FUNCTION_SOURCE,
+                Some(repo_test_artifact_path(
+                    "record_containing_function_regression_test.mmm",
+                )),
+            )
+        });
+
+        assert_eq!(value, 42.0);
     }
 }

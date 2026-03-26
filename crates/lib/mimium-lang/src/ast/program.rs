@@ -9,7 +9,7 @@ use crate::ast::Expr;
 use crate::ast::statement::into_then_expr;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::TypedId;
-use crate::types::{RecordTypeField, Type};
+use crate::types::{PType, RecordTypeField, Type};
 use crate::utils::error::{ReportableError, SimpleError};
 use crate::utils::metadata::{Location, Span};
 
@@ -312,8 +312,13 @@ fn stmts_from_program_with_prefix(
                     .into_iter()
                     .map(RecordTypeField::from)
                     .collect::<Vec<_>>();
+                let argty = match argsty.as_slice() {
+                    [] => Type::Primitive(PType::Unit).into_id_with_location(argloc.clone()),
+                    [arg] => arg.ty,
+                    _ => Type::Record(argsty).into_id_with_location(argloc),
+                };
                 let fnty = Type::Function {
-                    arg: Type::Record(argsty).into_id_with_location(argloc),
+                    arg: argty,
                     ret: return_type.unwrap_or(Type::Unknown.into_id_with_location(loc.clone())),
                 }
                 .into_id_with_location(loc.clone());

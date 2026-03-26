@@ -251,7 +251,14 @@ impl Type {
     pub fn contains_unresolved(&self) -> bool {
         match self {
             Type::Unknown | Type::TypeScheme(_) => true,
-            Type::Intermediate(_) => true,
+            Type::Intermediate(cell) => {
+                let tv = cell.read().unwrap();
+                let fallback =
+                    (!matches!(tv.bound.lower.to_type(), Type::Failure)).then_some(tv.bound.lower);
+                tv.parent
+                    .or(fallback)
+                    .is_none_or(|resolved| resolved.to_type().contains_unresolved())
+            }
             Type::Array(t) | Type::Ref(t) | Type::Code(t) | Type::Boxed(t) => {
                 t.to_type().contains_unresolved()
             }
@@ -289,28 +296,38 @@ impl Type {
     pub fn can_be_unpacked(&self) -> bool {
         matches!(self, Type::Tuple(_) | Type::Record(_))
     }
+
+    fn is_iochannel_scalar(&self) -> bool {
+        match self {
+            Type::Primitive(PType::Numeric) | Type::Unknown => true,
+            Type::Intermediate(cell) => {
+                let parent = cell.read().unwrap().parent;
+                parent.is_none_or(|resolved| resolved.to_type().is_iochannel_scalar())
+            }
+            _ => false,
+        }
+    }
+
     pub fn get_iochannel_count(&self) -> Option<u32> {
         match self {
             Type::Tuple(ts) => {
-                if ts
-                    .iter()
-                    .all(|t| t.to_type() == Type::Primitive(PType::Numeric))
-                {
+                if ts.iter().all(|t| t.to_type().is_iochannel_scalar()) {
                     Some(ts.len() as _)
                 } else {
                     None
                 }
             }
             Type::Record(kvs) => {
-                if kvs.iter().all(|RecordTypeField { ty, .. }| {
-                    ty.to_type() == Type::Primitive(PType::Numeric)
-                }) {
+                if kvs
+                    .iter()
+                    .all(|RecordTypeField { ty, .. }| ty.to_type().is_iochannel_scalar())
+                {
                     Some(kvs.len() as _)
                 } else {
                     None
                 }
             }
-            Type::Primitive(PType::Numeric) => Some(1),
+            t if t.is_iochannel_scalar() => Some(1),
             Type::Primitive(PType::Unit) => Some(0),
             _ => None,
         }
@@ -546,8 +563,38 @@ impl TypeNodeId {
                     .unwrap_or(0);
                 1 + max_variant_size
             }
+            Type::Intermediate(cell) => {
+                let tv = cell.read().unwrap();
+                tv.parent
+                    .or_else(|| {
+                        (!matches!(tv.bound.lower.to_type(), Type::Failure))
+                            .then_some(tv.bound.lower)
+                    })
+                    .map_or(1, |resolved| resolved.word_size())
+            }
             _ => 1, // fallback for intermediate types
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, RwLock};
+
+    #[test]
+    fn resolved_intermediate_is_not_unresolved() {
+        let resolved = Type::Tuple(vec![
+            Type::Primitive(PType::Numeric).into_id(),
+            Type::Primitive(PType::Numeric).into_id(),
+        ])
+        .into_id();
+        let mut tvar = TypeVar::new(IntermediateId(1), 0);
+        tvar.parent = Some(resolved);
+        let intermediate = Type::Intermediate(Arc::new(RwLock::new(tvar))).into_id();
+
+        assert!(!intermediate.to_type().contains_unresolved());
+        assert_eq!(intermediate.word_size(), 2);
     }
 }
 

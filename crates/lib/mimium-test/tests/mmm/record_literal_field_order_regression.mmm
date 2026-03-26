@@ -1,0 +1,8 @@
+// @test {"times":1,"stereo":false,"expected":[0.0],"web":true}
+
+type alias Arc = {start:float, end:float}
+
+fn dsp(){
+    let arc:Arc = {start = 0.0, end = 1.0}
+    arc.start
+}

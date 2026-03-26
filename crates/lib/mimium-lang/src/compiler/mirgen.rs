@@ -173,11 +173,17 @@ impl Context {
     ) -> (VPtr, TypeNodeId, Vec<StateSkeleton>) {
         let alloc_ty = self.canonical_record_type_id(ty);
         if let Type::Record(type_fields) = alloc_ty.to_type() {
+            let field_exprs_by_name = fields
+                .iter()
+                .map(|field| (field.name, field.expr))
+                .collect::<BTreeMap<_, _>>();
             let ordered_exprs = type_fields
                 .iter()
-                .filter_map(|tf| fields.iter().find(|f| f.name == tf.key).map(|f| f.expr))
-                .collect::<Vec<_>>();
-            if ordered_exprs.len() == fields.len() {
+                .map(|type_field| field_exprs_by_name.get(&type_field.key).copied())
+                .collect::<Option<Vec<_>>>();
+            if let Some(ordered_exprs) = ordered_exprs
+                && ordered_exprs.len() == fields.len()
+            {
                 return self.alloc_aggregates(&ordered_exprs, alloc_ty);
             }
         }
@@ -1519,6 +1525,7 @@ impl Context {
         }
     }
     fn eval_rvar(&mut self, e: ExprNodeId, t: TypeNodeId) -> VPtr {
+        let t = canonicalize_record_layout_type(t);
         // After convert_qualified_names, all module names are resolved to simple Var.
         // QualifiedVar should have been converted to Var with mangled name.
         let name = match e.to_expr() {
@@ -1978,7 +1985,7 @@ impl Context {
     ) -> Vec<(VPtr, TypeNodeId)> {
         // Resolve any remaining intermediate type variables before matching.
         let at = InferContext::substitute_type(at);
-        let ty = InferContext::substitute_type(ty);
+        let ty = canonicalize_record_layout_type(InferContext::substitute_type(ty));
         log::trace!("Unpacking argument {ty} for {at}");
         // Check if the argument is a tuple or record that we need to unpack
         match ty.to_type() {
@@ -2002,7 +2009,9 @@ impl Context {
                 // MIR function definition.
                 let param_fields: Option<Vec<RecordTypeField>> =
                     if let Type::Record(param_types) = at.to_type() {
-                        Some(param_types)
+                        let tuple_tys = param_types.iter().map(|field| field.ty).collect::<Vec<_>>();
+                        self.get_function_param_fields(&f_val, &tuple_tys)
+                            .or(Some(param_types))
                     } else if let Type::Tuple(tuple_tys) = at.to_type() {
                         self.get_function_param_fields(&f_val, &tuple_tys)
                     } else {
@@ -2124,24 +2133,6 @@ impl Context {
         fid.and_then(|fid| {
             let func = self.program.functions.get(fid)?;
 
-            if let Some((fn_ty, _stage)) = self.typeenv.env.lookup(&func.label).cloned()
-                && let Type::Function { arg, .. } = fn_ty.to_type()
-                && let Type::Record(fields) = arg.to_type()
-                && fields.len() == tuple_tys.len()
-            {
-                return Some(
-                    fields
-                        .iter()
-                        .enumerate()
-                        .map(|(i, field)| RecordTypeField {
-                            key: field.key,
-                            ty: tuple_tys.get(i).copied().unwrap_or(field.ty),
-                            has_default: field.has_default,
-                        })
-                        .collect(),
-                );
-            }
-
             let has_default_for = |arg_name: Symbol| {
                 self.default_args_map
                     .get(&FunctionId(fid as u64))
@@ -2166,10 +2157,10 @@ impl Context {
             Some(
                 func.args
                     .iter()
-                    .zip(tuple_tys.iter())
-                    .map(|(arg, elem_ty)| RecordTypeField {
+                    .enumerate()
+                    .map(|(index, arg)| RecordTypeField {
                         key: arg.0,
-                        ty: *elem_ty,
+                        ty: tuple_tys.get(index).copied().unwrap_or(arg.1),
                         has_default: has_default_for(arg.0),
                     })
                     .collect(),
@@ -2713,18 +2704,37 @@ impl Context {
                         vec![(label, atype, id.default_value)]
                     }
                     _ => {
-                        let tys = atype
-                            .to_type()
-                            .get_as_tuple()
-                            .expect("must be tuple or record type. type inference failed");
-                        //multiple arguments
-                        ids.iter()
-                            .zip(tys.iter())
-                            .map(|(id, ty)| {
-                                let label = id.id;
-                                (label, *ty, id.default_value)
-                            })
-                            .collect()
+                        match atype.to_type() {
+                            Type::Record(fields) => ids
+                                .iter()
+                                .map(|id| {
+                                    let label = id.id;
+                                    let ty = fields
+                                        .iter()
+                                        .find(|field| field.key == label)
+                                        .map(|field| field.ty)
+                                        .unwrap_or_else(|| {
+                                            panic!(
+                                                "record argument type is missing field {label} for lambda binding"
+                                            )
+                                        });
+                                    (label, ty, id.default_value)
+                                })
+                                .collect(),
+                            _ => {
+                                let tys = atype
+                                    .to_type()
+                                    .get_as_tuple()
+                                    .expect("must be tuple or record type. type inference failed");
+                                ids.iter()
+                                    .zip(tys.iter())
+                                    .map(|(id, ty)| {
+                                        let label = id.id;
+                                        (label, *ty, id.default_value)
+                                    })
+                                    .collect()
+                            }
+                        }
                     }
                 };
 
@@ -4443,8 +4453,9 @@ fn compile_and_execute_stage0(
 
             let vm_fun: crate::plugin::ExtClsType = Rc::new(RefCell::new(
                 move |machine: &mut vm::Machine| -> vm::ReturnCode {
-                    let concrete_arg_types =
-                        lookup_extfun_arg_types(machine, name).unwrap_or_else(|| arg_types.clone());
+                    let concrete_arg_types = lookup_current_extfun_arg_types(machine)
+                        .or_else(|| lookup_extfun_arg_types(machine, name))
+                        .unwrap_or_else(|| arg_types.clone());
 
                     // Convert each argument from VM representation to interpreter Value.
                     let mut offset: i64 = 0;
@@ -4530,6 +4541,7 @@ fn compile_and_execute_stage0(
                 .map(|cls| Box::new(cls) as Box<dyn MachineFunction>),
         );
     let mut machine = vm::Machine::new(program, [].into_iter(), ext_closures);
+    let _macro_file_env_guard = MacroFileEnvGuard::new(file_path.as_deref());
     let retcode = machine.execute_main();
 
     if retcode <= 0 {
@@ -4543,6 +4555,36 @@ fn compile_and_execute_stage0(
     let result_raw = machine.get_top_n(1)[0];
     let result_expr = machine.get_code(result_raw);
     Ok(result_expr)
+}
+
+struct MacroFileEnvGuard {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl MacroFileEnvGuard {
+    const KEY: &'static str = "MIMIUM_CURRENT_MACRO_FILE";
+
+    fn new(file_path: Option<&std::path::Path>) -> Self {
+        let previous = std::env::var_os(Self::KEY);
+        match file_path {
+            Some(path) => {
+                unsafe { std::env::set_var(Self::KEY, path) };
+            }
+            None => {
+                unsafe { std::env::remove_var(Self::KEY) };
+            }
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for MacroFileEnvGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => unsafe { std::env::set_var(Self::KEY, value) },
+            None => unsafe { std::env::remove_var(Self::KEY) },
+        }
+    }
 }
 
 fn lookup_extfun_arg_types(
@@ -4568,6 +4610,20 @@ fn lookup_extfun_arg_types(
                 .filter(|t| !t.to_type().contains_unresolved())
                 .count()
         })
+}
+
+fn lookup_current_extfun_arg_types(
+    machine: &crate::runtime::vm::Machine,
+) -> Option<Vec<TypeNodeId>> {
+    let ext_fun_idx = machine.get_current_ext_call_idx()?;
+    let (_, ty) = machine.prog.ext_fun_table.get(ext_fun_idx)?;
+    match ty.to_type() {
+        Type::Function { arg, .. } => Some(match arg.to_type() {
+            Type::Tuple(types) => types,
+            _ => vec![arg],
+        }),
+        _ => None,
+    }
 }
 
 /// Strip `Code(T)` wrapper from a function's return type, replacing it with
@@ -4603,11 +4659,31 @@ fn raw_to_interpreter_value_at(
     raw_words_to_interpreter_value(machine, &words, ty)
 }
 
+fn canonicalize_record_layout_type(ty: TypeNodeId) -> TypeNodeId {
+    let ty = InferContext::substitute_type(ty);
+    match ty.to_type() {
+        Type::Record(fields) => {
+            let mut normalized_fields = fields
+                .iter()
+                .map(|field| RecordTypeField {
+                    key: field.key,
+                    ty: canonicalize_record_layout_type(field.ty),
+                    has_default: field.has_default,
+                })
+                .collect::<Vec<_>>();
+            normalized_fields.sort_by(|a, b| a.key.as_str().cmp(b.key.as_str()));
+            Type::Record(normalized_fields).into_id_with_location(ty.to_loc())
+        }
+        _ => ty.apply_fn(canonicalize_record_layout_type),
+    }
+}
+
 fn raw_words_to_interpreter_value(
     machine: &crate::runtime::vm::Machine,
     words: &[crate::runtime::vm::RawVal],
     ty: TypeNodeId,
 ) -> crate::interpreter::Value {
+    let ty = canonicalize_record_layout_type(ty);
     match ty.to_type() {
         Type::Primitive(PType::String) => {
             let idx = words.first().copied().unwrap_or_default() as usize;

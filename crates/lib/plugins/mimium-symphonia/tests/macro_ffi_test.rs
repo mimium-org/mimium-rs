@@ -39,11 +39,18 @@ fn test_make_sampler_mono_direct() {
     // Call the macro function directly
     let result = plugin.make_sampler_mono(&args);
 
-    // Result should be Value::Code containing a Lambda expression
+    // Result should be Value::Code containing a record literal
     match result {
         Value::Code(expr_id) => {
             let expr = expr_id.to_expr();
-            assert!(matches!(expr, Expr::Lambda(..)));
+            match expr {
+                Expr::RecordLiteral(fields) => {
+                    assert_eq!(fields.len(), 2);
+                    assert_eq!(fields[0].name.to_string(), "length");
+                    assert_eq!(fields[1].name.to_string(), "player");
+                }
+                other => panic!("Expected RecordLiteral, got {other:?}"),
+            }
         }
         other => panic!("Expected Value::Code, got {other:?}"),
     }

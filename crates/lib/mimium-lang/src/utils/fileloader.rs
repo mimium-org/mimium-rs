@@ -101,24 +101,15 @@ fn get_env_lib_paths() -> Vec<PathBuf> {
 /// Used for resolving include.
 ///
 /// Search order:
-/// 1. `~/.mimium/lib` (default library path)
-/// 2. Paths specified by the `MIMIUM_LIB_PATH` environment variable
-/// 3. Workspace ancestor `lib/` directories
+/// 1. Paths specified by the `MIMIUM_LIB_PATH` environment variable
+/// 2. Workspace ancestor `lib/` directories
+/// 3. `~/.mimium/lib` (default library path)
 /// 4. Relative to the current file
 ///
 /// Absolute or explicitly relative paths (starting with `.`) skip steps 1-3.
 pub fn load_mmmlibfile(current_file_or_dir: &str, path: &str) -> Result<(String, PathBuf), Error> {
     let path = std::path::Path::new(path);
     let search_default_lib = !(path.is_absolute() || path.starts_with("."));
-    if let (true, Some(stdlibpath)) = (search_default_lib, get_default_library_path()) {
-        let cpath = stdlibpath.join(path).canonicalize();
-        if let Ok(cpath) = cpath
-            && let Ok(content) = load(&cpath.to_string_lossy())
-        {
-            return Ok((content, cpath));
-            // if not found in the stdlib, continue to find in a relative path.
-        }
-    };
     // Search paths from MIMIUM_LIB_PATH environment variable
     if search_default_lib {
         for lib_dir in get_env_lib_paths() {
@@ -136,6 +127,15 @@ pub fn load_mmmlibfile(current_file_or_dir: &str, path: &str) -> Result<(String,
     {
         return Ok((content, cpath));
     }
+    if let (true, Some(stdlibpath)) = (search_default_lib, get_default_library_path()) {
+        let cpath = stdlibpath.join(path).canonicalize();
+        if let Ok(cpath) = cpath
+            && let Ok(content) = load(&cpath.to_string_lossy())
+        {
+            return Ok((content, cpath));
+            // if not found in the default library, continue to find in a relative path.
+        }
+    };
     let cpath = get_canonical_path(current_file_or_dir, &path.to_string_lossy())?;
     if current_file_or_dir == cpath.to_string_lossy() {
         return Err(Error::SelfReference {

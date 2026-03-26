@@ -1,28 +1,23 @@
-`{ 
-	${
-	letrec additive = |n,gen|{
-	    if (n>1){
-			let n_lifted = lift_f(n)
-	        let next = additive(n-1 ,gen)
-`|rate|{|r3|{|r2|{|r1|{osc(r1*1)/1}(r2)+osc(r2*2)/2}(r3)+osc(r*3)/3}(rate) + osc(rate*4)/4
-	    }
-	}
-	`{
-		let PI = 3.14159265359
-        let phasor = |freq|{
-            (self + freq/samplerate)%1.0
-        }
-        let sinwave= |freq|{
-            phasor(freq)*2.0*PI |> sin
-        }
-        let osc = |freq|{
-        sinwave(freq) * 0.5
-        }
-		let dsp = | |{
-		    let f = 200
-		    let r = f |> $additive(5,`osc)
-		    (r,r)
-		}
-	}
-	}
+use core::*
+use osc::*
+use delay::*
+use filter::*
+use env::*
+let notes = [60,62,64,67,72]
+
+fn melody(cps){
+	let len = length_array(notes)
+	let phase = phasor(cps/(len-1),0)
+	let i = phase*len |> floor
+	let freq = notes[i] |> midi_to_hz
+	let gate = adsr({gate= (phase*len%1) < 0.2})
+	${`saw(freq,0) |> |x| lowpass(x,(sinwave(1,0)+1)*1000+200,4) * gate }
+	
+}
+
+let cps = 1.0
+fn dsp(){
+	let s = melody(cps)
+	let s = pingpong_delay((s,s),0.5,0.9,1.0,0.5) 
+	s |> ProbeValue!("out")
 }

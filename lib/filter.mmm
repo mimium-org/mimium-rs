@@ -10,7 +10,7 @@ pub fn freq2tau(x){
     1/(2*PI()*x)
 }
 pub fn tau2pole(x){
-    exp(-1/x*samplerate)
+    exp(-1/(x*samplerate))
 }
 pub fn lop_tau(input,tau){
     onepole(input,tau2pole(tau))

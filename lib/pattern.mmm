@@ -13,10 +13,10 @@ pub type alias Event  = {
 pub type alias Pattern = (Arc)->[Event]
 pub type alias Note = {val:float, gate:float}
 #stage(macro)
-fn map(arr:[a], f:(a)->b)->[b]{
+fn pmap(arr:[a], f:(a)->b)->[b]{
     if ((arr |> length_array) > 0){
         let (head,rest) = arr |> split_head
-        prepend(f(head), map(rest, f))
+        prepend(f(head), pmap(rest, f))
     }else{
        []
     }
@@ -75,11 +75,11 @@ pub fn slowcat(pts:[Pattern])->Pattern{
     }
 }
 pub fn alternate(inserted:[Pattern],target:(Pattern)->Pattern)->Pattern{
-    map(inserted,target) |> slowcat
+    pmap(inserted,target) |> slowcat
 }
 
 pub fn seq(vals)->Pattern{
-    map(vals,pure) |> cat
+    pmap(vals,pure) |> cat
 }
 fn reverse_arc(arc:Arc,last_time:float)->Arc{
     {start = last_time - arc.end, end = last_time - arc.start}
@@ -112,7 +112,7 @@ pub fn reverse(pt:Pattern)->Pattern{
 pub fn legato(ratio,target:Pattern)->Pattern{
     |arc|{
         let events = target(arc)
-        map(events,|e:Event| {
+        pmap(events,|e:Event| {
             let start = e.active.start
             let len = (e.active.end - e.active.start) * ratio
             let active:Arc = {start = start, end = start+len}
@@ -164,8 +164,12 @@ fn note_at_phase(events:[Event], phase:float, current:Event)->Note{
 
 #stage(macro)
 fn get_events_len(events:[Event])->float{
-    let (rest,tail) = split_tail(events)
-    tail.arc.end
+    if ((events |> length_array) > 0.0){
+        let (rest,tail) = split_tail(events)
+        tail.arc.end
+    }else{
+        1.0
+    }
 }
 /// convert pattern to stream for continous value. so ignore the end of arc. just see the start of arc as event time.
 pub fn run(pt:Pattern, cycle_per_sec:float)->`float{

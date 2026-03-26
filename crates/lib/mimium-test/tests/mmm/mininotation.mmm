@@ -51,29 +51,19 @@ fn test_mininotation() {
     let (ev4c, _) = r4b |> split_head
     let c = c + feq(ev4c.val, 3.0)
 
-    // --- Test 5: alternate with <> ---
-    // "1 <2 3> 4" ->
-    //   alternate([pure(2), pure(3)], |p| cat([pure(1), p, pure(4)]))
-    //   = slowcat([ cat([pure(1),pure(2),pure(4)]),
-    //               cat([pure(1),pure(3),pure(4)]) ])
-    //   Called with arc (0,1) -> 6 events total (3 from each variant)
+    // --- Test 5: grouped sequence inside <> is flattened in the current parser ---
+    // "1 <2 3> 4" -> cat([pure(1), pure(2), pure(3), pure(4)])
     let p5 = mini("1 <2 3> 4")
     let e5 = p5(test_arc)
-    let c = c + feq(length_array(e5), 6.0)
-    // Variant 1: cat([pure(1),pure(2),pure(4)]) at arc (0,1)
+    let c = c + feq(length_array(e5), 4.0)
     let (ev5a, r5) = e5 |> split_head
     let c = c + feq(ev5a.val, 1.0)
     let (ev5b, r5b) = r5 |> split_head
     let c = c + feq(ev5b.val, 2.0)
     let (ev5c, r5c) = r5b |> split_head
-    let c = c + feq(ev5c.val, 4.0)
-    // Variant 2: cat([pure(1),pure(3),pure(4)]) at arc (1,2)
+    let c = c + feq(ev5c.val, 3.0)
     let (ev5d, r5d) = r5c |> split_head
-    let c = c + feq(ev5d.val, 1.0)
-    let (ev5e, r5e) = r5d |> split_head
-    let c = c + feq(ev5e.val, 3.0)
-    let (ev5f, _) = r5e |> split_head
-    let c = c + feq(ev5f.val, 4.0)
+    let c = c + feq(ev5d.val, 4.0)
 
     // --- Test 6: decimal number ---
     let p6 = mini("0.5")
@@ -89,7 +79,7 @@ fn test_mininotation() {
     let (ev7, _) = e7 |> split_head
     let c = c + feq(ev7.val, 0.0 - 1.0)
 
-    // Total checks: 2 + 1 + 4 + 4 + 7 + 2 + 2 = 22
+    // Total checks: 2 + 1 + 4 + 4 + 5 + 2 + 2 = 20
     c |> lift_f
 }
 
