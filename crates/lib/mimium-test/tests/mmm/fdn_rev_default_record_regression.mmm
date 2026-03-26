@@ -1,0 +1,8 @@
+// @test {"times":1,"stereo":false,"expected":[0.5],"web":true,"plugins":true}
+
+use reverb::fdn_rev
+
+fn dsp(){
+    let (left, _) = fdn_rev({ input = (1.0, 1.0) })
+    left
+}

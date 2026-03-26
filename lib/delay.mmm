@@ -54,6 +54,7 @@ pub fn pingpong_delay(input:(float,float),time_sec:float=0.5,fb:float=0.2,width:
     let (left,right) = pingpong_delay_inner(input,time_sec,fb,width)
     let wet = (left*mix_amt,right*mix_amt)
     let mix_inv = 1.0-mix_amt
-    let dry = input * mix_inv
+    let (li,ri) = input
+    let dry = (li*mix_inv,ri*mix_inv)
     dry + wet
 }

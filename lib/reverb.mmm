@@ -182,6 +182,99 @@ mod freeverb{
     }
 }
 
+mod fdn{
+    #stage(macro)
+    fn negate_row(row:[float])->[float]{
+        core::map(|x| -x, row)
+    }
+    fn duplicate_row(row:[float])->[float]{
+        core::join(row, row)
+    }
+    fn signed_row(row:[float])->[float]{
+        core::join(row, negate_row(row))
+    }
+    fn hadamard(order)->[[float]]{
+        if (order>1){
+            let child = hadamard(order-1)
+            let upper = core::map(duplicate_row, child)
+            let lower = core::map(signed_row, child)
+            core::join(upper, lower)
+        }else{
+            [[1.0]]
+        }
+    }
+    #stage(main)
+    fn dot(left:[float],right:[float])->float{
+        let (left_head,left_rest) = split_head(left)
+        let (right_head,right_rest) = split_head(right)
+        let head_product = left_head * right_head
+        if ((left_rest |> length_array) > 0){
+            head_product + dot(left_rest,right_rest)
+        }else{
+            head_product
+        }
+    }
+    fn map_rows(fun:([float])->float,matrix:[[float]])->[float]{
+        let (head,rest) = split_head(matrix)
+        if ((rest |> length_array) > 0){
+            prepend(fun(head),map_rows(fun,rest))
+        }else{
+            [fun(head)]
+        }
+    }
+    fn map_float(fun:(float)->float,input:[float])->[float]{
+        let (head,rest) = split_head(input)
+        if ((rest |> length_array) > 0){
+            prepend(fun(head),map_float(fun,rest))
+        }else{
+            [fun(head)]
+        }
+    }
+    fn zipwith_1(fun:(((float)->float),float)->float,left:[(float)->float],right:[float])->[float]{
+        let (left_head,left_rest) = split_head(left)
+        let (right_head,right_rest) = split_head(right)
+        if ((right_rest |> length_array) > 0){
+            prepend(fun(left_head,right_head),zipwith_1(fun,left_rest,right_rest))
+        }else{
+            [fun(left_head,right_head)]
+        }
+    }
+    fn matrix_vec_mul(matrix:[[float]],input:[float])->[float]{
+        map_rows(|row| dot(row,input), matrix)
+    }
+    #stage(macro)
+    fn hadamard_mul(order){
+        let mat = core::map(|row| row |> lift, hadamard(order)) |> lift_array_code
+        `|input:[float]| {
+            matrix_vec_mul($mat,input)
+        }
+    }
+    fn fdn_wet_inner(){
+        let times = [2^11,3^7,5^5,7^4]
+        let delays = core::map(|t| `|x| delay(3500,x,$lift(t)),times) |> lift_array_code
+        `|input,time,damp|{
+            let fb = self
+            let fb_mixed = hadamard_mul!(2)(fb)
+            let damped = map_float(|sample| damp_filter(sample,damp)*gain_tr60(3500,time),fb_mixed)
+            let summed = zipwith_1(|a,b| a+b,input,damped)
+            zipwith_1(|delay_line,sample| delay_line(sample),$delays,summed)
+        }
+    }
+    #stage(main)
+    fn fdn_wet(input:(float,float),time,damp){
+        let inner = fdn_wet_inner!()
+        let (left,right) = input
+        let in = [left,right,0,0]
+        let out = inner(in,time,damp)
+        (out[0],out[1])
+    }
+    pub fn fdn_rev(input,time=1.0,damp=0.2,mix=0.5){
+        let wet = fdn_wet(input,time,damp)
+        input*(1-mix)+wet*mix
+    }
+}
+
 pub use freeverb::{freeverb_stereo,freeverb_mono}
 pub use jcrev::{jcrev_wet,jcrev_stereo_wet,jcrev,jcrev_stereo}
+pub use fdn::{fdn_rev}
 

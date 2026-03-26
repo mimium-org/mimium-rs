@@ -1,9 +1,11 @@
 use osc::*
-use env::adsr
+use env::*
 use filter::*
-use delay::*
-use reverb::*
-use reactive::metro
+// include("delay.mmm")
+// include("reverb.mmm")
+use reactive::*
+
+#stage(main)
 fn counter(max){
     (self+1)%max
 }
@@ -19,27 +21,20 @@ let beat2 = 16 * (bpm / 60)
 fn beat_to_interval(beat){
     samplerate / beat
 }
-fn myreverb(input){
-    let damp = 0.3
-    let roomsize = 0.8
-    let width = 1.0
-    freeverb_stereo(input,damp,roomsize,width,0.8)
-}
-fn mydelay(input){
-    pingpong_delay((input*0.7,input*0.3),0.3*samplerate,0.2,0.5,0.3)
-}
 let gate1:()->float = metro(beat1 |> beat_to_interval ,rhythm1);
 let gate2:()->float = metro(beat2 |> beat_to_interval ,rhythm2);
 fn synth(gate){
-    let g = gate > 0  
-    let f = 80 + adsr(0.001,0.2,0.0,0.1,g) * 30
-    let cf = 100 + adsr(0.01,0.2,0.0,0.1,g) * 400
+    let g = gate > 0
+    let f = 50 + adsr(0.001,0.2,0.0,0.1,g) * 30
+    let cf = 50 + adsr(0.01,0.2,0.0,0.1,g) * 400
     let sig = lowpass(saw(f,0.0),cf,4.0)
-    sig * adsr(0.0001,0.2,0.0,0.1,gate)
+    // let sig = sinwave(f,0.0)
+    sig * adsr(0.0001,0.2,0.0,0.1,gate)*0.3
 }
 fn dsp(){
-    let gate = (gate1() * gate2()) |> Probe!("test1")
-    let r = synth(gate)*0.5 |> Probe!("test2") |> mydelay |> myreverb ;
-    (r,r)   
+    let gate = (gate1() * gate2()) 
+    let r = synth(gate)
+    // |> mydelay 
+    // |> myreverb ;
+    (r,r) |> ProbeValue!("out")
 }
-

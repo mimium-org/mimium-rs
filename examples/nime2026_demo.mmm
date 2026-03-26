@@ -1,22 +1,21 @@
 use core::*
 use osc::*
 use delay::*
+use filter::*
 use env::*
-let notes = [60,62,64,67]
-fn changed(i){
-	i > mem(i)
-}
+let notes = [60,62,64,67,72]
 
 fn melody(cps){
-	let len =length_array(notes)
-	let phase = phasor(cps/(len-1),0)|> ProbeValue!("test")
+	let len = length_array(notes)
+	let phase = phasor(cps/(len-1),0)
 	let i = phase*len |> floor
-	let freq = notes[i]|>midi_to_hz
+	let freq = notes[i] |> midi_to_hz
 	let gate = adsr({gate= (phase*len%1) < 0.2})
-	saw(freq,0)*gate
+	${`saw(freq,0) |> |x| lowpass(x,(sinwave(1,0)+1)*1000+200,4) * gate }
+	
 }
 
-let cps = 0.9
+let cps = 1.0
 fn dsp(){
 	let s = melody(cps)
 	let s = pingpong_delay((s,s),0.5,0.9,1.0,0.5) 
