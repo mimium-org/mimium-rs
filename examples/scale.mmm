@@ -1,7 +1,6 @@
 use core::*
 use osc::saw
 use composition::scale::*
-use noise::*
 use drive::sah_auto
 use env::adsr
 let scale = $(minor()|> expand(_,5)|> take(_,30)|>lift)
@@ -34,6 +33,6 @@ fn dsp(){
     let freq = sah_auto(notes,8)
                 |> midi_to_hz
     let a = amp(freq,0.1)
-
-    saw(freq,0) * a |>ProbeValue!("out")
+    let o = saw(freq,0) * a
+    o |>ProbeValue!("out")
 }

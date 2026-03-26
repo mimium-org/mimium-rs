@@ -268,9 +268,9 @@ mod fdn{
         let out = inner(in,time,damp)
         (out[0],out[1])
     }
-    pub fn fdn_rev(input,time=1.0,damp=0.2,mix=0.5){
+    pub fn fdn_rev(input,time=1.0,damp=0.2,m=0.5){
         let wet = fdn_wet(input,time,damp)
-        input*(1-mix)+wet*mix
+        input*(1-m)+wet*m
     }
 }
 
