@@ -63,7 +63,7 @@ Open `mimium-rs.code-workspace` with VSCode. The workspace contains recommended 
 
 ## How to Run & Debug
 
-You can run built `mimium-cli` by running `cargo run -- targetfile.mmm`. Note that you need to be in `mimium-cli` directory.
+You can run built `mimium-cli` by running `cargo run --bin mimium-cli -- path/to/file.mmm`. Note that you need to be in `crates/bin/mimium-bintools` directory.
 
 Note that the binary with debug configuration is slow, you may hear the glitch noise (because of audio driver underrun). You should try with release build when you are trying to check audio with `--release` option.
 
