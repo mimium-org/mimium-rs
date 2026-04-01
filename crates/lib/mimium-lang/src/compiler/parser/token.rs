@@ -41,6 +41,7 @@ pub enum TokenKind {
     OpAnd,          // &&
     OpOr,           // ||
     OpPipe,         // |>
+    OpPipeMacro,    // ||>
     OpUnknown,      // Other operators
 
     // Special literals
@@ -139,6 +140,7 @@ impl fmt::Display for TokenKind {
             TokenKind::OpAnd => write!(f, "&&"),
             TokenKind::OpOr => write!(f, "||"),
             TokenKind::OpPipe => write!(f, "|>"),
+            TokenKind::OpPipeMacro => write!(f, "||>"),
             TokenKind::OpUnknown => write!(f, "unknown_op"),
             TokenKind::SelfLit => write!(f, "self"),
             TokenKind::Now => write!(f, "now"),

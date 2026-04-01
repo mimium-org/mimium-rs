@@ -420,18 +420,22 @@ fn convert_placeholder(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
                 .map(|(i, e)| {
                     if matches!(e.to_expr(), Expr::Literal(Literal::PlaceHolder)) {
                         let loc = Location::new(e_id.to_span().clone(), file_path.clone());
+                        let escaped_loc = loc.clone();
                         let id = format!("__lambda_arg_{i}").to_symbol();
                         let ty = Type::Unknown.into_id_with_location(loc.clone());
                         let newid = TypedId::new(id, ty);
-                        let e = Expr::Var(id).into_id(loc);
+                        let e = Expr::Escape(Expr::Var(id).into_id(escaped_loc.clone()))
+                            .into_id(escaped_loc);
                         (Some(newid), e)
                     } else {
-                        (None, e)
+                        (None, convert_placeholder(e, file_path.clone()))
                     }
                 })
                 .unzip();
             let lambda_args = lambda_args_sparse.into_iter().flatten().collect();
-            let body = Expr::Apply(fun, new_args).into_id(loc.clone());
+            let body_loc = loc.clone();
+            let body = Expr::Bracket(Expr::Apply(fun, new_args).into_id(body_loc.clone()))
+                .into_id(body_loc);
             Expr::Lambda(lambda_args, None, body).into_id(loc.clone())
         }
         _ => convert_recursively_pure(
@@ -449,6 +453,11 @@ fn convert_operators(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
             let arg = convert_operators(arg, file_path.clone());
             let fun = convert_operators(fun, file_path.clone());
             Expr::Apply(fun, vec![arg]).into_id(loc)
+        }
+        Expr::BinOp(arg, (Op::PipeMacro, _opspan), fun) => {
+            let arg = convert_operators(arg, file_path.clone());
+            let fun = convert_operators(fun, file_path.clone());
+            Expr::BinOp(arg, (Op::PipeMacro, loc.span.clone()), fun).into_id(loc)
         }
         Expr::BinOp(lhs, (op, opspan), rhs) => {
             log::trace!(
@@ -547,6 +556,54 @@ fn convert_operators(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
         ),
     }
 }
+
+fn substitute_macro_arg(
+    e_id: ExprNodeId,
+    target: Symbol,
+    replacement: ExprNodeId,
+    file_path: PathBuf,
+) -> ExprNodeId {
+    match e_id.to_expr() {
+        Expr::Escape(inner) if matches!(inner.to_expr(), Expr::Var(name) if name == target) => {
+            replacement
+        }
+        _ => {
+            let recursive_path = file_path.clone();
+            convert_recursively_pure(
+                e_id,
+                |e| substitute_macro_arg(e, target, replacement, recursive_path.clone()),
+                file_path,
+            )
+        }
+    }
+}
+
+fn convert_macro_pipe(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
+    let loc = Location::new(e_id.to_span().clone(), file_path.clone());
+    match e_id.to_expr() {
+        Expr::BinOp(arg, (Op::PipeMacro, _opspan), fun) => {
+            let arg = convert_macro_pipe(arg, file_path.clone());
+            let fun = convert_macro_pipe(fun, file_path.clone());
+            match fun.to_expr() {
+                Expr::Lambda(params, _, body) if params.len() == 1 => match body.to_expr() {
+                    Expr::Bracket(inner) => {
+                        substitute_macro_arg(inner, params[0].id, arg, file_path)
+                    }
+                    _ => Expr::Apply(fun, vec![arg]).into_id(loc),
+                },
+                _ => Expr::Apply(fun, vec![arg]).into_id(loc),
+            }
+        }
+        _ => {
+            let recursive_path = file_path.clone();
+            convert_recursively_pure(
+                e_id,
+                |e| convert_macro_pipe(e, recursive_path.clone()),
+                file_path,
+            )
+        }
+    }
+}
 fn convert_macroexpand(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
     let loc = Location::new(e_id.to_span().clone(), file_path.clone());
     match e_id.to_expr() {
@@ -572,6 +629,7 @@ pub fn convert_pronoun(expr: ExprNodeId, file_path: PathBuf) -> (ExprNodeId, Vec
     // However, for clarity, we split them into separated operations.
     let expr = convert_operators(expr, file_path.clone());
     let expr = convert_placeholder(expr, file_path.clone());
+    let expr = convert_macro_pipe(expr, file_path.clone());
     let expr = convert_macroexpand(expr, file_path.clone());
     let (res, errs) = convert_self(expr, FeedId::Global, file_path.clone());
     (res.expr, errs)
@@ -586,11 +644,12 @@ use crate::utils::error::ReportableError;
 /// This should be used when module information is available.
 ///
 /// The pipeline is:
-/// 1. convert_operators: Expand |>, binary ops, RecordUpdate
-/// 2. convert_placeholder: _ -> lambda args
-/// 3. convert_macroexpand: macro!() -> Escape(Apply(...))
-/// 4. convert_self: self -> Feed variables
-/// 5. convert_qualified_names: QualifiedVar -> Var (with mangled names), resolve use aliases and wildcards
+/// 1. convert_operators: Expand |>, ||>, binary ops, RecordUpdate
+/// 2. convert_placeholder: _ -> macro-level lambda args
+/// 3. convert_macro_pipe: `||>` + macro-level partial application -> expanded AST
+/// 4. convert_macroexpand: macro!() -> Escape(Apply(...))
+/// 5. convert_self: self -> Feed variables
+/// 6. convert_qualified_names: QualifiedVar -> Var (with mangled names), resolve use aliases and wildcards
 ///
 /// The `builtin_names` parameter should contain names from builtin functions and external functions.
 pub fn convert_pronoun_with_module(
@@ -602,6 +661,7 @@ pub fn convert_pronoun_with_module(
     // Run the existing pronoun conversions
     let expr = convert_operators(expr, file_path.clone());
     let expr = convert_placeholder(expr, file_path.clone());
+    let expr = convert_macro_pipe(expr, file_path.clone());
     let expr = convert_macroexpand(expr, file_path.clone());
     let (res, self_errs) = convert_self(expr, FeedId::Global, file_path.clone());
 
@@ -681,5 +741,73 @@ mod test {
         .into_id(loc);
         assert!(errs.is_empty());
         assert_eq!(res, ans);
+    }
+
+    #[test]
+    pub fn test_placeholder_converts_to_macro_lambda() {
+        let loc = Location {
+            span: 0..1,
+            path: PathBuf::from("/"),
+        };
+        let unknownty = Type::Unknown.into_id_with_location(loc.clone());
+        let src = Expr::Apply(
+            Expr::Var("lowpass".to_symbol()).into_id(loc.clone()),
+            vec![
+                Expr::Literal(Literal::PlaceHolder).into_id(loc.clone()),
+                Expr::Literal(Literal::Float("2000".to_symbol())).into_id(loc.clone()),
+                Expr::Literal(Literal::Float("2".to_symbol())).into_id(loc.clone()),
+            ],
+        )
+        .into_id(loc.clone());
+
+        let (res, errs) = convert_pronoun(src, PathBuf::from("/"));
+        assert!(errs.is_empty());
+
+        let expected = Expr::Lambda(
+            vec![TypedId::new("__lambda_arg_0".to_symbol(), unknownty)],
+            None,
+            Expr::Bracket(
+                Expr::Apply(
+                    Expr::Var("lowpass".to_symbol()).into_id(loc.clone()),
+                    vec![
+                        Expr::Escape(Expr::Var("__lambda_arg_0".to_symbol()).into_id(loc.clone()))
+                            .into_id(loc.clone()),
+                        Expr::Literal(Literal::Float("2000".to_symbol())).into_id(loc.clone()),
+                        Expr::Literal(Literal::Float("2".to_symbol())).into_id(loc.clone()),
+                    ],
+                )
+                .into_id(loc.clone()),
+            )
+            .into_id(loc.clone()),
+        )
+        .into_id(loc);
+        assert_eq!(res, expected);
+    }
+
+    #[test]
+    pub fn test_macro_pipe_converts_to_escape_apply_with_bracketed_argument() {
+        let loc = Location {
+            span: 0..1,
+            path: PathBuf::from("/"),
+        };
+        let src = Expr::BinOp(
+            Expr::Var("input".to_symbol()).into_id(loc.clone()),
+            (Op::PipeMacro, 0..1),
+            Expr::Apply(
+                Expr::Var("effect".to_symbol()).into_id(loc.clone()),
+                vec![Expr::Literal(Literal::PlaceHolder).into_id(loc.clone())],
+            )
+            .into_id(loc.clone()),
+        )
+        .into_id(loc.clone());
+
+        let (res, errs) = convert_pronoun(src, PathBuf::from("/"));
+        assert!(errs.is_empty());
+        let expected = Expr::Apply(
+            Expr::Var("effect".to_symbol()).into_id(loc.clone()),
+            vec![Expr::Var("input".to_symbol()).into_id(loc.clone())],
+        )
+        .into_id(loc);
+        assert_eq!(res, expected);
     }
 }

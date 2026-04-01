@@ -144,6 +144,13 @@ fn parser_combinators() {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn pipe_and_macro_pipe_mix_left_associatively() {
+    let (res, spec) = run_annotated_file_test("pipe_mixed_precedence.mmm").unwrap();
+    assert_with_spec(&res, &spec);
+}
+
 #[wasm_bindgen_test(unsupported = test)]
 #[cfg(not(target_arch = "wasm32"))]
 fn mininotation() {

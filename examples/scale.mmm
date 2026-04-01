@@ -3,8 +3,10 @@ use osc::saw
 use composition::scale::*
 use drive::sah_auto
 use env::adsr
-let scale = $(minor()|> expand(_,5)|> take(_,30)|>lift)
-let len = length_array(scale) |> probeln
+use reverb::*
+
+let scale = $(minor()||> expand(_,5)||> take(_,30)|>lift)
+let len = scale |> length_array |> probeln
 
 fn sec2samp(sec){
     sec*samplerate
@@ -29,10 +31,12 @@ fn amp(input,dur){
 }
 
 fn dsp(){
-    let notes = scale[phasor(0.2,0)*len] |> floor |> _+36 
-    let freq = sah_auto(notes,8)
+    let notes = scale[phasor(0.1,0)*len] |> floor ||> _+36 
+    let freq = sah_auto(notes,12)
                 |> midi_to_hz
     let a = amp(freq,0.1)
-    let o = saw(freq,0) * a
-    o |>ProbeValue!("out")
+    let o = saw(freq,0) * a * 0.1
+    (o,o)
+    ||> freeverb_stereo(_,0.5,0.8,1.0,0.7) 
+    |>ProbeValue!("out")
 }

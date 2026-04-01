@@ -1,21 +1,16 @@
-// @test {"times":1,"stereo":true,"expected":[123.0, 123.0],"web":true}
-// pipe operator can be used against either a function or an inline lambda
-// pipe operator can be placed at either the beginning or the end of the line
-fn foo(x, y, z) {
-    100.0 * x + 10.0 * y + z
-}
-let d2 = _ / _
-let f = foo(1.0, _, 3.0)
+// @test {"times":1,"stereo":true,"expected":[102.0, 102.0],"web":true}
+// pipe operators can be placed at either the beginning or the end of the line
+// `||>` works with underscore-based macro partial application
 fn dsp(){
-    let x = 3.0 |>
-        1.0 + _ |>
-        d2(_, 2.0) |>
-        f
+    let x = 3.0 ||>
+        1.0 + _ ||>
+        _ / 2.0 ||>
+        _ + 100.0
 
     let y = 3.0
-        |> 1.0 + _
-        |> |arg| d2(arg, 2.0)
-        |> f
+        |> |arg| 1.0 + arg
+        |> |arg| arg / 2.0
+        |> |arg| arg + 100.0
 
     (x, y)
 }

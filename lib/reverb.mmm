@@ -154,10 +154,10 @@ mod freeverb{
     pub fn freeverb_mono_wet(is_right){
         `|input,damp,roomsize|{
             gen_lfc_bank!(is_right)(input,damp,roomsize)
-                |> allpass(_,0.5,225)
-                |> allpass(_,0.5,556)
-                |> allpass(_,0.5,441)
-                |> allpass(_,0.5,341)
+                ||> allpass(_,0.5,225)
+                ||> allpass(_,0.5,556)
+                ||> allpass(_,0.5,441)
+                ||> allpass(_,0.5,341)
         }
     }
     #stage(main)
@@ -170,13 +170,13 @@ mod freeverb{
     fn scalewidth(x){
         x * 0.5 + 0.5
     }
-    pub fn freeverb_stereo(input:(float,float),damp,roomsize,width,mix){
+    pub fn freeverb_stereo(input:(float,float),damp=0.9,roomsize=0.9,width=1.0,mix=0.5){
         let (left,right) = input
         let left_wet = freeverb_mono_wet!(0)(left,damp,roomsize)*mix
         let right_wet = freeverb_mono_wet!(1)(right,damp,roomsize)*mix
         let mix_inv = 1-mix
-        let left_out = left*mix_inv + left_wet*scalewidth(width)+right_wet*scalewidth(1-width)
-        let right_out = right*mix_inv + left_wet*scalewidth(width)+right_wet*scalewidth(1-width)
+        let left_out = left*mix_inv + left_wet*scalewidth(width*0.5)+right_wet*scalewidth(1-width*0.5)
+        let right_out = right*mix_inv + left_wet*scalewidth(width*0.5)+right_wet*scalewidth(1-width*0.5)
 
         (left_out,right_out)
     }
@@ -268,6 +268,7 @@ mod fdn{
         let out = inner(in,time,damp)
         (out[0],out[1])
     }
+    /// it's still buggy and heavy
     pub fn fdn_rev(input,time=1.0,damp=0.2,m=0.5){
         let wet = fdn_wet(input,time,damp)
         input*(1-m)+wet*m
@@ -277,4 +278,3 @@ mod fdn{
 pub use freeverb::{freeverb_stereo,freeverb_mono}
 pub use jcrev::{jcrev_wet,jcrev_stereo_wet,jcrev,jcrev_stereo}
 pub use fdn::{fdn_rev}
-

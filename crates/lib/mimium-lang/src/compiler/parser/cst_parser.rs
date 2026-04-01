@@ -838,19 +838,19 @@ impl<'a> Parser<'a> {
     /// Get precedence of an infix operator (None means not an infix operator)
     fn get_infix_precedence(&self, token_kind: TokenKind) -> Option<usize> {
         match token_kind {
-            // Pipe should have the lowest precedence to allow chaining with other operators
+            // Pipe operators share the same precedence and associate to the left.
             // but must be > 0 to avoid infinite loop in statement context (min_prec == 0)
-            TokenKind::OpPipe => Some(1),
-            TokenKind::OpOr => Some(2),
-            TokenKind::OpAnd => Some(3),
-            TokenKind::OpEqual | TokenKind::OpNotEqual => Some(4),
+            TokenKind::OpPipeMacro | TokenKind::OpPipe => Some(2),
+            TokenKind::OpOr => Some(3),
+            TokenKind::OpAnd => Some(4),
+            TokenKind::OpEqual | TokenKind::OpNotEqual => Some(5),
             TokenKind::OpLessThan
             | TokenKind::OpLessEqual
             | TokenKind::OpGreaterThan
-            | TokenKind::OpGreaterEqual => Some(5),
-            TokenKind::OpSum | TokenKind::OpMinus => Some(6),
-            TokenKind::OpProduct | TokenKind::OpDivide | TokenKind::OpModulo => Some(7),
-            TokenKind::OpExponent => Some(8),
+            | TokenKind::OpGreaterEqual => Some(6),
+            TokenKind::OpSum | TokenKind::OpMinus => Some(7),
+            TokenKind::OpProduct | TokenKind::OpDivide | TokenKind::OpModulo => Some(8),
+            TokenKind::OpExponent => Some(9),
             TokenKind::OpAt => Some(10),
             // Arrow is NOT an infix operator in expressions, only used in type annotations
             // Return None to prevent it from being treated as an operator

@@ -1341,7 +1341,7 @@ use mininotation::mini
 use pattern::{run_note, legato}
 
 fn dsp(){
-    let note = run_note!(mini("60") |> legato(0.2,_), 0.5)
+    let note = run_note!(mini("60") |> |target| legato(0.2, target), 0.5)
     note.val
 }
 "#;
