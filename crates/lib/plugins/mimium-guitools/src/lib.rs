@@ -10,7 +10,7 @@ use mimium_lang::{
     pattern::TypedId,
     plugin::{SysPluginSignature, SystemPlugin, SystemPluginFnType, SystemPluginMacroType},
     string_t,
-    types::{PType, Type, TypeSchemeId},
+    types::{Type, TypeSchemeId},
 };
 use mimium_plugin_macros::{mimium_export_plugin, mimium_plugin_fn};
 use plot_window::PlotApp;
@@ -234,7 +234,7 @@ impl GuiToolPlugin {
         base
     }
 
-    /// Register a probe group for a `ProbeValue!` expansion.
+    /// Register a probe group for a `Probe!` expansion.
     ///
     /// Eagerly creates all channels up to `PROBE_VALUE_MAX_ARITY`.
     /// Channels that never receive data are hidden in the GUI by
@@ -465,55 +465,12 @@ impl GuiToolPlugin {
         self.make_control_rec(value, &root_name)
     }
 
-    pub fn make_probe_macro(&mut self, v: &[(Value, TypeNodeId)]) -> Value {
-        assert_eq!(v.len(), 1);
-        let name = match v[0].0.clone() {
-            Value::String(name) => name,
-            _ => {
-                log::error!("invalid argument for Probe macro type {}", v[0].1);
-                return Value::Code(
-                    Expr::Lambda(
-                        vec![TypedId::new(
-                            "x".to_symbol(),
-                            Type::Primitive(PType::Numeric).into_id(),
-                        )],
-                        None,
-                        Expr::Var("x".to_symbol()).into_id_without_span(),
-                    )
-                    .into_id_without_span(),
-                );
-            }
-        };
-        let probeid = self.ensure_probe_id(name.as_str()).unwrap_or(0);
-
-        // Generate a lambda that calls probe_intercept with the fixed ID
-        Value::Code(
-            Expr::Lambda(
-                vec![TypedId::new(
-                    "x".to_symbol(),
-                    Type::Primitive(PType::Numeric).into_id(),
-                )],
-                None,
-                Expr::Apply(
-                    Expr::Var(Self::PROBE_INTERCEPT.to_symbol()).into_id_without_span(),
-                    vec![
-                        Expr::Var("x".to_symbol()).into_id_without_span(),
-                        Expr::Literal(Literal::Float(probeid.to_string().to_symbol()))
-                            .into_id_without_span(),
-                    ],
-                )
-                .into_id_without_span(),
-            )
-            .into_id_without_span(),
-        )
-    }
-
-    pub fn make_probe_generic(&mut self, values: &[(Value, TypeNodeId)]) -> Value {
+    pub fn make_probe(&mut self, values: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(values.len(), 1);
         let root_name = match &values[0].0 {
             Value::String(name) => name.as_str(),
             other => {
-                log::error!("ProbeValue first argument must be String, got: {other:?}");
+                log::error!("Probe first argument must be String, got: {other:?}");
                 return Value::Code(Expr::Block(None).into_id_without_span());
             }
         };
@@ -711,27 +668,16 @@ impl SystemPlugin for GuiToolPlugin {
             ),
         );
 
-        // Replace make_probe function with Probe macro
-        let probe_macrof: SystemPluginMacroType<Self> = Self::make_probe_macro;
-        let probe_macro = SysPluginSignature::new_macro(
-            "Probe",
-            probe_macrof,
-            function!(
-                vec![string_t!()],
-                Type::Code(function!(vec![numeric!()], numeric!())).into_id()
-            ),
-        );
-
-        let probe_genericf: SystemPluginMacroType<Self> = Self::make_probe_generic;
+        let probef: SystemPluginMacroType<Self> = Self::make_probe;
         let probe_value_elem_ty = Type::TypeScheme(TypeSchemeId(9998)).into_id();
         let probe_value_fn_ty = Type::Function {
             arg: probe_value_elem_ty,
             ret: probe_value_elem_ty,
         }
         .into_id();
-        let probe_generic = SysPluginSignature::new_macro(
-            "ProbeValue",
-            probe_genericf,
+        let probe_macro = SysPluginSignature::new_macro(
+            "Probe",
+            probef,
             function!(vec![string_t!()], Type::Code(probe_value_fn_ty).into_id()),
         );
 
@@ -802,7 +748,6 @@ impl SystemPlugin for GuiToolPlugin {
 
         let mut interfaces = vec![
             probe_macro,
-            probe_generic,
             probe_generic_with_shape,
             make_control,
             get_slider,
@@ -847,22 +792,9 @@ impl GuiToolPlugin {
         )
     }
 
-    /// Returns the signature for the `Probe!` macro.
+    /// Returns the signature for the generic `Probe!` macro.
     pub fn probe_signature() -> SysPluginSignature {
-        let probe_macrof: SystemPluginMacroType<Self> = Self::make_probe_macro;
-        SysPluginSignature::new_macro(
-            "Probe",
-            probe_macrof,
-            function!(
-                vec![string_t!()],
-                Type::Code(function!(vec![numeric!()], numeric!())).into_id()
-            ),
-        )
-    }
-
-    /// Returns the signature for the generic `ProbeValue!` macro.
-    pub fn probe_generic_signature() -> SysPluginSignature {
-        let probe_macrof: SystemPluginMacroType<Self> = Self::make_probe_generic;
+        let probe_macrof: SystemPluginMacroType<Self> = Self::make_probe;
         let probe_value_elem_ty = Type::TypeScheme(TypeSchemeId(9998)).into_id();
         let probe_value_fn_ty = Type::Function {
             arg: probe_value_elem_ty,
@@ -870,7 +802,7 @@ impl GuiToolPlugin {
         }
         .into_id();
         SysPluginSignature::new_macro(
-            "ProbeValue",
+            "Probe",
             probe_macrof,
             function!(vec![string_t!()], Type::Code(probe_value_fn_ty).into_id()),
         )
@@ -933,14 +865,12 @@ mimium_export_plugin! {
     ],
     macro_functions: [
         ("Control", make_control),
-        ("Probe", make_probe_macro),
-        ("ProbeValue", make_probe_generic),
+        ("Probe", make_probe),
         ("ProbeValueWith", make_probe_generic_with_shape),
     ],
     type_infos: [
         { name: "Control", sig: GuiToolPlugin::control_signature(), stage: 0 },
         { name: "Probe", sig: GuiToolPlugin::probe_signature(), stage: 0 },
-        { name: "ProbeValue", sig: GuiToolPlugin::probe_generic_signature(), stage: 0 },
         { name: "ProbeValueWith", sig: GuiToolPlugin::probe_generic_with_shape_signature(), stage: 0 },
         { name: "__get_slider", ty_expr: function!(vec![numeric!()], numeric!()), stage: 1 },
         { name: "__probe_intercept", ty_expr: function!(vec![numeric!(), numeric!()], numeric!()), stage: 1 },

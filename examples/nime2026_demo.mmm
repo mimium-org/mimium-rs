@@ -19,5 +19,5 @@ let cps = 1.0
 fn dsp(){
 	let s = melody(cps)
 	let s = pingpong_delay((s,s),0.5,0.9,1.0,0.5) 
-	s |> ProbeValue!("out")
+	s |> Probe!("out")
 }

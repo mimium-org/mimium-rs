@@ -505,12 +505,12 @@ fn is_value_type(ty: &Type) -> bool {
 ///     ],
 ///     // Macro functions mapped from FFI name to method name.
 ///     macro_functions: [
-///         ("Slider", make_slider),
-///         ("Probe", make_probe_macro),
+///         ("Control", make_control),
+///         ("Probe", make_probe),
 ///     ],
 ///     // Type info entries: (name, type_expr, stage).
 ///     type_infos: [
-///         { name: "Slider", ty: MyPlugin::slider_signature(), stage: 0 },
+///         { name: "Control", ty: MyPlugin::control_signature(), stage: 0 },
 ///         { name: "Probe", ty: MyPlugin::probe_signature(), stage: 0 },
 ///         { name: "__get_slider", ty_expr: function!(vec![numeric!()], numeric!()), stage: 1 },
 ///     ],

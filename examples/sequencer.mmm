@@ -235,5 +235,5 @@ fn dsp(){
     let out = drum + bass + pad
     let mute = smooth(Control!("mute",1))
     let out = out*mute
-    out |> ProbeValue!("out")
+    out |> Probe!("out")
 }

@@ -8,5 +8,5 @@ fn dsp(){
     let player = sampler.player
     let len = sampler.length
 
-    player((counter()-1.0)%len) |> ProbeValue!("out")
+    player((counter()-1.0)%len) |> Probe!("out")
 }

@@ -17,6 +17,6 @@ let amosc = |input,rate|{
 let dsp = | |{
     let l = amosc(fmosc(440,0.02) , 0.2)* Control!("gain",0.5)
     let r = amosc(fmosc(220,0.03) , 0.3)* Control!("gain2",0.5)
-    (l,r) |> ProbeValue!("out")
+    (l,r) |> Probe!("out")
 }
 }

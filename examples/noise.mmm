@@ -2,7 +2,7 @@ use noise::*
 use core::stereo_synth
 #stage(main)
 fn dsp(){
-    stereo_synth!(| | white())  |> ProbeValue!("noise")
-    // (white!(),white!())  |> ProbeValue!("noise")
+    stereo_synth!(| | white())  |> Probe!("noise")
+    // (white!(),white!())  |> Probe!("noise")
 
 }

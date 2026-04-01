@@ -58,5 +58,5 @@ fn dsp(){
     let out = myfilt(out,src.gate)|>(|x| (x,x))
     pingpong_delay(out*0.85,0.3,0.6,0.8,0.6)
     |> stereo_fx!(`|x|compressor({input=x,thresh=-9,ratio=100,response=0.99}))
-    |> ProbeValue!("out")
+    |> Probe!("out")
 }
