@@ -117,7 +117,7 @@ mod freeverb{
     #stage(macro)
     fn map(fun,array){
         let (head,rest) = array |> split_head
-        if ((rest |> length_array) > 0){
+        if ((rest |> len) > 0){
             prepend(fun(head),map(fun,rest))
         }else{
             [fun(head)]
@@ -125,7 +125,7 @@ mod freeverb{
     }
     fn foldl(array,init,folder){
         let (head_f,rest) = array |> split_head
-        if ((rest |> length_array) > 0){
+        if ((rest |> len) > 0){
             let restf = foldl(rest,init,folder)
             folder(head_f , restf) 
         }else{
@@ -208,7 +208,7 @@ mod fdn{
         let (left_head,left_rest) = split_head(left)
         let (right_head,right_rest) = split_head(right)
         let head_product = left_head * right_head
-        if ((left_rest |> length_array) > 0){
+        if ((left_rest |> len) > 0){
             head_product + dot(left_rest,right_rest)
         }else{
             head_product
@@ -216,7 +216,7 @@ mod fdn{
     }
     fn map_rows(fun:([float])->float,matrix:[[float]])->[float]{
         let (head,rest) = split_head(matrix)
-        if ((rest |> length_array) > 0){
+        if ((rest |> len) > 0){
             prepend(fun(head),map_rows(fun,rest))
         }else{
             [fun(head)]
@@ -224,7 +224,7 @@ mod fdn{
     }
     fn map_float(fun:(float)->float,input:[float])->[float]{
         let (head,rest) = split_head(input)
-        if ((rest |> length_array) > 0){
+        if ((rest |> len) > 0){
             prepend(fun(head),map_float(fun,rest))
         }else{
             [fun(head)]
@@ -233,7 +233,7 @@ mod fdn{
     fn zipwith_1(fun:(((float)->float),float)->float,left:[(float)->float],right:[float])->[float]{
         let (left_head,left_rest) = split_head(left)
         let (right_head,right_rest) = split_head(right)
-        if ((right_rest |> length_array) > 0){
+        if ((right_rest |> len) > 0){
             prepend(fun(left_head,right_head),zipwith_1(fun,left_rest,right_rest))
         }else{
             [fun(left_head,right_head)]

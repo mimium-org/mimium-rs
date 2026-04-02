@@ -27,5 +27,5 @@ fn dsp(){
     |> mylop
     |> (|x| (x,x))
     |> mychorus
-    |> ProbeValue!("out")
+    |> Probe!("out")
 }   

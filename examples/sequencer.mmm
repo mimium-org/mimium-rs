@@ -26,7 +26,7 @@ fn maybe(prob, rand){
 /// - `step_per_sec` is the number of sequencer steps advanced per second.
 /// - `gate_ratio` is the gate length inside one step, normalized to 0.0..1.0.
 fn seq(step_per_sec, notes:[float], gates:[float], accents:[float], gate_ratio:float){
-    let step_count = length_array(notes)
+    let step_count = len(notes)
     let phase = phasor(step_per_sec / step_count, 0.0) * step_count
     let step = floor(phase)
     let local_phase = phase - step
@@ -136,8 +136,8 @@ fn pad_voice(note, gate, accent){
         sustain = 0.2,
         release = 1.2,
     })
-    let pad_fx = Slider!("pad_fx",10,0,127)/127
-    let pad_on = Slider!("pad_on",1,0,1)
+    let pad_fx = Control!("pad_fx",10)/127
+    let pad_on = Control!("pad_on",1)
 
     let detune = 1.003 + accent * 0.002
     let root = saw(freq, 0.0) * 0.28
@@ -194,21 +194,21 @@ fn dsp(){
     let hat_accent_rand = rand_on_trig(h.trig)
     let hat_gate = h.gate * maybe(0.92, hat_skip_rand)
     let hat_accent = min(h.accent + hat_accent_rand * 0.25, 1.0)
-    let pad_rate = Slider!("pad_rate",16,1,16) |> ceil
+    let pad_rate = Control!("pad_rate",16) |> ceil
     let p = seq(step_per_sec/pad_rate , pad_notes, pad_gates, pad_accents, 0.98)
     let pad_note_rand = rand_on_trig(p.trig)
     let pad_accent_rand = rand_on_trig(p.trig)
     let pad_shift = if (pad_note_rand > 0.84) 7.0 else 0.0
     let pad_note = p.note + pad_shift
     let pad_accent = min(p.accent + pad_accent_rand * 0.2, 1.0)
-    let bass_rate = Slider!("bass_rate",1,1,16) |> ceil
+    let bass_rate = Control!("bass_rate",1) |> ceil
 
     let b = seq(step_per_sec/bass_rate, bass_notes, bass_gates, bass_accents, 0.62)
     let gate_rand = rand_on_trig(b.trig)
     let octave_rand = rand_on_trig(b.trig)
     let accent_rand = rand_on_trig(b.trig)
 
-    let gate_prob = Slider!("bass_prob",100,0,127)/127
+    let gate_prob = Control!("bass_prob",100)/127
     let octave_prob = 0.24
     let octave_down_prob = 0.08
     let octave_shift = if (octave_rand < octave_down_prob) {
@@ -224,16 +224,16 @@ fn dsp(){
     let bass = voice(note, gate, accent)
     let bass = lowpass(bass, 1200.0 + accent * 1200.0, 2.0)
                 |>(|x|(x,x))
-    let bass_on = smooth(Slider!("bass_on",1,0,1))
+    let bass_on = smooth(Control!("bass_on",1))
     let bass= pingpong_delay(bass,0.1,0.3,1.0,0.4)*bass_on
     let kick = kick_voice(kick_gate, k.accent)
     let snare = snare_voice(snare_gate, sn.accent)
     let hat = hihat_voice(hat_gate, hat_accent)
-    let drum_on = smooth(Slider!("drum_on",1,0,1))
+    let drum_on = smooth(Control!("drum_on",1))
     let drum = kick + snare + hat|> (_* drum_on) |> (|x|(x,x))
     let pad = pad_voice(pad_note, p.gate, pad_accent)
     let out = drum + bass + pad
-    let mute = smooth(Slider!("mute",1,0,1))
+    let mute = smooth(Control!("mute",1))
     let out = out*mute
-    out |> ProbeValue!("out")
+    out |> Probe!("out")
 }

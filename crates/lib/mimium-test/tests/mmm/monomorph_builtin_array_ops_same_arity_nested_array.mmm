@@ -1,7 +1,7 @@
 // @test {"times":1,"stereo":false,"expected":[48.0],"web":true}
 #stage(macro)
 fn join(arr1:[a],arr2:[a])->[a]{
-    if (length_array(arr2)>0){
+    if (len(arr2)>0){
         let (head,rest) = split_head(arr2)
         join(append(arr1,head),rest)
     }else{
@@ -10,7 +10,7 @@ fn join(arr1:[a],arr2:[a])->[a]{
 }
 fn map(fun:(a)->b,array:[a])->[b]{
     let (head,rest) = array |> split_head
-    if ((rest |> length_array) > 0){
+    if ((rest |> len) > 0){
         prepend(fun(head),map(fun,rest))
     }else{
         [fun(head)]

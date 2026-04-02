@@ -36,5 +36,5 @@ fn dsp(){
     let r = synth(gate)
     // |> mydelay 
     // |> myreverb ;
-    (r,r) |> ProbeValue!("out")
+    (r,r) |> Probe!("out")
 }

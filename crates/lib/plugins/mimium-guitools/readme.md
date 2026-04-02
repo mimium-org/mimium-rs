@@ -11,7 +11,7 @@ mimium-guitools = { version = "*", features = ["osc"] }
 ```
 
 When enabled, the GUI listens on `127.0.0.1:9000` by default (override with `MIMIUM_GUITOOLS_OSC_BIND`).
-`SliderValue!("Params", {freq=440, phase=0.1})` can then be updated by sending OSC messages such as:
+`Control!("Params", {freq=440, phase=0.1})` can then be updated by sending OSC messages such as:
 
 - `/Params/freq 440.0`
 - `/Params/phase 0.1`

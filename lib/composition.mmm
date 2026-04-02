@@ -2,7 +2,7 @@ use core::{join,map}
 mod scale{
     #stage(macro)
     fn rotate(arr,n){
-        if (n>0 && length_array(arr)>1){
+        if (n>0 && len(arr)>1){
             let (head,rest) = split_head(arr)
             rotate(append(rest,head),n-1)
         }else{
@@ -46,7 +46,7 @@ mod scale{
         }
     }
     pub fn take(arr,n){
-        if (length_array(arr)>n){
+        if (len(arr)>n){
             let (rest,tail) = split_tail(arr)
             take(rest,n)
         }else{

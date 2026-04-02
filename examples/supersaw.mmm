@@ -32,16 +32,16 @@ fn supersaw(){
 
 #stage(main)
 let pitches = [0, 4, 7, 12, 16, 19, 24, 28, 31, 33]
-let pitch_len = length_array(pitches)
+let pitch_len = len(pitches)
 fn source(){
-    let rate= Slider!("rate",1,0.01,25)
+    let rate= Control!("rate",1)
     let gate = phasor(rate+phasor(0.2,0)*3,0)
     let f= sah(unoise!()*(pitch_len-1),gate) |>floor
     let freq = pitches[f] + 24 |> midi_to_hz
     {freq = freq, gate = gate<0.2}
 }
 fn myfilt(input,gate){
-    let fbase = Slider!("filt",1000,0,2000)
+    let fbase = Control!("filt",1000)
     let filt = adsr(0.1,0.1,0.5,0.2,gate)*2000 + fbase
     lowpass(input,filt,12.0)
 }
@@ -49,7 +49,7 @@ fn myfilt(input,gate){
 fn dsp(){
     let src = source()
 
-    let params = SliderValue!("param",{
+    let params = Control!("param",{
         mix = 1,
         detune = 1,
     })
@@ -58,5 +58,5 @@ fn dsp(){
     let out = myfilt(out,src.gate)|>(|x| (x,x))
     pingpong_delay(out*0.85,0.3,0.6,0.8,0.6)
     |> stereo_fx!(`|x|compressor({input=x,thresh=-9,ratio=100,response=0.99}))
-    |> ProbeValue!("out")
+    |> Probe!("out")
 }

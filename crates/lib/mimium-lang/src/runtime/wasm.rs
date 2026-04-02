@@ -360,7 +360,7 @@ impl WasmRuntime {
         register_builtin! {
             "probeln" => builtin_probeln_host,
             "probe" => builtin_probe_host,
-            "length_array" => builtin_length_array_host,
+            "len" => builtin_length_array_host,
             "split_head" => builtin_split_head_host,
             "split_tail" => builtin_split_tail_host,
         }
@@ -1658,7 +1658,7 @@ fn builtin_length_array_host(caller: Caller<'_, RuntimeState>, array: i64) -> f6
     let array_data = state
         .arrays
         .get(&(array as Word))
-        .expect("length_array: invalid array ID");
+        .expect("len: invalid array ID");
     array_data.len() as f64
 }
 

@@ -10,7 +10,7 @@ use mimium_lang::{
     pattern::TypedId,
     plugin::{SysPluginSignature, SystemPlugin, SystemPluginFnType, SystemPluginMacroType},
     string_t,
-    types::{PType, Type, TypeSchemeId},
+    types::{Type, TypeSchemeId},
 };
 use mimium_plugin_macros::{mimium_export_plugin, mimium_plugin_fn};
 use plot_window::PlotApp;
@@ -234,7 +234,7 @@ impl GuiToolPlugin {
         base
     }
 
-    /// Register a probe group for a `ProbeValue!` expansion.
+    /// Register a probe group for a `Probe!` expansion.
     ///
     /// Eagerly creates all channels up to `PROBE_VALUE_MAX_ARITY`.
     /// Channels that never receive data are hidden in the GUI by
@@ -299,55 +299,6 @@ impl GuiToolPlugin {
         Some(idx)
     }
 
-    pub fn make_slider(&mut self, v: &[(Value, TypeNodeId)]) -> Value {
-        assert_eq!(v.len(), 4);
-        let (name, init, min, max, mut window) = match (
-            v[0].0.clone(),
-            v[1].0.clone(),
-            v[2].0.clone(),
-            v[3].0.clone(),
-            self.window.lock(),
-        ) {
-            (
-                Value::String(name),
-                Value::Number(init),
-                Value::Number(min),
-                Value::Number(max),
-                Ok(window),
-            ) => (name, init, min, max, window),
-            _ => {
-                log::error!("invalid argument");
-                return Value::Number(0.0);
-            }
-        };
-        let idx = if let Some(&existing_idx) = self.slider_namemap.get(name.as_str()) {
-            // Slider with this name already exists, reuse the index
-            if let Some(p) = self.slider_instances.get_mut(existing_idx) {
-                // Instance still available, update range
-                p.set_range(min, max);
-            }
-            // Return existing index whether instance is available or not
-            // (if drained, the frozen handle will still have it)
-            existing_idx
-        } else {
-            // New slider - add to window and register
-            let (p, idx) = window.add_slider(name.as_str(), init, min, max);
-            self.slider_instances.push(p);
-            self.slider_namemap.insert(name.to_string(), idx);
-            idx
-        };
-        Value::Code(
-            Expr::Apply(
-                Expr::Var(Self::GET_SLIDER.to_symbol()).into_id_without_span(),
-                vec![
-                    Expr::Literal(Literal::Float(idx.to_string().to_symbol()))
-                        .into_id_without_span(),
-                ],
-            )
-            .into_id_without_span(),
-        )
-    }
-
     fn build_slider_code_from_name(&mut self, name: &str, init: f64, min: f64, max: f64) -> Value {
         let idx = if let Some(&existing_idx) = self.slider_namemap.get(name) {
             if let Some(parameter) = self.slider_instances.get_mut(existing_idx) {
@@ -390,7 +341,7 @@ impl GuiToolPlugin {
         }
     }
 
-    fn make_slider_generic_rec(&mut self, value: &Value, current_path: &str) -> Value {
+    fn make_control_rec(&mut self, value: &Value, current_path: &str) -> Value {
         match value {
             Value::Number(init) => {
                 let label = current_path.to_string();
@@ -398,14 +349,14 @@ impl GuiToolPlugin {
                 self.build_slider_code_from_name(&label, *init, min, max)
             }
             Value::Code(expr) => {
-                Value::Code(self.make_slider_generic_code_rec(*expr, current_path))
+                Value::Code(self.make_control_code_rec(*expr, current_path))
             }
             Value::Record(fields) => {
                 let record_fields = fields
                     .iter()
                     .filter_map(|(name, field_value)| {
                         let child_path = Self::join_slider_path(current_path, name.as_str());
-                        let child_value = self.make_slider_generic_rec(field_value, &child_path);
+                        let child_value = self.make_control_rec(field_value, &child_path);
                         let child_expr = match child_value {
                             Value::Code(expr) => Some(expr),
                             other => other.try_into().ok(),
@@ -424,7 +375,7 @@ impl GuiToolPlugin {
                     .filter_map(|(index, element)| {
                         let field_name = format!("{index}");
                         let child_path = Self::join_slider_path(current_path, &field_name);
-                        let child_value = self.make_slider_generic_rec(element, &child_path);
+                        let child_value = self.make_control_rec(element, &child_path);
                         match child_value {
                             Value::Code(expr) => Some(expr),
                             other => other.try_into().ok(),
@@ -436,14 +387,14 @@ impl GuiToolPlugin {
             other => match other.clone().try_into() {
                 Ok(expr) => Value::Code(expr),
                 Err(_) => {
-                    log::warn!("SliderValue does not support value kind: {other:?}");
+                    log::warn!("Control does not support value kind: {other:?}");
                     Value::Code(Expr::Block(None).into_id_without_span())
                 }
             },
         }
     }
 
-    fn make_slider_generic_code_rec(&mut self, expr: ExprNodeId, current_path: &str) -> ExprNodeId {
+    fn make_control_code_rec(&mut self, expr: ExprNodeId, current_path: &str) -> ExprNodeId {
         match expr.to_expr() {
             Expr::Literal(Literal::Float(sym)) => {
                 let init = sym.as_str().parse::<f64>().unwrap_or(0.0);
@@ -474,7 +425,7 @@ impl GuiToolPlugin {
                         let child_path = Self::join_slider_path(current_path, field.name.as_str());
                         RecordField {
                             name: field.name,
-                            expr: self.make_slider_generic_code_rec(field.expr, &child_path),
+                            expr: self.make_control_code_rec(field.expr, &child_path),
                         }
                     })
                     .collect::<Vec<_>>();
@@ -486,14 +437,14 @@ impl GuiToolPlugin {
                     .enumerate()
                     .map(|(index, element)| {
                         let child_path = Self::join_slider_path(current_path, &index.to_string());
-                        self.make_slider_generic_code_rec(*element, &child_path)
+                        self.make_control_code_rec(*element, &child_path)
                     })
                     .collect::<Vec<_>>();
                 Expr::Tuple(mapped).into_id_without_span()
             }
             _ => {
                 log::warn!(
-                    "SliderValue code argument contains unsupported expression kind: {:?}",
+                    "Control code argument contains unsupported expression kind: {:?}",
                     expr.to_expr()
                 );
                 expr
@@ -501,68 +452,25 @@ impl GuiToolPlugin {
         }
     }
 
-    pub fn make_slider_generic(&mut self, values: &[(Value, TypeNodeId)]) -> Value {
+    pub fn make_control(&mut self, values: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(values.len(), 2);
         let root_name = match &values[0].0 {
             Value::String(name) => name.as_str().to_string(),
             other => {
-                log::error!("SliderValue first argument must be String, got: {other:?}");
+                log::error!("Control first argument must be String, got: {other:?}");
                 return Value::Code(Expr::Block(None).into_id_without_span());
             }
         };
         let value = &values[1].0;
-        self.make_slider_generic_rec(value, &root_name)
+        self.make_control_rec(value, &root_name)
     }
 
-    pub fn make_probe_macro(&mut self, v: &[(Value, TypeNodeId)]) -> Value {
-        assert_eq!(v.len(), 1);
-        let name = match v[0].0.clone() {
-            Value::String(name) => name,
-            _ => {
-                log::error!("invalid argument for Probe macro type {}", v[0].1);
-                return Value::Code(
-                    Expr::Lambda(
-                        vec![TypedId::new(
-                            "x".to_symbol(),
-                            Type::Primitive(PType::Numeric).into_id(),
-                        )],
-                        None,
-                        Expr::Var("x".to_symbol()).into_id_without_span(),
-                    )
-                    .into_id_without_span(),
-                );
-            }
-        };
-        let probeid = self.ensure_probe_id(name.as_str()).unwrap_or(0);
-
-        // Generate a lambda that calls probe_intercept with the fixed ID
-        Value::Code(
-            Expr::Lambda(
-                vec![TypedId::new(
-                    "x".to_symbol(),
-                    Type::Primitive(PType::Numeric).into_id(),
-                )],
-                None,
-                Expr::Apply(
-                    Expr::Var(Self::PROBE_INTERCEPT.to_symbol()).into_id_without_span(),
-                    vec![
-                        Expr::Var("x".to_symbol()).into_id_without_span(),
-                        Expr::Literal(Literal::Float(probeid.to_string().to_symbol()))
-                            .into_id_without_span(),
-                    ],
-                )
-                .into_id_without_span(),
-            )
-            .into_id_without_span(),
-        )
-    }
-
-    pub fn make_probe_generic(&mut self, values: &[(Value, TypeNodeId)]) -> Value {
+    pub fn make_probe(&mut self, values: &[(Value, TypeNodeId)]) -> Value {
         assert_eq!(values.len(), 1);
         let root_name = match &values[0].0 {
             Value::String(name) => name.as_str(),
             other => {
-                log::error!("ProbeValue first argument must be String, got: {other:?}");
+                log::error!("Probe first argument must be String, got: {other:?}");
                 return Value::Code(Expr::Block(None).into_id_without_span());
             }
         };
@@ -750,47 +658,26 @@ impl SystemPlugin for GuiToolPlugin {
     }
 
     fn gen_interfaces(&self) -> Vec<SysPluginSignature> {
-        let sliderf: SystemPluginMacroType<Self> = Self::make_slider;
-        let make_slider = SysPluginSignature::new_macro(
-            "Slider",
-            sliderf,
-            function!(
-                vec![string_t!(), numeric!(), numeric!(), numeric!()],
-                code!(numeric!())
-            ),
-        );
-
-        let slider_genericf: SystemPluginMacroType<Self> = Self::make_slider_generic;
-        let make_slider_generic = SysPluginSignature::new_macro(
-            "SliderValue",
-            slider_genericf,
+        let controlf: SystemPluginMacroType<Self> = Self::make_control;
+        let make_control = SysPluginSignature::new_macro(
+            "Control",
+            controlf,
             function!(
                 vec![string_t!(), Type::TypeScheme(TypeSchemeId(10)).into_id()],
                 code!(Type::TypeScheme(TypeSchemeId(10)).into_id())
             ),
         );
 
-        // Replace make_probe function with Probe macro
-        let probe_macrof: SystemPluginMacroType<Self> = Self::make_probe_macro;
-        let probe_macro = SysPluginSignature::new_macro(
-            "Probe",
-            probe_macrof,
-            function!(
-                vec![string_t!()],
-                Type::Code(function!(vec![numeric!()], numeric!())).into_id()
-            ),
-        );
-
-        let probe_genericf: SystemPluginMacroType<Self> = Self::make_probe_generic;
+        let probef: SystemPluginMacroType<Self> = Self::make_probe;
         let probe_value_elem_ty = Type::TypeScheme(TypeSchemeId(9998)).into_id();
         let probe_value_fn_ty = Type::Function {
             arg: probe_value_elem_ty,
             ret: probe_value_elem_ty,
         }
         .into_id();
-        let probe_generic = SysPluginSignature::new_macro(
-            "ProbeValue",
-            probe_genericf,
+        let probe_macro = SysPluginSignature::new_macro(
+            "Probe",
+            probef,
             function!(vec![string_t!()], Type::Code(probe_value_fn_ty).into_id()),
         );
 
@@ -861,10 +748,8 @@ impl SystemPlugin for GuiToolPlugin {
 
         let mut interfaces = vec![
             probe_macro,
-            probe_generic,
             probe_generic_with_shape,
-            make_slider,
-            make_slider_generic,
+            make_control,
             get_slider,
             probe_intercept,
             probe_intercept_arity2,
@@ -896,46 +781,20 @@ impl SystemPlugin for GuiToolPlugin {
 // -------------------------------------------------------------------------
 
 impl GuiToolPlugin {
-    /// Returns the signature for the `Slider!` macro.
-    pub fn slider_signature() -> SysPluginSignature {
-        let sliderf: SystemPluginMacroType<Self> = Self::make_slider;
-        SysPluginSignature::new_macro(
-            "Slider",
-            sliderf,
-            function!(
-                vec![string_t!(), numeric!(), numeric!(), numeric!()],
-                code!(numeric!())
-            ),
-        )
-    }
-
-    /// Returns the signature for the generic `SliderValue!` macro.
-    pub fn slider_generic_signature() -> SysPluginSignature {
-        let sliderf: SystemPluginMacroType<Self> = Self::make_slider_generic;
+    /// Returns the signature for the generic `Control!` macro.
+    pub fn control_signature() -> SysPluginSignature {
+        let controlf: SystemPluginMacroType<Self> = Self::make_control;
         let generic_type = Type::TypeScheme(TypeSchemeId(10)).into_id();
         SysPluginSignature::new_macro(
-            "SliderValue",
-            sliderf,
+            "Control",
+            controlf,
             function!(vec![string_t!(), generic_type], code!(generic_type)),
         )
     }
 
-    /// Returns the signature for the `Probe!` macro.
+    /// Returns the signature for the generic `Probe!` macro.
     pub fn probe_signature() -> SysPluginSignature {
-        let probe_macrof: SystemPluginMacroType<Self> = Self::make_probe_macro;
-        SysPluginSignature::new_macro(
-            "Probe",
-            probe_macrof,
-            function!(
-                vec![string_t!()],
-                Type::Code(function!(vec![numeric!()], numeric!())).into_id()
-            ),
-        )
-    }
-
-    /// Returns the signature for the generic `ProbeValue!` macro.
-    pub fn probe_generic_signature() -> SysPluginSignature {
-        let probe_macrof: SystemPluginMacroType<Self> = Self::make_probe_generic;
+        let probe_macrof: SystemPluginMacroType<Self> = Self::make_probe;
         let probe_value_elem_ty = Type::TypeScheme(TypeSchemeId(9998)).into_id();
         let probe_value_fn_ty = Type::Function {
             arg: probe_value_elem_ty,
@@ -943,7 +802,7 @@ impl GuiToolPlugin {
         }
         .into_id();
         SysPluginSignature::new_macro(
-            "ProbeValue",
+            "Probe",
             probe_macrof,
             function!(vec![string_t!()], Type::Code(probe_value_fn_ty).into_id()),
         )
@@ -1005,17 +864,13 @@ mimium_export_plugin! {
         ("__probe_value_intercept$arity16", probe_intercept_arity16),
     ],
     macro_functions: [
-        ("Slider", make_slider),
-        ("SliderValue", make_slider_generic),
-        ("Probe", make_probe_macro),
-        ("ProbeValue", make_probe_generic),
+        ("Control", make_control),
+        ("Probe", make_probe),
         ("ProbeValueWith", make_probe_generic_with_shape),
     ],
     type_infos: [
-        { name: "Slider", sig: GuiToolPlugin::slider_signature(), stage: 0 },
-        { name: "SliderValue", sig: GuiToolPlugin::slider_generic_signature(), stage: 0 },
+        { name: "Control", sig: GuiToolPlugin::control_signature(), stage: 0 },
         { name: "Probe", sig: GuiToolPlugin::probe_signature(), stage: 0 },
-        { name: "ProbeValue", sig: GuiToolPlugin::probe_generic_signature(), stage: 0 },
         { name: "ProbeValueWith", sig: GuiToolPlugin::probe_generic_with_shape_signature(), stage: 0 },
         { name: "__get_slider", ty_expr: function!(vec![numeric!()], numeric!()), stage: 1 },
         { name: "__probe_intercept", ty_expr: function!(vec![numeric!(), numeric!()], numeric!()), stage: 1 },

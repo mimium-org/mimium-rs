@@ -6,7 +6,7 @@ use env::adsr
 use reverb::*
 
 let scale = $(minor()||> expand(_,5)||> take(_,30)|>lift)
-let len = scale |> length_array |> probeln
+let len = scale |> len |> probeln
 
 fn sec2samp(sec){
     sec*samplerate
@@ -38,5 +38,5 @@ fn dsp(){
     let o = saw(freq,0) * a * 0.1
     (o,o)
     ||> freeverb_stereo(_,0.5,0.8,1.0,0.7) 
-    |>ProbeValue!("out")
+    |>Probe!("out")
 }

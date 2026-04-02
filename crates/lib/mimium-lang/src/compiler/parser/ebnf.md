@@ -342,7 +342,7 @@ fn dsp() {
 ### Macro Expansion
 
 ```mimium
-Slider!(freq, 440, 20, 20000)
+Control!(freq, 440)
 ```
 
 ---

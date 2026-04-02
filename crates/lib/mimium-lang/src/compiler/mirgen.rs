@@ -4528,7 +4528,7 @@ fn compile_and_execute_stage0(
     let program = bytecodegen::gen_bytecode(mir, config);
 
     // 6. Create a VM with combinator closures, builtin common function closures
-    //    (e.g. length_array, split_head, prepend), and macro bridge closures.
+    //    (e.g. len, split_head, prepend), and macro bridge closures.
     let builtin_plugin = crate::plugin::get_builtin_fns_as_plugins();
     let builtin_closures = builtin_plugin.get_ext_closures();
     let ext_closures = combinator_sigs

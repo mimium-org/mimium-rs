@@ -635,7 +635,7 @@ impl WasmGenerator {
         self.rt.math_max = self.add_import_from("math", "max", type_idx_f64_f64_f64);
     }
 
-    /// Setup builtin function imports (probeln, probe, length_array, split_head, split_tail)
+    /// Setup builtin function imports (probeln, probe, len, split_head, split_tail)
     fn setup_builtin_imports(&mut self) {
         // Type: (f64) -> f64 for probeln, probe
         let type_idx_f64_f64 = self.type_section.len();
@@ -645,13 +645,13 @@ impl WasmGenerator {
         self.rt.builtin_probeln = self.add_import_from("builtin", "probeln", type_idx_f64_f64);
         self.rt.builtin_probe = self.add_import_from("builtin", "probe", type_idx_f64_f64);
 
-        // Type: (i64) -> f64 for length_array (takes array handle, returns count as f64)
+        // Type: (i64) -> f64 for len (takes array handle, returns count as f64)
         let type_idx_i64_f64 = self.type_section.len();
         self.type_section
             .ty()
             .function(vec![ValType::I64], vec![ValType::F64]);
         self.rt.builtin_length_array =
-            self.add_import_from("builtin", "length_array", type_idx_i64_f64);
+            self.add_import_from("builtin", "len", type_idx_i64_f64);
 
         // Type: (i64, i32) -> () for split_head / split_tail
         //   arg1: array handle (i64),  arg2: destination pointer (i32)
@@ -4625,7 +4625,7 @@ impl WasmGenerator {
             "_mimium_getnow" => Some(self.rt.runtime_get_now),
             "probeln" => Some(self.rt.builtin_probeln),
             "probe" => Some(self.rt.builtin_probe),
-            "length_array" => Some(self.rt.builtin_length_array),
+            "len" => Some(self.rt.builtin_length_array),
             "split_head" => Some(self.rt.builtin_split_head),
             "split_tail" => Some(self.rt.builtin_split_tail),
             "prepend" => Some(self.rt.builtin_prepend),
@@ -5275,11 +5275,11 @@ fn dsp() -> float { apply_gain(1.0) }
         let src = r#"
 fn f(arrs){
     let (head, rest) = split_head(arrs)
-    if length_array(rest) > 0 {
+    if len(rest) > 0 {
         let (head2, rest2) = split_head(rest)
-        length_array(head) + length_array(head2) + length_array(rest2)
+        len(head) + len(head2) + len(rest2)
     } else {
-        length_array(head)
+        len(head)
     }
 }
 
@@ -5304,7 +5304,7 @@ fn dot(left, right){
     let (left_head, left_rest) = split_head(left)
     let (right_head, right_rest) = split_head(right)
     let head_product = left_head * right_head
-    if length_array(left_rest) > 0 {
+    if len(left_rest) > 0 {
         head_product + dot(left_rest, right_rest)
     } else {
         head_product
@@ -5313,7 +5313,7 @@ fn dot(left, right){
 
 fn map_rows(fun, matrix){
     let (head, rest) = split_head(matrix)
-    if length_array(rest) > 0 {
+    if len(rest) > 0 {
         prepend(fun(head), map_rows(fun, rest))
     } else {
         [fun(head)]

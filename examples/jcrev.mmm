@@ -12,5 +12,5 @@ fn dsp(){
   let mix = osc01(0.6)
   let r  = ( jcrev(src,2.0,1) ) |> (|x|(x,x))
   // let r = freeverb_stereo((src,src),0.8,0.6,1,1)
-  r*0.2 |> ProbeValue!("out")
+  r*0.2 |> Probe!("out")
 }

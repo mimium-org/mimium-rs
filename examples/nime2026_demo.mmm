@@ -6,7 +6,7 @@ use env::*
 let notes = [60,62,64,67,72]
 
 fn melody(cps){
-	let len = length_array(notes)
+	let len = len(notes)
 	let phase = phasor(cps/(len-1),0)
 	let i = phase*len |> floor
 	let freq = notes[i] |> midi_to_hz
@@ -19,5 +19,5 @@ let cps = 1.0
 fn dsp(){
 	let s = melody(cps)
 	let s = pingpong_delay((s,s),0.5,0.9,1.0,0.5) 
-	s |> ProbeValue!("out")
+	s |> Probe!("out")
 }
