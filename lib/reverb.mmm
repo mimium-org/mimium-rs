@@ -19,13 +19,13 @@ fn lp_fb_comb(input,time,damp,roomsize){
 }
 
 
-fn allpass_inner(input,gain,N){
+fn rev_allpass_inner(input,gain,N){
     let (_ffpath,fbpath) = self
     let delsig = input+fbpath*gain
-    (delsig, delay(2000,delsig,N))
+    (delsig, delay(5000,delsig,N))
 }
-fn allpass(input,gain,N){
-    let (ff_path,fb_path) = allpass_inner(input,gain,N)
+fn rev_allpass(input,gain,N){
+    let (ff_path,fb_path) = rev_allpass_inner(input,gain,N)
     fb_path - ff_path*gain
 }
 fn comb_fb(input,gain,time_samps){
@@ -48,7 +48,7 @@ mod jcrev{
     }
     fn allpass_rev(line_time_samps:`float)->`(float)->float{
         `|input| {
-            allpass(input,$(allpass_gain |> lift_f),$line_time_samps)
+            rev_allpass(input,$(allpass_gain |> lift_f),$line_time_samps)
         }
     }
     fn output_delay(line_time_samps:`float)->`(float)->float{
@@ -150,14 +150,15 @@ mod freeverb{
                 }
             },
         )
+        // `|input,damp,roomsize| input
     }
     pub fn freeverb_mono_wet(is_right){
         `|input,damp,roomsize|{
             gen_lfc_bank!(is_right)(input,damp,roomsize)
-                ||> allpass(_,0.5,225)
-                ||> allpass(_,0.5,556)
-                ||> allpass(_,0.5,441)
-                ||> allpass(_,0.5,341)
+            ||> rev_allpass(_ ,0.5,225)
+            ||> rev_allpass(_,0.5,556)
+            ||> rev_allpass(_,0.5,441)
+            ||> rev_allpass(_,0.5,341)
         }
     }
     #stage(main)
@@ -175,8 +176,8 @@ mod freeverb{
         let left_wet = freeverb_mono_wet!(0)(left,damp,roomsize)*mix
         let right_wet = freeverb_mono_wet!(1)(right,damp,roomsize)*mix
         let mix_inv = 1-mix
-        let left_out = left*mix_inv + left_wet*scalewidth(width*0.5)+right_wet*scalewidth(1-width*0.5)
-        let right_out = right*mix_inv + left_wet*scalewidth(width*0.5)+right_wet*scalewidth(1-width*0.5)
+        let left_out = left*mix_inv + left_wet*core::scale(width,0,1,0.5,1.0)+right_wet*core::scale(width,0,1,0.5,0)
+        let right_out = right*mix_inv + left_wet*core::scale(width,0,1,0.5,0.0)+right_wet*core::scale(width,0,1,0.5,1.0)
 
         (left_out,right_out)
     }

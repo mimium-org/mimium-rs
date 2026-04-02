@@ -1,4 +1,6 @@
-include("osc.mmm")
+// an example to replicate oscillator with higher order function.
+// this is kind of legacy one, take a look at cascadeosc_macro.mmm for more modern one.
+use osc::*
 fn osc(freq){
   sinwave(freq,0.0)
 }
