@@ -12,7 +12,7 @@ fn feq(a: float, b: float) -> float {
 }
 
 fn check_values(events: [Event], expected: [float]) -> float {
-    if ((expected |> length_array) > 0.0 && (events |> length_array) > 0.0) {
+    if ((expected |> len) > 0.0 && (events |> len) > 0.0) {
         let (v, rest_v) = events |> split_head
         let (e, rest_e) = expected |> split_head
         feq(v.val, e) + check_values(rest_v, rest_e)
@@ -28,7 +28,7 @@ fn test_mininotation_alternate_grouping() {
     // 1) Simple alternation
     let p1 = mini("<62 72>")
     let e1 = p1(test_arc)
-    let c = feq(length_array(e1), 2.0)
+    let c = feq(len(e1), 2.0)
     let c = c + check_values(e1, [62.0, 72.0])
 
     // 2) Alternation where each arm is a grouped pattern.
@@ -36,14 +36,14 @@ fn test_mininotation_alternate_grouping() {
     // => first arm values then second arm values
     let p2 = mini("<[64 [74 72] 65] [65 62]>")
     let e2 = p2(test_arc)
-    let c = c + feq(length_array(e2), 6.0)
+    let c = c + feq(len(e2), 6.0)
     let c = c + check_values(e2, [64.0, 74.0, 72.0, 65.0, 65.0, 62.0])
 
     // 3) Grouped alternations are flattened before outer concatenation.
     // <62 72> <[64 [74 72] 65] [65 62]>
     let p3 = mini("<62 72> <[64 [74 72] 65] [65 62]>")
     let e3 = p3(test_arc)
-    let c = c + feq(length_array(e3), 8.0)
+    let c = c + feq(len(e3), 8.0)
     let c = c + check_values(
         e3,
         [

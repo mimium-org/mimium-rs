@@ -6,7 +6,7 @@ use env::*
 let notes = [60,62,64,67,72]
 
 fn melody(cps){
-	let len = length_array(notes)
+	let len = len(notes)
 	let phase = phasor(cps/(len-1),0)
 	let i = phase*len |> floor
 	let freq = notes[i] |> midi_to_hz

@@ -130,7 +130,7 @@ mod lift_array_code {
     }
 }
 
-mod length_array {
+mod len {
     use super::*;
     use crate::interner::TypeNodeId;
     use crate::interpreter::Value;
@@ -172,7 +172,7 @@ mod length_array {
 
     pub(super) fn signature() -> CommonFunction {
         CommonFunction {
-            name: "length_array".to_symbol(),
+            name: "len".to_symbol(),
             ty: function!(
                 vec![Type::Array(Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id()).into_id()],
                 numeric!()
@@ -1230,7 +1230,7 @@ fn generate_builtin_functions() -> impl ExactSizeIterator<Item = CommonFunction>
         atan::signature(),
         atan2::signature(),
         pow::signature(),
-        length_array::signature(),
+        len::signature(),
         append::signature(),
         prepend::signature(),
         split_tail::signature(),

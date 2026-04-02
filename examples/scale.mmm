@@ -6,7 +6,7 @@ use env::adsr
 use reverb::*
 
 let scale = $(minor()||> expand(_,5)||> take(_,30)|>lift)
-let len = scale |> length_array |> probeln
+let len = scale |> len |> probeln
 
 fn sec2samp(sec){
     sec*samplerate

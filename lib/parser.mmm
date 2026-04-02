@@ -215,7 +215,7 @@ pub fn alt(p1: Parser, p2: Parser) -> Parser {
 
 // Helper: recursively tries parsers from a list.
 fn choice_inner(parsers: [Parser], input: string) -> ParseResult {
-    if (length_array(parsers) > 0.0) {
+    if (len(parsers) > 0.0) {
         let (head, rest) = parsers |> split_head
         let r = head(input)
         match r {

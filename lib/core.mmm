@@ -52,7 +52,7 @@ pub fn stereo_fx_var(processor:`(float,float)->float)->`(float,float)->(float,fl
     }
 }
 pub fn join(arr1:[a],arr2:[a])->[a]{
-    if (length_array(arr2)>0){
+    if (len(arr2)>0){
         let (head2,rest2) = split_head(arr2)
         join(append(arr1,head2),rest2)
     }else{
@@ -60,9 +60,9 @@ pub fn join(arr1:[a],arr2:[a])->[a]{
     }
 }
 pub fn map(fun:(a)->b,array:[a])->[b] {
-    if ((array |> length_array) > 0){
+    if ((array |> len) > 0){
         let (head,rest) = array |> split_head
-        if ((rest |> length_array) > 0){
+        if ((rest |> len) > 0){
             prepend(fun(head),map(fun,rest))
         }else{
             [fun(head)]
@@ -76,7 +76,7 @@ pub fn map(fun:(a)->b,array:[a])->[b] {
 pub fn zipwith(fun:(a,b)->c,left:[a],right:[b])->[c] {
     let (left_head,left_rest) = left |> split_head
     let (right_head,right_rest) = right |> split_head
-    if ((left_rest |> length_array) > 0){
+    if ((left_rest |> len) > 0){
         prepend(fun(left_head,right_head),zipwith(fun,left_rest,right_rest))
     }else{
         [fun(left_head,right_head)]
@@ -85,9 +85,9 @@ pub fn zipwith(fun:(a,b)->c,left:[a],right:[b])->[c] {
 
 #stage(macro)
 pub fn foldl(array:[a],init:b, folder:(a,b)->b)->b{
-    if ((array |> length_array) > 0){
+    if ((array |> len) > 0){
         let (head_f,rest) = array |> split_head
-        if ((rest |> length_array) > 0){
+        if ((rest |> len) > 0){
             let rest_folded = foldl(rest,init,folder)
             folder(head_f , rest_folded) 
         }else{

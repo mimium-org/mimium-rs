@@ -32,7 +32,7 @@ fn supersaw(){
 
 #stage(main)
 let pitches = [0, 4, 7, 12, 16, 19, 24, 28, 31, 33]
-let pitch_len = length_array(pitches)
+let pitch_len = len(pitches)
 fn source(){
     let rate= Control!("rate",1)
     let gate = phasor(rate+phasor(0.2,0)*3,0)

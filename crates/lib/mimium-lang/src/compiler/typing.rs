@@ -3252,7 +3252,7 @@ pub type alias Arc = {start:float, end:float}
 pub type alias Event = {arc:Arc, active:Arc, val:float}
 
 fn value_at_phase(events:[Event], phase:float, current:float)->float{
-    if (length_array(events) > 0.0){
+    if (len(events) > 0.0){
         let (head,rest) = events |> split_head
         if (phase >= head.arc.start){
             value_at_phase(rest, phase, head.val)
@@ -3328,7 +3328,7 @@ pub type alias Event = {arc:Arc, active:Arc, val:float}
 
 #stage(main)
 fn value_at_phase(events:[Event], phase:float, current:float)->float{
-    if ((events |> length_array) > 0.0){
+    if ((events |> len) > 0.0){
         let (head,rest) = events |> split_head
         if (phase >= head.arc.start){
             value_at_phase(rest, phase, head.val)

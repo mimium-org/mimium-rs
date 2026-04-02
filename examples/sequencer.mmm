@@ -26,7 +26,7 @@ fn maybe(prob, rand){
 /// - `step_per_sec` is the number of sequencer steps advanced per second.
 /// - `gate_ratio` is the gate length inside one step, normalized to 0.0..1.0.
 fn seq(step_per_sec, notes:[float], gates:[float], accents:[float], gate_ratio:float){
-    let step_count = length_array(notes)
+    let step_count = len(notes)
     let phase = phasor(step_per_sec / step_count, 0.0) * step_count
     let step = floor(phase)
     let local_phase = phase - step
