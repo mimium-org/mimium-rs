@@ -598,6 +598,26 @@ fn convert_var(ctx: &mut ResolveContext, name: Symbol, loc: Location) -> ExprNod
         return Expr::Var(name).into_id(loc);
     }
 
+    // Resolve within current module hierarchy first. Imported names must not shadow
+    // internal symbols defined in the current/parent module chain.
+    if !ctx.current_module_context.is_empty()
+        && let Some(relative_mangled) = (1..=ctx.current_module_context.len())
+            .rev()
+            .map(|prefix_len| {
+                let mut relative_path = ctx.current_module_context[..prefix_len].to_vec();
+                relative_path.push(name);
+                relative_path
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join("$")
+                    .to_symbol()
+            })
+            .find(|relative_mangled| ctx.name_exists(relative_mangled))
+    {
+        return Expr::Var(relative_mangled).into_id(loc);
+    }
+
     // Check if this is a use alias (explicit `use foo::bar` or `use foo::bar as alias`)
     if ctx.module_info.use_alias_map.contains_key(&name) {
         let mangled_name = resolve_alias_chain(ctx.module_info, name);
@@ -629,24 +649,6 @@ fn convert_var(ctx: &mut ResolveContext, name: Symbol, loc: Location) -> ExprNod
 
     if is_core_intrinsic_name(name) {
         return Expr::Var(name).into_id(loc);
-    }
-
-    // Try relative resolution from current module context (for intra-module references)
-    // and its parent modules.
-    if !ctx.current_module_context.is_empty() {
-        for prefix_len in (1..=ctx.current_module_context.len()).rev() {
-            let mut relative_path = ctx.current_module_context[..prefix_len].to_vec();
-            relative_path.push(name);
-            let relative_mangled = relative_path
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join("$")
-                .to_symbol();
-            if ctx.name_exists(&relative_mangled) {
-                return Expr::Var(relative_mangled).into_id(loc);
-            }
-        }
     }
 
     // Keep as-is - will be resolved by type checker (local variable or error)
@@ -839,6 +841,49 @@ mod tests {
                 assert!(matches!(then.to_expr(), Expr::Var(name) if name.as_str() == "mix"));
             }
             _ => panic!("expected let expression with then branch"),
+        }
+    }
+
+    #[test]
+    fn test_parent_module_symbol_shadows_wildcard_import() {
+        let loc = make_loc();
+        let mut module_info = ModuleInfo::default();
+        module_info.wildcard_imports.push("filter".to_symbol());
+        module_info
+            .visibility_map
+            .insert("filter$allpass".to_symbol(), true);
+
+        let wet_name = "reverb$freeverb$freeverb_mono_wet".to_symbol();
+        module_info.module_context_map.insert(
+            wet_name,
+            vec![
+                "reverb".to_symbol(),
+                "freeverb".to_symbol(),
+                "freeverb_mono_wet".to_symbol(),
+            ],
+        );
+
+        let unknownty = Type::Unknown.into_id_with_location(loc.clone());
+        let expr = Expr::LetRec(
+            crate::pattern::TypedId::new(wet_name, unknownty),
+            Expr::Var("allpass".to_symbol()).into_id(loc.clone()),
+            None,
+        )
+        .into_id(loc.clone());
+
+        // Both names exist, but the relative parent module symbol must win.
+        let builtin_names = vec!["filter$allpass".to_symbol(), "reverb$allpass".to_symbol()];
+        let (result, errors) =
+            convert_qualified_names(expr, &module_info, &builtin_names, PathBuf::from("/test"));
+
+        assert!(errors.is_empty());
+        match result.to_expr() {
+            Expr::LetRec(_, body, _) => {
+                assert!(
+                    matches!(body.to_expr(), Expr::Var(name) if name.as_str() == "reverb$allpass")
+                );
+            }
+            _ => panic!("expected letrec expression"),
         }
     }
 
