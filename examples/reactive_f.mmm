@@ -1,5 +1,6 @@
+// example of using "metro" higher-order function which is for using `self` expression for non per-sample processing.
+// `major` function is called every 0.5 seconds, and it generates a sequence of MIDI note numbers in the major scale.
 use core::*
-
 use osc::*
 use reactive::metro
 use modulation::*

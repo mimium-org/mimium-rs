@@ -117,10 +117,14 @@ fn append_to_each(head: [Event], tails: [[Event]]) -> [[Event]] {
 
 fn cross_concat(heads: [[Event]], tails: [[Event]]) -> [[Event]] {
     if (len(heads) > 0.0) {
-        let split = heads |> split_head
-        let head = split.0
-        let rest = split.1
-        concat_event_groups(append_to_each(head, tails), cross_concat(rest, tails))
+        if (len(tails) > 0.0) {
+            let split = heads |> split_head
+            let head = split.0
+            let rest = split.1
+            concat_event_groups(append_to_each(head, tails), cross_concat(rest, tails))
+        } else {
+            heads
+        }
     } else {
         []
     }
@@ -180,12 +184,12 @@ fn is_terminator(c: string, term: string) -> float {
 fn parse_variants(s: string, term: string) -> ([[Event]], string) {
     let input = skip_spaces(s)
     if (str_length(input) == 0.0) {
-        ([[]], input)
+        ([], input)
     } else {
         let c = str_char_at(input, 0)
         if (str_length(term) > 0.0) {
             if (str_eq(c, term) > 0.0) {
-                ([[]], str_drop(input, 1))
+                ([], str_drop(input, 1))
             } else {
                 let parsed = if (str_eq(c, "~") > 0.0) {
                     (wrap_single(silent_events()), str_drop(input, 1))
@@ -195,9 +199,11 @@ fn parse_variants(s: string, term: string) -> ([[Event]], string) {
                     let rest = inner.1
                     let events = if (len(inner_variants) > 1.0) {
                         slowcat_events(inner_variants)
-                    } else {
+                    } else if (len(inner_variants) > 0.0) {
                         let split = inner_variants |> split_head
                         split.0
+                    } else {
+                        []
                     }
                     (wrap_single(events), rest)
                 } else if (str_eq(c, "<") > 0.0) {
@@ -230,9 +236,11 @@ fn parse_variants(s: string, term: string) -> ([[Event]], string) {
                 let rest = inner.1
                 let events = if (len(inner_variants) > 1.0) {
                     slowcat_events(inner_variants)
-                } else {
+                } else if (len(inner_variants) > 0.0) {
                     let split = inner_variants |> split_head
                     split.0
+                } else {
+                    []
                 }
                 (wrap_single(events), rest)
             } else if (str_eq(c, "<") > 0.0) {
@@ -276,9 +284,11 @@ pub fn mini(s: string) -> Pattern {
     let variants = parsed.0
     let events = if (len(variants) > 1.0) {
         slowcat_events(variants)
-    } else {
+    } else if (len(variants) > 0.0) {
         let split = variants |> split_head
         split.0
+    } else {
+        []
     }
     |arc| {
         scale_events(events, arc)

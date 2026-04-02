@@ -230,7 +230,7 @@ fn dsp(){
     let snare = snare_voice(snare_gate, sn.accent)
     let hat = hihat_voice(hat_gate, hat_accent)
     let drum_on = smooth(Control!("drum_on",1))
-    let drum = kick + snare + hat|> (_* drum_on) |> (|x|(x,x))
+    let drum = kick + snare + hat ||> (_* drum_on) |> (|x|(x,x))
     let pad = pad_voice(pad_note, p.gate, pad_accent)
     let out = drum + bass + pad
     let mute = smooth(Control!("mute",1))

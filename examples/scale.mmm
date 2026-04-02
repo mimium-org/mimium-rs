@@ -6,7 +6,7 @@ use env::adsr
 use reverb::*
 
 let scale = $(minor()||> expand(_,5)||> take(_,30)|>lift)
-let len = scale |> len |> probeln
+let size = scale |> len |> probeln
 
 fn sec2samp(sec){
     sec*samplerate
@@ -31,7 +31,7 @@ fn amp(input,dur){
 }
 
 fn dsp(){
-    let notes = scale[phasor(0.1,0)*len] |> floor ||> _+36 
+    let notes = scale[phasor(0.1,0)*size] |> floor ||> _+36 
     let freq = sah_auto(notes,12)
                 |> midi_to_hz
     let a = amp(freq,0.1)

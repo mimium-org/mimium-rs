@@ -1,7 +1,7 @@
 use noise::*
 use filter::{lowpass,highpass,bandpass}
 use env::adsr
-use reverb::{jcrev,freeverb_stereo}
+use reverb::{freeverb_stereo}
 use osc::phasor
 
 #stage(macro)
@@ -18,7 +18,7 @@ fn rain_drop(phase,base_rate,rate_wander,cutoff_base,cutoff_wander,q,amp,release
     `{
         let rate = sah_auto($base_rate + $noise * $rate_wander,3.0)
         let gate = phasor(rate,$phase) > 0.996
-        let env = adsr(0.0005,0.004,0.0,$release,gate)
+        let env = adsr(0.005,0.004,0.0,$release,gate)
         let cutoff = sah_auto($cutoff_base + unoise!() * $cutoff_wander,rate*0.5+0.1)
         let body = bandpass(white!(),cutoff,$q)
         let click = highpass(white!(),cutoff*0.7,0.8)
@@ -30,8 +30,8 @@ fn rain_drop(phase,base_rate,rate_wander,cutoff_base,cutoff_wander,q,amp,release
 
 fn rain_bed(){
     let hiss = white!()
-                |> lowpass(_,4000.0 + phasor(0.021,0.0) * 2500.0,0.8)
-                |> highpass(_,1200.0,0.8)
+                ||> lowpass(_,1000.0 + phasor(0.021,0.0) * 2500.0,0.8)
+                ||> highpass(_,800.0,0.8)
     let rumble = lowpass(white!(),220.0 + phasor(0.013,0.31) * 180.0,0.8)
     hiss * 0.025 + rumble * 0.03
 }
@@ -39,8 +39,7 @@ fn rain_bed(){
 fn stereo_field(shared,left_bias,right_bias){
     let left = shared + left_bias
     let right = shared + right_bias
-    // freeverb_stereo((left,right),0.92,0.2,1.0,0.22)
-    jcrev_stereo((left,right),1.0,0.2)
+    freeverb_stereo((left,right),0.2,0.4,1.0,0.22)
     // (left,right)
 }
 

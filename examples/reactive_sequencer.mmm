@@ -1,8 +1,6 @@
 use osc::*
 use env::*
 use filter::*
-// include("delay.mmm")
-// include("reverb.mmm")
 use reactive::*
 
 #stage(main)
@@ -34,7 +32,5 @@ fn synth(gate){
 fn dsp(){
     let gate = (gate1() * gate2()) 
     let r = synth(gate)
-    // |> mydelay 
-    // |> myreverb ;
     (r,r) |> Probe!("out")
 }

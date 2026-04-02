@@ -1,3 +1,8 @@
+// this is simple example for presenting live coding feature of mimium.
+// The code contains simple melody and feedback delay.
+// If you edit, melody cps for instance, and overwrite the file with cmd+S,
+// you can hear the change immediately without audio interruption and even without reset of delay tail.
+
 use core::*
 use osc::*
 use delay::*
@@ -11,7 +16,8 @@ fn melody(cps){
 	let i = phase*len |> floor
 	let freq = notes[i] |> midi_to_hz
 	let gate = adsr({gate= (phase*len%1) < 0.2})
-	${`saw(freq,0) |> |x| lowpass(x,(sinwave(1,0)+1)*1000+200,4) * gate }
+	let ff = (sinwave(1,0)+1)*1000+200
+	(saw(freq,0) ||> lowpass(_,ff,4)) * gate
 	
 }
 
