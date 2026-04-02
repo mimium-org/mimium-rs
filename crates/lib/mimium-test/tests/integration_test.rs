@@ -160,7 +160,7 @@ fn mininotation() {
         .stack_size(16 * 1024 * 1024) // 16 MB
         .spawn(|| {
             let res = run_file_with_plugins("mininotation.mmm", 1, [].into_iter(), false).unwrap();
-            let ans = vec![20.0]; // 20 boolean checks, each contributing 1.0
+            let ans = vec![25.0]; // 25 boolean checks, each contributing 1.0
             assert_eq!(res, ans);
         })
         .unwrap()

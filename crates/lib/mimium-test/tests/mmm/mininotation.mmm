@@ -33,10 +33,22 @@ fn test_mininotation() {
     let c = c + feq(len(e3), 3.0)
     let (ev3a, r3) = e3 |> split_head
     let c = c + feq(ev3a.val, 1.0)
+    let c = c + feq(ev3a.arc.start, 0.0)
+    let c = c + feq(ev3a.arc.end, 1.0 / 3.0)
     let (ev3b, r3b) = r3 |> split_head
     let c = c + feq(ev3b.val, 2.0)
     let (ev3c, _) = r3b |> split_head
     let c = c + feq(ev3c.val, 3.0)
+
+    // --- Test 3b: exact arc boundaries for simple 2-step sequence ---
+    let p3b = mini("1 2")
+    let e3b = p3b(test_arc)
+    let (ev3b_a, r3b_a) = e3b |> split_head
+    let c = c + feq(ev3b_a.arc.start, 0.0)
+    let c = c + feq(ev3b_a.arc.end, 0.5)
+    let (ev3b_b, _) = r3b_a |> split_head
+    let c = c + feq(ev3b_b.arc.start, 0.5)
+    let c = c + feq(ev3b_b.arc.end, 1.0)
 
     // --- Test 4: nested cat with [] ---
     // "[1 2] 3" -> cat([cat([pure(1), pure(2)]), pure(3)])
@@ -79,7 +91,7 @@ fn test_mininotation() {
     let (ev7, _) = e7 |> split_head
     let c = c + feq(ev7.val, 0.0 - 1.0)
 
-    // Total checks: 2 + 1 + 4 + 4 + 5 + 2 + 2 = 20
+    // Total checks: 2 + 1 + 8 + 5 + 5 + 2 + 2 = 25
     c |> lift_f
 }
 
