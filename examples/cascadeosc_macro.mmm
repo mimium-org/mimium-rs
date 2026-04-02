@@ -1,7 +1,7 @@
 //same as cascadeosc.mmm, but written with new multi-stage computation feature.
 // include("osc.mmm")
 #stage(main)
-
+use core::*
 let PI = 3.14159265359
 
 let phasor_shift =  |freq,phase_shift|{
@@ -36,8 +36,11 @@ fn dsp(){
     // let time_l =100
     let f = 50
     let f = Control!("freq",100) + osc(0.2)*50 +5   
-    let r =  (f |> cascade!(10, `osc))*0.3 |> Probe!("L");
-    let res = (time_l,time_r) ||> (_+20000) ||> fbdelay(r,_,0.99,0.7)
-    res
+    let r =  (f |> cascade!(10, `osc))*0.3 
+    let res =  stereo_fx_var!(`|x,is_r|{
+        let delay_time = if is_r {time_r} else {time_l}
+        fbdelay(x,delay_time,0.5,0.4)
+    })
+    (r,r)||> res(_) |> Probe!("L")
     
 }

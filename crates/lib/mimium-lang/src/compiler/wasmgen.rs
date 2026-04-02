@@ -3393,7 +3393,7 @@ impl WasmGenerator {
                             .copied()
                             .map(wasm_encoder::BlockType::Result)
                             .unwrap_or(wasm_encoder::BlockType::Empty);
-                        let param_types: Vec<ValType> = vec![ValType::I64; args.len()];
+                        let param_types = Self::indirect_call_param_types(args);
                         let type_idx = self.get_or_create_call_type(param_types, return_types);
 
                         // TODO: This branch is a compatibility workaround for the current
@@ -3408,7 +3408,7 @@ impl WasmGenerator {
                         // represented as direct function-table indices on both MIR and VM.
                         // They are not heap/linear-memory closures, so call them directly
                         // without switching closure state.
-                        self.emit_call_args_word_packed(args, func);
+                        self.emit_call_args_word(args, func);
                         self.emit_value_load_typed(closure_ptr, ValType::I64, func);
                         func.instruction(&W::I32WrapI64);
                         func.instruction(&W::CallIndirect {
@@ -3444,8 +3444,8 @@ impl WasmGenerator {
                         self.emit_value_load(closure_ptr, func);
                         func.instruction(&W::I64Store(memarg));
 
-                        // Push one raw i64 word per MIR argument for indirect-call ABI.
-                        self.emit_call_args_word_packed(args, func);
+                        // Push flattened i64 words matching indirect-call adapter ABI.
+                        self.emit_call_args_word(args, func);
 
                         // Load function table index from closure[0]
                         self.emit_value_load(closure_ptr, func);
@@ -3776,7 +3776,7 @@ impl WasmGenerator {
                             .copied()
                             .map(wasm_encoder::BlockType::Result)
                             .unwrap_or(wasm_encoder::BlockType::Empty);
-                        let param_types: Vec<ValType> = vec![ValType::I64; args.len()];
+                        let param_types = Self::indirect_call_param_types(args);
                         let type_idx = self.get_or_create_call_type(param_types, return_types);
 
                         // TODO: Same as `CallIndirect` above: remove this runtime check once
@@ -3789,7 +3789,7 @@ impl WasmGenerator {
                         // Raw function references use the same direct-table representation
                         // as the VM's indirect-call path. Only heap/linear-memory closures
                         // need closure-state switching in WASM.
-                        self.emit_call_args_word_packed(args, func);
+                        self.emit_call_args_word(args, func);
                         self.emit_value_load_typed(fn_ptr, ValType::I64, func);
                         func.instruction(&W::I32WrapI64);
                         func.instruction(&W::CallIndirect {
@@ -3825,8 +3825,8 @@ impl WasmGenerator {
                         self.emit_value_load(fn_ptr, func);
                         func.instruction(&W::I64Store(memarg));
 
-                        // Push one raw i64 word per MIR argument for indirect-call ABI.
-                        self.emit_call_args_word_packed(args, func);
+                        // Push flattened i64 words matching indirect-call adapter ABI.
+                        self.emit_call_args_word(args, func);
 
                         // Load function table index from closure[0]
                         self.emit_value_load(fn_ptr, func);
@@ -4402,25 +4402,17 @@ impl WasmGenerator {
         }
     }
 
-    /// Emit indirect-call arguments as one raw i64 word per MIR argument.
+    /// Build indirect-call parameter ABI from MIR argument types.
     ///
-    /// This avoids flattening tuple/record arguments twice. If a MIR argument
-    /// is aggregate-typed, it is already represented by a pointer word.
-    fn emit_call_args_word_packed(&mut self, args: &[(VPtr, TypeNodeId)], func: &mut Function) {
-        use wasm_encoder::Instruction as W;
-
-        for (arg, ty) in args {
-            if ty.word_size() > 1 {
-                self.emit_value_load(arg, func);
-                continue;
-            }
-
-            let actual = self.infer_value_type(arg);
-            self.emit_value_load(arg, func);
-            if actual == ValType::F64 {
-                func.instruction(&W::I64ReinterpretF64);
-            }
-        }
+    /// Indirect adapters use an i64-word ABI, so tuple/record arguments
+    /// contribute one parameter per flattened word.
+    fn indirect_call_param_types(args: &[(VPtr, TypeNodeId)]) -> Vec<ValType> {
+        args.iter()
+            .flat_map(|(_, ty)| {
+                let word_count = Self::flatten_type_to_valtypes(&ty.to_type()).len().max(1);
+                std::iter::repeat_n(ValType::I64, word_count)
+            })
+            .collect()
     }
 
     /// Load a value and convert to i64 using numeric truncation (not bit reinterpretation).

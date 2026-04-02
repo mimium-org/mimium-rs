@@ -1,0 +1,22 @@
+// @test {"times":1,"expected":[0.0],"tol":1e-12,"web":true}
+// Regression: tuple pipe into a 2-arg higher-order callee must match direct call on WASM.
+
+fn passthrough_hof(f){
+    // Keep function value flow explicit so the call site becomes indirect.
+    f
+}
+
+fn pair_shift(l,r){
+    (l + 10.0, r + 20.0)
+}
+
+fn dsp(){
+    let x = 1.5
+    let res = passthrough_hof(pair_shift)
+
+    let (d_l,d_r) = res(x,x)
+    let (p_l,p_r) = (x,x) |> res
+
+    (d_l - p_l) * (d_l - p_l)
+    + (d_r - p_r) * (d_r - p_r)
+}
