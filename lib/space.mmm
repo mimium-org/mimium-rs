@@ -1,0 +1,15 @@
+use math::*
+use osc::sinwave
+//pan -1.0(left) to 1.0(right)
+pub fn pan2(input:float, pan){
+    let p_norm = (pan+1)/2 
+    let pi_over_4 = PI()/2
+    let l_amp = pi_over_4 * p_norm |> cos
+    let r_amp = pi_over_4 * p_norm |> sin
+    (input * l_amp, input * r_amp)
+}
+
+pub fn autopan2(input:float, rate){
+    let pan = sinwave(rate, 0)
+    pan2(input, pan)
+}

@@ -4,11 +4,7 @@ use env::adsr
 use filter::*
 use noise::*
 use delay::*
-
-/// Detect positive and negative changes on a sampled control signal.
-fn changed(input){
-    input != mem(input)
-}
+use sequencer::step_seq
 
 /// Hold a fresh random value for one sequencer step.
 fn rand_on_trig(trig){
@@ -17,31 +13,6 @@ fn rand_on_trig(trig){
 
 fn maybe(prob, rand){
     if (rand < prob) 1.0 else 0.0
-}
-
-/// A small phasor-based monophonic step sequencer.
-///
-/// Assumptions:
-/// - `notes`, `gates`, and `accents` have the same length.
-/// - `step_per_sec` is the number of sequencer steps advanced per second.
-/// - `gate_ratio` is the gate length inside one step, normalized to 0.0..1.0.
-fn seq(step_per_sec, notes:[float], gates:[float], accents:[float], gate_ratio:float){
-    let step_count = len(notes)
-    let phase = phasor(step_per_sec / step_count, 0.0) * step_count
-    let step = floor(phase)
-    let local_phase = phase - step
-    let trig = changed(step)
-    let note = notes[step]
-    let accent = accents[step]
-    let is_on = gates[step] > 0.0
-    let gate = if (is_on && local_phase < gate_ratio) 1.0 else 0.0
-    {
-        step = step,
-        trig = trig,
-        gate = gate,
-        note = note,
-        accent = accent,
-    }
 }
 
 fn voice(note, gate, accent){
@@ -181,21 +152,21 @@ let step_per_sec = bpm / 60.0 * steps_per_beat
 
 fn dsp(){
 
-    let k = seq(step_per_sec, kick_notes, kick_gates, kick_accents, 0.3)
+    let k = step_seq(step_per_sec, kick_notes, kick_gates, kick_accents, 0.3)
     let kick_rand = rand_on_trig(k.trig)
     let kick_gate = k.gate * maybe(0.96, kick_rand)
 
-    let sn = seq(step_per_sec, snare_notes, snare_gates, snare_accents, 0.24)
+    let sn = step_seq(step_per_sec, snare_notes, snare_gates, snare_accents, 0.24)
     let snare_rand = rand_on_trig(sn.trig)
     let snare_gate = sn.gate * maybe(0.93, snare_rand)
 
-    let h = seq(step_per_sec, hat_notes, hat_gates, hat_accents, 0.18)
+    let h = step_seq(step_per_sec, hat_notes, hat_gates, hat_accents, 0.18)
     let hat_skip_rand = rand_on_trig(h.trig)
     let hat_accent_rand = rand_on_trig(h.trig)
     let hat_gate = h.gate * maybe(0.92, hat_skip_rand)
     let hat_accent = min(h.accent + hat_accent_rand * 0.25, 1.0)
     let pad_rate = Control!("pad_rate",16) |> ceil
-    let p = seq(step_per_sec/pad_rate , pad_notes, pad_gates, pad_accents, 0.98)
+    let p = step_seq(step_per_sec/pad_rate , pad_notes, pad_gates, pad_accents, 0.98)
     let pad_note_rand = rand_on_trig(p.trig)
     let pad_accent_rand = rand_on_trig(p.trig)
     let pad_shift = if (pad_note_rand > 0.84) 7.0 else 0.0
@@ -203,7 +174,7 @@ fn dsp(){
     let pad_accent = min(p.accent + pad_accent_rand * 0.2, 1.0)
     let bass_rate = Control!("bass_rate",1) |> ceil
 
-    let b = seq(step_per_sec/bass_rate, bass_notes, bass_gates, bass_accents, 0.62)
+    let b = step_seq(step_per_sec/bass_rate, bass_notes, bass_gates, bass_accents, 0.62)
     let gate_rand = rand_on_trig(b.trig)
     let octave_rand = rand_on_trig(b.trig)
     let accent_rand = rand_on_trig(b.trig)
@@ -223,14 +194,14 @@ fn dsp(){
     let accent = min(b.accent + accent_rand * 0.35, 1.0)
     let bass = voice(note, gate, accent)
     let bass = lowpass(bass, 1200.0 + accent * 1200.0, 2.0)
-                |>(|x|(x,x))
+                |> tostereo
     let bass_on = smooth(Control!("bass_on",1))
     let bass= pingpong_delay(bass,0.1,0.3,1.0,0.4)*bass_on
     let kick = kick_voice(kick_gate, k.accent)
     let snare = snare_voice(snare_gate, sn.accent)
     let hat = hihat_voice(hat_gate, hat_accent)
     let drum_on = smooth(Control!("drum_on",1))
-    let drum = kick + snare + hat ||> (_* drum_on) |> (|x|(x,x))
+    let drum = kick + snare + hat ||> (_* drum_on) |> tostereo
     let pad = pad_voice(pad_note, p.gate, pad_accent)
     let out = drum + bass + pad
     let mute = smooth(Control!("mute",1))

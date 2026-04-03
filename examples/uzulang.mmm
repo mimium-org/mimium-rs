@@ -17,7 +17,7 @@ fn dsp(){
     saw(note.val-12 |> midi_to_hz, 0.0)
      * adsr({attack = 0.001,release=0.1,sustain=0.9,gate=note.gate}) 
     ||> lowpass(_,((sinwave(0.1,0)+1)*500+400),4)
-    |> (|x| (x,x))
+    |> tostereo
     ||> chorus_st(_,1,0.1,0.5)
-    |> Probe!("out")
+    //|> Probe!("out")
 }   

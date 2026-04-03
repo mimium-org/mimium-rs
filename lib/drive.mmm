@@ -12,6 +12,17 @@ pub fn bitcrush(input,res=8){
   |> round
   ||> (_ / steps)
 }
+fn fold_dist_inner(input){
+    let raw = input
+    let folded =if(raw>1) 1-(raw-1) else {
+        if (raw < -1) { -1-(raw+1) } else {raw}
+    }
+    if (raw > 1 || raw < -1) fold_dist_inner(folded) else folded
+}
+pub fn fold_dist(input,amt=1){
+    fold_dist_inner(input*amt)
+}
+
 fn trigger_fallng(input){
     input < mem(input)
 }

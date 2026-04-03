@@ -1,0 +1,27 @@
+use core::*
+use osc::phasor
+
+#stage(main)
+pub fn changed(input){
+    input != mem(input)
+}
+
+#stage(main)
+pub fn step_seq(step_per_sec, notes:[float], gates:[float], accents:[float], gate_ratio:float){
+    let step_count = len(notes)
+    let phase = phasor(step_per_sec / step_count, 0.0) * step_count
+    let step = floor(phase)
+    let local_phase = phase - step
+    let trig = changed(step)
+    let note = notes[step]
+    let accent = accents[step]
+    let is_on = gates[step] > 0.0
+    let gate = if (is_on && local_phase < gate_ratio) 1.0 else 0.0
+    {
+        step = step,
+        trig = trig,
+        gate = gate,
+        note = note,
+        accent = accent,
+    }
+}

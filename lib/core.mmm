@@ -30,6 +30,10 @@ pub fn dbtolinear(x){
 pub fn linear2db(g) {
     20.0*log10(g)
 }
+pub fn tostereo(x){
+    (x,x)
+}
+
 #stage(macro)
 
 pub fn stereo_synth(processor:()->`float)->`(float,float){

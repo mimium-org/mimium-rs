@@ -24,6 +24,6 @@ fn dsp(){
     let f = 50
     let f = Control!("freq",100) + osc(0.2)*50 +5   
     let r =  (f |> cascade!(10, `osc))*0.3 
-    (r,r) |> Probe!("L")
+    (r,r)
     
 }

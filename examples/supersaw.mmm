@@ -48,15 +48,16 @@ fn myfilt(input,gate){
 
 fn dsp(){
     let src = source()
-
     let params = Control!("param",{
         mix = 1,
         detune = 1,
     })
     let amp = adsr(0.001,0.2,0.7,0.1,src.gate)
-    let out = supersaw!()(src.freq,params.mix,params.detune,src.gate) * amp
-    let out = myfilt(out,src.gate)|>(|x| (x,x))
-    pingpong_delay(out*0.85,0.3,0.6,0.8,0.6)
-    |> stereo_fx!(`|x|compressor({input=x,thresh=-9,ratio=100,response=0.99}))
+    
+    supersaw!()(src.freq,params.mix,params.detune,src.gate) * amp * 0.85
+    ||> myfilt(_,src.gate)
+    |> tostereo
+    ||> pingpong_delay(_,0.3,0.6,0.8,0.6)
+    ||> stereo_fx!(`|x|compressor({input=x,thresh=-9,ratio=100,response=0.99}))
     |> Probe!("out")
 }

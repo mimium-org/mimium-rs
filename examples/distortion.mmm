@@ -1,11 +1,13 @@
+// various type of distortion effects from standard library.
 use drive::*
 use osc::*
 use env::adsr
 fn dsp(){
     let src = sinwave({freq=440})
-    let gain = phasor({freq=1})>0.5 |> |gate| adsr({gate=gate}) 
+    let gain =  phasor({freq=1})>0.5 |> |gate| adsr({gate=gate}) 
     src * gain 
     // |> saturate
-    |> |x| degrade({input=x,freq=2000})
+    // ||> degrade(_,2000,8)
+    ||> fold_dist(_,5)
     |> Probe!("out")
 }
