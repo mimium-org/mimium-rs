@@ -591,8 +591,30 @@ fn is_core_intrinsic_name(name: Symbol) -> bool {
     )
 }
 
+fn is_operator_intrinsic_call_site(loc: &Location) -> bool {
+    let src = std::fs::read_to_string(&loc.path);
+    let Ok(src) = src else {
+        return false;
+    };
+    let token = src.get(loc.span.start..loc.span.end);
+    matches!(
+        token,
+        Some(
+            "+" | "-" | "*" | "/" | "==" | "!=" | "<" | "<=" | ">" | ">=" | "%"
+                | "^" | "&&" | "||" | "@"
+        )
+    )
+}
+
 /// Convert a simple variable reference, resolving explicit `use` aliases and wildcards.
 fn convert_var(ctx: &mut ResolveContext, name: Symbol, loc: Location) -> ExprNodeId {
+    // Operator lowering rewrites `lhs + rhs` to `add(lhs, rhs)` with the function
+    // span set to the original operator token. In that case, keep intrinsic
+    // semantics even when a local binding has the same name (e.g. `fn add(...)`).
+    if is_core_intrinsic_name(name) && is_operator_intrinsic_call_site(&loc) {
+        return Expr::Var(name).into_id(loc);
+    }
+
     // Lexical local bindings must take precedence over imported aliases or wildcards.
     if ctx.is_locally_bound(name) {
         return Expr::Var(name).into_id(loc);
@@ -645,10 +667,6 @@ fn convert_var(ctx: &mut ResolveContext, name: Symbol, loc: Location) -> ExprNod
     // Try wildcard resolution
     if let Some(mangled) = ctx.resolve_through_wildcards(name) {
         return Expr::Var(mangled).into_id(loc);
-    }
-
-    if is_core_intrinsic_name(name) {
-        return Expr::Var(name).into_id(loc);
     }
 
     // Keep as-is - will be resolved by type checker (local variable or error)
