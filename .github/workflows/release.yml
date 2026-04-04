@@ -36,7 +36,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libasound2-dev
 
-      - name: Build binaries
+      - name: Build binaries (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
         run: |
           cargo build -p mimium-bintools --release --bins
           cargo build --release \
@@ -45,6 +47,13 @@ jobs:
             -p mimium-guitools \
             -F mimium-midi/dynamic-plugin-abi \
             -F mimium-symphonia/dynamic-plugin-abi
+
+      - name: Build binaries (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build -p mimium-bintools --release --bins
+          cargo build --release -p mimium-midi -p mimium-symphonia -p mimium-guitools -F mimium-midi/dynamic-plugin-abi -F mimium-symphonia/dynamic-plugin-abi
 
       - name: Package release (Linux/macOS)
         if: runner.os != 'Windows'
