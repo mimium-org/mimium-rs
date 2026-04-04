@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## v4.0.1
+
+### Fixed bugs
+
+- Fixed library loading bug.
+- Fixed samplerate loading strategy on Web platform.
+- Fixed remote library loading strategy on Web.
+
 ## v4.0.0
 
 ### Breaking changes
