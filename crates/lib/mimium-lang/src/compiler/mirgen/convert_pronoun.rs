@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::ast::operators::Op;
+use crate::ast::program::QualifiedPath;
 use crate::ast::{Expr, Literal, RecordField};
 use crate::interner::{ExprNodeId, Symbol, ToSymbol};
 use crate::pattern::TypedId;
@@ -9,6 +10,9 @@ use crate::utils::error::SimpleError;
 use crate::utils::metadata::Location;
 use crate::utils::miniprint::MiniPrint;
 pub type Error = SimpleError;
+
+const OP_INTRINSIC_MARKER_NS: &str = "__mimium_op_intrinsic";
+
 #[derive(Clone)]
 struct ConvertResult {
     expr: ExprNodeId,
@@ -473,7 +477,11 @@ fn convert_operators(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
                 span: opspan.clone(),
                 path: loc.path.clone(),
             };
-            let fname = Expr::Var(op_var).into_id(oploc);
+            let fname = Expr::QualifiedVar(QualifiedPath::new(vec![
+                OP_INTRINSIC_MARKER_NS.to_symbol(),
+                op_var,
+            ]))
+            .into_id(oploc);
             match op {
                 Op::At => Expr::Apply(fname, vec![rhs, lhs]).into_id(loc), // applies in reversed order,
                 _ => Expr::Apply(fname, vec![lhs, rhs]).into_id(loc),
@@ -486,7 +494,11 @@ fn convert_operators(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
                 span: opspan.clone(),
                 path: loc.path.clone(),
             };
-            let fname = Expr::Var(op_var).into_id(oploc);
+            let fname = Expr::QualifiedVar(QualifiedPath::new(vec![
+                OP_INTRINSIC_MARKER_NS.to_symbol(),
+                op_var,
+            ]))
+            .into_id(oploc);
             let zero = Expr::Literal(Literal::Float("0.0".to_symbol())).into_id(loc.clone());
             Expr::Apply(fname, vec![zero, e]).into_id(loc)
         }
@@ -497,7 +509,11 @@ fn convert_operators(e_id: ExprNodeId, file_path: PathBuf) -> ExprNodeId {
                 span: opspan.clone(),
                 path: loc.path.clone(),
             };
-            let fname = Expr::Var(op_var).into_id(oploc);
+            let fname = Expr::QualifiedVar(QualifiedPath::new(vec![
+                OP_INTRINSIC_MARKER_NS.to_symbol(),
+                op_var,
+            ]))
+            .into_id(oploc);
             Expr::Apply(fname, vec![e]).into_id(loc.clone())
         }
         Expr::Paren(e) => convert_operators(e, file_path),
