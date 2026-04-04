@@ -591,6 +591,10 @@ fn is_core_intrinsic_name(name: Symbol) -> bool {
     )
 }
 
+fn is_operator_lowered_builtin_name(name: Symbol) -> bool {
+    is_core_intrinsic_name(name) || name.as_str() == "_mimium_schedule_at"
+}
+
 /// Convert a simple variable reference, resolving explicit `use` aliases and wildcards.
 fn convert_var(ctx: &mut ResolveContext, name: Symbol, loc: Location) -> ExprNodeId {
     // Lexical local bindings must take precedence over imported aliases or wildcards.
@@ -659,7 +663,7 @@ fn convert_qualified_var(
 ) -> ExprNodeId {
     if let [ns, name] = segments
         && ns.as_str() == "__mimium_op_intrinsic"
-        && is_core_intrinsic_name(*name)
+        && is_operator_lowered_builtin_name(*name)
     {
         return Expr::Var(*name).into_id(loc);
     }
