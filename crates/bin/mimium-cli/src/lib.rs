@@ -77,8 +77,8 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub no_gui: bool,
 
-    /// Execution backend (default: vm).
-    #[arg(long, value_enum, default_value_t = Backend::Vm)]
+    /// Execution backend (default: wasm).
+    #[arg(long, value_enum, default_value_t = Backend::Wasm)]
     pub backend: Backend,
 
     /// Path to config.toml (default: ~/.mimium/config.toml)
