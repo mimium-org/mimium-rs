@@ -147,6 +147,11 @@ function getTagFromBaseUrl(baseUrl) {
   return tag || DEFAULT_GITHUB_TAG;
 }
 
+function isMutableGitRefTag(tag) {
+  const normalized = (tag || '').toLowerCase();
+  return normalized === 'dev' || normalized === 'main' || normalized === 'master' || normalized === 'head';
+}
+
 function getCacheDirName() {
   return `mimium-lib-${getTagFromBaseUrl(globalThis.__mimium_lib_base_url || '')}`;
 }
@@ -289,6 +294,8 @@ async function preload_mimium_lib_cache(base_url) {
       : `${DEFAULT_GITHUB_LIB_BASE}${DEFAULT_GITHUB_TAG}/lib/`;
   const normalizedBaseUrl = normalizeBaseUrlCandidate(baseUrlCandidate);
   const baseUrl = normalizedBaseUrl.endsWith('/') ? normalizedBaseUrl : `${normalizedBaseUrl}/`;
+  const resolvedTag = getTagFromBaseUrl(baseUrl);
+  const shouldRefreshMutableRef = isMutableGitRefTag(resolvedTag);
   globalThis.__mimium_lib_base_url = baseUrl;
   lastPreloadBaseUrl = baseUrl;
 
@@ -304,14 +311,23 @@ async function preload_mimium_lib_cache(base_url) {
     }
 
     const fromOpfs = await readFromOpfs(filename);
-    if (fromOpfs !== null) {
+    if (!shouldRefreshMutableRef && fromOpfs !== null) {
       putMemoryAliases(filename, fromOpfs);
       continue;
     }
 
-    const fetched = await fetchLibFile(baseUrl, filename);
-    putMemoryAliases(filename, fetched);
-    await writeToOpfs(filename, fetched);
+    try {
+      const fetched = await fetchLibFile(baseUrl, filename);
+      putMemoryAliases(filename, fetched);
+      await writeToOpfs(filename, fetched);
+    } catch (e) {
+      // Keep mutable refs fresh when online, but remain usable offline via OPFS fallback.
+      if (fromOpfs !== null) {
+        putMemoryAliases(filename, fromOpfs);
+        continue;
+      }
+      throw e;
+    }
   }
 }
 
