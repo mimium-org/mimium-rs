@@ -67,11 +67,11 @@ mimium is a statically typed language but the most of type annotations can be om
 
 ### Live Coding
 
-mimium can describe digital signal processing algorithm from very low-level, like Faust. Moreover, mimium can update source code without audio interruption, which enables **full-scratch dsp livecoding** performance.
+mimium can describe digital signal processing algorithm from very low-level, like Faust. Moreover, mimium can update source code without an audio discontinuity and keeps tail of delay and reverb, which enables **full-scratch dsp livecoding** performance.
 
 ### Extensibility
 
-mimium's VM design is inspired by Lua, that can be easily embedded on Rust application through the plugin system. External functions(closures) defined in Rust can be easily called from mimium.
+mimium's VM design is inspired by Lua, that can be easily embedded on Rust application through the plugin system. External functions (closures) defined in Rust can be easily called from mimium.
 
 ## Installation
 
@@ -123,6 +123,7 @@ This list contains the contributers from v1 development, documentation and finan
 - [kyo](https://github.com/syougikakugenn)
 - [Inqb8tr-jp](https://github.com/Inqb8tr-jp)
 - [zakuro9715](https://github.com/zakuro9715)
+- [kuroboshi](https://github.com/kuroboshi)
 
 #### Other forms of Contributions
 
