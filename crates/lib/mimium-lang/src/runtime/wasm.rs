@@ -1980,6 +1980,7 @@ fn builtin_split_tail_host(caller: Caller<'_, RuntimeState>, array: i64, dst_ptr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::repo_test_artifact_path;
 
     #[test]
     fn test_wasm_runtime_create() {
@@ -2158,15 +2159,7 @@ mod tests {
 
     #[test]
     fn test_load_generated_wasm() {
-        use std::path::PathBuf;
-
-        // Use workspace root relative path
-        let mut wasm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        wasm_path.pop(); // Remove mimium-lang
-        wasm_path.pop(); // Remove lib
-        wasm_path.pop(); // Remove crates
-        wasm_path.push("tmp");
-        wasm_path.push("test_integration.wasm");
+        let wasm_path = repo_test_artifact_path("test_integration.wasm");
 
         // Skip test if the file doesn't exist (e.g., in CI environment)
         if !wasm_path.exists() {
