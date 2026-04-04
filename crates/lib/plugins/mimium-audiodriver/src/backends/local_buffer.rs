@@ -43,6 +43,13 @@ impl LocalBufferDriver {
         }
     }
 
+    /// Update sample rate while preserving the shared atomic captured by runtime closures.
+    pub fn set_sample_rate(&mut self, sample_rate: SampleRate) {
+        self.samplerate
+            .0
+            .store(sample_rate.get(), Ordering::Relaxed);
+    }
+
     pub fn get_generated_samples(&self) -> &[<LocalBufferDriver as Driver>::Sample] {
         &self.localbuffer
     }
@@ -66,7 +73,8 @@ impl Driver for LocalBufferDriver {
         let mut runtime_data = runtime_data;
         if let Some(iochannels) = runtime_data.io_channels() {
             self.localbuffer = Vec::with_capacity(iochannels.output as usize * self.times);
-            self.samplerate = sample_rate.unwrap_or(SampleRate::from(48000));
+            let effective_sr = sample_rate.unwrap_or(SampleRate::from(48000));
+            self.set_sample_rate(effective_sr);
             runtime_data
                 .runtime
                 .set_sample_rate(self.samplerate.get() as f64);
