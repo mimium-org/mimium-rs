@@ -30,6 +30,7 @@
 //!   when hitting `Escape(inner)`, switch back to `translate_stage0(inner)`.
 
 use crate::ast::{Expr, Literal, MatchArm, MatchPattern, RecordField};
+use crate::compiler::intrinsics;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::types::Type;
@@ -44,6 +45,20 @@ use slotmap::Key;
 /// of `wrap_to_staged_expr` followed by type checking).
 pub fn translate(expr: ExprNodeId) -> ExprNodeId {
     translate_stage0(expr)
+}
+
+fn mangle_qualified_segments(segments: &[Symbol]) -> Symbol {
+    match segments {
+        [] => "".to_symbol(),
+        [ns, name] if ns.as_str() == intrinsics::OP_INTRINSIC_MARKER_NS => *name,
+        [single] => *single,
+        _ => segments
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("$")
+            .to_symbol(),
+    }
 }
 
 fn type_id_to_int_literal(ty: TypeNodeId) -> ExprNodeId {
@@ -257,7 +272,11 @@ fn translate_stage0(expr: ExprNodeId) -> ExprNodeId {
         }
 
         // Leaves: literals, variables, errors — return as-is.
-        Expr::Literal(_) | Expr::Var(_) | Expr::QualifiedVar(_) | Expr::Error => expr,
+        Expr::Literal(_) | Expr::Var(_) | Expr::Error => expr,
+        Expr::QualifiedVar(path) => {
+            let mangled = mangle_qualified_segments(&path.segments);
+            Expr::Var(mangled).into_id_without_span()
+        }
 
         // These should already be desugared before this pass.
         Expr::BinOp(..) | Expr::UniOp(..) | Expr::MacroExpand(..) => {
@@ -582,9 +601,9 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
         Expr::Paren(inner) => translate_code(inner),
 
         // -- Nodes that should not appear inside brackets -------------------
-        Expr::QualifiedVar(_) => {
-            log::warn!("translate_staging: QualifiedVar in translate_code");
-            expr
+        Expr::QualifiedVar(path) => {
+            let mangled = mangle_qualified_segments(&path.segments);
+            make_apply_str("code_var", mangled)
         }
         Expr::BinOp(..) | Expr::UniOp(..) | Expr::MacroExpand(..) => {
             log::warn!("translate_staging: desugared-only node in translate_code");

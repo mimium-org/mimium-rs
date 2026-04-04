@@ -662,7 +662,7 @@ fn convert_qualified_var(
     loc: Location,
 ) -> ExprNodeId {
     if let [ns, name] = segments
-        && ns.as_str() == "__mimium_op_intrinsic"
+        && ns.as_str() == intrinsics::OP_INTRINSIC_MARKER_NS
         && is_operator_lowered_builtin_name(*name)
     {
         return Expr::Var(*name).into_id(loc);
