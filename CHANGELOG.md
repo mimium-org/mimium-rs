@@ -4,11 +4,15 @@
 
 ### Breaking changes
 
-- Introduced **Module Semantics** and rewrote standard libraries to use it (#180).
+- `Slider!` is replaced to `Control!`. It is generic function. If you give record and tuple type value to initial value, multiple sliders appear. Minimum/Maximum values are automatically inferred.
+- `Probe!` is now generic function too.
+- `length_array` has been replaced to `len`.
+- `Sampler_mono now returns`` `{player:(float)->float,length:float}``
 
 ### New features / improvements
 
-- Introduced WASM backend and dynamic plugin loading (#185).
+- Introduced **Module Semantics** and rewrote standard libraries to use it (#180). `include` is still available but not recommended to use.
+- Introduced WASM backend and dynamic plugin loading (#185). `--backend=vm` option switches back to the native vm backend.
 - Introduced generics (#188).
 - Introduced basic standard operations between tuples and auto expansion (#187).
 - Introduced variant types and type aliases (#183, #184).
@@ -22,8 +26,6 @@
 
 - Fixed file change event watching during live coding on Windows.
 - Fixed glitch noise when delay time is modulated.
-
-
 
 ## v3.2.0
 

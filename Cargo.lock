@@ -2281,6 +2281,7 @@ dependencies = [
  "mimium-guitools",
  "mimium-lang",
  "mimium-scheduler",
+ "mimium-symphonia",
  "notify",
  "ringbuf",
  "serde",

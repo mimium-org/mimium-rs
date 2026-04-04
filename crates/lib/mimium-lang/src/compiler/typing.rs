@@ -2,7 +2,7 @@ use crate::ast::program::TypeAliasMap;
 use crate::ast::{Expr, Literal, RecordField};
 use crate::compiler::{EvalStage, intrinsics};
 use crate::interner::{ExprKey, ExprNodeId, Symbol, ToSymbol, TypeNodeId};
-use crate::pattern::{Pattern, TypedPattern};
+use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::types::{IntermediateId, PType, RecordTypeField, Type, TypeSchemeId, TypeVar};
 use crate::utils::metadata::Location;
 use crate::utils::{environment::Environment, error::ReportableError};
@@ -23,6 +23,9 @@ pub enum Error {
     TypeMismatch {
         left: (TypeNodeId, Location),
         right: (TypeNodeId, Location),
+    },
+    EscapeRequiresCodeType {
+        found: (TypeNodeId, Location),
     },
     LengthMismatch {
         left: (usize, Location),
@@ -124,6 +127,12 @@ impl ReportableError for Error {
     fn get_message(&self) -> String {
         match self {
             Error::TypeMismatch { .. } => format!("Type mismatch"),
+            Error::EscapeRequiresCodeType { found: (ty, ..) } => {
+                format!(
+                    "Escape requires a code value, but found {}",
+                    ty.to_type().to_string_for_error()
+                )
+            }
             Error::PatternMismatch(..) => format!("Pattern mismatch"),
             Error::LengthMismatch { .. } => format!("Length of the elements are different"),
             Error::NonFunctionForLetRec(_, _) => format!("`letrec` can take only function type."),
@@ -315,6 +324,13 @@ impl ReportableError for Error {
                     ]
                 }
             }
+            Error::EscapeRequiresCodeType { found: (ty, loc) } => vec![(
+                loc.clone(),
+                format!(
+                    "escape expects `Code(T)`, but found {}. Escaping nested code containers such as arrays of quoted values is not supported",
+                    ty.to_type().to_string_for_error()
+                ),
+            )],
             Error::PatternMismatch((ty, loct), (pat, locp)) => vec![
                 (loct.clone(), ty.to_type().to_string_for_error()),
                 (locp.clone(), pat.to_string()),
@@ -1669,6 +1685,70 @@ impl InferContext {
         }
     }
 
+    fn provisional_lambda_function_type(
+        &mut self,
+        params: &[TypedId],
+        rtype: Option<TypeNodeId>,
+        loc: Location,
+    ) -> TypeNodeId {
+        let param_fields = params
+            .iter()
+            .map(|param| {
+                let annotated_ty =
+                    self.convert_unknown_to_intermediate(param.ty, param.ty.to_loc());
+                RecordTypeField {
+                    key: param.id,
+                    ty: self.resolve_type_alias(annotated_ty),
+                    has_default: param.default_value.is_some(),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let arg_ty = match param_fields.len() {
+            0 => Type::Primitive(PType::Unit).into_id_with_location(loc.clone()),
+            1 => param_fields[0].ty,
+            _ => Type::Record(param_fields).into_id_with_location(loc.clone()),
+        };
+
+        let ret_ty = rtype
+            .map(|ret| {
+                let annotated_ret = self.convert_unknown_to_intermediate(ret, ret.to_loc());
+                self.resolve_type_alias(annotated_ret)
+            })
+            .unwrap_or_else(|| self.gen_intermediate_type_with_location(loc.clone()));
+
+        Type::Function {
+            arg: arg_ty,
+            ret: ret_ty,
+        }
+        .into_id_with_location(loc)
+    }
+
+    fn provisional_letrec_binding_type(
+        &mut self,
+        id: &TypedId,
+        body: ExprNodeId,
+        loc: Location,
+    ) -> TypeNodeId {
+        match body.to_expr() {
+            Expr::Lambda(params, rtype, _) => {
+                let has_explicit_lambda_signature =
+                    params.iter().any(|param| !matches!(param.ty.to_type(), Type::Unknown))
+                        || rtype.is_some();
+
+                if has_explicit_lambda_signature || matches!(id.ty.to_type(), Type::Unknown) {
+                    self.provisional_lambda_function_type(params.as_slice(), rtype, loc)
+                } else {
+                    self.convert_unknown_to_intermediate(id.ty, id.ty.to_loc())
+                }
+            }
+            _ if !matches!(id.ty.to_type(), Type::Unknown) => {
+                self.convert_unknown_to_intermediate(id.ty, id.ty.to_loc())
+            }
+            _ => self.convert_unknown_to_intermediate(id.ty, id.ty.to_loc()),
+        }
+    }
+
     /// Check if a symbol is public based on the visibility map
     fn is_public(&self, name: &Symbol) -> bool {
         let resolved_name = self.resolve_type_alias_symbol_fallback(*name);
@@ -1705,6 +1785,9 @@ impl InferContext {
         let resolved = Self::substitute_type(ty);
         match resolved.to_type() {
             Type::TypeAlias(name) => {
+                if Self::is_explicit_type_param_name(name) {
+                    return None;
+                }
                 let resolved_name = self.resolve_type_alias_symbol_fallback(name);
                 // Check if this type alias is private
                 if self.is_private(&resolved_name) {
@@ -1891,6 +1974,7 @@ impl InferContext {
             _ => t.apply_fn(|t| self.generalize(t)),
         }
     }
+
     fn instantiate(&mut self, t: TypeNodeId) -> TypeNodeId {
         match t.to_type() {
             Type::TypeScheme(id) => {
@@ -2297,6 +2381,7 @@ impl InferContext {
                             .map(|id| {
                                 let annotated_ty =
                                     this.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
+                                let annotated_ty = this.resolve_type_alias(annotated_ty);
                                 let ity = this.instantiate(annotated_ty);
                                 this.env.add_bind(&[(id.id, (ity, this.stage))]);
                                 RecordTypeField {
@@ -2316,6 +2401,7 @@ impl InferContext {
                         let bty = if let Some(r) = rtype {
                             let annotated_ret =
                                 this.convert_unknown_to_intermediate(*r, r.to_loc());
+                            let annotated_ret = this.resolve_type_alias(annotated_ret);
                             let expected_ret = this.instantiate(annotated_ret);
                             let bty = this.infer_type_unwrapping(*body);
                             let _rel = this.unify_types(expected_ret, bty)?;
@@ -2362,12 +2448,22 @@ impl InferContext {
                 }
             }
             Expr::LetRec(id, body, then) => {
-                self.with_explicit_type_param_scope_from_types(&[id.ty], |this| {
-                    let idt = this.convert_unknown_to_intermediate(id.ty, id.ty.to_loc());
+                let body_expr = *body;
+                let mut scoped_types = vec![id.ty];
+                if let Expr::Lambda(params, rtype, _) = body_expr.to_expr() {
+                    params
+                        .iter()
+                        .filter(|param| param.ty.to_type() != Type::Unknown)
+                        .for_each(|param| scoped_types.push(param.ty));
+                    rtype.iter().copied().for_each(|ret| scoped_types.push(ret));
+                }
+
+                self.with_explicit_type_param_scope_from_types(&scoped_types, |this| {
+                    let idt = this.provisional_letrec_binding_type(id, body_expr, loc.clone());
                     this.env.add_bind(&[(id.id, (idt, this.stage))]);
                     //polymorphic inference is not allowed in recursive function.
 
-                    let bodyt = this.infer_type_levelup(*body);
+                    let bodyt = this.infer_type_levelup(body_expr);
 
                     let _res = this.unify_types(idt, bodyt);
 
@@ -2567,6 +2663,13 @@ impl InferContext {
                 self.stage = prev_stage;
                 if matches!(res.get_root().to_type(), Type::Primitive(PType::Unit)) {
                     return Ok(Type::Primitive(PType::Unit).into_id_with_location(loc_e));
+                }
+                if !matches!(res.get_root().to_type(), Type::Code(_))
+                    && res.get_root().to_type().contains_code()
+                {
+                    return Err(vec![Error::EscapeRequiresCodeType {
+                        found: (res.get_root(), loc_e),
+                    }]);
                 }
                 let intermediate = self.gen_intermediate_type_with_location(loc_e.clone());
                 let rel = self.unify_types(
@@ -3136,6 +3239,181 @@ fn dsp(){
             }),
             "Expected field access type error for \"val\", got: {:?}",
             errors.iter().map(|e| e.get_message()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_recursive_function_preserves_record_array_width_from_param_annotation() {
+        use crate::compiler;
+        use crate::plugin;
+
+        let src = r#"
+pub type alias Arc = {start:float, end:float}
+pub type alias Event = {arc:Arc, active:Arc, val:float}
+
+fn value_at_phase(events:[Event], phase:float, current:float)->float{
+    if (len(events) > 0.0){
+        let (head,rest) = events |> split_head
+        if (phase >= head.arc.start){
+            value_at_phase(rest, phase, head.val)
+        }else{
+            current
+        }
+    }else{
+        current
+    }
+}
+
+fn dsp(){
+    let events = [{
+        arc = {start = 0.0, end = 1.0},
+        active = {start = 0.0, end = 1.0},
+        val = 1.0,
+    }]
+    value_at_phase(events, 0.0, 0.0)
+}
+"#;
+
+        let ext_fns = plugin::get_extfun_types(&[plugin::get_builtin_fns_as_plugins()])
+            .collect::<Vec<_>>();
+        let macros = plugin::get_macro_functions(&[plugin::get_builtin_fns_as_plugins()])
+            .collect::<Vec<_>>();
+        let ctx = compiler::Context::new(
+            ext_fns,
+            macros,
+            Some(std::path::PathBuf::from("test")),
+            compiler::Config::default(),
+        );
+        let result = ctx.emit_mir(src);
+
+        assert!(result.is_ok(), "MIR generation failed: {:?}", result.err());
+
+        let mir = result.unwrap();
+        let printed = format!("{mir}");
+        let signature_line = printed
+            .lines()
+            .find(|line| line.starts_with("fn value_at_phase ["))
+            .expect("value_at_phase should be present in MIR");
+
+        assert!(
+            signature_line.contains("active") && signature_line.contains("end:number"),
+            "record-array parameter width should keep full Event shape, got: {signature_line}"
+        );
+        assert!(
+            printed.contains("split_head$arity5"),
+            "split_head should specialize for full Event width, got MIR:\n{printed}"
+        );
+    }
+
+    #[test]
+    fn test_imported_staging_preserves_record_array_width() {
+        use crate::compiler;
+        use crate::plugin;
+        use std::fs;
+
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let fixture_root = repo_root.join("tmp/staging_import_record_array_regression");
+        let fixture_lib_dir = fixture_root.join("lib");
+        let fixture_main = fixture_root.join("main.mmm");
+        let fixture_module = fixture_lib_dir.join("pattern_like.mmm");
+
+        fs::create_dir_all(&fixture_lib_dir).expect("fixture lib dir should be created");
+        fs::write(
+            &fixture_module,
+            r#"
+use osc::phasor
+
+pub type alias Arc = {start:float, end:float}
+pub type alias Event = {arc:Arc, active:Arc, val:float}
+
+#stage(main)
+fn value_at_phase(events:[Event], phase:float, current:float)->float{
+    if ((events |> len) > 0.0){
+        let (head,rest) = events |> split_head
+        if (phase >= head.arc.start){
+            value_at_phase(rest, phase, head.val)
+        }else{
+            current
+        }
+    }else{
+        current
+    }
+}
+
+#stage(macro)
+pub fn run_value()->`float{
+    let events = [{
+        arc = {start = 0.0, end = 1.0},
+        active = {start = 0.0, end = 1.0},
+        val = 60.0,
+    }]
+    `{
+        let phase = phasor(0.5, 0.0)
+        let v = value_at_phase($(events |> lift), phase, 0.0)
+        v
+    }
+}
+"#,
+        )
+        .expect("fixture module should be written");
+        fs::write(
+            &fixture_main,
+            r#"
+use pattern_like::*
+
+fn dsp(){
+    let value = run_value!()
+    (value, value)
+}
+"#,
+        )
+        .expect("fixture main should be written");
+
+        let src = fs::read_to_string(&fixture_main).expect("fixture main should be readable");
+        let (_ast, module_info, parse_errs) = crate::compiler::parser::parse_to_expr(
+            &src,
+            Some(fixture_main.clone()),
+        );
+        assert!(parse_errs.is_empty(), "fixture should parse cleanly");
+        assert!(
+            module_info
+                .type_aliases
+                .keys()
+                .any(|name| name.as_str() == "pattern_like$Event"),
+            "imported module type aliases should contain pattern_like$Event, got: {:?}",
+            module_info
+                .type_aliases
+                .keys()
+                .map(|name| name.as_str().to_string())
+                .collect::<Vec<_>>()
+        );
+        let ext_fns = plugin::get_extfun_types(&[plugin::get_builtin_fns_as_plugins()])
+            .collect::<Vec<_>>();
+        let macros = plugin::get_macro_functions(&[plugin::get_builtin_fns_as_plugins()])
+            .collect::<Vec<_>>();
+        let ctx = compiler::Context::new(
+            ext_fns,
+            macros,
+            Some(fixture_main.clone()),
+            compiler::Config::default(),
+        );
+        let result = ctx.emit_mir(&src);
+
+        assert!(result.is_ok(), "MIR generation failed: {:?}", result.err());
+
+        let printed = format!("{}", result.unwrap());
+        let signature_line = printed
+            .lines()
+            .find(|line| line.starts_with("fn pattern_like$value_at_phase ["))
+            .expect("imported value_at_phase should be present in MIR");
+
+        assert!(
+            signature_line.contains("active") && signature_line.contains("end:number"),
+            "imported staged record-array parameter width should keep full Event shape, got: {signature_line}"
+        );
+        assert!(
+            printed.contains("split_head$arity5"),
+            "imported staged split_head should specialize for full Event width, got MIR:\n{printed}"
         );
     }
 }

@@ -234,6 +234,7 @@ pub struct Machine {
     global_vals: Vec<RawVal>,
     debug_stacktype: Vec<RawValType>,
     current_ext_call_nargs: u8,
+    current_ext_call_idx: Option<usize>,
     /// Storage for code values (AST fragments) produced by codegen combinators.
     /// Each entry is an interned `ExprNodeId`; the index into this vec is
     /// stored as a `RawVal` on the VM stack.
@@ -354,36 +355,56 @@ where
 }
 
 impl Machine {
+    fn try_get_heap_backed_closure(&self, raw: RawVal) -> Option<(heap::HeapIdx, ClosureIdx)> {
+        let heap_idx = Self::get_as::<heap::HeapIdx>(raw);
+        self.heap.get(heap_idx).and_then(|obj| {
+            obj.data
+                .first()
+                .map(|&closure_raw| (heap_idx, Self::get_as::<ClosureIdx>(closure_raw)))
+        })
+    }
+
+    fn try_get_direct_closure(&self, raw: RawVal) -> Option<ClosureIdx> {
+        let clsidx = Self::get_as::<ClosureIdx>(raw);
+        self.closures.contains_key(clsidx.0).then_some(clsidx)
+    }
+
     /// Drop a closure by decrementing its reference count.
     /// When refcount reaches 0, recursively drops captured closures and removes the closure.
     pub fn drop_closure(&mut self, id: ClosureIdx) {
         let cls = self.closures.get_mut(id.0).unwrap();
         cls.refcount -= 1;
         if cls.refcount == 0 {
-            let refs = self
+            let raw_refs = self
                 .closures
-                .get_mut(id.0)
+                .get(id.0)
                 .unwrap()
                 .upvalues
                 .iter()
-                .map(|v| {
+                .filter_map(|v| {
                     let v = v.borrow();
                     match &*v {
-                        UpValue::Closed(data, true) => {
-                            // Closure-typed upvalue: value is a HeapIdx
-                            let heap_idx = Self::get_as::<heap::HeapIdx>(data[0]);
-                            self.heap.get(heap_idx).and_then(|obj| {
-                                (!obj.data.is_empty())
-                                    .then_some((heap_idx, Self::get_as::<ClosureIdx>(obj.data[0])))
-                            })
-                        }
+                        UpValue::Closed(data, true) => Some(data[0]),
                         _ => None,
                     }
                 })
                 .collect::<Vec<_>>();
-            refs.iter().filter_map(|i| *i).for_each(|(heap_idx, clsi)| {
-                self.drop_closure(clsi);
-                heap::heap_release(&mut self.heap, heap_idx);
+            let refs = raw_refs
+                .into_iter()
+                .filter_map(|raw| {
+                    self.try_get_heap_backed_closure(raw)
+                        .map(|(heap_idx, closure_idx)| (Some(heap_idx), closure_idx))
+                        .or_else(|| {
+                            self.try_get_direct_closure(raw)
+                                .map(|closure_idx| (None, closure_idx))
+                        })
+                })
+                .collect::<Vec<_>>();
+            refs.iter().for_each(|(heap_idx, clsi)| {
+                self.drop_closure(*clsi);
+                if let Some(heap_idx) = heap_idx {
+                    heap::heap_release(&mut self.heap, *heap_idx);
+                }
             });
             self.closures.remove(id.0);
         }
@@ -412,6 +433,7 @@ impl Machine {
             global_vals: vec![],
             debug_stacktype: vec![RawValType::Int; 255],
             current_ext_call_nargs: 0,
+            current_ext_call_idx: None,
             code_values: vec![],
         };
         extfns.for_each(|ExtFunInfo { name, fun, .. }| {
@@ -442,6 +464,7 @@ impl Machine {
             global_vals: vec![],
             debug_stacktype: vec![RawValType::Int; 255],
             current_ext_call_nargs: 0,
+            current_ext_call_idx: None,
             code_values: vec![],
         };
         //expect there are no change changes in external function use for now
@@ -485,16 +508,9 @@ impl Machine {
         self.get_stack_range(offset, 1).1[0]
     }
     pub fn get_stack_range(&self, offset: i64, word_size: TypeSize) -> (Range<usize>, &[RawVal]) {
-        let addr_start = self.base_pointer as usize + offset as usize;
+        let addr_start = (self.base_pointer as i64 + offset) as usize;
         let addr_end = addr_start + word_size as usize;
-        let start = self.stack.as_slice().as_ptr();
-        let slice = unsafe {
-            // w/ unstable feature
-            // let (_,snd) = self.stack.as_slice().split_at_unchecked(offset as usize);
-            // snd.split_at_unchecked(n as usize)
-            let vstart = start.add(addr_start);
-            slice::from_raw_parts(vstart, word_size as usize)
-        };
+        let slice = &self.stack[addr_start..addr_end];
         (addr_start..addr_end, slice)
     }
     pub fn get_stack_range_mut(
@@ -502,16 +518,9 @@ impl Machine {
         offset: i64,
         word_size: TypeSize,
     ) -> (Range<usize>, &mut [RawVal]) {
-        let addr_start = self.base_pointer as usize + offset as usize;
+        let addr_start = (self.base_pointer as i64 + offset) as usize;
         let addr_end = addr_start + word_size as usize;
-        let start = self.stack.as_mut_ptr();
-        let slice = unsafe {
-            // w/ unstable feature
-            // let (_,snd) = self.stack.as_slice().split_at_unchecked(offset as usize);
-            // snd.split_at_unchecked(n as usize)
-            let vstart = start.add(addr_start);
-            slice::from_raw_parts_mut(vstart, word_size as usize)
-        };
+        let slice = &mut self.stack[addr_start..addr_end];
         (addr_start..addr_end, slice)
     }
     pub fn set_stack(&mut self, offset: i64, v: RawVal) {
@@ -553,6 +562,10 @@ impl Machine {
     /// Number of argument words for the currently executing external function call.
     pub fn get_current_ext_call_nargs(&self) -> u8 {
         self.current_ext_call_nargs
+    }
+
+    pub fn get_current_ext_call_idx(&self) -> Option<usize> {
+        self.current_ext_call_idx
     }
     /// Extract the [`ClosureIdx`] stored inside a heap-allocated closure object.
     ///
@@ -640,7 +653,7 @@ impl Machine {
         self.delaysizes_pos_stack.push(0);
         self.base_pointer += offset;
 
-        let snapshot_words = std::cmp::max(nargs as usize, nret_req as usize);
+        let snapshot_words = nargs as usize;
         let arg_snapshot = (0..snapshot_words)
             .map(|i| self.get_stack(i as i64))
             .collect::<Vec<_>>();
@@ -816,50 +829,43 @@ impl Machine {
     fn close_upvalues_by_idx(&mut self, clsidx: ClosureIdx) {
         let closure_base_ptr = self.get_closure(clsidx).base_ptr as usize;
 
-        // Collect (ClosureIdx-to-retain, Option<HeapIdx-to-retain>) pairs for
-        // each upvalue that holds a closure reference.
-        let refs = self
+        // Collect closure references to retain. Function-typed upvalues may be
+        // stored either as heap-backed closures or as direct closure refs.
+        let raw_refs = self
             .get_closure(clsidx)
             .upvalues
             .iter()
-            .map(|upv| {
+            .filter_map(|upv| {
                 let upv = &mut *upv.borrow_mut();
                 match upv {
                     UpValue::Open(ov) => {
                         let (_range, ov_raw) = self.get_open_upvalue(closure_base_ptr, *ov);
                         let is_closure = ov.is_closure;
                         *upv = UpValue::Closed(ov_raw.to_vec(), is_closure);
-                        if is_closure {
-                            // The raw value is a HeapIdx wrapping a ClosureIdx
-                            let heap_idx = Self::get_as::<heap::HeapIdx>(ov_raw[0]);
-                            Some(heap_idx)
-                        } else {
-                            None
-                        }
+                        is_closure.then_some(ov_raw[0])
                     }
                     UpValue::Closed(v, is_closure) => {
-                        if *is_closure {
-                            Some(Self::get_as::<heap::HeapIdx>(v[0]))
-                        } else {
-                            None
-                        }
+                        (*is_closure).then_some(v[0])
                     }
                 }
             })
             .collect::<Vec<_>>();
-        // Retain each captured HeapObject and increment the underlying Closure refcount
-        refs.iter().for_each(|heap_opt| {
-            if let Some(heap_idx) = heap_opt {
-                // Retain the HeapObject so it is not freed when its creator exits
+        let refs = raw_refs
+            .into_iter()
+            .filter_map(|raw| {
+                self.try_get_heap_backed_closure(raw)
+                    .map(|(heap_idx, closure_idx)| (Some(heap_idx), closure_idx))
+                    .or_else(|| {
+                        self.try_get_direct_closure(raw)
+                            .map(|closure_idx| (None, closure_idx))
+                    })
+            })
+            .collect::<Vec<_>>();
+        refs.iter().for_each(|(heap_idx, closure_idx)| {
+            if let Some(heap_idx) = heap_idx {
                 heap::heap_retain(&mut self.heap, *heap_idx);
-                // Also bump the underlying Closure refcount for the existing drop_closure chain
-                if let Some(heap_obj) = self.heap.get(*heap_idx) {
-                    if !heap_obj.data.is_empty() {
-                        let ci = Self::get_as::<ClosureIdx>(heap_obj.data[0]);
-                        self.get_closure_mut(ci).refcount += 1;
-                    }
-                }
             }
+            self.get_closure_mut(*closure_idx).refcount += 1;
         });
         let cls = self.get_closure_mut(clsidx);
         cls.is_closed = true;
@@ -947,7 +953,9 @@ impl Machine {
                     let ext_fn_idx = self.get_stack(func as i64) as usize;
                     let fidx = self.fn_map.get(&ext_fn_idx).unwrap();
                     let prev_nargs = self.current_ext_call_nargs;
+                    let prev_ext_call_idx = self.current_ext_call_idx;
                     self.current_ext_call_nargs = nargs;
+                    self.current_ext_call_idx = Some(ext_fn_idx);
                     let _nret = match fidx {
                         ExtFnIdx::Fun(fi) => {
                             let f = self.ext_fun_table[*fi].1;
@@ -962,6 +970,7 @@ impl Machine {
                         }
                     };
                     self.current_ext_call_nargs = prev_nargs;
+                    self.current_ext_call_idx = prev_ext_call_idx;
 
                     // Shift return values one position left so they start at
                     // register `func` (the slot that held the function ref).
@@ -994,13 +1003,26 @@ impl Machine {
                 }
                 Instruction::CloseHeapClosure(src) => {
                     let heap_addr = self.get_stack(src as i64);
-                    let heap_idx = Self::get_as::<heap::HeapIdx>(heap_addr);
-                    self.close_heap_upvalues(heap_idx);
+                    if let Some((heap_idx, _)) = self.try_get_heap_backed_closure(heap_addr) {
+                        self.close_heap_upvalues(heap_idx);
+                    } else if let Some(closure_idx) = self.try_get_direct_closure(heap_addr) {
+                        self.close_upvalues_by_idx(closure_idx);
+                    }
                 }
                 Instruction::CloneHeap(src) => {
                     let heap_addr = self.get_stack(src as i64);
-                    let heap_idx = Self::get_as::<heap::HeapIdx>(heap_addr);
-                    heap::heap_retain(&mut self.heap, heap_idx);
+                    if let Some((heap_idx, closure_idx)) =
+                        self.try_get_heap_backed_closure(heap_addr)
+                    {
+                        heap::heap_retain(&mut self.heap, heap_idx);
+                        if let Some(closure) = self.closures.get_mut(closure_idx.0) {
+                            closure.refcount += 1;
+                        }
+                    } else if let Some(closure_idx) = self.try_get_direct_closure(heap_addr) {
+                        if let Some(closure) = self.closures.get_mut(closure_idx.0) {
+                            closure.refcount += 1;
+                        }
+                    }
                 }
                 Instruction::BoxAlloc(dst, src, inner_size) => {
                     // Allocate a heap object and copy data from stack
@@ -1042,42 +1064,68 @@ impl Machine {
                     heap_obj.data[..inner_size as usize].copy_from_slice(&data);
                 }
                 Instruction::CloneUserSum(value_reg, value_size, type_idx) => {
-                    let (_, value_data) = self.get_stack_range(value_reg as i64, value_size);
-                    let value_vec = value_data.to_vec();
                     let ty = self
                         .prog
                         .get_type_from_table(type_idx)
                         .expect("Invalid type table index in CloneUserSum");
+                    let (_, value_data) = self.get_stack_range(value_reg as i64, value_size);
+                    let value_vec = value_data.to_vec();
                     Self::clone_usersum_recursive(&value_vec, &ty, &mut self.heap);
                 }
                 Instruction::ReleaseUserSum(value_reg, value_size, type_idx) => {
-                    let (_, value_data) = self.get_stack_range(value_reg as i64, value_size);
-                    let value_vec = value_data.to_vec();
                     let ty = self
                         .prog
                         .get_type_from_table(type_idx)
                         .expect("Invalid type table index in ReleaseUserSum");
+                    let (_, value_data) = self.get_stack_range(value_reg as i64, value_size);
+                    let value_vec = value_data.to_vec();
                     let tt = &self.prog.type_table;
                     Self::release_usersum_recursive(&value_vec, &ty, &mut self.heap, tt);
                 }
                 Instruction::CallIndirect(func, nargs, nret_req) => {
-                    // Get heap index from the register
-                    let heap_addr = self.get_stack(func as i64);
-                    let heap_idx = Self::get_as::<heap::HeapIdx>(heap_addr);
+                    let callable = self.get_stack(func as i64);
+                    let heap_idx = Self::get_as::<heap::HeapIdx>(callable);
 
-                    // Extract the ClosureIdx from the heap object
-                    let heap_obj = self.heap.get(heap_idx).unwrap_or_else(|| {
-                        panic!("Invalid heap index: {heap_idx:?} (heap_len={}, func_i={func_i}, pc={pcounter})", self.heap.len());
+                    let maybe_heap_closure = self.heap.get(heap_idx).and_then(|heap_obj| {
+                        heap_obj.data.first().and_then(|&closure_raw| {
+                            let cls_i = Self::get_as::<ClosureIdx>(closure_raw);
+                            self.closures.contains_key(cls_i.0).then_some(cls_i)
+                        })
                     });
-                    let cls_i = Self::get_as::<ClosureIdx>(heap_obj.data[0]);
 
-                    let cls = self.get_closure(cls_i);
-                    let pos_of_f = cls.fn_proto_pos;
-                    self.states_stack.push(cls_i);
-                    self.call_function(func, nargs, nret_req, move |machine| {
-                        machine.execute(pos_of_f, Some(cls_i))
-                    });
-                    self.states_stack.pop();
+                    if let Some(cls_i) = maybe_heap_closure {
+                        let cls = self.get_closure(cls_i);
+                        let pos_of_f = cls.fn_proto_pos;
+                        self.states_stack.push(cls_i);
+                        self.call_function(func, nargs, nret_req, move |machine| {
+                            machine.execute(pos_of_f, Some(cls_i))
+                        });
+                        self.states_stack.pop();
+                    } else {
+                        let closure_idx = ClosureIdx(DefaultKey::from(KeyData::from_ffi(callable)));
+                        if self.closures.contains_key(closure_idx.0) {
+                            let cls = self.get_closure(closure_idx);
+                            let pos_of_f = cls.fn_proto_pos;
+                            self.states_stack.push(closure_idx);
+                            self.call_function(func, nargs, nret_req, move |machine| {
+                                machine.execute(pos_of_f, Some(closure_idx))
+                            });
+                            self.states_stack.pop();
+                        } else {
+                            // TODO: Give direct function refs and closures distinct runtime
+                            // representations. The VM currently falls back from heap-closure
+                            // handle -> ClosureIdx -> raw function index, which mirrors the
+                            // migration-era callable encoding but keeps the distinction implicit.
+                            let pos_of_f = callable as usize;
+                            assert!(
+                                pos_of_f < self.prog.global_fn_table.len(),
+                                "Invalid indirect callable: raw={callable}, heap={heap_idx:?}, func_i={func_i}, pc={pcounter}"
+                            );
+                            self.call_function(func, nargs, nret_req, move |machine| {
+                                machine.execute(pos_of_f, None)
+                            });
+                        }
+                    }
                 }
                 Instruction::Return0 => {
                     self.stack.truncate((self.base_pointer - 1) as usize);

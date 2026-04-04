@@ -79,7 +79,8 @@ fn scheduler_gc_test() {
         return;
     }
     let (_, src) = load_src("scheduler_counter_indirect.mmm");
-    let mut driver1 = prep_gc_test_machine(2, &src);
+    let playback_samples = 4;
+    let mut driver1 = prep_gc_test_machine(playback_samples, &src);
     driver1.play();
     let first = driver1
         .vmdata
@@ -90,7 +91,7 @@ fn scheduler_gc_test() {
         .closures
         .len();
 
-    let mut driver2 = prep_gc_test_machine(3, &src);
+    let mut driver2 = prep_gc_test_machine(playback_samples, &src);
     driver2.play();
     let second = driver2
         .vmdata
@@ -101,7 +102,7 @@ fn scheduler_gc_test() {
         .closures
         .len();
 
-    let mut driver3 = prep_gc_test_machine(4, &src);
+    let mut driver3 = prep_gc_test_machine(playback_samples, &src);
     driver3.play();
     let third = driver3
         .vmdata
@@ -111,5 +112,8 @@ fn scheduler_gc_test() {
         .vm
         .closures
         .len();
-    assert!(first == second && second == third)
+    assert!(
+        first == second && second == third,
+        "scheduler closure count should stay stable for identical playback lengths, got {first}, {second}, {third}"
+    )
 }

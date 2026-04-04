@@ -1,16 +1,18 @@
+use core::tostereo
 use osc::{phasor,sinwave}
 use env::adsr
-use reverb::{jcrev,freeverb_mono,freeverb_stereo}
+use reverb::{jcrev,freeverb_stereo}
+
 #stage(main)
 let osc = |f| sinwave({freq=f})
 let osc01 = |f| (osc(f) + 1) /2.0
+
 fn dsp(){
-  let src = sinwave({freq=phasor({freq=1.1,..})*400+100 ,..}) 
-          * (phasor({freq=7,..})>0.95
-          |> |x| adsr({gate= x ,attack = 0.0001,release=0.01,..}))
-  let mix = osc01(0.6)
-  // let r  = (src |> jcrev(_,2.0,mix) ) |> |x|(x,x)
-  let r = freeverb_stereo((src,src),0.8,0.6,1,1)
-  let (l,r) = r
-  (l |> Probe!("L"), r |> Probe!("R"))
+  let gate =(phasor(3,0)>0.85)
+  let src = osc(phasor(1.1,0)*400+100) 
+        * adsr({gate= gate ,attack = 0.0001,release=0.01})
+  let mix = osc01(0.2)
+  //  jcrev(src,2.0,1)  |> tostereo
+  freeverb_stereo((src,src),0.9,0.8,1,mix)
+  //|> Probe!("out")
 }

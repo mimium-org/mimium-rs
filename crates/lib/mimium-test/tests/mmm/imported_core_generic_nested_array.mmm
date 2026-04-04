@@ -1,0 +1,29 @@
+// @test {"times":1,"stereo":false,"expected":[0.0],"web":true}
+use core
+
+#stage(macro)
+fn negate_row(row:[float])->[float]{
+    core::map(|x| -x, row)
+}
+fn duplicate_row(row:[float])->[float]{
+    core::join(row, row)
+}
+fn signed_row(row:[float])->[float]{
+    core::join(row, negate_row(row))
+}
+fn hadamard(order)->[[float]]{
+    if (order>1){
+        let child = hadamard(order-1)
+        let upper = core::map(duplicate_row, child)
+        let lower = core::map(signed_row, child)
+        core::join(upper, lower)
+    }else{
+        [[1.0]]
+    }
+}
+
+#stage(main)
+fn dsp(){
+    let _m = ${ hadamard(3)[0][0] |> lift_f }
+    0.0
+}

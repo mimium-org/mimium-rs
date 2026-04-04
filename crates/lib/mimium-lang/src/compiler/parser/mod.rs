@@ -256,4 +256,80 @@ mod tests {
             "Expected parser errors for malformed input"
         );
     }
+
+    #[test]
+    fn test_nested_function_types_in_module_params() {
+        let source = r#"
+            mod fdn{
+                #stage(main)
+                fn zipwith(fun:(((float)->float),float)->float,left:[(float)->float],right:[float])->[float]{
+                    0
+                }
+            }
+        "#;
+        let (ast, tokens, _preparsed, _arena, errors) = parse(source);
+
+        match ast {
+            AstNode::Program { statements } => {
+                assert!(!statements.is_empty());
+            }
+            _ => panic!("Expected Program node"),
+        }
+
+        assert!(!tokens.is_empty());
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
+    }
+
+    #[test]
+    fn test_malformed_module_body_does_not_stall() {
+        let source = r#"
+            mod fdn{
+                fn broken(x:){
+                    0
+                }
+            }
+        "#;
+        let (ast, tokens, _preparsed, _arena, errors) = parse(source);
+
+        match ast {
+            AstNode::Program { .. } => {}
+            _ => panic!("Expected Program node"),
+        }
+
+        assert!(!tokens.is_empty());
+        assert!(
+            !errors.is_empty(),
+            "Expected parser errors for malformed module input"
+        );
+    }
+
+    #[test]
+    fn test_exact_module_zipwith_source() {
+        let source = "mod fdn{\n    #stage(main)\n    fn zipwith(fun:(((float)->float),float)->float,left:[(float)->float],right:[float])->[float]{\n        0\n    }\n}\n";
+        let (ast, tokens, _preparsed, _arena, errors) = parse(source);
+
+        match ast {
+            AstNode::Program { statements } => {
+                assert!(!statements.is_empty());
+            }
+            _ => panic!("Expected Program node"),
+        }
+
+        assert!(!tokens.is_empty());
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
+    }
+
+    #[test]
+    fn test_exact_module_zipwith_cst_print() {
+        let source = "mod fdn{\n    #stage(main)\n    fn zipwith(fun:(((float)->float),float)->float,left:[(float)->float],right:[float])->[float]{\n        0\n    }\n}\n";
+        let tokens = tokenize(source);
+        let preparsed = preparse(&tokens);
+        let (green_id, arena, tokens, errors) = parse_cst(tokens, &preparsed);
+
+        assert!(errors.is_empty(), "Expected no errors, got {errors:?}");
+
+        let tree_output = arena.print_tree(green_id, &tokens, source, 0);
+        assert!(tree_output.contains("FunctionDecl"));
+        assert!(tree_output.contains("zipwith"));
+    }
 }

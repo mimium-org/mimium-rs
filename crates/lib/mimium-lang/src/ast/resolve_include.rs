@@ -56,14 +56,36 @@ mod test {
     use super::*;
     use crate::utils::fileloader;
     use wasm_bindgen_test::*;
+
+    fn normalize_test_path(path: &str) -> String {
+        use std::path::Component;
+
+        std::path::Path::new(path)
+            .components()
+            .fold(std::path::PathBuf::new(), |mut acc, component| {
+                match component {
+                    Component::CurDir => {}
+                    Component::ParentDir => {
+                        acc.pop();
+                    }
+                    Component::RootDir | Component::Prefix(_) | Component::Normal(_) => {
+                        acc.push(component.as_os_str())
+                    }
+                }
+                acc
+            })
+            .to_string_lossy()
+            .into_owned()
+    }
+
     #[wasm_bindgen_test]
     fn test_resolve_include() {
-        let file = format!(
+        let file = normalize_test_path(&format!(
             "{}/../mimium-test/tests/mmm/{}",
             fileloader::get_env("TEST_ROOT").expect("TEST_ROOT is not set"),
             "error_include_itself.mmm"
-        );
-        let (res, errs) = resolve_include(&file, &file, 0..0);
+        ));
+        let (res, errs) = resolve_include(&file, "error_include_itself.mmm", 0..0);
         let id = res.program;
         assert_eq!(errs.len(), 1);
         assert!(

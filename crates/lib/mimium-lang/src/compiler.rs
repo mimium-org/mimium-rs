@@ -251,12 +251,7 @@ pub struct WasmOutput {
 
 #[cfg(test)]
 mod test {
-    use crate::{
-        function,
-        interner::ToSymbol,
-        numeric,
-        types::{PType, Type},
-    };
+    use crate::{function, interner::ToSymbol, numeric};
 
     use super::*;
     fn get_source() -> &'static str {
@@ -272,6 +267,15 @@ fn dsp(input:float){
 }
 "#
     }
+
+    fn get_tuple_source() -> &'static str {
+        r#"
+fn dsp(input:(float,float)){
+    input
+}
+"#
+    }
+
     fn test_context() -> Context {
         let addfn = ExtFunTypeInfo::new(
             "add".to_symbol(),
@@ -291,6 +295,16 @@ fn dsp(input:float){
         assert_eq!(iochannels.input, 1);
         assert_eq!(iochannels.output, 2);
     }
+
+    #[test]
+    fn mir_tuple_channelcount() {
+        let ctx = test_context();
+        let mir = ctx.emit_mir(get_tuple_source()).unwrap();
+        let iochannels = mir.get_dsp_iochannels().unwrap();
+        assert_eq!(iochannels.input, 2);
+        assert_eq!(iochannels.output, 2);
+    }
+
     #[test]
     fn bytecode_channelcount() {
         let src = &get_source();
@@ -298,6 +312,15 @@ fn dsp(input:float){
         let prog = ctx.emit_bytecode(src).unwrap();
         let iochannels = prog.iochannels.unwrap();
         assert_eq!(iochannels.input, 1);
+        assert_eq!(iochannels.output, 2);
+    }
+
+    #[test]
+    fn bytecode_tuple_channelcount() {
+        let ctx = test_context();
+        let prog = ctx.emit_bytecode(get_tuple_source()).unwrap();
+        let iochannels = prog.iochannels.unwrap();
+        assert_eq!(iochannels.input, 2);
         assert_eq!(iochannels.output, 2);
     }
 }

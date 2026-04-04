@@ -1,0 +1,72 @@
+use core::*
+use osc::sinwave
+use env::adsr
+use filter::lowpass
+use delay::pingpong_delay
+use sequencer::step_seq
+
+fn op_fb(freq, ratio,phase_mod,gate, vel, attack, decay, sustain, release, level, feedback){
+	let env = adsr({
+		gate = gate,
+		attack = attack,
+		decay = decay,
+		sustain = sustain,
+		release = release,
+	})
+	let fb = self * feedback
+	sinwave(freq * ratio, phase_mod+fb) * env * level * vel
+}
+
+fn op(freq, ratio, phase_mod, gate, vel, attack, decay, sustain, release, level){
+ 	op_fb(freq, ratio, phase_mod, gate, vel, attack, decay, sustain, release, level, 0.0)
+}
+
+fn krs(low_time, high_time, key_pos){
+	low_time + (high_time - low_time) * key_pos
+}
+
+fn ep_voice(note, gate, velocity, phase_shift){
+	let vel = velocity / 127.0
+	let key_pos = min(1.0, max(0.0, (note - 36.0) / 48.0))
+
+	let freq = midi_to_hz(note)
+	let body_decay = krs(2.1, 0.58, key_pos)
+	let body_release = krs(0.20, 0.08, key_pos)
+
+	// Pair A (Op2 -> Op1): core bell attack using ratio 14:1
+	let op2 = op(freq, 14.0, phase_shift, gate, 1.0, 0.0016, krs(0.14, 0.05, key_pos), 0.0, 0.035, 0.34 + vel * 0.20)
+	let op1 = op(freq, 1.0, op2, gate, 1.0, 0.0022, body_decay, 0.0, body_release, 0.44)
+
+	// Pair B (Op4 -> Op3): mellow body and sustain mass
+	let op4 = op(freq, 1.0, phase_shift * 0.7, gate, 1.0, 0.0025, krs(0.32, 0.10, key_pos), 0.0, 0.06, 0.75 + vel * 0.35)
+	let op3 = op(freq, 1.0, op4, gate, 1.0, 0.0020, krs(1.55, 0.46, key_pos), 0.0, body_release * 1.1, 0.40)
+
+	// Pair C (Op6 -> Op5): fixed-frequency hammer knock around 97Hz
+	let op6 = op_fb(97.0, 1.0, 0, gate, 1.0, 0.0012, 0.018, 0.0, 0.010, 0.12 + vel * 0.08, 0.03)
+	let op5 = op(97.0, 1.0, op6, gate, 1.0, 0.0016, 0.024, 0.0, 0.012, 0.12)
+
+	let tone = (op1 + op3 + op5) * (0.17 + vel * 0.10)
+	let cutoff = 4000.0 + key_pos * 1400.0 + vel * 700.0
+	lowpass(tone, cutoff, 0.85)
+}
+
+let notes = [48, 52, 55, 59, 60, 55, 52, 47, 50, 53, 57, 60, 62, 57, 53, 49]
+
+let gates = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+let accents = [0.70, 0.45, 0.55, 0.38, 0.80, 0.50, 0.40, 0.58, 0.75, 0.48, 0.60, 0.43, 0.82, 0.52, 0.44, 0.65]
+
+let bpm = 86.0
+let steps_per_beat = 2.0
+let step_per_sec = bpm / 60.0 * steps_per_beat
+
+fn dsp(){
+	let s = step_seq(step_per_sec, notes, gates, accents, 0.78)
+	let vel = 58.0 + s.accent * 62.0
+
+	let left = ep_voice(s.note + 0.03, s.gate, vel, 0.00)
+	let right = ep_voice(s.note - 0.03, s.gate, vel, 0.23)
+	
+	(left, right) 
+	||> pingpong_delay(_,0.75/step_per_sec,0.7,1.0,0.5)
+	//|> Probe!("out")
+}

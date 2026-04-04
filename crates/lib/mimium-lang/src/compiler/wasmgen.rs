@@ -25,7 +25,7 @@ use wasm_encoder::{
 /// Upper bound of `$arityN` builtin specializations imported for WASM.
 ///
 /// We predeclare a finite set of imports (`split_head$arityN`, `split_tail$arityN`,
-/// `prepend$arityN`) to avoid generating unbounded host import symbols while still
+/// `prepend$arityN`, `append$arityN`) to avoid generating unbounded host import symbols while still
 /// covering practical aggregate element sizes used by current codegen.
 ///
 /// Keep this value in sync with runtime registration in `runtime/wasm.rs`.
@@ -94,9 +94,11 @@ struct RuntimeFunctionIndices {
     builtin_split_head: u32,
     builtin_split_tail: u32,
     builtin_prepend: u32,
+    builtin_append: u32,
     builtin_split_head_specialized: HashMap<usize, u32>,
     builtin_split_tail_specialized: HashMap<usize, u32>,
     builtin_prepend_specialized: HashMap<usize, u32>,
+    builtin_append_specialized: HashMap<usize, u32>,
 }
 
 /// Linear memory layout manager
@@ -128,6 +130,20 @@ impl Default for MemoryLayout {
         }
     }
 }
+
+// TODO: Replace this runtime threshold heuristic with an explicit callable
+// representation in MIR/WASM lowering.
+//
+// Today, higher-order values are all carried as raw `i64`, so at a `call_indirect`
+// site the WASM backend cannot statically distinguish:
+// - a direct function-table index, from
+// - a pointer to a closure object in linear memory.
+//
+// The current workaround relies on the fact that runtime allocations start at
+// `alloc_offset = 1024`, so smaller values are treated as direct function refs.
+// Directionally, the better design is to represent these as distinct callable
+// kinds in MIR/lowering rather than recovering that distinction at runtime.
+const DIRECT_FUNCTION_REF_MAX_EXCLUSIVE: i64 = 1024;
 
 impl MemoryLayout {
     /// Allocate a linear memory offset for a global variable, or return existing one.
@@ -619,7 +635,7 @@ impl WasmGenerator {
         self.rt.math_max = self.add_import_from("math", "max", type_idx_f64_f64_f64);
     }
 
-    /// Setup builtin function imports (probeln, probe, length_array, split_head, split_tail)
+    /// Setup builtin function imports (probeln, probe, len, split_head, split_tail)
     fn setup_builtin_imports(&mut self) {
         // Type: (f64) -> f64 for probeln, probe
         let type_idx_f64_f64 = self.type_section.len();
@@ -629,13 +645,13 @@ impl WasmGenerator {
         self.rt.builtin_probeln = self.add_import_from("builtin", "probeln", type_idx_f64_f64);
         self.rt.builtin_probe = self.add_import_from("builtin", "probe", type_idx_f64_f64);
 
-        // Type: (i64) -> f64 for length_array (takes array handle, returns count as f64)
+        // Type: (i64) -> f64 for len (takes array handle, returns count as f64)
         let type_idx_i64_f64 = self.type_section.len();
         self.type_section
             .ty()
             .function(vec![ValType::I64], vec![ValType::F64]);
         self.rt.builtin_length_array =
-            self.add_import_from("builtin", "length_array", type_idx_i64_f64);
+            self.add_import_from("builtin", "len", type_idx_i64_f64);
 
         // Type: (i64, i32) -> () for split_head / split_tail
         //   arg1: array handle (i64),  arg2: destination pointer (i32)
@@ -660,19 +676,23 @@ impl WasmGenerator {
                 .insert(arity, split_tail_idx);
         }
 
-        // Type: (i64, i64) -> i64 for prepend/prepend$arityN
+        // Type: (i64, i64) -> i64 for prepend/prepend$arityN and append/append$arityN
         let type_idx_prepend = self.type_section.len();
         self.type_section
             .ty()
             .function(vec![ValType::I64, ValType::I64], vec![ValType::I64]);
         self.rt.builtin_prepend = self.add_import_from("builtin", "prepend", type_idx_prepend);
+        self.rt.builtin_append = self.add_import_from("builtin", "append", type_idx_prepend);
 
         for arity in 1..=MAX_SPECIALIZED_BUILTIN_ARITY {
             let prepend_name = format!("prepend$arity{arity}");
+            let append_name = format!("append$arity{arity}");
             let prepend_idx = self.add_import_from("builtin", &prepend_name, type_idx_prepend);
+            let append_idx = self.add_import_from("builtin", &append_name, type_idx_prepend);
             self.rt
                 .builtin_prepend_specialized
                 .insert(arity, prepend_idx);
+            self.rt.builtin_append_specialized.insert(arity, append_idx);
         }
     }
 
@@ -2443,7 +2463,7 @@ impl WasmGenerator {
             // Type cast operations
             I::CastFtoI(a) => {
                 self.emit_value_load_typed(a, ValType::F64, func);
-                func.instruction(&W::I64TruncF64S);
+                func.instruction(&W::I64TruncSatF64S);
             }
             I::CastItoF(a) => {
                 self.emit_value_load_typed(a, ValType::I64, func);
@@ -2756,11 +2776,25 @@ impl WasmGenerator {
                             self.emit_value_load(upindex, func);
                         }
                         mir::Value::Register(reg_idx)
-                            if self.alloc_registers.contains_key(reg_idx) =>
+                            if self.alloc_registers.get(reg_idx).copied().unwrap_or(0) > 1 =>
                         {
                             // Multi-word alloc (tuple etc.): the alloc address
                             // IS the data address; store as-is, no indirection.
                             self.emit_value_load(upindex, func);
+                        }
+                        mir::Value::Register(reg_idx)
+                            if self.alloc_registers.contains_key(reg_idx) =>
+                        {
+                            // Single-word direct alloc (e.g. array/function handle,
+                            // single-word record): capture the cell contents, not the
+                            // alloc-cell address.
+                            self.emit_value_load(upindex, func);
+                            func.instruction(&W::I32WrapI64);
+                            func.instruction(&W::I64Load(MemArg {
+                                offset: 0,
+                                align: 3,
+                                memory_index: 0,
+                            }));
                         }
                         _ => {
                             // Direct value (non-alloc register, argument, etc.)
@@ -2906,10 +2940,8 @@ impl WasmGenerator {
             I::Array(values, ty) => {
                 // array_alloc(src_ptr: i64, size_words: i32) -> i64
                 // Reads `size_words` words from linear memory at `src_ptr` and creates an array.
-                let elem_ty = match ty.to_type() {
-                    Type::Array(elem) => elem,
-                    _ => *ty, // fallback
-                };
+                // MIR stores the array element type here, not the full array type.
+                let elem_ty = *ty;
                 let elem_size = elem_ty.word_size() as u32;
                 let total_words = values.len() as u32 * elem_size.max(1);
                 let total_bytes = total_words * 8;
@@ -3348,6 +3380,44 @@ impl WasmGenerator {
                         }
                     }
                     _ => {
+                        let return_types: Vec<ValType> = {
+                            let ty = ret_ty.to_type();
+                            if matches!(ty, Type::Primitive(PType::Unit)) {
+                                vec![]
+                            } else {
+                                vec![ValType::I64]
+                            }
+                        };
+                        let block_type = return_types
+                            .first()
+                            .copied()
+                            .map(wasm_encoder::BlockType::Result)
+                            .unwrap_or(wasm_encoder::BlockType::Empty);
+                        let param_types = Self::indirect_call_param_types(args);
+                        let type_idx = self.get_or_create_call_type(param_types, return_types);
+
+                        // TODO: This branch is a compatibility workaround for the current
+                        // callable encoding. We should decide direct-function-ref vs closure
+                        // statically during lowering, not by inspecting the runtime value.
+                        self.emit_value_load_typed(closure_ptr, ValType::I64, func);
+                        func.instruction(&W::I64Const(DIRECT_FUNCTION_REF_MAX_EXCLUSIVE));
+                        func.instruction(&W::I64LtU);
+                        func.instruction(&W::If(block_type));
+
+                        // Raw function values (e.g. functions stored in arrays) are
+                        // represented as direct function-table indices on both MIR and VM.
+                        // They are not heap/linear-memory closures, so call them directly
+                        // without switching closure state.
+                        self.emit_call_args_word(args, func);
+                        self.emit_value_load_typed(closure_ptr, ValType::I64, func);
+                        func.instruction(&W::I32WrapI64);
+                        func.instruction(&W::CallIndirect {
+                            type_index: type_idx,
+                            table_index: 0,
+                        });
+
+                        func.instruction(&W::Else);
+
                         // Closure call via WASM call_indirect through the function table
                         let memarg = MemArg {
                             offset: 0,
@@ -3374,8 +3444,8 @@ impl WasmGenerator {
                         self.emit_value_load(closure_ptr, func);
                         func.instruction(&W::I64Store(memarg));
 
-                        // Push one raw i64 word per MIR argument for indirect-call ABI.
-                        self.emit_call_args_word_packed(args, func);
+                        // Push flattened i64 words matching indirect-call adapter ABI.
+                        self.emit_call_args_word(args, func);
 
                         // Load function table index from closure[0]
                         self.emit_value_load(closure_ptr, func);
@@ -3383,29 +3453,10 @@ impl WasmGenerator {
                         func.instruction(&W::I64Load(memarg));
                         func.instruction(&W::I32WrapI64); // table index must be i32
 
-                        // Compute call_indirect type from the call site signature
-                        let param_types: Vec<ValType> = vec![ValType::I64; args.len()];
-                        let return_types: Vec<ValType> = {
-                            let ty = ret_ty.to_type();
-                            if matches!(ty, Type::Primitive(PType::Unit)) {
-                                vec![]
-                            } else {
-                                vec![ValType::I64]
-                            }
-                        };
-                        let type_idx = self.get_or_create_call_type(param_types, return_types);
                         func.instruction(&W::CallIndirect {
                             type_index: type_idx,
                             table_index: 0,
                         });
-
-                        // Indirect adapters normalize non-Unit returns to i64.
-                        // Reinterpret back to f64 at numeric call sites.
-                        if !matches!(ret_ty.to_type(), Type::Primitive(PType::Unit))
-                            && Self::type_to_valtype(&ret_ty.to_type()) == ValType::F64
-                        {
-                            func.instruction(&W::F64ReinterpretI64);
-                        }
 
                         // Restore the previous closure_self_ptr
                         func.instruction(&W::I32Const(0)); // CLOSURE_SELF_PTR_ADDR
@@ -3414,6 +3465,15 @@ impl WasmGenerator {
 
                         // Pop closure state from the state stack
                         self.emit_closure_state_pop(func);
+                        func.instruction(&W::End);
+
+                        // Indirect adapters normalize non-Unit returns to i64.
+                        // Reinterpret back to f64 at numeric call sites.
+                        if !matches!(ret_ty.to_type(), Type::Primitive(PType::Unit))
+                            && Self::type_to_valtype(&ret_ty.to_type()) == ValType::F64
+                        {
+                            func.instruction(&W::F64ReinterpretI64);
+                        }
                     }
                 }
             }
@@ -3646,10 +3706,23 @@ impl WasmGenerator {
                             self.emit_value_load(upindex, func);
                         }
                         mir::Value::Register(reg_idx)
-                            if self.alloc_registers.contains_key(reg_idx) =>
+                            if self.alloc_registers.get(reg_idx).copied().unwrap_or(0) > 1 =>
                         {
                             // Multi-word alloc (tuple etc.): store pointer as-is
                             self.emit_value_load(upindex, func);
+                        }
+                        mir::Value::Register(reg_idx)
+                            if self.alloc_registers.contains_key(reg_idx) =>
+                        {
+                            // Single-word direct allocs keep their value in the alloc cell.
+                            // Capture that word rather than the alloc-cell address.
+                            self.emit_value_load(upindex, func);
+                            func.instruction(&W::I32WrapI64);
+                            func.instruction(&W::I64Load(MemArg {
+                                offset: 0,
+                                align: 3,
+                                memory_index: 0,
+                            }));
                         }
                         _ => {
                             let val_type = self.infer_value_type(upindex);
@@ -3690,6 +3763,42 @@ impl WasmGenerator {
                         }
                     }
                     _ => {
+                        let return_types: Vec<ValType> = {
+                            let ty = ret_ty.to_type();
+                            if matches!(ty, Type::Primitive(PType::Unit)) {
+                                vec![]
+                            } else {
+                                vec![ValType::I64]
+                            }
+                        };
+                        let block_type = return_types
+                            .first()
+                            .copied()
+                            .map(wasm_encoder::BlockType::Result)
+                            .unwrap_or(wasm_encoder::BlockType::Empty);
+                        let param_types = Self::indirect_call_param_types(args);
+                        let type_idx = self.get_or_create_call_type(param_types, return_types);
+
+                        // TODO: Same as `CallIndirect` above: remove this runtime check once
+                        // direct function refs and closures have distinct lowered forms.
+                        self.emit_value_load_typed(fn_ptr, ValType::I64, func);
+                        func.instruction(&W::I64Const(DIRECT_FUNCTION_REF_MAX_EXCLUSIVE));
+                        func.instruction(&W::I64LtU);
+                        func.instruction(&W::If(block_type));
+
+                        // Raw function references use the same direct-table representation
+                        // as the VM's indirect-call path. Only heap/linear-memory closures
+                        // need closure-state switching in WASM.
+                        self.emit_call_args_word(args, func);
+                        self.emit_value_load_typed(fn_ptr, ValType::I64, func);
+                        func.instruction(&W::I32WrapI64);
+                        func.instruction(&W::CallIndirect {
+                            type_index: type_idx,
+                            table_index: 0,
+                        });
+
+                        func.instruction(&W::Else);
+
                         // Closure call via WASM call_indirect (same as CallIndirect)
                         let memarg = MemArg {
                             offset: 0,
@@ -3716,8 +3825,8 @@ impl WasmGenerator {
                         self.emit_value_load(fn_ptr, func);
                         func.instruction(&W::I64Store(memarg));
 
-                        // Push one raw i64 word per MIR argument for indirect-call ABI.
-                        self.emit_call_args_word_packed(args, func);
+                        // Push flattened i64 words matching indirect-call adapter ABI.
+                        self.emit_call_args_word(args, func);
 
                         // Load function table index from closure[0]
                         self.emit_value_load(fn_ptr, func);
@@ -3725,29 +3834,10 @@ impl WasmGenerator {
                         func.instruction(&W::I64Load(memarg));
                         func.instruction(&W::I32WrapI64);
 
-                        // Compute call_indirect type
-                        let param_types: Vec<ValType> = vec![ValType::I64; args.len()];
-                        let return_types: Vec<ValType> = {
-                            let ty = ret_ty.to_type();
-                            if matches!(ty, Type::Primitive(PType::Unit)) {
-                                vec![]
-                            } else {
-                                vec![ValType::I64]
-                            }
-                        };
-                        let type_idx = self.get_or_create_call_type(param_types, return_types);
                         func.instruction(&W::CallIndirect {
                             type_index: type_idx,
                             table_index: 0,
                         });
-
-                        // Indirect adapters normalize non-Unit returns to i64.
-                        // Reinterpret back to f64 at numeric call sites.
-                        if !matches!(ret_ty.to_type(), Type::Primitive(PType::Unit))
-                            && Self::type_to_valtype(&ret_ty.to_type()) == ValType::F64
-                        {
-                            func.instruction(&W::F64ReinterpretI64);
-                        }
 
                         // Restore closure_self_ptr
                         func.instruction(&W::I32Const(0));
@@ -3756,6 +3846,15 @@ impl WasmGenerator {
 
                         // Pop closure state from the state stack
                         self.emit_closure_state_pop(func);
+                        func.instruction(&W::End);
+
+                        // Indirect adapters normalize non-Unit returns to i64.
+                        // Reinterpret back to f64 at numeric call sites.
+                        if !matches!(ret_ty.to_type(), Type::Primitive(PType::Unit))
+                            && Self::type_to_valtype(&ret_ty.to_type()) == ValType::F64
+                        {
+                            func.instruction(&W::F64ReinterpretI64);
+                        }
                     }
                 }
             }
@@ -4203,13 +4302,20 @@ impl WasmGenerator {
             if flat_types.len() <= 1 {
                 let mut expected = flat_types.first().copied().unwrap_or(ValType::I64);
 
-                if (ext_name.as_str() == "prepend"
+                if ((ext_name.as_str() == "prepend"
                     || ext_name
                         .as_str()
                         .strip_prefix("prepend$arity")
                         .and_then(|n| n.parse::<usize>().ok())
                         .is_some())
-                    && arg_idx == 0
+                    && arg_idx == 0)
+                    || ((ext_name.as_str() == "append"
+                        || ext_name
+                            .as_str()
+                            .strip_prefix("append$arity")
+                            .and_then(|n| n.parse::<usize>().ok())
+                            .is_some())
+                        && arg_idx == 1)
                 {
                     expected = ValType::I64;
                 }
@@ -4225,15 +4331,22 @@ impl WasmGenerator {
 
                 self.emit_value_load_typed(arg, expected, func);
             } else {
-                // prepend/prepend$arityN always takes the first argument as a packed i64 word
-                // (tuple pointer/handle), not flattened scalar fields.
-                if (ext_name.as_str() == "prepend"
+                // prepend/prepend$arityN and append/append$arityN take aggregate element
+                // arguments as packed i64 words (tuple pointer/handle), not flattened fields.
+                if ((ext_name.as_str() == "prepend"
                     || ext_name
                         .as_str()
                         .strip_prefix("prepend$arity")
                         .and_then(|n| n.parse::<usize>().ok())
                         .is_some())
-                    && arg_idx == 0
+                    && arg_idx == 0)
+                    || ((ext_name.as_str() == "append"
+                        || ext_name
+                            .as_str()
+                            .strip_prefix("append$arity")
+                            .and_then(|n| n.parse::<usize>().ok())
+                            .is_some())
+                        && arg_idx == 1)
                 {
                     self.emit_value_load_typed(arg, ValType::I64, func);
                     continue;
@@ -4289,25 +4402,17 @@ impl WasmGenerator {
         }
     }
 
-    /// Emit indirect-call arguments as one raw i64 word per MIR argument.
+    /// Build indirect-call parameter ABI from MIR argument types.
     ///
-    /// This avoids flattening tuple/record arguments twice. If a MIR argument
-    /// is aggregate-typed, it is already represented by a pointer word.
-    fn emit_call_args_word_packed(&mut self, args: &[(VPtr, TypeNodeId)], func: &mut Function) {
-        use wasm_encoder::Instruction as W;
-
-        for (arg, ty) in args {
-            if ty.word_size() > 1 {
-                self.emit_value_load(arg, func);
-                continue;
-            }
-
-            let actual = self.infer_value_type(arg);
-            self.emit_value_load(arg, func);
-            if actual == ValType::F64 {
-                func.instruction(&W::I64ReinterpretF64);
-            }
-        }
+    /// Indirect adapters use an i64-word ABI, so tuple/record arguments
+    /// contribute one parameter per flattened word.
+    fn indirect_call_param_types(args: &[(VPtr, TypeNodeId)]) -> Vec<ValType> {
+        args.iter()
+            .flat_map(|(_, ty)| {
+                let word_count = Self::flatten_type_to_valtypes(&ty.to_type()).len().max(1);
+                std::iter::repeat_n(ValType::I64, word_count)
+            })
+            .collect()
     }
 
     /// Load a value and convert to i64 using numeric truncation (not bit reinterpretation).
@@ -4495,16 +4600,28 @@ impl WasmGenerator {
                 .and_then(|n| n.parse::<usize>().ok())
                 .and_then(|arity| self.rt.builtin_prepend_specialized.get(&arity).copied());
         }
+        if name_str
+            .strip_prefix("append$arity")
+            .and_then(|n| n.parse::<usize>().ok())
+            .and_then(|arity| self.rt.builtin_append_specialized.get(&arity).copied())
+            .is_some()
+        {
+            return name_str
+                .strip_prefix("append$arity")
+                .and_then(|n| n.parse::<usize>().ok())
+                .and_then(|arity| self.rt.builtin_append_specialized.get(&arity).copied());
+        }
 
         match name.as_str() {
             "_mimium_getsamplerate" => Some(self.rt.runtime_get_samplerate),
             "_mimium_getnow" => Some(self.rt.runtime_get_now),
             "probeln" => Some(self.rt.builtin_probeln),
             "probe" => Some(self.rt.builtin_probe),
-            "length_array" => Some(self.rt.builtin_length_array),
+            "len" => Some(self.rt.builtin_length_array),
             "split_head" => Some(self.rt.builtin_split_head),
             "split_tail" => Some(self.rt.builtin_split_tail),
             "prepend" => Some(self.rt.builtin_prepend),
+            "append" => Some(self.rt.builtin_append),
             "sin" => Some(self.rt.math_sin),
             "cos" => Some(self.rt.math_cos),
             "tan" => Some(self.rt.math_tan),
@@ -4790,32 +4907,8 @@ impl WasmGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ExecContext;
     use crate::interner::ToSymbol;
-
-    /// Helper: Create a path to write WASM output file in tmp directory
-    fn get_wasm_output_path(filename: &str) -> std::path::PathBuf {
-        let mut wasm_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        wasm_path.pop(); // Remove mimium-lang
-        wasm_path.pop(); // Remove lib
-        wasm_path.pop(); // Remove crates
-        wasm_path.push("tmp");
-        std::fs::create_dir_all(&wasm_path).ok(); // Ensure tmp directory exists
-        wasm_path.push(filename);
-        wasm_path
-    }
-
-    /// Helper: Compile source code to MIR
-    fn compile_to_mir(src: &str) -> Arc<Mir> {
-        let mut ctx = ExecContext::new(std::iter::empty(), None, crate::Config::default());
-        ctx.prepare_compiler();
-        let mir = ctx
-            .get_compiler()
-            .unwrap()
-            .emit_mir(src)
-            .expect("MIR generation failed");
-        Arc::new(mir)
-    }
+    use crate::test_utils::{compile_to_mir, repo_test_artifact_path, run_wasm_dsp_f64};
 
     #[test]
     fn test_wasmgen_create() {
@@ -4860,8 +4953,8 @@ mod tests {
         let mut generator = WasmGenerator::new_without_plugins(mir);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
-        // Write to tmp directory for inspection
-        let wasm_path = get_wasm_output_path("test_simple_return_from_test.wasm");
+        // Write to tracked testdata directory for inspection
+        let wasm_path = repo_test_artifact_path("test_simple_return_from_test.wasm");
         std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
 
         eprintln!(
@@ -4937,8 +5030,8 @@ fn dsp() -> float { helper(21.0) }
         let mut generator = WasmGenerator::new_without_plugins(mir);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
-        // Write to tmp directory for inspection
-        let wasm_path = get_wasm_output_path("test_function_call_from_test.wasm");
+        // Write to tracked testdata directory for inspection
+        let wasm_path = repo_test_artifact_path("test_function_call_from_test.wasm");
         std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
 
         eprintln!(
@@ -4969,8 +5062,8 @@ fn dsp() -> float {
         let mut generator = WasmGenerator::new_without_plugins(mir);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
-        // Write to tmp directory (3 levels up from crates/lib/mimium-lang)
-        let wasm_path = get_wasm_output_path("test_integration.wasm");
+        // Write to tracked testdata directory for inspection
+        let wasm_path = repo_test_artifact_path("test_integration.wasm");
         std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
 
         eprintln!(
@@ -4986,8 +5079,8 @@ fn dsp() -> float {
         let mut generator = WasmGenerator::new_without_plugins(mir);
         let wasm_bytes = generator.generate().expect("WASM generation failed");
 
-        // Write to tmp for inspection
-        let wasm_path = get_wasm_output_path(&format!("{test_name}.wasm"));
+        // Write to tracked testdata directory for inspection
+        let wasm_path = repo_test_artifact_path(&format!("{test_name}.wasm"));
         std::fs::write(&wasm_path, &wasm_bytes).expect("Failed to write WASM file");
 
         let engine = wasmtime::Engine::default();
@@ -5167,5 +5260,72 @@ fn apply_gain(x: float) -> float { x * GAIN }
 fn dsp() -> float { apply_gain(1.0) }
 "#;
         compile_and_validate(src, "test_global_in_function");
+    }
+
+    #[test]
+    fn test_wasmgen_regression_nested_array_split_head_wasm_execution() {
+        let src = r#"
+fn f(arrs){
+    let (head, rest) = split_head(arrs)
+    if len(rest) > 0 {
+        let (head2, rest2) = split_head(rest)
+        len(head) + len(head2) + len(rest2)
+    } else {
+        len(head)
+    }
+}
+
+fn dsp(){
+    f([[1.0, 2.0], [3.0, 4.0]])
+}
+"#;
+
+        let value = run_wasm_dsp_f64(
+            src,
+            Some(repo_test_artifact_path(
+                "nested_array_split_head_regression.mmm",
+            )),
+        );
+        assert_eq!(value, 4.0);
+    }
+
+    #[test]
+    fn test_wasmgen_regression_closure_captures_array_handle_wasm_execution() {
+        let src = r#"
+fn dot(left, right){
+    let (left_head, left_rest) = split_head(left)
+    let (right_head, right_rest) = split_head(right)
+    let head_product = left_head * right_head
+    if len(left_rest) > 0 {
+        head_product + dot(left_rest, right_rest)
+    } else {
+        head_product
+    }
+}
+
+fn map_rows(fun, matrix){
+    let (head, rest) = split_head(matrix)
+    if len(rest) > 0 {
+        prepend(fun(head), map_rows(fun, rest))
+    } else {
+        [fun(head)]
+    }
+}
+
+fn dsp(){
+    let input = [3.0, 4.0]
+    let out = map_rows(|row| dot(row, input), [[1.0, 2.0], [5.0, 6.0]])
+    let (head, _) = split_head(out)
+    head
+}
+"#;
+
+        let value = run_wasm_dsp_f64(
+            src,
+            Some(repo_test_artifact_path(
+                "closure_capture_array_regression.mmm",
+            )),
+        );
+        assert_eq!(value, 11.0);
     }
 }

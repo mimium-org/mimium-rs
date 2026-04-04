@@ -1,0 +1,10 @@
+// @test {"times":3,"stereo":false,"expected":[1.0,2.0,3.0],"web":true}
+fn accum_head() -> [float] {
+    let (head, _rest) = split_head(self)
+    [head + 1.0, 42.0]
+}
+
+fn dsp() -> float {
+    let (head, _) = split_head(accum_head())
+    head
+}

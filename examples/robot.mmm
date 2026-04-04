@@ -1,0 +1,18 @@
+use core::*
+use noise::*
+use filter::*
+use drive::*
+use osc::*
+
+fn dsp(){
+    let f = unoise!()
+     ||> sah_auto(_,16) 
+     ||> scale(_,0,1,200,2000)
+
+    let amp = white!()
+    ||> lowpass(_,2,1)
+    ||> _ > 0.0
+    ||> smooth(_) 
+
+    sinwave(f,0)*amp
+}

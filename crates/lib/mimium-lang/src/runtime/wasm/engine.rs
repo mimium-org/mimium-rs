@@ -250,6 +250,11 @@ impl WasmDspRuntime {
 
 impl DspRuntime for WasmDspRuntime {
     fn run_dsp(&mut self, time: Time) -> ReturnCode {
+        let saved_alloc_ptr = self
+            .engine
+            .current_module_mut()
+            .and_then(|module| module.get_alloc_ptr().ok());
+
         // Update current_time in the WASM runtime state.
         if let Some(module) = self.engine.current_module_mut()
             && let Some(state) = module.get_runtime_state_mut()
@@ -267,7 +272,7 @@ impl DspRuntime for WasmDspRuntime {
 
         let out_channels = self.io_channels.map_or(1, |io| io.output as usize);
 
-        match self.engine.execute_dsp(&args) {
+        let result = match self.engine.execute_dsp(&args) {
             Ok(result) => {
                 self.output_cache.clear();
                 if out_channels > 1 {
@@ -291,7 +296,16 @@ impl DspRuntime for WasmDspRuntime {
                 log::error!("WASM DSP execution error: {e}");
                 -1
             }
+        };
+
+        if let Some(saved_ptr) = saved_alloc_ptr
+            && let Some(module) = self.engine.current_module_mut()
+            && let Err(err) = module.set_alloc_ptr(saved_ptr)
+        {
+            log::warn!("failed to restore __alloc_ptr after dsp tick: {err}");
         }
+
+        result
     }
 
     fn get_output(&self, n_channels: usize) -> &[f64] {

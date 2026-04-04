@@ -1,19 +1,19 @@
 pub fn rms(input){
     input^2 |> sqrt
 }
-use filter::lop_tau
+use filter::*
 
 pub fn avg(input,tau){
-    input |> rms |> lop_tau(_,tau)
+    lop_tau(rms(input),tau)
 }
 
 use core::dbtolinear
 pub fn compressor(input,thresh=-15,ratio=8,response=0.2){
-    let env = input|>avg(_,response)
+    let env = avg(input,response)
     let level = thresh |> dbtolinear
-    let folded = -(env-level) |> max(_,0)
+    let folded = (env-level) ||> max(_,0)
     //scale 1 to INF to 0 to 1
-    let gain_pos = folded * (1 - 1/ratio)
-    let gain = 1 - gain_pos
+    let gain_pos = folded * (1 - 1/ratio) ||> max(_,0)
+    let gain = 1 - gain_pos //|> Probe!("gain")
     input * gain
 }

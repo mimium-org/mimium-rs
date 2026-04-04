@@ -8,7 +8,7 @@ pub fn phasor(freq,phase_shift=0){
 pub fn lfsaw(freq,phase=0){
     phasor(freq,phase) * 2.0 -1.0
 }
-//for now
+//it should be oversampled to avoid aliasing ideally.
 pub fn saw(freq,phase=0){
     lfsaw(freq,phase)
 }
@@ -18,6 +18,23 @@ pub fn tri(freq,phase=0){
     (raw-0.5)*4.0
 }
 
+// tri with range 0~1 for control signal
+pub fn lftri(freq,phase=0){
+    tri(freq,phase)*0.5+0.5
+}
+
+pub fn rect(freq,phase=0,duty=0.5){
+    if (phasor(freq,phase) < duty) 1.0 else -1.0
+}
+
+pub fn lfrect(freq,phase=0,duty=0.5){
+    if (phasor(freq,phase) < duty) 1.0 else 0
+}
+
 pub fn sinwave(freq,phase=0){
     phasor(freq,phase)*2.0*PI() |> sin
+}
+// sinwave with range 0~1 for control signal
+pub fn lfsinwave(freq,phase=0){
+    sinwave(freq,phase)*0.5+0.5
 }

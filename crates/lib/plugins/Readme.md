@@ -30,7 +30,7 @@ A typical plugin consists of the following layers:
 ```
 ┌─────────────────────────────────────────────┐
 │  mimium source code                         │
-│   e.g.  let v = Slider!("vol",0.5,0.0,1.0) │
+│   e.g.  let v = Control!("vol",0.5) │
 ├─────────────────────────────────────────────┤
 │  Stage 0 (compile-time macros)              │
 │   Receives AST values, returns Code(...)    │
@@ -261,7 +261,7 @@ fn freeze_for_wasm(&mut self) -> Option<mimium_lang::runtime::wasm::WasmPluginFn
 }
 ```
 
-See `mimium-guitools` for a complete working example with `Slider` and `Probe` macros.
+See `mimium-guitools` for a complete working example with `Control` and `Probe` macros.
 
 ---
 

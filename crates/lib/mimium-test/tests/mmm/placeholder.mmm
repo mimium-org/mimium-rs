@@ -1,10 +1,4 @@
-// @test {"times":1,"stereo":false,"expected":[123.0],"web":true}
-fn foo(x, y, z) {
-    100.0 * x + 10.0 * y + z
-}
-let p1 = 1.0 + _
-let d2 = _ / _
-let f = foo(1.0, _, 3.0)
+// @test {"times":1,"stereo":false,"expected":[102.0],"web":true}
 fn dsp(){
-    f(d2(p1(3.0), 2.0))
+    3.0 ||> 1.0 + _ ||> _ / 2.0 ||> _ + 100.0
 }

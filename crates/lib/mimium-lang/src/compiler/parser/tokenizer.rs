@@ -83,6 +83,7 @@ where
         just("->").to(TokenKind::Arrow),
         just("<-").to(TokenKind::LeftArrow),
         just("=>").to(TokenKind::FatArrow),
+        just("||>").to(TokenKind::OpPipeMacro),
         just("==").to(TokenKind::OpEqual),
         just("!=").to(TokenKind::OpNotEqual),
         just("<=").to(TokenKind::OpLessEqual),
@@ -342,7 +343,7 @@ mod tests {
 
     #[test]
     fn test_tokenize_operators() {
-        let source = "+ - * / == != < <= > >= && || |>";
+        let source = "+ - * / == != < <= > >= && || |> ||>";
         let tokens = tokenize(source);
 
         let op_kinds: Vec<_> = tokens
@@ -367,6 +368,7 @@ mod tests {
                 TokenKind::OpAnd,
                 TokenKind::OpOr,
                 TokenKind::OpPipe,
+                TokenKind::OpPipeMacro,
             ]
         );
     }

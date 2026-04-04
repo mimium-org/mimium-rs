@@ -21,6 +21,7 @@ mimium-lang = { workspace = true }
 mimium-audiodriver = { workspace = true }
 mimium-scheduler = { workspace = true }
 mimium-guitools = { workspace = true }
+mimium-symphonia = { workspace=true }
 state-tree = { workspace = true }
 colog = { workspace = true }
 ringbuf = { workspace = true }

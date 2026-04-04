@@ -1,0 +1,7 @@
+use dynamics::compressor
+use osc::*
+use env::*
+fn dsp(){
+    let o = saw(440,0)* adsr({gate=phasor(1,0)>0.4})
+    compressor({input=o,ratio=2,response = 1})
+}

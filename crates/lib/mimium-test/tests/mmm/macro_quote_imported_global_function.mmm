@@ -1,0 +1,15 @@
+// @test {"times":1,"stereo":false,"expected":[6.0],"web":true}
+use core
+
+#stage(macro)
+fn twice(){
+    `|xs:[float]| {
+        core::zipwith(|a,b| a+b, xs, xs)
+    }
+}
+
+#stage(main)
+fn dsp(){
+    let out = twice!()([1.0,2.0])
+    out[0] + out[1]
+}

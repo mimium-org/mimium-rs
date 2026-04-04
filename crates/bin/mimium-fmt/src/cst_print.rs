@@ -657,10 +657,11 @@ where
                     | TokenKind::OpGreaterEqual
                     | TokenKind::OpAt
                     | TokenKind::OpPipe
+                    | TokenKind::OpPipeMacro
             );
 
             if is_operator {
-                is_pipe = token.kind == TokenKind::OpPipe;
+                is_pipe = matches!(token.kind, TokenKind::OpPipe | TokenKind::OpPipeMacro);
                 op_doc = emit_token_with_trivia(*token_index, ctx, allocator);
                 seen_op = true;
                 continue;

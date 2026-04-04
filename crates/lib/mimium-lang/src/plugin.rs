@@ -64,6 +64,7 @@ impl MacroStageT for PersistentStage {}
 impl MachineStageT for PersistentStage {}
 impl PersistentStageT for PersistentStage {}
 pub type MacroFunType = Rc<RefCell<dyn Fn(&[(Value, TypeNodeId)]) -> Value>>;
+
 pub trait MacroFunction {
     //name is still needed for linking program
     fn get_name(&self) -> Symbol;

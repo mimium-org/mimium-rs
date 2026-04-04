@@ -1,6 +1,7 @@
 // example of uzulang(tidalcycles/strudel like language)
 // with embedded mininotation parser combinator library 
-// note that mininotation is very limimted for now
+// note that the current implementation of mininotation and pattern library is not really efficient because every samples it needs to traverse event array to find active events
+// so the complex pattern may causes audio dropouts.
 
 use core::*
 use mininotation::*
@@ -9,23 +10,14 @@ use env::adsr
 use delay::stereo_delay
 use filter::lowpass
 use modulation::*
-fn mychorus(input:(float,float)) {
-    let rate = 1
-    let depth = 0.1
-    let mix = 0.5
-    chorus_st(input,rate,depth,mix)
-}
-let mylop = lowpass(_,((sinwave(0.1,0)+1)*500+400),4)
 
 fn dsp(){
     let note = run_note!(mini("60 <62 72> <[64 [74 72] 65] [65 62]> ~ 69") 
-    |> legato(0.2,_), 0.5) 
-    // let note = {val = 60,gate=1.0}
-    // let note = run_note!(alternate([pure(62), pure(72)], |p| cat([pure(60), p, cat([pure(64), cat([pure(74), pure(72)]), pure(65)]), silence(), pure(69)])) |> legato(0.2,_), 1.0)
+    ||> legato(0.2,_), 1) 
     saw(note.val-12 |> midi_to_hz, 0.0)
      * adsr({attack = 0.001,release=0.1,sustain=0.9,gate=note.gate}) 
-    |> mylop
-    |> (|x| (x,x))
-    |> mychorus
-    |> ProbeValue!("out")
+    ||> lowpass(_,((sinwave(0.1,0)+1)*500+400),4)
+    |> tostereo
+    ||> chorus_st(_,1,0.1,0.5)
+    //|> Probe!("out")
 }   

@@ -110,8 +110,8 @@ ExprGroup       ::= Block
 /* Expression with operator precedence (lowest to highest) */
 Expr            ::= PipeExpr
 
-/* Precedence 0: Pipe (left associative) */
-PipeExpr        ::= ScheduleExpr { "|>" ScheduleExpr }
+/* Precedence 0: Pipe and macro pipe (left associative) */
+PipeExpr        ::= ScheduleExpr { ("|>" | "||>") ScheduleExpr }
 
 /* Precedence 1: Schedule (left associative) */
 ScheduleExpr    ::= OrExpr { "@" OrExpr }
@@ -122,22 +122,22 @@ OrExpr          ::= AndExpr { "||" AndExpr }
 /* Precedence 3: Logical AND (left associative) */
 AndExpr         ::= EqExpr { "&&" EqExpr }
 
-/* Precedence 4: Equality (left associative) */
+/* Precedence 5: Equality (left associative) */
 EqExpr          ::= RelExpr { ("==" | "!=") RelExpr }
 
-/* Precedence 5: Relational (left associative) */
+/* Precedence 6: Relational (left associative) */
 RelExpr         ::= AddExpr { ("<" | "<=" | ">" | ">=") AddExpr }
 
-/* Precedence 6: Additive (left associative) */
+/* Precedence 7: Additive (left associative) */
 AddExpr         ::= MultExpr { ("+" | "-") MultExpr }
 
-/* Precedence 7: Multiplicative (left associative) */
+/* Precedence 8: Multiplicative (left associative) */
 MultExpr        ::= ExponentExpr { ("*" | "/" | "%") ExponentExpr }
 
-/* Precedence 8: Exponentiation (right associative) */
+/* Precedence 9: Exponentiation (right associative) */
 ExponentExpr    ::= UnaryExpr [ "^" ExponentExpr ]
 
-/* Precedence 9: Unary operators */
+/* Precedence 10: Unary operators */
 UnaryExpr       ::= { "-" | "`" | "$" } DotExpr
 
 /* Precedence 10: Field access (left associative) */
@@ -342,7 +342,7 @@ fn dsp() {
 ### Macro Expansion
 
 ```mimium
-Slider!(freq, 440, 20, 20000)
+Control!(freq, 440)
 ```
 
 ---

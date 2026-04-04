@@ -4,6 +4,17 @@ use crate::{
 };
 use std::{cell::RefCell, rc::Rc};
 
+/// Raw array handle used as a sentinel for zero-initialized array-valued state.
+///
+/// Array-valued `self` currently starts life as raw word `0` before any real
+/// array handle has been allocated. The runtime interprets that value as an
+/// empty / all-zero array as a compatibility workaround so user code does not
+/// need to spell out an explicit `[0, 0, ...]` initializer.
+///
+/// This is intentionally a workaround-level convention rather than a full
+/// typed-state initialization solution.
+const UNINITIALIZED_ARRAY_HANDLE_SENTINEL: crate::runtime::vm::RawVal = 0;
+
 fn lift_value_to_code(value: crate::interpreter::Value) -> crate::interpreter::Value {
     match value.try_into() {
         Ok(expr) => crate::interpreter::Value::Code(expr),
@@ -93,7 +104,33 @@ mod lift_arrayf {
     }
 }
 
-mod length_array {
+mod lift_array_code {
+    use super::*;
+    use crate::code;
+    use crate::interner::TypeNodeId;
+    use crate::interpreter::Value;
+    use crate::{
+        function,
+        types::{Type, TypeSchemeId},
+    };
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 1);
+        super::lift_value_to_code(args[0].0.clone())
+    }
+
+    pub(super) fn signature() -> MacroInfo {
+        let t = Type::TypeScheme(TypeSchemeId(u64::MAX - 2)).into_id();
+        let array_type = Type::Array(code!(t)).into_id();
+        MacroInfo {
+            name: "lift_array_code".to_symbol(),
+            ty: function!(vec![array_type], code!(Type::Array(t).into_id())),
+            fun: std::rc::Rc::new(std::cell::RefCell::new(macro_function)),
+        }
+    }
+}
+
+mod len {
     use super::*;
     use crate::interner::TypeNodeId;
     use crate::interpreter::Value;
@@ -108,6 +145,13 @@ mod length_array {
         machine: &mut crate::runtime::vm::Machine,
     ) -> crate::runtime::vm::ReturnCode {
         let arr = machine.get_stack(0);
+        if arr == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+            // Treat the zero handle as the temporary "uninitialized array
+            // state" sentinel described above.
+            let res = 0.0;
+            machine.set_stack(0, crate::runtime::vm::Machine::to_value(res));
+            return 1;
+        }
         let array = machine.arrays.get_array(arr);
         let res = array.get_length_array() as f64;
         machine.set_stack(0, crate::runtime::vm::Machine::to_value(res));
@@ -128,7 +172,7 @@ mod length_array {
 
     pub(super) fn signature() -> CommonFunction {
         CommonFunction {
-            name: "length_array".to_symbol(),
+            name: "len".to_symbol(),
             ty: function!(
                 vec![Type::Array(Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id()).into_id()],
                 numeric!()
@@ -151,6 +195,13 @@ mod split_tail {
         machine: &mut crate::runtime::vm::Machine,
     ) -> crate::runtime::vm::ReturnCode {
         let arr_idx = machine.get_stack(0);
+        if arr_idx == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+            // Workaround: interpret zero-initialized array-valued `self` as an
+            // empty/all-zero array instead of crashing on an invalid handle.
+            machine.set_stack(0, 0);
+            machine.set_stack(1, 0);
+            return 2;
+        }
         let array = machine.arrays.get_array(arr_idx);
         let len = array.get_length_array();
 
@@ -234,6 +285,13 @@ mod split_head {
         machine: &mut crate::runtime::vm::Machine,
     ) -> crate::runtime::vm::ReturnCode {
         let arr_idx = machine.get_stack(0);
+        if arr_idx == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+            // Workaround: interpret zero-initialized array-valued `self` as an
+            // empty/all-zero array instead of crashing on an invalid handle.
+            machine.set_stack(0, 0);
+            machine.set_stack(1, 0);
+            return 2;
+        }
         let array = machine.arrays.get_array(arr_idx);
         let len = array.get_length_array();
 
@@ -503,6 +561,72 @@ mod prepend {
     }
 }
 
+mod append {
+    use super::*;
+    use crate::interpreter::Value;
+    use crate::plugin::CommonFunction;
+    use crate::types::{Type, TypeSchemeId};
+    use crate::{function, interner::TypeNodeId};
+
+    fn machine_function(
+        machine: &mut crate::runtime::vm::Machine,
+    ) -> crate::runtime::vm::ReturnCode {
+        let arr_idx = machine.get_stack(0);
+        let array = machine.arrays.get_array(arr_idx);
+        let len = array.get_length_array() as usize;
+        let elem_size = array.get_elem_word_size() as usize;
+
+        if elem_size != 1 {
+            panic!(
+                "append runtime base implementation expects elem word size 1, found {elem_size}. use monomorphized append$arityN"
+            );
+        }
+
+        let new_arr_idx = machine
+            .arrays
+            .alloc_array((len + 1) as u64, elem_size as u64);
+        let copy_len = len * elem_size;
+        let elem_words = vec![machine.get_stack(1)];
+        let arr_data = machine.arrays.get_array(arr_idx).get_data().to_vec();
+
+        {
+            let dst = machine.arrays.get_array_mut(new_arr_idx).get_data_mut();
+            dst[..copy_len].copy_from_slice(&arr_data[..copy_len]);
+            dst[copy_len..copy_len + elem_size].copy_from_slice(&elem_words);
+        }
+
+        machine.set_stack(0, new_arr_idx);
+        1
+    }
+
+    fn macro_function(args: &[(Value, TypeNodeId)]) -> Value {
+        assert_eq!(args.len(), 2);
+        let (arr, _) = &args[0];
+        let (elem, _) = &args[1];
+        match (arr, elem) {
+            (Value::Array(array), elem) => {
+                let mut new_vec = array.clone();
+                new_vec.push(elem.clone());
+                Value::Array(new_vec)
+            }
+            _ => panic!("Invalid argument types for function append"),
+        }
+    }
+
+    pub(super) fn signature() -> CommonFunction {
+        let ty_var = Type::TypeScheme(TypeSchemeId(u64::MAX)).into_id();
+        CommonFunction {
+            name: "append".to_symbol(),
+            ty: function!(
+                vec![Type::Array(ty_var).into_id(), ty_var],
+                Type::Array(ty_var).into_id()
+            ),
+            macro_fun: macro_function,
+            fun: machine_function,
+        }
+    }
+}
+
 fn parse_arity_specialized_name(name: Symbol, base: &str) -> Option<usize> {
     name.as_str()
         .strip_prefix(base)
@@ -529,6 +653,8 @@ pub(crate) fn try_get_monomorphized_ext_fn_name(
             "__probe_value_intercept"
         } else if name == "prepend" || name.starts_with("prepend$arity") {
             "prepend"
+        } else if name == "append" || name.starts_with("append$arity") {
+            "append"
         } else if name == "split_head" || name.starts_with("split_head$arity") {
             "split_head"
         } else if name == "split_tail" || name.starts_with("split_tail$arity") {
@@ -547,6 +673,14 @@ pub(crate) fn try_get_monomorphized_ext_fn_name(
         }
         "prepend" => match concrete_arg_ty.to_type() {
             crate::types::Type::Tuple(args) if args.len() == 2 => match args[1].to_type() {
+                crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
+                _ => return None,
+            },
+            crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
+            _ => return None,
+        },
+        "append" => match concrete_arg_ty.to_type() {
+            crate::types::Type::Tuple(args) if args.len() == 2 => match args[0].to_type() {
                 crate::types::Type::Array(elem_ty) => resolved_word_size(elem_ty)?,
                 _ => return None,
             },
@@ -607,10 +741,47 @@ pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Optio
         ExtClsInfo::new(name, ty, f)
     };
 
+    let make_append = |elem_size: usize| {
+        let f = Rc::new(RefCell::new(
+            move |machine: &mut crate::runtime::vm::Machine| -> crate::runtime::vm::ReturnCode {
+                let arr_idx = machine.get_stack(0);
+                let arr = machine.arrays.get_array(arr_idx);
+                if arr.get_elem_word_size() as usize != elem_size {
+                    panic!(
+                        "append$arity{} called with array elem size {}",
+                        elem_size,
+                        arr.get_elem_word_size()
+                    );
+                }
+                let len = arr.get_length_array() as usize;
+                let src = arr.get_data().to_vec();
+                let new_arr_idx = machine
+                    .arrays
+                    .alloc_array((len + 1) as u64, elem_size as u64);
+                let elem_words = (0..elem_size)
+                    .map(|i| machine.get_stack((i + 1) as i64))
+                    .collect::<Vec<_>>();
+                let dst = machine.arrays.get_array_mut(new_arr_idx).get_data_mut();
+                dst[..len * elem_size].copy_from_slice(&src[..len * elem_size]);
+                dst[len * elem_size..(len + 1) * elem_size].copy_from_slice(&elem_words);
+                machine.set_stack(0, new_arr_idx);
+                1
+            },
+        ));
+        ExtClsInfo::new(name, ty, f)
+    };
+
     let make_split_head = |elem_size: usize| {
         let f = Rc::new(RefCell::new(
             move |machine: &mut crate::runtime::vm::Machine| -> crate::runtime::vm::ReturnCode {
                 let arr_idx = machine.get_stack(0);
+                if arr_idx == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+                    // Workaround: preserve the zero-array sentinel semantics
+                    // for monomorphized `split_head$arityN` as well.
+                    (0..elem_size).for_each(|i| machine.set_stack(i as i64, 0));
+                    machine.set_stack(elem_size as i64, 0);
+                    return elem_size as i64 + 1;
+                }
                 let arr = machine.arrays.get_array(arr_idx);
                 let actual_elem_size = arr.get_elem_word_size() as usize;
                 if actual_elem_size != elem_size {
@@ -646,6 +817,13 @@ pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Optio
         let f = Rc::new(RefCell::new(
             move |machine: &mut crate::runtime::vm::Machine| -> crate::runtime::vm::ReturnCode {
                 let arr_idx = machine.get_stack(0);
+                if arr_idx == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+                    // Workaround: preserve the zero-array sentinel semantics
+                    // for monomorphized `split_tail$arityN` as well.
+                    machine.set_stack(0, 0);
+                    (0..elem_size).for_each(|i| machine.set_stack((i + 1) as i64, 0));
+                    return elem_size as i64 + 1;
+                }
                 let arr = machine.arrays.get_array(arr_idx);
                 let actual_elem_size = arr.get_elem_word_size() as usize;
                 if actual_elem_size != elem_size {
@@ -679,6 +857,9 @@ pub(crate) fn try_make_specialized_extcls(name: Symbol, ty: TypeNodeId) -> Optio
 
     if let Some(arity) = parse_arity_specialized_name(name, "prepend") {
         return Some(make_prepend(arity));
+    }
+    if let Some(arity) = parse_arity_specialized_name(name, "append") {
+        return Some(make_append(arity));
     }
     if let Some(arity) = parse_arity_specialized_name(name, "split_head") {
         return Some(make_split_head(arity));
@@ -1049,7 +1230,8 @@ fn generate_builtin_functions() -> impl ExactSizeIterator<Item = CommonFunction>
         atan::signature(),
         atan2::signature(),
         pow::signature(),
-        length_array::signature(),
+        len::signature(),
+        append::signature(),
         prepend::signature(),
         split_tail::signature(),
         split_head::signature(),
@@ -1063,6 +1245,7 @@ fn generate_default_macros() -> impl ExactSizeIterator<Item = MacroInfo> {
         lift::signature(),
         lift_f::signature(),
         lift_arrayf::signature(),
+        lift_array_code::signature(),
         map::signature(),
         // String primitives (Stage 0 only)
         str_length::signature(),
@@ -1091,12 +1274,140 @@ pub fn get_builtin_fns_as_plugins() -> Box<dyn Plugin> {
 
 #[cfg(test)]
 mod tests {
-    use super::try_get_monomorphized_ext_fn_name;
+    use super::{get_builtin_fns_as_plugins, try_get_monomorphized_ext_fn_name};
     use crate::{
+        Config, ExecContext, compiler,
         interner::ToSymbol,
-        numeric,
+        numeric, plugin,
+        plugin::Plugin,
+        runtime::vm::Machine,
+        test_utils::{compile_to_mir_with_path, repo_test_artifact_path},
         types::{PType, Type},
     };
+    use std::path::PathBuf;
+
+    const LIFT_ARRAY_CODE_SOURCE: &str = r#"
+// @test {"times":1,"stereo":false,"expected":[31.0],"web":true}
+
+#stage(macro)
+fn mk_functions(){
+    let funcs = [
+        `|x| x + 1.0,
+        `|x| x * 2.0,
+    ]
+    funcs |> lift_array_code
+}
+
+#stage(main)
+fn dsp(){
+  let funcs = mk_functions!()
+  funcs[0](10.0) + funcs[1](10.0)
+}
+"#;
+
+    const LOCAL_LIFT_ARRAY_CODE_BINDING_SOURCE: &str = r#"
+#stage(macro)
+fn make_id(){
+    let delays = [
+        `|x| x + 1.0,
+        `|x| x + 2.0,
+    ] |> lift_array_code
+    `|input:[float]| {
+        input
+    }
+}
+
+#stage(main)
+fn dsp(){
+  let f = make_id!()
+  let out = f([1.0,2.0])
+  out[0]
+}
+"#;
+
+    const MININOTATION_SINGLE_EVENT_SOURCE: &str = r#"
+use mininotation::mini
+use pattern::run_note
+
+fn dsp(){
+    let note = run_note!(mini("60"), 0.5)
+    note.val
+}
+"#;
+
+    const MININOTATION_WITH_CORE_IMPORT_SOURCE: &str = r#"
+use core::*
+use mininotation::mini
+use pattern::{run_note, legato}
+
+fn dsp(){
+    let note = run_note!(mini("60") |> |target| legato(0.2, target), 0.5)
+    note.val
+}
+"#;
+
+    const RECORD_CONTAINING_FUNCTION_SOURCE: &str = r#"
+fn player(pos){ pos + 1.0 }
+
+fn mk(){
+    {length = 10.0, player = player}
+}
+
+fn dsp(){
+    let sampler = mk()
+    sampler.player(41.0)
+}
+"#;
+
+    fn run_vm_dsp_f64(src: &str, path: Option<PathBuf>) -> f64 {
+        fn runtime_get_samplerate(machine: &mut Machine) -> crate::runtime::vm::ReturnCode {
+            machine.set_stack(0, Machine::to_value(44_100.0f64));
+            1
+        }
+
+        fn runtime_get_now(machine: &mut Machine) -> crate::runtime::vm::ReturnCode {
+            machine.set_stack(0, Machine::to_value(0.0f64));
+            1
+        }
+
+        let plugin = get_builtin_fns_as_plugins();
+        let plugins = [plugin];
+        let ext_fns = plugin::get_extfun_types(&plugins).collect::<Vec<_>>();
+        let macros = plugin::get_macro_functions(&plugins).collect::<Vec<_>>();
+        let ctx = compiler::Context::new(ext_fns, macros, path, compiler::Config::default());
+        let prog = ctx
+            .emit_bytecode(src)
+            .expect("bytecode generation should succeed");
+        let extcls = plugin::get_ext_closures(&plugins);
+        let runtime_extfns = vec![
+            plugin::ExtFunInfo::new(
+                "_mimium_getsamplerate".to_symbol(),
+                crate::function!(vec![], crate::numeric!()),
+                runtime_get_samplerate,
+            ),
+            plugin::ExtFunInfo::new(
+                "_mimium_getnow".to_symbol(),
+                crate::function!(vec![], crate::numeric!()),
+                runtime_get_now,
+            ),
+        ];
+        let mut machine = Machine::new(prog, runtime_extfns.into_iter(), extcls);
+        machine.execute_entry("dsp");
+        Machine::get_as::<f64>(machine.get_top_n(1)[0])
+    }
+
+    fn run_with_large_stack<F, T>(f: F) -> T
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(f)
+            .expect("test thread should spawn")
+            .join()
+            .expect("test thread should complete")
+    }
 
     #[test]
     fn probe_value_monomorphized_name_uses_return_word_size() {
@@ -1139,5 +1450,108 @@ mod tests {
         );
 
         assert_eq!(resolved, Some("__probe_value_intercept$arity1".to_symbol()));
+    }
+
+    #[test]
+    fn builtin_plugin_exposes_lift_array_code() {
+        let plugin = get_builtin_fns_as_plugins();
+        let type_infos = plugin.get_type_infos();
+        let macro_functions = plugin.get_macro_functions();
+
+        assert!(
+            type_infos
+                .iter()
+                .any(|info| info.name == "lift_array_code".to_symbol()),
+            "type infos should contain lift_array_code"
+        );
+        assert!(
+            macro_functions
+                .iter()
+                .any(|fun| fun.get_name() == "lift_array_code".to_symbol()),
+            "macro functions should contain lift_array_code"
+        );
+    }
+
+    #[test]
+    fn compiler_context_keeps_lift_array_code() {
+        let plugin = get_builtin_fns_as_plugins();
+        let plugins = [plugin];
+        let ext_fns = plugin::get_extfun_types(&plugins).collect::<Vec<_>>();
+        let macros = plugin::get_macro_functions(&plugins).collect::<Vec<_>>();
+        let ctx = compiler::Context::new(ext_fns, macros, None, compiler::Config::default());
+
+        assert!(
+            ctx.get_ext_typeinfos()
+                .iter()
+                .any(|(name, _)| *name == "lift_array_code".to_symbol()),
+            "compiler context should contain lift_array_code"
+        );
+    }
+
+    #[test]
+    fn exec_context_compiles_lift_array_code_source() {
+        let mut ctx = ExecContext::new(std::iter::empty(), None, Config::default());
+        let result = ctx.prepare_machine(LIFT_ARRAY_CODE_SOURCE);
+        assert!(result.is_ok(), "prepare_machine failed: {result:?}");
+    }
+
+    #[test]
+    fn compiler_with_file_path_compiles_lift_array_code_source() {
+        compile_to_mir_with_path(
+            LIFT_ARRAY_CODE_SOURCE,
+            Some(repo_test_artifact_path("lift_array_code_test.mmm")),
+        );
+    }
+
+    #[test]
+    fn compiler_with_file_path_compiles_local_lift_array_code_binding() {
+        compile_to_mir_with_path(
+            LOCAL_LIFT_ARRAY_CODE_BINDING_SOURCE,
+            Some(repo_test_artifact_path(
+                "lift_array_code_local_binding_test.mmm",
+            )),
+        );
+    }
+
+    #[test]
+    fn lift_uses_concrete_array_argument_type_for_current_call() {
+        let value = run_with_large_stack(|| {
+            run_vm_dsp_f64(
+                MININOTATION_SINGLE_EVENT_SOURCE,
+                Some(repo_test_artifact_path(
+                    "lift_overload_array_argument_test.mmm",
+                )),
+            )
+        });
+
+        assert_eq!(value, 60.0);
+    }
+
+    #[test]
+    fn mininotation_still_works_with_core_imports() {
+        let value = run_with_large_stack(|| {
+            run_vm_dsp_f64(
+                MININOTATION_WITH_CORE_IMPORT_SOURCE,
+                Some(repo_test_artifact_path(
+                    "mininotation_core_import_regression_test.mmm",
+                )),
+            )
+        });
+
+        assert_eq!(value, 60.0);
+    }
+
+    #[test]
+    fn record_can_store_function_value() {
+        let value = run_with_large_stack(|| {
+            run_vm_dsp_f64(
+                RECORD_CONTAINING_FUNCTION_SOURCE,
+                Some(repo_test_artifact_path(
+                    "record_containing_function_regression_test.mmm",
+                )),
+            )
+        });
+
+        assert_eq!(value, 42.0);
     }
 }

@@ -3,29 +3,40 @@ pub fn saturate(input){
 }
 pub fn clamp(input,vmin=-0.7,vmax=0.7){
     max(input,vmin)
-    |> min(_,vmax)
+    ||> min(_,vmax)
 }
 //expect input -1~1
 pub fn bitcrush(input,res=8){
   let steps = 2^res
   input * steps
   |> round
-  |> (_ / steps)
+  ||> (_ / steps)
 }
+fn fold_dist_inner(input){
+    let raw = input
+    let folded =if(raw>1) 1-(raw-1) else {
+        if (raw < -1) { -1-(raw+1) } else {raw}
+    }
+    if (raw > 1 || raw < -1) fold_dist_inner(folded) else folded
+}
+pub fn fold_dist(input,amt=1){
+    fold_dist_inner(input*amt)
+}
+
 fn trigger_fallng(input){
-    (input-mem(input))<0
+    input < mem(input)
 }
 pub fn sah(input,trigger){
   let t = trigger |> trigger_fallng
-  let last = self
-  if (t) input else last
+  if (t) input else self
 }
 use osc::phasor
 pub fn sah_auto(input,freq=1000){
-    let trigger = phasor({freq=freq, ..})
+    let trigger = phasor({freq=freq, ..})>0.5
     sah(input,trigger)
 }
+
 pub fn degrade(input,freq=1000,res=8){
     sah_auto(input,freq)
-    |> bitcrush(_,res)
+    ||> bitcrush(_,res)
 }

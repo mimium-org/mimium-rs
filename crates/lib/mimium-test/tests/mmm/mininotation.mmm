@@ -18,32 +18,44 @@ fn test_mininotation() {
     // --- Test 1: single number ---
     let p1 = mini("1")
     let e1 = p1(test_arc)
-    let c = feq(length_array(e1), 1.0)
+    let c = feq(len(e1), 1.0)
     let (ev1, _) = e1 |> split_head
     let c = c + feq(ev1.val, 1.0)
 
     // --- Test 2: silence ---
     let p2 = mini("~")
     let e2 = p2(test_arc)
-    let c = c + feq(length_array(e2), 0.0)
+    let c = c + feq(len(e2), 0.0)
 
     // --- Test 3: space-separated numbers = cat ---
     let p3 = mini("1 2 3")
     let e3 = p3(test_arc)
-    let c = c + feq(length_array(e3), 3.0)
+    let c = c + feq(len(e3), 3.0)
     let (ev3a, r3) = e3 |> split_head
     let c = c + feq(ev3a.val, 1.0)
+    let c = c + feq(ev3a.arc.start, 0.0)
+    let c = c + feq(ev3a.arc.end, 1.0 / 3.0)
     let (ev3b, r3b) = r3 |> split_head
     let c = c + feq(ev3b.val, 2.0)
     let (ev3c, _) = r3b |> split_head
     let c = c + feq(ev3c.val, 3.0)
+
+    // --- Test 3b: exact arc boundaries for simple 2-step sequence ---
+    let p3b = mini("1 2")
+    let e3b = p3b(test_arc)
+    let (ev3b_a, r3b_a) = e3b |> split_head
+    let c = c + feq(ev3b_a.arc.start, 0.0)
+    let c = c + feq(ev3b_a.arc.end, 0.5)
+    let (ev3b_b, _) = r3b_a |> split_head
+    let c = c + feq(ev3b_b.arc.start, 0.5)
+    let c = c + feq(ev3b_b.arc.end, 1.0)
 
     // --- Test 4: nested cat with [] ---
     // "[1 2] 3" -> cat([cat([pure(1), pure(2)]), pure(3)])
     // 3 events: val 1 in (0, 0.25), val 2 in (0.25, 0.5), val 3 in (0.5, 1.0)
     let p4 = mini("[1 2] 3")
     let e4 = p4(test_arc)
-    let c = c + feq(length_array(e4), 3.0)
+    let c = c + feq(len(e4), 3.0)
     let (ev4a, r4) = e4 |> split_head
     let c = c + feq(ev4a.val, 1.0)
     let (ev4b, r4b) = r4 |> split_head
@@ -51,45 +63,35 @@ fn test_mininotation() {
     let (ev4c, _) = r4b |> split_head
     let c = c + feq(ev4c.val, 3.0)
 
-    // --- Test 5: alternate with <> ---
-    // "1 <2 3> 4" ->
-    //   alternate([pure(2), pure(3)], |p| cat([pure(1), p, pure(4)]))
-    //   = slowcat([ cat([pure(1),pure(2),pure(4)]),
-    //               cat([pure(1),pure(3),pure(4)]) ])
-    //   Called with arc (0,1) -> 6 events total (3 from each variant)
+    // --- Test 5: grouped sequence inside <> is flattened in the current parser ---
+    // "1 <2 3> 4" -> cat([pure(1), pure(2), pure(3), pure(4)])
     let p5 = mini("1 <2 3> 4")
     let e5 = p5(test_arc)
-    let c = c + feq(length_array(e5), 6.0)
-    // Variant 1: cat([pure(1),pure(2),pure(4)]) at arc (0,1)
+    let c = c + feq(len(e5), 4.0)
     let (ev5a, r5) = e5 |> split_head
     let c = c + feq(ev5a.val, 1.0)
     let (ev5b, r5b) = r5 |> split_head
     let c = c + feq(ev5b.val, 2.0)
     let (ev5c, r5c) = r5b |> split_head
-    let c = c + feq(ev5c.val, 4.0)
-    // Variant 2: cat([pure(1),pure(3),pure(4)]) at arc (1,2)
+    let c = c + feq(ev5c.val, 3.0)
     let (ev5d, r5d) = r5c |> split_head
-    let c = c + feq(ev5d.val, 1.0)
-    let (ev5e, r5e) = r5d |> split_head
-    let c = c + feq(ev5e.val, 3.0)
-    let (ev5f, _) = r5e |> split_head
-    let c = c + feq(ev5f.val, 4.0)
+    let c = c + feq(ev5d.val, 4.0)
 
     // --- Test 6: decimal number ---
     let p6 = mini("0.5")
     let e6 = p6(test_arc)
-    let c = c + feq(length_array(e6), 1.0)
+    let c = c + feq(len(e6), 1.0)
     let (ev6, _) = e6 |> split_head
     let c = c + feq(ev6.val, 0.5)
 
     // --- Test 7: negative number ---
     let p7 = mini("-1")
     let e7 = p7(test_arc)
-    let c = c + feq(length_array(e7), 1.0)
+    let c = c + feq(len(e7), 1.0)
     let (ev7, _) = e7 |> split_head
     let c = c + feq(ev7.val, 0.0 - 1.0)
 
-    // Total checks: 2 + 1 + 4 + 4 + 7 + 2 + 2 = 22
+    // Total checks: 2 + 1 + 8 + 5 + 5 + 2 + 2 = 25
     c |> lift_f
 }
 

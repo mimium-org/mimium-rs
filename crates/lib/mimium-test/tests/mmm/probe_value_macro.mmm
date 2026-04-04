@@ -1,4 +1,4 @@
 #stage(main)
 fn dsp(){
-  (1.5,1.2) |> ProbeValue!("pair")
+  (1.5,1.2) |> Probe!("pair")
 }

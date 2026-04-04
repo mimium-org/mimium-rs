@@ -1,8 +1,9 @@
 use osc::*
+use core::*
 use filter::lowpass
 fn dsp(){
     let f = phasor(0.2,0)*3000.0+200.0;
-    let sig = saw(220.0,0.0);
-    let r = lowpass(sig,f,10.0)
-    (r, r)
+    saw(220.0,0.0)
+    ||> lowpass(_,f,10.0)
+    |> tostereo
 }

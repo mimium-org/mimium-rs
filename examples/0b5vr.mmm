@@ -42,11 +42,11 @@ fn smoothstep(a, b, t) {
   x * x * (3 - 2 * x)
 }
 
-use dynamics::compressor
+
 fn dsp() {
 
   let time = now / samplerate
-let dest = {
+  let dest = {
     let t = time % B2T
     let reset = t < 1 / samplerate
 
@@ -58,9 +58,6 @@ let dest = {
     let phase = integ(TAU * freq / samplerate, reset)
     env * sin(phase)
   }
-
-  let dest = compressor(dest,-40,5,0.2)
-  |> Probe!("test")
 
   (dest, dest)
 }

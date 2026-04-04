@@ -64,8 +64,44 @@ fn run_all_annotated_fixtures() {
     assert!(!fixture_names.is_empty());
 
     fixture_names.iter().for_each(|name| {
-        let (res, spec) =
-            run_annotated_file_test(name).unwrap_or_else(|e| panic!("{name} failed to run: {e}"));
+        let spec = read_annotated_file_test_spec(name)
+            .unwrap_or_else(|e| panic!("{name} metadata failed to load: {e}"));
+        let (res, spec) = if spec.plugins {
+            run_annotated_file_test_with_plugins(name, false)
+                .unwrap_or_else(|e| panic!("{name} failed to run with plugins: {e}"))
+        } else {
+            run_annotated_file_test(name)
+                .unwrap_or_else(|e| panic!("{name} failed to run: {e}"))
+        };
+        assert_with_spec(&res, &spec);
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn run_all_web_annotated_fixtures_wasm() {
+    use std::fs;
+    use std::path::Path;
+
+    let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/mmm");
+    let mut fixture_names = fs::read_dir(&fixture_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("mmm"))
+        .filter_map(|path| {
+            let name = path.file_name()?.to_str()?.to_string();
+            let spec = read_annotated_file_test_spec(&name).ok()?;
+            spec.web.then_some(name)
+        })
+        .collect::<Vec<_>>();
+
+    fixture_names.sort();
+    assert!(!fixture_names.is_empty());
+
+    fixture_names.iter().for_each(|name| {
+        let (res, spec) = run_annotated_file_test_wasm(name)
+            .unwrap_or_else(|e| panic!("{name} failed to run on WASM: {e}"));
         assert_with_spec(&res, &spec);
     });
 }
@@ -108,6 +144,13 @@ fn parser_combinators() {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn pipe_and_macro_pipe_mix_left_associatively() {
+    let (res, spec) = run_annotated_file_test("pipe_mixed_precedence.mmm").unwrap();
+    assert_with_spec(&res, &spec);
+}
+
 #[wasm_bindgen_test(unsupported = test)]
 #[cfg(not(target_arch = "wasm32"))]
 fn mininotation() {
@@ -117,7 +160,7 @@ fn mininotation() {
         .stack_size(16 * 1024 * 1024) // 16 MB
         .spawn(|| {
             let res = run_file_with_plugins("mininotation.mmm", 1, [].into_iter(), false).unwrap();
-            let ans = vec![22.0]; // 22 boolean checks, each contributing 1.0
+            let ans = vec![25.0]; // 25 boolean checks, each contributing 1.0
             assert_eq!(res, ans);
         })
         .unwrap()
@@ -257,6 +300,32 @@ fn tuple_binop_arity_over16_fail() {
 fn tuple_binop_nested_shape_mismatch_fail() {
     let res = run_error_test("tuple_binop_nested_shape_mismatch_fail.mmm", false);
     assert_eq!(res.len(), 1);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+fn monomorph_builtin_array_ops_same_arity_nested_array() {
+    let (res, spec) =
+        run_annotated_file_test("monomorph_builtin_array_ops_same_arity_nested_array.mmm").unwrap();
+    assert_with_spec(&res, &spec);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+// On web/wasm this currently overflows the host stack during compiler-side
+// pronoun conversion (`Maximum call stack size exceeded` in Node), so keep
+// native coverage and skip the wasm target until that recursion is flattened.
+#[cfg(not(target_arch = "wasm32"))]
+fn imported_core_generic_nested_array() {
+    let (res, spec) = run_annotated_file_test("imported_core_generic_nested_array.mmm").unwrap();
+    assert_with_spec(&res, &spec);
+}
+
+#[wasm_bindgen_test(unsupported = test)]
+// Same limitation as above: macro-heavy expansion currently exceeds the host
+// call stack on web/wasm (`Maximum call stack size exceeded` in Node).
+#[cfg(not(target_arch = "wasm32"))]
+fn macro_quote_imported_global_function() {
+    let (res, spec) = run_annotated_file_test("macro_quote_imported_global_function.mmm").unwrap();
+    assert_with_spec(&res, &spec);
 }
 
 #[test]
@@ -747,4 +816,15 @@ fn wasm_record_default_adsr() {
             res[i - 1]
         );
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_stateful_array_self_zero_init() {
+    let res = run_file_test_wasm("stateful_array_self_zero_init.mmm", 3, false).unwrap();
+    let ans = vec![1.0, 2.0, 3.0];
+    assert_eq!(
+        res, ans,
+        "WASM backend: array-valued self should start from zero"
+    );
 }

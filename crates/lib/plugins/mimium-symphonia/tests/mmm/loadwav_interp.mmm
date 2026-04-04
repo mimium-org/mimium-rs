@@ -3,5 +3,6 @@ fn counter(){
 }
 fn dsp(){
     let sampler = Sampler_mono!("tests/assets/count_100_by_0_01_f32_48000Hz.wav")
-    counter()-1.0+0.5 |> sampler
+    let player = sampler.player
+    player(counter()-1.0+0.5)
 }

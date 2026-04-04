@@ -360,7 +360,16 @@ impl<'a> Parser<'a> {
 
                 // Parse module body (statements)
                 while !this.check(TokenKind::BlockEnd) && !this.is_at_end() {
+                    let before = this.current;
                     this.parse_statement();
+
+                    if this.current == before && !this.is_at_end() {
+                        this.add_error(ParserError::invalid_syntax(
+                            this.current_token_index(),
+                            "parser made no progress in module; skipping token for recovery",
+                        ));
+                        this.bump();
+                    }
                 }
 
                 this.expect(TokenKind::BlockEnd);
@@ -829,19 +838,19 @@ impl<'a> Parser<'a> {
     /// Get precedence of an infix operator (None means not an infix operator)
     fn get_infix_precedence(&self, token_kind: TokenKind) -> Option<usize> {
         match token_kind {
-            // Pipe should have the lowest precedence to allow chaining with other operators
+            // Pipe operators share the same precedence and associate to the left.
             // but must be > 0 to avoid infinite loop in statement context (min_prec == 0)
-            TokenKind::OpPipe => Some(1),
-            TokenKind::OpOr => Some(2),
-            TokenKind::OpAnd => Some(3),
-            TokenKind::OpEqual | TokenKind::OpNotEqual => Some(4),
+            TokenKind::OpPipeMacro | TokenKind::OpPipe => Some(2),
+            TokenKind::OpOr => Some(3),
+            TokenKind::OpAnd => Some(4),
+            TokenKind::OpEqual | TokenKind::OpNotEqual => Some(5),
             TokenKind::OpLessThan
             | TokenKind::OpLessEqual
             | TokenKind::OpGreaterThan
-            | TokenKind::OpGreaterEqual => Some(5),
-            TokenKind::OpSum | TokenKind::OpMinus => Some(6),
-            TokenKind::OpProduct | TokenKind::OpDivide | TokenKind::OpModulo => Some(7),
-            TokenKind::OpExponent => Some(8),
+            | TokenKind::OpGreaterEqual => Some(6),
+            TokenKind::OpSum | TokenKind::OpMinus => Some(7),
+            TokenKind::OpProduct | TokenKind::OpDivide | TokenKind::OpModulo => Some(8),
+            TokenKind::OpExponent => Some(9),
             TokenKind::OpAt => Some(10),
             // Arrow is NOT an infix operator in expressions, only used in type annotations
             // Return None to prevent it from being treated as an operator
@@ -1019,10 +1028,6 @@ impl<'a> Parser<'a> {
                             paren_depth -= 1;
                         }
                     }
-                    Some(TokenKind::Arrow) if paren_depth == 0 => {
-                        ahead_arrow = Some(i);
-                        break;
-                    }
                     None => break,
                     _ => continue,
                 }
@@ -1170,10 +1175,22 @@ impl<'a> Parser<'a> {
     /// Parse tuple type or parenthesized type: (T) or (T1, T2)
     fn parse_type_tuple_or_paren(&mut self) {
         // Look ahead to determine if it's a tuple
+        let mut paren_depth = 0;
         let is_tuple = (1..MAX_LOOKAHEAD)
             .find_map(|i| match self.peek_ahead(i) {
-                Some(TokenKind::Comma) => Some(true),
-                Some(TokenKind::ParenEnd) => Some(false),
+                Some(TokenKind::ParenBegin) => {
+                    paren_depth += 1;
+                    None
+                }
+                Some(TokenKind::ParenEnd) => {
+                    if paren_depth == 0 {
+                        Some(false)
+                    } else {
+                        paren_depth -= 1;
+                        None
+                    }
+                }
+                Some(TokenKind::Comma) if paren_depth == 0 => Some(true),
                 None => Some(false),
                 _ => None,
             })

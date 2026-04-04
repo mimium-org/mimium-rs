@@ -1,0 +1,42 @@
+use core::*
+use osc::saw
+use composition::scale::*
+use drive::sah_auto
+use env::adsr
+use reverb::*
+
+let scale = $(minor()||> expand(_,5)||> take(_,30)|>lift)
+let size = scale |> len |> probeln
+
+fn sec2samp(sec){
+    sec*samplerate
+}
+fn countup_least(active,max){
+    let inc = self+1.0
+    if (self+active>0 && inc<max) inc else 0.0
+}
+pub fn hold_least(time,active){
+    countup_least(active,time)>0.0
+}
+pub fn hold_sec(time,active){
+    hold_least(sec2samp(time),active)
+}
+
+fn changed(input){
+    input != mem(input)
+}
+fn amp(input,dur){
+    let g = hold_sec(dur,changed(input)) 
+    adsr({gate=g})
+}
+
+fn dsp(){
+    let notes = scale[phasor(0.1,0)*size] |> floor ||> _+36 
+    let freq = sah_auto(notes,12)
+                |> midi_to_hz
+    let a = amp(freq,0.1)
+    let o = saw(freq,0) * a * 0.1
+    (o,o)
+    ||> freeverb_stereo(_,0.5,0.8,1.0,0.7) 
+    |>Probe!("out")
+}

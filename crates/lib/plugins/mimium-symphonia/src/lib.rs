@@ -1,7 +1,7 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use mimium_lang::ast::{Expr, Literal};
+use mimium_lang::ast::{Expr, Literal, RecordField};
 use mimium_lang::interner::{ToSymbol, TypeNodeId};
 use mimium_lang::interpreter::Value;
 use mimium_lang::numeric;
@@ -10,7 +10,7 @@ use mimium_lang::plugin::{
     SysPluginSignature, SystemPlugin, SystemPluginFnType, SystemPluginMacroType,
 };
 use mimium_lang::string_t;
-use mimium_lang::types::{PType, Type};
+use mimium_lang::types::{PType, RecordTypeField, Type};
 use mimium_lang::{function, log};
 use mimium_plugin_macros::{mimium_export_plugin, mimium_plugin_fn, mimium_plugin_macro};
 use symphonia::core::audio::{Layout, SampleBuffer, SignalSpec};
@@ -24,6 +24,25 @@ use symphonia::core::units::Time;
 type DecoderSet = (Box<dyn Decoder>, ProbeResult, u32);
 mod filemanager;
 use filemanager::FileManager;
+
+fn resolve_sample_path(path: &str) -> std::io::Result<std::path::PathBuf> {
+    let raw_path = std::path::PathBuf::from(path);
+    if raw_path.is_absolute() {
+        return raw_path.canonicalize();
+    }
+
+    if let Some(macro_file) = std::env::var_os("MIMIUM_CURRENT_MACRO_FILE") {
+        let macro_file_path = std::path::PathBuf::from(macro_file);
+        if let Some(base_dir) = macro_file_path.parent() {
+            let candidate = base_dir.join(&raw_path);
+            if let Ok(resolved) = candidate.canonicalize() {
+                return Ok(resolved);
+            }
+        }
+    }
+
+    raw_path.canonicalize()
+}
 
 fn get_default_decoder(path: &str) -> Result<DecoderSet, Box<dyn std::error::Error>> {
     let flmgr = filemanager::get_global_file_manager();
@@ -136,26 +155,63 @@ fn interpolate_vec(vec: &[f64], pos: f64) -> f64 {
 
 #[derive(Default)]
 pub struct SamplerPlugin {
-    sample_cache: HashMap<String, Arc<Vec<f64>>>,
+    sample_buffers: Vec<Arc<Vec<f64>>>,
     sample_namemap: HashMap<String, usize>,
 }
 
 impl SamplerPlugin {
     pub const GET_SAMPLER: &'static str = "__get_sampler";
 
-    /// Returns a fallback lambda that ignores input and always returns 0.0 (silence)
-    fn error_fallback() -> Value {
-        Value::Code(
-            Expr::Lambda(
-                vec![TypedId::new(
-                    "_".to_symbol(),
-                    Type::Primitive(PType::Numeric).into_id(),
-                )],
-                None,
-                Expr::Literal(Literal::Float("0.0".to_symbol())).into_id_without_span(),
+    fn sampler_player_type() -> TypeNodeId {
+        function!(vec![numeric!()], numeric!())
+    }
+
+    fn sampler_result_type() -> TypeNodeId {
+        Type::Record(vec![
+            RecordTypeField::new("length".to_symbol(), numeric!(), false),
+            RecordTypeField::new("player".to_symbol(), Self::sampler_player_type(), false),
+        ])
+        .into_id()
+    }
+
+    fn sampler_player_expr(sample_idx: usize) -> mimium_lang::interner::ExprNodeId {
+        Expr::Lambda(
+            vec![TypedId::new(
+                "pos".to_symbol(),
+                Type::Primitive(PType::Numeric).into_id(),
+            )],
+            None,
+            Expr::Apply(
+                Expr::Var(Self::GET_SAMPLER.to_symbol()).into_id_without_span(),
+                vec![
+                    Expr::Var("pos".to_symbol()).into_id_without_span(),
+                    Expr::Literal(Literal::Float(sample_idx.to_string().to_symbol()))
+                        .into_id_without_span(),
+                ],
             )
             .into_id_without_span(),
         )
+        .into_id_without_span()
+    }
+
+    fn sampler_record_expr(sample_idx: usize, length: f64) -> mimium_lang::interner::ExprNodeId {
+        Expr::RecordLiteral(vec![
+            RecordField {
+                name: "length".to_symbol(),
+                expr: Expr::Literal(Literal::Float(length.to_string().to_symbol()))
+                    .into_id_without_span(),
+            },
+            RecordField {
+                name: "player".to_symbol(),
+                expr: Self::sampler_player_expr(sample_idx),
+            },
+        ])
+        .into_id_without_span()
+    }
+
+    /// Returns a fallback sampler record with a silent player and zero length.
+    fn error_fallback() -> Value {
+        Value::Code(Self::sampler_record_expr(0, 0.0))
     }
 
     /// Returns the signature for the Sampler_mono! macro.
@@ -168,7 +224,7 @@ impl SamplerPlugin {
             sampler_macrof,
             function!(
                 vec![string_t!()],
-                Type::Code(function!(vec![numeric!()], numeric!())).into_id()
+                Type::Code(Self::sampler_result_type()).into_id()
             ),
         )
     }
@@ -183,9 +239,9 @@ impl SamplerPlugin {
             }
         };
 
-        // Resolve the path (absolute or relative to CWD)
+        // Resolve the path relative to the current source file when available.
         log::debug!("Attempting to canonicalize path: {rel_path_str}");
-        let abs_path = match std::fs::canonicalize(&rel_path_str) {
+        let abs_path = match resolve_sample_path(&rel_path_str) {
             Ok(p) => {
                 let path_str = p.to_string_lossy().to_string();
                 log::debug!("Canonicalized path: {path_str}");
@@ -210,38 +266,21 @@ impl SamplerPlugin {
                 }
             };
 
-            let idx = self.sample_cache.len();
-            self.sample_cache.insert(abs_path.clone(), vec);
+            let idx = self.sample_buffers.len();
+            self.sample_buffers.push(vec);
             self.sample_namemap.insert(abs_path, idx);
             idx
         };
 
-        // Generate code that creates a closure for sampling
-        Value::Code(
-            Expr::Lambda(
-                vec![TypedId::new(
-                    "pos".to_symbol(),
-                    Type::Primitive(PType::Numeric).into_id(),
-                )],
-                None,
-                Expr::Apply(
-                    Expr::Var(Self::GET_SAMPLER.to_symbol()).into_id_without_span(),
-                    vec![
-                        Expr::Var("pos".to_symbol()).into_id_without_span(),
-                        Expr::Literal(Literal::Float(idx.to_string().to_symbol()))
-                            .into_id_without_span(),
-                    ],
-                )
-                .into_id_without_span(),
-            )
-            .into_id_without_span(),
-        )
+        let sample_length = self.sample_buffers[idx].len() as f64;
+
+        Value::Code(Self::sampler_record_expr(idx, sample_length))
     }
 
     #[mimium_plugin_fn]
     pub fn get_sampler(&mut self, pos: f64, sample_idx: f64) -> f64 {
         let idx = sample_idx as usize;
-        let samples = self.sample_cache.values().nth(idx);
+        let samples = self.sample_buffers.get(idx);
         match samples {
             Some(vec) => interpolate_vec(vec, pos),
             None => {
@@ -257,6 +296,37 @@ impl SystemPlugin for SamplerPlugin {
         self
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn freeze_for_wasm(&mut self) -> Option<mimium_lang::runtime::wasm::WasmPluginFnMap> {
+        if self.sample_buffers.is_empty() {
+            return None;
+        }
+
+        let sample_buffers = Arc::new(self.sample_buffers.clone());
+        let mut map = mimium_lang::runtime::wasm::WasmPluginFnMap::new();
+        map.insert(
+            Self::GET_SAMPLER.to_string(),
+            Arc::new(move |args| match args {
+                [pos, sample_idx] => sample_buffers
+                    .get(*sample_idx as usize)
+                    .map(|samples| interpolate_vec(samples, *pos))
+                    .or_else(|| {
+                        mimium_lang::log::error!("Invalid sample index: {}", *sample_idx as usize);
+                        Some(0.0)
+                    }),
+                _ => {
+                    mimium_lang::log::error!(
+                        "{} expects 2 arguments, got {}",
+                        Self::GET_SAMPLER,
+                        args.len()
+                    );
+                    Some(0.0)
+                }
+            }),
+        );
+        Some(map)
+    }
+
     fn gen_interfaces(&self) -> Vec<SysPluginSignature> {
         let sampler_macrof: SystemPluginMacroType<Self> = Self::make_sampler_mono;
         let sampler_macro = SysPluginSignature::new_macro(
@@ -264,7 +334,7 @@ impl SystemPlugin for SamplerPlugin {
             sampler_macrof,
             function!(
                 vec![string_t!()],
-                Type::Code(function!(vec![numeric!()], numeric!())).into_id()
+                Type::Code(Self::sampler_result_type()).into_id()
             ),
         );
 

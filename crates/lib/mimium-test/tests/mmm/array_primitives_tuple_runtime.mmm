@@ -1,4 +1,4 @@
-// @test {"times":1,"stereo":false,"expected":[88.0],"web":true}
+// @test {"times":1,"stereo":false,"expected":[132.0],"web":true}
 
 fn dsp(){
     let src = [(1.0,10.0), (2.0,20.0), (3.0,30.0)]
@@ -7,13 +7,16 @@ fn dsp(){
     let prepended = prepend((0.0,0.0), rest_head)
 
     let (rest_tail, tail) = split_tail(src)
+    let appended = append(rest_tail, (4.0,40.0))
     let (h0,h1) = head
     let (p10,p11) = prepended[1]
     let (t0,t1) = tail
     let (rt10,rt11) = rest_tail[1]
+    let (a20,a21) = appended[2]
 
     h0 + h1
     + p10 + p11
     + t0 + t1
     + rt10 + rt11
+    + a20 + a21
 }

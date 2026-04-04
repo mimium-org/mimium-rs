@@ -1,0 +1,80 @@
+use core::*
+use osc::sinwave
+use env::adsr
+use filter::{bandpass, highpass, lowpass, peakeq}
+use delay::fdelay
+use noise::white
+use sequencer::step_seq
+
+fn sat(x, drive){
+	let y = x * drive
+	tanh(y)
+}
+
+fn grit(x, drive, asym){
+	let y = x * drive + max(0.0, x) * asym
+	tanh(y) - tanh(y * 0.3) * 0.18
+}
+
+fn lip_exciter(mouth_pressure, bore_return, lip_tension, noise_amt){
+	let turbulence = lowpass(white!(), 6500.0, 0.9) * noise_amt
+	let delta_p = mouth_pressure - bore_return * 0.88 + turbulence
+	grit(delta_p, lip_tension, 0.45)
+}
+
+fn bore_delay(input, freq, loss, tone){
+	let target_delay = samplerate / (freq * 2.0)
+	let delay_samp = max(8.0, target_delay - 2.0)
+	let safe_loss = min(0.90, max(0.0, loss))
+	let fb = sat(self, 1.35) * safe_loss
+	input + fb 
+	||> fdelay!(96000)(_, delay_samp)
+	||>lowpass(_, tone, 0.75)
+	||>highpass(_, 40.0, 0.8)
+}
+
+fn trumpet_voice(note, gate, accent){
+	let base_freq = midi_to_hz(note)
+	let vib_depth = 0.01 + accent * 0.004
+	let lip_freq = base_freq * (1.0 + sinwave(5.8, 0.0) * vib_depth)
+
+	let amp_env = adsr(0.008, 0.070, 0.76, 0.210, gate)
+	let breath_env = adsr(0.03, 0.040, 0.88, 0.170, gate)
+	let breath_pressure = breath_env * (0.66 + accent * 0.24)
+	let growl_noise = bandpass(white!(), 1700.0 + accent * 1400.0, 1.8) * breath_env * (0.026 + accent * 0.045)
+	let harmonic_buzz = sat(sinwave(lip_freq * 2.02, 0.0) * 0.9 + sinwave(lip_freq * 3.01, 0.0) * 0.45, 2.4) * breath_env * (0.06 + accent * 0.08)
+
+	let reflection = bore_delay(self, lip_freq, 0.78, 2400.0 + accent * 900.0)
+	let reed = lip_exciter(breath_pressure, reflection, 2.9 + accent * 2.1, 0.03 + accent * 0.05)
+
+	let bore_input = reed * 0.62 + breath_pressure * 0.34 + growl_noise + harmonic_buzz - reflection * 0.12
+	let bore = bore_delay(bore_input, lip_freq, 0.86, 2900.0 + accent * 1600.0)
+
+	let bell = bore
+		||> highpass(_, 180.0, 0.8)
+		||> peakeq(_, 900.0, 3.6, 0.95)
+		||> peakeq(_, 2100.0, 2.8, 1.1)
+		||> peakeq(_, 3300.0, 2.2, 1.0)
+		||> lowpass(_, 7600.0, 0.72)
+
+	let edgy = highpass(bell, 1200.0, 0.9)
+	let dirty = grit(bell * amp_env * (0.25 + accent * 0.14), 1.6 + accent * 0.8, 0.22)
+	let rasp = sat(edgy, 2.6) * breath_env * (0.18 + accent * 0.10)
+	(dirty + rasp) * 0.68
+}
+
+let notes = $([62, 64, 65, 67, 69, 67, 65, 64, 62, 64, 65, 67, 70, 69, 67, 65]
+			||> map(|x|x-12,_)|>lift)
+let gates = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+let accents = [0.85, 0.45, 0.55, 0.48, 0.90, 0.50, 0.42, 0.58, 0.88, 0.47, 0.56, 0.49, 0.92, 0.62, 0.46, 0.70]
+
+let bpm = 54.0
+let steps_per_beat = 1.0
+let step_per_sec = bpm / 60.0 * steps_per_beat
+
+use space::*
+fn dsp(){
+	let s = step_seq(step_per_sec, notes, gates, accents, 0.72)
+	let mono = trumpet_voice(s.note, s.gate, s.accent) 
+	autopan2(mono,1)|> Probe!("out")
+}

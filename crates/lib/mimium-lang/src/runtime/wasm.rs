@@ -18,6 +18,12 @@ use wasmtime::{
 /// Must match compiler-side import declarations in `compiler/wasmgen.rs`.
 const MAX_SPECIALIZED_BUILTIN_ARITY: usize = 16;
 const MAX_WASM_DELAY_SAMPLES: usize = 16 * 1024 * 1024;
+/// Raw array handle used as a sentinel for zero-initialized array-valued state.
+///
+/// This mirrors the native VM workaround: array-valued `self` may be observed
+/// as raw handle `0` before any real array has been allocated, so the runtime
+/// treats it as an empty / all-zero array instead of failing immediately.
+const UNINITIALIZED_ARRAY_HANDLE_SENTINEL: i64 = 0;
 
 /// WASM-side analogue of [`SystemPluginAudioWorker`](crate::plugin::SystemPluginAudioWorker).
 ///
@@ -354,7 +360,7 @@ impl WasmRuntime {
         register_builtin! {
             "probeln" => builtin_probeln_host,
             "probe" => builtin_probe_host,
-            "length_array" => builtin_length_array_host,
+            "len" => builtin_length_array_host,
             "split_head" => builtin_split_head_host,
             "split_tail" => builtin_split_tail_host,
         }
@@ -374,6 +380,22 @@ impl WasmRuntime {
                 },
             )
             .map_err(|e| format!("Failed to register builtin::prepend: {e}"))?;
+
+        linker
+            .func_new(
+                "builtin",
+                "append",
+                FuncType::new(
+                    linker.engine(),
+                    vec![ValType::I64, ValType::I64],
+                    vec![ValType::I64],
+                ),
+                move |caller, params, results| {
+                    builtin_append_arity_host(caller, params, results, 1);
+                    Ok(())
+                },
+            )
+            .map_err(|e| format!("Failed to register builtin::append: {e}"))?;
 
         for arity in 1..=MAX_SPECIALIZED_BUILTIN_ARITY {
             let split_head_name = format!("split_head$arity{arity}");
@@ -414,6 +436,23 @@ impl WasmRuntime {
                     },
                 )
                 .map_err(|e| format!("Failed to register builtin::prepend$arity{arity}: {e}"))?;
+
+            let append_name = format!("append$arity{arity}");
+            linker
+                .func_new(
+                    "builtin",
+                    append_name.as_str(),
+                    FuncType::new(
+                        linker.engine(),
+                        vec![ValType::I64, ValType::I64],
+                        vec![ValType::I64],
+                    ),
+                    move |caller, params, results| {
+                        builtin_append_arity_host(caller, params, results, arity);
+                        Ok(())
+                    },
+                )
+                .map_err(|e| format!("Failed to register builtin::append$arity{arity}: {e}"))?;
         }
 
         Ok(())
@@ -732,12 +771,34 @@ impl WasmModule {
         func: &wasmtime::Func,
         args: &[Word],
     ) -> Result<Vec<Word>, String> {
-        // Convert args to wasmtime values
-        let wasm_args: Vec<wasmtime::Val> =
-            args.iter().map(|&w| wasmtime::Val::I64(w as i64)).collect();
+        let func_ty = func.ty(&self.store);
+        let param_types = func_ty.params().collect::<Vec<_>>();
+        if param_types.len() != args.len() {
+            return Err(format!(
+                "Failed to call function: argument count mismatch: expected {}, found {}",
+                param_types.len(),
+                args.len()
+            ));
+        }
+
+        // Convert args to wasmtime values using the callee's actual signature.
+        let wasm_args: Vec<wasmtime::Val> = args
+            .iter()
+            .zip(param_types.iter())
+            .map(|(&word, ty)| match ty {
+                ValType::F64 => wasmtime::Val::F64(word),
+                ValType::F32 => wasmtime::Val::F32(word as u32),
+                ValType::I64 => wasmtime::Val::I64(word as i64),
+                ValType::I32 => wasmtime::Val::I32(word as i32),
+                _ => wasmtime::Val::I64(word as i64),
+            })
+            .collect();
 
         // Prepare results buffer
-        let mut results = vec![wasmtime::Val::I64(0); func.ty(&self.store).results().len()];
+        let mut results = func_ty
+            .results()
+            .map(default_val_for_valtype)
+            .collect::<Vec<_>>();
 
         // Call function
         func.call(&mut self.store, &wasm_args, &mut results)
@@ -1440,6 +1501,21 @@ fn array_get_elem_host(
         panic!("array_get_elem: invalid zero elem_words");
     }
 
+    if array == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+        let data = vec![0; elem_words];
+        let memory = caller.data().memory.expect("Memory not initialized");
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                data.as_ptr() as *const u8,
+                elem_words * std::mem::size_of::<Word>(),
+            )
+        };
+        memory
+            .write(&mut caller, dst_ptr as usize, bytes)
+            .expect("Failed to write to WASM memory");
+        return;
+    }
+
     // Get element data from array storage (multi-word aware)
     let data = {
         let state = caller.data();
@@ -1575,11 +1651,14 @@ fn builtin_probe_host(_caller: Caller<'_, RuntimeState>, x: f64) -> f64 {
 
 fn builtin_length_array_host(caller: Caller<'_, RuntimeState>, array: i64) -> f64 {
     log::trace!("builtin_length_array_host: array={array}");
+    if array == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+        return 0.0;
+    }
     let state = caller.data();
     let array_data = state
         .arrays
         .get(&(array as Word))
-        .expect("length_array: invalid array ID");
+        .expect("len: invalid array ID");
     array_data.len() as f64
 }
 
@@ -1590,6 +1669,44 @@ fn builtin_split_head_arity_host(
     elem_words: usize,
 ) {
     log::trace!("builtin_split_head$arity{elem_words}: array={array}, dst_ptr={dst_ptr}");
+
+    if array == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+        let memory = caller.data().memory.expect("Memory not initialized");
+        (0..elem_words).for_each(|idx| {
+            memory
+                .write(
+                    &mut caller,
+                    (dst_ptr as usize) + idx * std::mem::size_of::<Word>(),
+                    &0i64.to_le_bytes(),
+                )
+                .expect("split_head: failed to write zero head word");
+        });
+        memory
+            .write(
+                &mut caller,
+                (dst_ptr as usize) + elem_words * std::mem::size_of::<Word>(),
+                &0i64.to_le_bytes(),
+            )
+            .expect("split_head: failed to write zero rest array handle");
+        return;
+    }
+
+    if array == UNINITIALIZED_ARRAY_HANDLE_SENTINEL {
+        let memory = caller.data().memory.expect("Memory not initialized");
+        memory
+            .write(&mut caller, dst_ptr as usize, &0i64.to_le_bytes())
+            .expect("split_tail: failed to write zero rest array handle");
+        (0..elem_words).for_each(|idx| {
+            memory
+                .write(
+                    &mut caller,
+                    (dst_ptr as usize) + (idx + 1) * std::mem::size_of::<Word>(),
+                    &0i64.to_le_bytes(),
+                )
+                .expect("split_tail: failed to write zero tail word");
+        });
+        return;
+    }
 
     let (head_words, rest_data) = {
         let state = caller.data();
@@ -1773,6 +1890,85 @@ fn builtin_prepend_arity_host(
     }
 }
 
+fn builtin_append_arity_host(
+    mut caller: Caller<'_, RuntimeState>,
+    params: &[Val],
+    results: &mut [Val],
+    elem_words: usize,
+) {
+    let expected_params = 2;
+    if params.len() != expected_params {
+        panic!(
+            "append$arity{} expected {} params, got {}",
+            elem_words,
+            expected_params,
+            params.len()
+        );
+    }
+
+    let array_handle = match params[0] {
+        Val::I64(i) => i as Word,
+        Val::F64(bits) => i64::from_le_bytes(bits.to_le_bytes()) as Word,
+        ref other => {
+            panic!("append$arity{elem_words}: expected array handle as I64/F64, got {other:?}")
+        }
+    };
+
+    let elem_or_ptr = match params[1] {
+        Val::I64(i) => i as u64,
+        Val::F64(bits) => bits,
+        ref other => {
+            panic!("append$arity{elem_words}: expected second arg as I64/F64, got {other:?}")
+        }
+    };
+
+    let elem_bits = if elem_words == 1 {
+        vec![elem_or_ptr]
+    } else {
+        let mut words = vec![0u64; elem_words];
+        let memory = caller.data().memory.expect("Memory not initialized");
+        let src_ptr = elem_or_ptr as usize;
+        let bytes = unsafe {
+            std::slice::from_raw_parts_mut(
+                words.as_mut_ptr() as *mut u8,
+                elem_words * std::mem::size_of::<Word>(),
+            )
+        };
+        memory
+            .read(&caller, src_ptr, bytes)
+            .expect("append$arityN: failed to read element words from memory");
+        words
+    };
+
+    let mut new_array = {
+        let state = caller.data();
+        let old = state
+            .arrays
+            .get(&array_handle)
+            .unwrap_or_else(|| panic!("append: invalid array ID {array_handle}"));
+        if old.len() % elem_words != 0 {
+            panic!(
+                "append$arity{}: array length {} is not divisible by elem_words",
+                elem_words,
+                old.len()
+            );
+        }
+        old.to_vec()
+    };
+    new_array.extend_from_slice(&elem_bits);
+
+    let new_id = {
+        let state = caller.data_mut();
+        let new_id = (state.arrays.len() + 1) as Word;
+        state.arrays.insert(new_id, new_array);
+        new_id
+    };
+
+    if let Some(slot) = results.get_mut(0) {
+        *slot = Val::I64(new_id as i64);
+    }
+}
+
 fn builtin_split_head_host(caller: Caller<'_, RuntimeState>, array: i64, dst_ptr: i32) {
     builtin_split_head_arity_host(caller, array, dst_ptr, 1);
 }
@@ -1784,6 +1980,7 @@ fn builtin_split_tail_host(caller: Caller<'_, RuntimeState>, array: i64, dst_ptr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::repo_test_artifact_path;
 
     #[test]
     fn test_wasm_runtime_create() {
@@ -1962,15 +2159,7 @@ mod tests {
 
     #[test]
     fn test_load_generated_wasm() {
-        use std::path::PathBuf;
-
-        // Use workspace root relative path
-        let mut wasm_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        wasm_path.pop(); // Remove mimium-lang
-        wasm_path.pop(); // Remove lib
-        wasm_path.pop(); // Remove crates
-        wasm_path.push("tmp");
-        wasm_path.push("test_integration.wasm");
+        let wasm_path = repo_test_artifact_path("test_integration.wasm");
 
         // Skip test if the file doesn't exist (e.g., in CI environment)
         if !wasm_path.exists() {

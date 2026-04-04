@@ -1,0 +1,34 @@
+// @test {"times":1,"stereo":false,"expected":[48.0],"web":true}
+#stage(macro)
+fn join(arr1:[a],arr2:[a])->[a]{
+    if (len(arr2)>0){
+        let (head,rest) = split_head(arr2)
+        join(append(arr1,head),rest)
+    }else{
+        arr1
+    }
+}
+fn map(fun:(a)->b,array:[a])->[b]{
+    let (head,rest) = array |> split_head
+    if ((rest |> len) > 0){
+        prepend(fun(head),map(fun,rest))
+    }else{
+        [fun(head)]
+    }
+}
+
+#stage(main)
+fn dsp(){
+    let ans = ${
+        let nums = [1,2]
+        let rows = [[1],[2]]
+        let nums_joined = join(nums,[3])
+        let rows_joined = join(rows,[[3]])
+        let doubled = map(|x| x*2, nums_joined)
+        let offset_rows = map(|row| row[0]+10, rows_joined)
+        doubled[0]+doubled[1]+doubled[2]
+        +offset_rows[0]+offset_rows[1]+offset_rows[2]
+        |> lift_f
+    }
+    ans
+}
