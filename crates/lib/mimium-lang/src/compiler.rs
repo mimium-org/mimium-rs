@@ -1,3 +1,4 @@
+mod block_pass;
 pub mod bytecodegen;
 pub(crate) mod intrinsics;
 pub mod mirgen;
@@ -131,6 +132,7 @@ pub fn emit_ast(
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Config {
     pub self_eval_mode: bytecodegen::SelfEvalMode,
+    pub dsp_block_size: Option<u32>,
 }
 
 pub struct Context {
@@ -180,7 +182,13 @@ impl Context {
             &self.macros,
             self.file_path.clone(),
             module_info,
-        );
+        )
+        .map(|mut mir| {
+            if let Some(block_size) = self.config.dsp_block_size {
+                block_pass::annotate_dsp_block_graph(&mut mir, block_size);
+            }
+            mir
+        });
         if parse_errs.is_empty() {
             mir
         } else {
@@ -285,6 +293,24 @@ fn dsp(input:(float,float)){
         let extfns = [addfn];
         Context::new(extfns, [], None, Config::default())
     }
+
+    fn test_block_context(block_size: u32) -> Context {
+        let addfn = ExtFunTypeInfo::new(
+            "add".to_symbol(),
+            function!(vec![numeric!(), numeric!()], numeric!()),
+            EvalStage::Persistent,
+        );
+        let extfns = [addfn];
+        Context::new(
+            extfns,
+            [],
+            None,
+            Config {
+                dsp_block_size: Some(block_size),
+                ..Config::default()
+            },
+        )
+    }
     #[test]
     fn mir_channelcount() {
         let src = &get_source();
@@ -322,5 +348,109 @@ fn dsp(input:(float,float)){
         let iochannels = prog.iochannels.unwrap();
         assert_eq!(iochannels.input, 2);
         assert_eq!(iochannels.output, 2);
+    }
+
+    #[test]
+    fn mir_marks_dsp_block_graph() {
+        let ctx = test_block_context(128);
+        let mir = ctx
+            .emit_mir(
+                r#"
+fn osc(x:float){
+    x + 1.0
+}
+
+fn helper(x:float){
+    osc(x)
+}
+
+fn unrelated(x:float){
+    x * 2.0
+}
+
+fn dsp(input:float){
+    helper(input)
+}
+"#,
+            )
+            .unwrap();
+
+        let dsp = mir.get_dsp_function().unwrap();
+        assert_eq!(
+            dsp.block_annotation().map(|a| a.requested_block_size),
+            Some(128)
+        );
+
+        let helper = mir.get_function("helper").unwrap();
+        assert_eq!(
+            helper.block_annotation().map(|a| a.requested_block_size),
+            Some(128)
+        );
+
+        let osc = mir.get_function("osc").unwrap();
+        assert_eq!(
+            osc.block_annotation().map(|a| a.requested_block_size),
+            Some(128)
+        );
+
+        let unrelated = mir.get_function("unrelated").unwrap();
+        assert_eq!(unrelated.block_annotation(), None);
+    }
+
+    #[test]
+    fn bytecode_generation_ignores_block_annotations_for_now() {
+        let ctx = test_block_context(64);
+        let prog = ctx
+            .emit_bytecode(
+                r#"
+fn helper(x:float){
+    x + 1.0
+}
+
+fn dsp(input:float){
+    helper(input)
+}
+"#,
+            )
+            .unwrap();
+
+        let dsp_state = prog.get_dsp_state_skeleton().cloned();
+        assert!(dsp_state.is_some());
+        assert_eq!(
+            prog.get_dsp_fn()
+                .and_then(|func| func.preferred_block_size),
+            Some(64)
+        );
+        let helper = prog
+            .global_fn_table
+            .iter()
+            .find(|(label, _)| label == "helper")
+            .map(|(_, func)| func)
+            .unwrap();
+        assert!(helper
+            .bytecodes
+            .iter()
+            .any(|instruction| matches!(instruction, vm::bytecode::Instruction::VAddF(_, _, _))));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn wasm_generation_accepts_block_vector_opcodes() {
+        let ctx = test_block_context(64);
+        let output = ctx
+            .emit_wasm(
+                r#"
+fn helper(x:float){
+    x + 1.0
+}
+
+fn dsp(input:float){
+    helper(input)
+}
+"#,
+            )
+            .unwrap();
+
+        assert!(!output.bytes.is_empty());
     }
 }

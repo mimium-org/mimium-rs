@@ -241,6 +241,89 @@ pub struct Machine {
     code_values: Vec<ExprNodeId>,
 }
 
+#[derive(Debug)]
+struct BlockRegisterFile {
+    values: Vec<Vec<RawVal>>,
+    defaults: Vec<RawVal>,
+    frames: usize,
+}
+
+impl BlockRegisterFile {
+    fn new(defaults: Vec<RawVal>, frames: usize) -> Self {
+        Self {
+            values: vec![],
+            defaults,
+            frames,
+        }
+    }
+
+    fn ensure_slot(&mut self, reg: Reg) {
+        let idx = reg as usize;
+        if self.values.len() <= idx {
+            self.values.resize_with(idx + 1, Vec::new);
+        }
+    }
+
+    fn materialize(&mut self, reg: Reg) {
+        self.ensure_slot(reg);
+        let idx = reg as usize;
+        if self.values[idx].is_empty() {
+            let default = self.defaults.get(idx).copied().unwrap_or_default();
+            self.values[idx].resize(self.frames, default);
+        }
+    }
+
+    fn set_repeat(&mut self, reg: Reg, value: RawVal) {
+        self.ensure_slot(reg);
+        self.values[reg as usize].clear();
+        self.values[reg as usize].resize(self.frames, value);
+    }
+
+    fn copy_reg(&mut self, dst: Reg, src: Reg) {
+        self.materialize(src);
+        let src_idx = src as usize;
+        let copied = self.values[src_idx].clone();
+        self.ensure_slot(dst);
+        self.values[dst as usize] = copied;
+    }
+
+    fn copy_range(&mut self, dst: Reg, src: Reg, n: TypeSize) {
+        (0..n).for_each(|offset| self.copy_reg(dst + offset as u16, src + offset as u16));
+    }
+
+    fn unary_f(&mut self, dst: Reg, src: Reg, op: impl Fn(f64) -> f64) {
+        self.materialize(src);
+        let src_idx = src as usize;
+        let values = self.values[src_idx]
+            .iter()
+            .map(|value| Machine::to_value::<f64>(op(Machine::get_as::<f64>(*value))))
+            .collect::<Vec<_>>();
+        self.ensure_slot(dst);
+        self.values[dst as usize] = values;
+    }
+
+    fn binary_f(&mut self, dst: Reg, lhs: Reg, rhs: Reg, op: impl Fn(f64, f64) -> f64) {
+        self.materialize(lhs);
+        self.materialize(rhs);
+        let lhs_idx = lhs as usize;
+        let rhs_idx = rhs as usize;
+        let values = self.values[lhs_idx]
+            .iter()
+            .zip(self.values[rhs_idx].iter())
+            .map(|(left, right)| {
+                Machine::to_value::<f64>(op(Machine::get_as::<f64>(*left), Machine::get_as::<f64>(*right)))
+            })
+            .collect::<Vec<_>>();
+        self.ensure_slot(dst);
+        self.values[dst as usize] = values;
+    }
+
+    fn values(&mut self, reg: Reg) -> &[RawVal] {
+        self.materialize(reg);
+        &self.values[reg as usize]
+    }
+}
+
 macro_rules! binop {
     ($op:tt,$t:ty, $dst:expr,$src1:expr,$src2:expr,$self:ident) => {
         {
@@ -1241,6 +1324,10 @@ impl Machine {
                 }
                 Instruction::MulF(dst, src1, src2) => binop!(*,f64,dst,src1,src2,self),
                 Instruction::DivF(dst, src1, src2) => binop!(/,f64,dst,src1,src2,self),
+                Instruction::VAddF(dst, src1, src2) => binop!(+,f64,dst,src1,src2,self),
+                Instruction::VSubF(dst, src1, src2) => binop!(-,f64,dst,src1,src2,self),
+                Instruction::VMulF(dst, src1, src2) => binop!(*,f64,dst,src1,src2,self),
+                Instruction::VDivF(dst, src1, src2) => binop!(/,f64,dst,src1,src2,self),
                 Instruction::ModF(dst, src1, src2) => binop!(%,f64,dst,src1,src2,self),
                 Instruction::NegF(dst, src) => uniop!(-,f64,dst,src,self),
                 Instruction::AbsF(dst, src) => uniopmethod!(abs, f64, dst, src, self),
@@ -1461,17 +1548,252 @@ impl Machine {
     pub fn execute_idx(&mut self, idx: usize) -> ReturnCode {
         let (_name, func) = &self.prog.global_fn_table[idx];
         if !func.bytecodes.is_empty() {
-            self.global_states
-                .resize(func.state_skeleton.total_size() as usize);
-            // 0 is always base pointer to the main function
-            if !self.stack.is_empty() {
-                self.stack[0] = 0;
-            }
-            self.base_pointer = 1;
-            self.execute(idx, None)
+            self.prepare_top_level_execution(idx);
+            self.execute_prepared_idx(idx)
         } else {
             0
         }
+    }
+
+    pub fn prepare_top_level_execution(&mut self, idx: usize) {
+        let (_name, func) = &self.prog.global_fn_table[idx];
+        if !func.bytecodes.is_empty() {
+            self.global_states
+                .resize(func.state_skeleton.total_size() as usize);
+        }
+    }
+
+    pub fn execute_prepared_idx(&mut self, idx: usize) -> ReturnCode {
+        if !self.stack.is_empty() {
+            self.stack[0] = 0;
+        }
+        self.base_pointer = 1;
+        self.execute(idx, None)
+    }
+
+    fn max_register_for_block(bytecodes: &[Instruction]) -> usize {
+        let mut max_reg = 0usize;
+        let mut update = |reg: Reg| {
+            max_reg = max_reg.max(reg as usize);
+        };
+        bytecodes.iter().for_each(|instruction| match instruction {
+            Instruction::Move(dst, src)
+            | Instruction::Mem(dst, src)
+            | Instruction::GetArrayElem(dst, src, _)
+            | Instruction::SetArrayElem(dst, src, _)
+            | Instruction::AddF(dst, src, _)
+            | Instruction::SubF(dst, src, _)
+            | Instruction::MulF(dst, src, _)
+            | Instruction::DivF(dst, src, _)
+            | Instruction::VAddF(dst, src, _)
+            | Instruction::VSubF(dst, src, _)
+            | Instruction::VMulF(dst, src, _)
+            | Instruction::VDivF(dst, src, _)
+            | Instruction::ModF(dst, src, _)
+            | Instruction::PowF(dst, src, _)
+            | Instruction::AddI(dst, src, _)
+            | Instruction::SubI(dst, src, _)
+            | Instruction::MulI(dst, src, _)
+            | Instruction::DivI(dst, src, _)
+            | Instruction::ModI(dst, src, _)
+            | Instruction::PowI(dst, src, _)
+            | Instruction::LogI(dst, src, _)
+            | Instruction::Eq(dst, src, _)
+            | Instruction::Ne(dst, src, _)
+            | Instruction::Gt(dst, src, _)
+            | Instruction::Ge(dst, src, _)
+            | Instruction::Lt(dst, src, _)
+            | Instruction::Le(dst, src, _)
+            | Instruction::And(dst, src, _)
+            | Instruction::Or(dst, src, _)
+            | Instruction::Delay(dst, src, _) => {
+                update(*dst);
+                update(*src);
+            }
+            Instruction::MoveConst(dst, _)
+            | Instruction::MoveImmF(dst, _)
+            | Instruction::NegF(dst, _)
+            | Instruction::AbsF(dst, _)
+            | Instruction::SqrtF(dst, _)
+            | Instruction::SinF(dst, _)
+            | Instruction::CosF(dst, _)
+            | Instruction::LogF(dst, _)
+            | Instruction::NegI(dst, _)
+            | Instruction::AbsI(dst, _)
+            | Instruction::Not(dst, _)
+            | Instruction::CastFtoI(dst, _)
+            | Instruction::CastItoF(dst, _)
+            | Instruction::CastItoB(dst, _) => {
+                update(*dst);
+            }
+            Instruction::MoveRange(dst, src, n) => {
+                update(*dst + (*n).saturating_sub(1) as u16);
+                update(*src + (*n).saturating_sub(1) as u16);
+            }
+            Instruction::Return(reg, nret) => {
+                update(*reg + (*nret).saturating_sub(1) as u16);
+            }
+            _ => {}
+        });
+        max_reg
+    }
+
+    pub fn can_execute_block_idx(&self, idx: usize) -> bool {
+        self.prog
+            .global_fn_table
+            .get(idx)
+            .map(|(_, func)| {
+                !func.bytecodes.is_empty()
+                    && func.bytecodes.iter().all(|instruction| {
+                        matches!(
+                            instruction,
+                            Instruction::Move(_, _)
+                                | Instruction::MoveConst(_, _)
+                                | Instruction::MoveImmF(_, _)
+                                | Instruction::MoveRange(_, _, _)
+                                | Instruction::PushStatePos(_)
+                                | Instruction::PopStatePos(_)
+                                | Instruction::Delay(_, _, _)
+                                | Instruction::Mem(_, _)
+                                | Instruction::AddF(_, _, _)
+                                | Instruction::SubF(_, _, _)
+                                | Instruction::MulF(_, _, _)
+                                | Instruction::DivF(_, _, _)
+                                | Instruction::VAddF(_, _, _)
+                                | Instruction::VSubF(_, _, _)
+                                | Instruction::VMulF(_, _, _)
+                                | Instruction::VDivF(_, _, _)
+                                | Instruction::ModF(_, _, _)
+                                | Instruction::NegF(_, _)
+                                | Instruction::AbsF(_, _)
+                                | Instruction::SqrtF(_, _)
+                                | Instruction::SinF(_, _)
+                                | Instruction::CosF(_, _)
+                                | Instruction::PowF(_, _, _)
+                                | Instruction::LogF(_, _)
+                                | Instruction::Return(_, _)
+                                | Instruction::Return0
+                        )
+                    })
+            })
+            .unwrap_or(false)
+    }
+
+    pub fn execute_block_prepared_idx(
+        &mut self,
+        idx: usize,
+        frames: usize,
+    ) -> Result<Vec<RawVal>, ReturnCode> {
+        if frames == 0 {
+            return Ok(vec![]);
+        }
+        if !self.can_execute_block_idx(idx) {
+            return Err(-1);
+        }
+
+        if !self.stack.is_empty() {
+            self.stack[0] = 0;
+        }
+        self.base_pointer = 1;
+
+        let (bytecodes, constants, delay_sizes) = {
+            let func = &self.prog.global_fn_table[idx].1;
+            (
+                func.bytecodes.clone(),
+                func.constants.clone(),
+                func.delay_sizes.clone(),
+            )
+        };
+        let defaults = (0..=Self::max_register_for_block(&bytecodes))
+            .map(|reg| {
+                let absolute = self.base_pointer as usize + reg;
+                self.stack.get(absolute).copied().unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        let mut regs = BlockRegisterFile::new(defaults, frames);
+
+        for instruction in &bytecodes {
+            match *instruction {
+                Instruction::Move(dst, src) => regs.copy_reg(dst, src),
+                Instruction::MoveConst(dst, pos) => regs.set_repeat(dst, constants[pos as usize]),
+                Instruction::MoveImmF(dst, value) => {
+                    regs.set_repeat(dst, Self::to_value::<f64>(Into::<f64>::into(value)))
+                }
+                Instruction::MoveRange(dst, src, n) => regs.copy_range(dst, src, n),
+                Instruction::PushStatePos(offset) => self.get_current_state().push_pos(offset),
+                Instruction::PopStatePos(offset) => self.get_current_state().pop_pos(offset),
+                Instruction::AddF(dst, lhs, rhs) | Instruction::VAddF(dst, lhs, rhs) => {
+                    regs.binary_f(dst, lhs, rhs, |left, right| left + right)
+                }
+                Instruction::SubF(dst, lhs, rhs) | Instruction::VSubF(dst, lhs, rhs) => {
+                    regs.binary_f(dst, lhs, rhs, |left, right| left - right)
+                }
+                Instruction::MulF(dst, lhs, rhs) | Instruction::VMulF(dst, lhs, rhs) => {
+                    regs.binary_f(dst, lhs, rhs, |left, right| left * right)
+                }
+                Instruction::DivF(dst, lhs, rhs) | Instruction::VDivF(dst, lhs, rhs) => {
+                    regs.binary_f(dst, lhs, rhs, |left, right| left / right)
+                }
+                Instruction::ModF(dst, lhs, rhs) => {
+                    regs.binary_f(dst, lhs, rhs, |left, right| left % right)
+                }
+                Instruction::PowF(dst, lhs, rhs) => {
+                    regs.binary_f(dst, lhs, rhs, |left, right| left.powf(right))
+                }
+                Instruction::NegF(dst, src) => regs.unary_f(dst, src, |value| -value),
+                Instruction::AbsF(dst, src) => regs.unary_f(dst, src, f64::abs),
+                Instruction::SqrtF(dst, src) => regs.unary_f(dst, src, f64::sqrt),
+                Instruction::SinF(dst, src) => regs.unary_f(dst, src, f64::sin),
+                Instruction::CosF(dst, src) => regs.unary_f(dst, src, f64::cos),
+                Instruction::LogF(dst, src) => regs.unary_f(dst, src, f64::ln),
+                Instruction::Delay(dst, src, time) => {
+                    let delaysize_i = *self.delaysizes_pos_stack.last().unwrap_or(&0);
+                    let size_in_samples = delay_sizes.get(delaysize_i).copied().unwrap_or_default();
+                    let src_values = regs.values(src).to_vec();
+                    let time_values = regs.values(time).to_vec();
+                    let mut dst_values = vec![0; frames];
+                    let mut ringbuf = self.get_current_state().get_as_ringbuffer(size_in_samples);
+                    ringbuf.process_block(&mut dst_values, &src_values, &time_values, frames);
+                    regs.ensure_slot(dst);
+                    regs.values[dst as usize] = dst_values;
+                }
+                Instruction::Mem(dst, src) => {
+                    let src_values = regs.values(src).to_vec();
+                    let mut dst_values = vec![0; frames];
+                    let ptr = self.get_current_state().get_state_mut(1);
+                    let mut previous = ptr[0];
+                    (0..frames).for_each(|frame| {
+                        dst_values[frame] = previous;
+                        previous = src_values[frame];
+                    });
+                    ptr[0] = previous;
+                    regs.ensure_slot(dst);
+                    regs.values[dst as usize] = dst_values;
+                }
+                Instruction::Return(reg, nret) => {
+                    let channel_values = (0..nret)
+                        .map(|offset| regs.values(reg + offset as u16).to_vec())
+                        .collect::<Vec<_>>();
+                    let mut flattened = Vec::with_capacity(frames * nret as usize);
+                    (0..frames).for_each(|frame| {
+                        channel_values.iter().for_each(|channel| flattened.push(channel[frame]));
+                    });
+                    let tail = (0..nret as usize)
+                        .map(|channel| channel_values[channel][frames - 1])
+                        .collect::<Vec<_>>();
+                    self.stack.clear();
+                    self.stack.extend_from_slice(&tail);
+                    return Ok(flattened);
+                }
+                Instruction::Return0 => {
+                    self.stack.clear();
+                    return Ok(vec![]);
+                }
+                _ => return Err(-1),
+            }
+        }
+
+        Ok(vec![])
     }
     pub fn execute_entry(&mut self, entry: &str) -> ReturnCode {
         if let Some(idx) = self.prog.get_fun_index(entry) {

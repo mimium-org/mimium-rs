@@ -1756,6 +1756,10 @@ impl WasmGenerator {
                     | I::SubF(a, b)
                     | I::MulF(a, b)
                     | I::DivF(a, b)
+                    | I::VAddF(a, b)
+                    | I::VSubF(a, b)
+                    | I::VMulF(a, b)
+                    | I::VDivF(a, b)
                     | I::ModF(a, b)
                     | I::PowF(a, b) => {
                         record_arg(a, vec![ValType::F64]);
@@ -1957,6 +1961,10 @@ impl WasmGenerator {
                         | I::SubF(..)
                         | I::MulF(..)
                         | I::DivF(..)
+                        | I::VAddF(..)
+                        | I::VSubF(..)
+                        | I::VMulF(..)
+                        | I::VDivF(..)
                         | I::ModF(..)
                         | I::PowF(..) => ValType::F64,
                         I::AddI(..)
@@ -2324,22 +2332,22 @@ impl WasmGenerator {
             }
 
             // Arithmetic operations (f64)
-            I::AddF(a, b) => {
+            I::AddF(a, b) | I::VAddF(a, b) => {
                 self.emit_value_load_typed(a, ValType::F64, func);
                 self.emit_value_load_typed(b, ValType::F64, func);
                 func.instruction(&W::F64Add);
             }
-            I::SubF(a, b) => {
+            I::SubF(a, b) | I::VSubF(a, b) => {
                 self.emit_value_load_typed(a, ValType::F64, func);
                 self.emit_value_load_typed(b, ValType::F64, func);
                 func.instruction(&W::F64Sub);
             }
-            I::MulF(a, b) => {
+            I::MulF(a, b) | I::VMulF(a, b) => {
                 self.emit_value_load_typed(a, ValType::F64, func);
                 self.emit_value_load_typed(b, ValType::F64, func);
                 func.instruction(&W::F64Mul);
             }
-            I::DivF(a, b) => {
+            I::DivF(a, b) | I::VDivF(a, b) => {
                 self.emit_value_load_typed(a, ValType::F64, func);
                 self.emit_value_load_typed(b, ValType::F64, func);
                 func.instruction(&W::F64Div);

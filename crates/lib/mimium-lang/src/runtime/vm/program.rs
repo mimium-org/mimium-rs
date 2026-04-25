@@ -29,6 +29,7 @@ pub struct FuncProto {
     pub bytecodes: Vec<Instruction>,
     pub constants: Vec<RawVal>,
     pub delay_sizes: Vec<u64>,
+    pub preferred_block_size: Option<u32>,
     /// Jump tables for switch/match expressions.
     pub jump_tables: Vec<JumpTable>,
     /// StateTree skeleton information inherited from MIR for this function's state layout
@@ -44,6 +45,7 @@ impl Default for FuncProto {
             bytecodes: Vec::new(),
             constants: Vec::new(),
             delay_sizes: Vec::new(),
+            preferred_block_size: None,
             jump_tables: Vec::new(),
             state_skeleton: StateTreeSkeleton::FnCall(vec![]), // Initialize as empty FnCall
         }
@@ -142,6 +144,7 @@ impl std::fmt::Display for Program {
             let _ = write!(f, "upindexes: {:?}  ", fns.1.upindexes);
             let _ = writeln!(f, "state_skeleton: {:?}", fns.1.state_skeleton);
             let _ = writeln!(f, "constants:  {:?}", fns.1.constants);
+            let _ = writeln!(f, "preferred_block_size: {:?}", fns.1.preferred_block_size);
             let _ = writeln!(f, "jump_tables: {:?}", fns.1.jump_tables);
             let _ = writeln!(f, "instructions:");
             for inst in fns.1.bytecodes.iter() {

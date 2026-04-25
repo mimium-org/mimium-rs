@@ -37,6 +37,27 @@ pub enum Value {
 
 pub type VPtr = Arc<Value>;
 type Bbindex = u64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FunctionExecutionMode {
+    #[default]
+    Scalar,
+    Block(BlockAnnotation),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockAnnotation {
+    pub requested_block_size: u32,
+}
+
+impl BlockAnnotation {
+    pub fn new(requested_block_size: u32) -> Self {
+        Self {
+            requested_block_size,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
     Uinteger(u64),
@@ -190,6 +211,10 @@ pub enum Instruction {
     SubF(VPtr, VPtr),
     MulF(VPtr, VPtr),
     DivF(VPtr, VPtr),
+    VAddF(VPtr, VPtr),
+    VSubF(VPtr, VPtr),
+    VMulF(VPtr, VPtr),
+    VDivF(VPtr, VPtr),
     ModF(VPtr, VPtr),
     NegF(VPtr),
     AbsF(VPtr),
@@ -319,6 +344,7 @@ pub struct Function {
     pub body: Vec<Block>,
     /// StateTree skeleton information for this function's state layout
     pub state_skeleton: StateTreeSkeleton<StateType>,
+    pub execution_mode: FunctionExecutionMode,
 }
 
 impl Function {
@@ -341,6 +367,7 @@ impl Function {
             upperfn_i,
             body: vec![Block::default()],
             state_skeleton: StateTreeSkeleton::FnCall(state_boxed),
+            execution_mode: FunctionExecutionMode::default(),
         }
     }
     pub fn add_new_basicblock(&mut self) -> usize {
@@ -371,6 +398,13 @@ impl Function {
             !children.is_empty()
         } else {
             panic!("State skeleton for function must be FnCall type");
+        }
+    }
+
+    pub fn block_annotation(&self) -> Option<BlockAnnotation> {
+        match self.execution_mode {
+            FunctionExecutionMode::Scalar => None,
+            FunctionExecutionMode::Block(annotation) => Some(annotation),
         }
     }
 }
@@ -424,5 +458,25 @@ impl Mir {
     /// Get the StateTreeSkeleton for the dsp function (commonly used for audio processing)
     pub fn get_dsp_state_skeleton(&self) -> Option<&StateTreeSkeleton<StateType>> {
         self.get_function_state_skeleton("dsp")
+    }
+
+    pub fn get_function(&self, function_name: &str) -> Option<&Function> {
+        self.functions
+            .iter()
+            .find(|f| f.label.as_str() == function_name)
+    }
+
+    pub fn get_function_mut(&mut self, function_name: &str) -> Option<&mut Function> {
+        self.functions
+            .iter_mut()
+            .find(|f| f.label.as_str() == function_name)
+    }
+
+    pub fn get_dsp_function(&self) -> Option<&Function> {
+        self.get_function("dsp")
+    }
+
+    pub fn get_dsp_function_mut(&mut self) -> Option<&mut Function> {
+        self.get_function_mut("dsp")
     }
 }

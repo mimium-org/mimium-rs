@@ -149,6 +149,18 @@ impl RuntimePrimitives for Machine {
         }
     }
 
+    fn state_delay_block(
+        &mut self,
+        dst: &mut [Word],
+        src: &[Word],
+        time: &[Word],
+        frames: usize,
+        max_len: Word,
+    ) {
+        let mut ringbuf = self.get_current_state().get_as_ringbuffer(max_len);
+        ringbuf.process_block(dst, src, time, frames);
+    }
+
     fn state_mem(&mut self, dst: &mut [Word], src: &[Word]) {
         let prev = self.get_current_state().get_state_mut(1)[0];
         let next = src.first().copied().unwrap_or_default();
@@ -156,6 +168,15 @@ impl RuntimePrimitives for Machine {
             *dst_first = prev;
         }
         self.get_current_state().get_state_mut(1)[0] = next;
+    }
+
+    fn state_mem_block(&mut self, dst: &mut [Word], src: &[Word], frames: usize) {
+        let mut previous = self.get_current_state().get_state_mut(1)[0];
+        (0..frames).for_each(|frame| {
+            dst[frame] = previous;
+            previous = src[frame];
+        });
+        self.get_current_state().get_state_mut(1)[0] = previous;
     }
 
     fn array_alloc(&mut self, len: Word, elem_size_words: WordSize) -> Self::ArrayRef {

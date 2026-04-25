@@ -54,6 +54,32 @@ pub trait DspRuntime {
     /// Execute the DSP function for one sample tick.
     fn run_dsp(&mut self, time: Time) -> ReturnCode;
 
+    /// Execute the DSP function for multiple consecutive sample ticks.
+    ///
+    /// The default implementation preserves the existing per-sample semantics
+    /// and appends the flattened outputs to `output`.
+    fn run_dsp_block(
+        &mut self,
+        start_time: Time,
+        frames: usize,
+        output: &mut Vec<f64>,
+        before_each_sample: &mut dyn FnMut(Time),
+    ) -> ReturnCode {
+        let out_channels = self.io_channels().map_or(0, |io| io.output as usize);
+        (0..frames)
+            .map(|frame| {
+                let time = Time(start_time.0 + frame as u64);
+                before_each_sample(time);
+                let rc = self.run_dsp(time);
+                if rc >= 0 && out_channels > 0 {
+                    output.extend_from_slice(self.get_output(out_channels));
+                }
+                rc
+            })
+            .find(|rc| *rc < 0)
+            .unwrap_or(0)
+    }
+
     /// Read the output produced by the last `run_dsp` call.
     ///
     /// The returned slice should contain at least `n_channels` elements.
@@ -64,6 +90,11 @@ pub trait DspRuntime {
 
     /// I/O channel configuration (None if the dsp function was not found).
     fn io_channels(&self) -> Option<IoChannelInfo>;
+
+    /// Preferred runtime block size, if provided by the compiled program.
+    fn preferred_block_size(&self) -> Option<usize> {
+        None
+    }
 
     /// Update sample rate for runtimes that keep an internal runtime state.
     fn set_sample_rate(&mut self, _sample_rate: f64) {}

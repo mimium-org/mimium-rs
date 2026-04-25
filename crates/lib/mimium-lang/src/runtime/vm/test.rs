@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    compiler,
     interner::ToSymbol,
     mir::OpenUpValue,
     plugin::{self, ExtFunTypeInfo},
@@ -229,6 +230,41 @@ fn rust_closure_test() {
     );
     let res = machine.execute_main();
     assert_eq!(res, 0);
+}
+
+#[test]
+fn block_vector_bytecode_matches_scalar_execution() {
+    let source = "fn dsp(){
+    let base = sin(0.25 * 6.28318530718)
+    let folded = ((base * 0.7 + 0.3) * (base * 0.5 + 0.1)) + sqrt(abs(base) + 1.0)
+    (folded, folded * 0.5)
+}";
+    let compiler = compiler::Context::new(
+        [].into_iter(),
+        [].into_iter(),
+        None,
+        compiler::Config {
+            dsp_block_size: Some(16),
+            ..Default::default()
+        },
+    );
+    let program = compiler.emit_bytecode(source).unwrap();
+    let dsp_index = program.get_fun_index("dsp").unwrap();
+
+    let mut scalar_machine = Machine::new(program.clone(), [].into_iter(), [].into_iter());
+    let scalar = (0..16)
+        .flat_map(|_| {
+            scalar_machine.prepare_top_level_execution(dsp_index);
+            scalar_machine.execute_prepared_idx(dsp_index);
+            scalar_machine.get_top_n(2).to_vec()
+        })
+        .collect::<Vec<_>>();
+
+    let mut block_machine = Machine::new(program, [].into_iter(), [].into_iter());
+    block_machine.prepare_top_level_execution(dsp_index);
+    let block = block_machine.execute_block_prepared_idx(dsp_index, 16).unwrap();
+
+    assert_eq!(block, scalar);
 }
 
 fn prep_closure_gc_program(is_closed: bool) -> Machine {

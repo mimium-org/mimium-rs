@@ -308,6 +308,27 @@ impl DspRuntime for WasmDspRuntime {
         result
     }
 
+    fn run_dsp_block(
+        &mut self,
+        start_time: Time,
+        frames: usize,
+        output: &mut Vec<f64>,
+        before_each_sample: &mut dyn FnMut(Time),
+    ) -> ReturnCode {
+        let out_channels = self.io_channels.map_or(1, |io| io.output as usize);
+        let mut rc = 0;
+        for frame in 0..frames {
+            let time = Time(start_time.0 + frame as u64);
+            before_each_sample(time);
+            rc = self.run_dsp(time);
+            if rc < 0 {
+                return rc;
+            }
+            output.extend_from_slice(&self.output_cache[..out_channels.min(self.output_cache.len())]);
+        }
+        rc
+    }
+
     fn get_output(&self, n_channels: usize) -> &[f64] {
         &self.output_cache[..n_channels.min(self.output_cache.len())]
     }

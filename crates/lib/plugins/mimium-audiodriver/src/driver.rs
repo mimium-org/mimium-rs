@@ -120,6 +120,55 @@ impl DspRuntime for VmDspRuntime {
         rc
     }
 
+    fn run_dsp_block(
+        &mut self,
+        start_time: Time,
+        frames: usize,
+        output: &mut Vec<f64>,
+        before_each_sample: &mut dyn FnMut(Time),
+    ) -> ReturnCode {
+        let ochannels = self.vm.prog.iochannels.map_or(0, |io| io.output as usize);
+        self.vm.prepare_top_level_execution(self.dsp_i);
+        if self.sys_plugin_workers.is_empty() && self.vm.can_execute_block_idx(self.dsp_i) {
+            (0..frames).for_each(|frame| before_each_sample(Time(start_time.0 + frame as u64)));
+            if let Ok(raw_output) = self.vm.execute_block_prepared_idx(self.dsp_i, frames) {
+                output.extend(raw_output.iter().map(|value| vm::Machine::get_as::<f64>(*value)));
+                if ochannels > 0 && !output.is_empty() {
+                    let tail = &output[output.len().saturating_sub(ochannels)..];
+                    self.output_cache.clear();
+                    self.output_cache.extend_from_slice(tail);
+                }
+                return 0;
+            }
+        }
+        let mut rc = 0;
+        for frame in 0..frames {
+            let time = Time(start_time.0 + frame as u64);
+            before_each_sample(time);
+            self.sys_plugin_workers.iter_mut().for_each(
+                |plug: &mut Box<dyn SystemPluginAudioWorker>| {
+                    let _ = plug.on_sample(time, &mut self.vm);
+                },
+            );
+
+            rc = self.vm.execute_prepared_idx(self.dsp_i);
+            if rc < 0 {
+                return rc;
+            }
+
+            if ochannels > 0 {
+                let raw = vm::Machine::get_as_array::<f64>(self.vm.get_top_n(ochannels));
+                output.extend_from_slice(raw);
+            }
+        }
+        if rc >= 0 && ochannels > 0 {
+            let tail = &output[output.len().saturating_sub(ochannels)..];
+            self.output_cache.clear();
+            self.output_cache.extend_from_slice(tail);
+        }
+        rc
+    }
+
     fn get_output(&self, n_channels: usize) -> &[f64] {
         &self.output_cache[..n_channels.min(self.output_cache.len())]
     }
@@ -131,6 +180,10 @@ impl DspRuntime for VmDspRuntime {
 
     fn io_channels(&self) -> Option<IoChannelInfo> {
         self.vm.prog.iochannels
+    }
+
+    fn preferred_block_size(&self) -> Option<usize> {
+        self.vm.prog.get_dsp_fn()?.preferred_block_size.map(|size| size as usize)
     }
 
     fn try_hot_swap(&mut self, new_program: ProgramPayload) -> bool {
@@ -215,9 +268,25 @@ impl RuntimeData {
         self.runtime.run_dsp(time)
     }
 
+    /// Execute the compiled `dsp` function for a consecutive block of samples.
+    pub fn run_dsp_block(
+        &mut self,
+        start_time: Time,
+        frames: usize,
+        output: &mut Vec<f64>,
+        before_each_sample: &mut dyn FnMut(Time),
+    ) -> ReturnCode {
+        self.runtime
+            .run_dsp_block(start_time, frames, output, before_each_sample)
+    }
+
     /// I/O channel configuration (None if the dsp function was not found).
     pub fn io_channels(&self) -> Option<IoChannelInfo> {
         self.runtime.io_channels()
+    }
+
+    pub fn preferred_block_size(&self) -> Option<usize> {
+        self.runtime.preferred_block_size()
     }
 
     /// Read the output produced by the last `run_dsp` call.

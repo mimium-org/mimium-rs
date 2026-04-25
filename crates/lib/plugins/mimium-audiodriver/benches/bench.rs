@@ -11,7 +11,7 @@ mod tests {
 
     use mimium_audiodriver::{
         backends::local_buffer::LocalBufferDriver,
-        driver::{Driver, VmDspRuntime},
+        driver::{Driver, RuntimeData, VmDspRuntime},
     };
     use mimium_lang::{
         Config, ExecContext,
@@ -19,6 +19,23 @@ mod tests {
         runtime::{DspRuntime, ProgramPayload, vm::Program},
     };
     use test::{Bencher, black_box};
+
+    fn bench_local_buffer_render(b: &mut Bencher, source: &str, frames: usize, block_size: usize) {
+        let mut driver = LocalBufferDriver::with_block_size(frames, block_size);
+        let mut ctx = ExecContext::new([].into_iter(), None, Config::default());
+        ctx.add_plugin(driver.get_as_plugin());
+        ctx.prepare_machine(source)
+            .expect("program compilation should succeed");
+        let _ = ctx.run_main();
+        let runtime = RuntimeData::try_from(&mut ctx).expect("runtime data should exist");
+        driver.init(runtime, None);
+
+        b.iter(|| {
+            driver.count.store(0, std::sync::atomic::Ordering::Relaxed);
+            black_box(driver.play());
+            black_box(driver.get_generated_samples().len());
+        });
+    }
 
     fn compile_program(source: &str) -> Program {
         let mut ctx = ExecContext::new([].into_iter(), None, Config::default());
@@ -93,6 +110,22 @@ fn dsp(){{
 
     fn make_pattern_test_variant(source: &str, variant_id: usize) -> String {
         format!("{source}\n\nlet __bench_pattern_variant_{variant_id} = {variant_id}.0\n")
+    }
+
+    fn make_render_source(voices: usize) -> String {
+        make_large_swap_source(0.1, voices)
+    }
+
+    fn make_dispatch_source() -> String {
+        "fn dsp(){ (0.0, 0.0) }".to_string()
+    }
+
+    fn make_linear_block_source() -> String {
+        "fn dsp(){
+    let base = sin(0.25 * 6.28318530718)
+    let folded = ((base * 0.7 + 0.3) * (base * 0.5 + 0.1)) + sqrt(abs(base) + 1.0)
+    (folded, folded * 0.5)
+}".to_string()
     }
 
     #[bench]
@@ -223,5 +256,45 @@ fn dsp(){{
             let did_swap = runtime.try_hot_swap(ProgramPayload::VmProgram(program));
             black_box(did_swap);
         });
+    }
+
+    #[bench]
+    fn bench_render_sample_by_sample_voices32(b: &mut Bencher) {
+        bench_local_buffer_render(b, &make_render_source(32), 256, 1);
+    }
+
+    #[bench]
+    fn bench_render_block_64_voices32(b: &mut Bencher) {
+        bench_local_buffer_render(b, &make_render_source(32), 256, 64);
+    }
+
+    #[bench]
+    fn bench_render_block_256_voices32(b: &mut Bencher) {
+        bench_local_buffer_render(b, &make_render_source(32), 256, 256);
+    }
+
+    #[bench]
+    fn bench_render_sample_by_sample_dispatch(b: &mut Bencher) {
+        bench_local_buffer_render(b, &make_dispatch_source(), 4096, 1);
+    }
+
+    #[bench]
+    fn bench_render_block_64_dispatch(b: &mut Bencher) {
+        bench_local_buffer_render(b, &make_dispatch_source(), 4096, 64);
+    }
+
+    #[bench]
+    fn bench_render_block_256_dispatch(b: &mut Bencher) {
+        bench_local_buffer_render(b, &make_dispatch_source(), 4096, 256);
+    }
+
+    #[bench]
+    fn bench_render_sample_by_sample_linear_block_kernel(b: &mut Bencher) {
+        bench_local_buffer_render(b, &make_linear_block_source(), 4096, 1);
+    }
+
+    #[bench]
+    fn bench_render_block_256_linear_block_kernel(b: &mut Bencher) {
+        bench_local_buffer_render(b, &make_linear_block_source(), 4096, 256);
     }
 }

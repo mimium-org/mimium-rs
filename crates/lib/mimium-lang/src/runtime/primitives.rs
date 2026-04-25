@@ -55,6 +55,28 @@ pub trait RuntimePrimitives {
     fn state_set(&mut self, src: &[Word], size_words: WordSize);
     fn state_delay(&mut self, dst: &mut [Word], src: &[Word], time: &[Word], max_len: Word);
     fn state_mem(&mut self, dst: &mut [Word], src: &[Word]);
+    fn state_delay_block(
+        &mut self,
+        dst: &mut [Word],
+        src: &[Word],
+        time: &[Word],
+        frames: usize,
+        max_len: Word,
+    ) {
+        (0..frames).for_each(|frame| {
+            let src_frame = &src[frame..frame + 1];
+            let time_frame = &time[frame..frame + 1];
+            let dst_frame = &mut dst[frame..frame + 1];
+            self.state_delay(dst_frame, src_frame, time_frame, max_len);
+        });
+    }
+    fn state_mem_block(&mut self, dst: &mut [Word], src: &[Word], frames: usize) {
+        (0..frames).for_each(|frame| {
+            let src_frame = &src[frame..frame + 1];
+            let dst_frame = &mut dst[frame..frame + 1];
+            self.state_mem(dst_frame, src_frame);
+        });
+    }
 
     // Arrays.
     fn array_alloc(&mut self, len: Word, elem_size_words: WordSize) -> Self::ArrayRef;

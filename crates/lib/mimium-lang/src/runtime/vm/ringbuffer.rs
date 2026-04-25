@@ -48,4 +48,54 @@ impl<'a> Ringbuffer<'a> {
             res
         }
     }
+
+    pub fn process_block(
+        &mut self,
+        dst: &mut [RawVal],
+        src: &[RawVal],
+        time: &[RawVal],
+        frames: usize,
+    ) {
+        debug_assert!(dst.len() >= frames);
+        debug_assert!(src.len() >= frames);
+        debug_assert!(time.len() >= frames);
+
+        (0..frames).for_each(|frame| {
+            dst[frame] = self.process(src[frame], time[frame]);
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Ringbuffer;
+
+    fn make_storage(size_in_samples: usize) -> Vec<u64> {
+        vec![0; size_in_samples + 2]
+    }
+
+    #[test]
+    fn process_block_matches_scalar_process() {
+        let size = 8usize;
+        let inputs = [1.0, 2.0, 3.0, 4.0, 5.0]
+            .map(f64::to_bits);
+        let times = [0.0, 1.0, 2.0, 3.0, 1.0]
+            .map(f64::to_bits);
+
+        let mut scalar_storage = make_storage(size);
+        let mut scalar = Ringbuffer::new(scalar_storage.as_mut_ptr(), size as u64);
+        let scalar_out = inputs
+            .iter()
+            .zip(times.iter())
+            .map(|(input, time)| scalar.process(*input, *time))
+            .collect::<Vec<_>>();
+
+        let mut block_storage = make_storage(size);
+        let mut block = Ringbuffer::new(block_storage.as_mut_ptr(), size as u64);
+        let mut block_out = vec![0; inputs.len()];
+        block.process_block(&mut block_out, &inputs, &times, inputs.len());
+
+        assert_eq!(block_out, scalar_out);
+        assert_eq!(block_storage, scalar_storage);
+    }
 }

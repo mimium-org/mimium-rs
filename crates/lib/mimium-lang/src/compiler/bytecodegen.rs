@@ -1260,6 +1260,10 @@ impl ByteCodeGenerator {
             mir::Instruction::SubF(v1, v2) => self.emit_binop2(VmInstruction::SubF, dst, v1, v2),
             mir::Instruction::MulF(v1, v2) => self.emit_binop2(VmInstruction::MulF, dst, v1, v2),
             mir::Instruction::DivF(v1, v2) => self.emit_binop2(VmInstruction::DivF, dst, v1, v2),
+            mir::Instruction::VAddF(v1, v2) => self.emit_binop2(VmInstruction::VAddF, dst, v1, v2),
+            mir::Instruction::VSubF(v1, v2) => self.emit_binop2(VmInstruction::VSubF, dst, v1, v2),
+            mir::Instruction::VMulF(v1, v2) => self.emit_binop2(VmInstruction::VMulF, dst, v1, v2),
+            mir::Instruction::VDivF(v1, v2) => self.emit_binop2(VmInstruction::VDivF, dst, v1, v2),
             mir::Instruction::ModF(v1, v2) => self.emit_binop2(VmInstruction::ModF, dst, v1, v2),
             mir::Instruction::PowF(v1, v2) => self.emit_binop2(VmInstruction::PowF, dst, v1, v2),
             mir::Instruction::LogF(v1) => self.emit_binop1(VmInstruction::LogF, dst, v1),
@@ -1385,6 +1389,9 @@ impl ByteCodeGenerator {
                     .get()
                     .expect("return type not inferred correctly"),
             ) as _,
+            preferred_block_size: mirfunc
+                .block_annotation()
+                .map(|annotation| annotation.requested_block_size),
             state_skeleton: mirfunc.state_skeleton.clone(), // Transfer state skeleton from MIR
             ..Default::default()
         };
