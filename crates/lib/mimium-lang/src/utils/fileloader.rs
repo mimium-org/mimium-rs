@@ -69,18 +69,19 @@ fn get_parent_dir(current_file: &str) -> Result<PathBuf, Error> {
 fn normalize_lexical_path(path: &std::path::Path) -> PathBuf {
     use std::path::Component;
 
-    path.components().fold(PathBuf::new(), |mut acc, component| {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                acc.pop();
+    path.components()
+        .fold(PathBuf::new(), |mut acc, component| {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    acc.pop();
+                }
+                Component::RootDir | Component::Prefix(_) | Component::Normal(_) => {
+                    acc.push(component.as_os_str())
+                }
             }
-            Component::RootDir | Component::Prefix(_) | Component::Normal(_) => {
-                acc.push(component.as_os_str())
-            }
-        }
-        acc
-    })
+            acc
+        })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -318,8 +319,8 @@ fn dsp(){
     fn loadlib_test_selfinclude() {
         use super::*;
         let (_, file) = setup_file();
-        let err = load_mmmlibfile(&file, "error_include_itself.mmm")
-            .expect_err("should be an error");
+        let err =
+            load_mmmlibfile(&file, "error_include_itself.mmm").expect_err("should be an error");
 
         assert!(matches!(err, Error::SelfReference { .. }));
     }
