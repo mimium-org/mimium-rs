@@ -2003,16 +2003,17 @@ impl Context {
                 // directly.  Otherwise (e.g. after VM staging which produces
                 // Tuple-typed function args), recover parameter names from the
                 // MIR function definition.
-                let param_fields: Option<Vec<RecordTypeField>> =
-                    if let Type::Record(param_types) = at.to_type() {
-                        let tuple_tys = param_types.iter().map(|field| field.ty).collect::<Vec<_>>();
-                        self.get_function_param_fields(&f_val, &tuple_tys)
-                            .or(Some(param_types))
-                    } else if let Type::Tuple(tuple_tys) = at.to_type() {
-                        self.get_function_param_fields(&f_val, &tuple_tys)
-                    } else {
-                        None
-                    };
+                let param_fields: Option<Vec<RecordTypeField>> = if let Type::Record(param_types) =
+                    at.to_type()
+                {
+                    let tuple_tys = param_types.iter().map(|field| field.ty).collect::<Vec<_>>();
+                    self.get_function_param_fields(&f_val, &tuple_tys)
+                        .or(Some(param_types))
+                } else if let Type::Tuple(tuple_tys) = at.to_type() {
+                    self.get_function_param_fields(&f_val, &tuple_tys)
+                } else {
+                    None
+                };
 
                 if let Some(param_types) = param_fields {
                     let fid_opt = match f_val.as_ref() {
@@ -2591,6 +2592,10 @@ impl Context {
 
                 let atvvec = if args.len() == 1 {
                     let (arg_val, ty) = evaluated_args.first().unwrap().clone();
+                    let is_empty_incomplete_record_arg = matches!(
+                        args[0].to_expr(),
+                        Expr::ImcompleteRecord(fields) if fields.is_empty()
+                    );
                     let should_unpack_single_arg = match f_to_call.as_ref() {
                         Value::Function(_) | Value::ExtFunction(_, _) => true,
                         Value::Global(v) => {
@@ -2610,6 +2615,37 @@ impl Context {
                         && ty.to_type().can_be_unpacked()
                     {
                         self.unpack_argument(f_to_call.clone(), arg_val, call_arg_ty, ty)
+                    } else if should_unpack_single_arg
+                        && is_empty_incomplete_record_arg
+                        && matches!(call_arg_ty.to_type(), Type::Record(ref fields) if !fields.is_empty())
+                    {
+                        let fields = match call_arg_ty.to_type() {
+                            Type::Record(fields) => fields,
+                            _ => unreachable!(),
+                        };
+                        let fid_opt = match f_to_call.as_ref() {
+                            Value::Function(fid) => Some(FunctionId(*fid as u64)),
+                            Value::Global(inner) => match inner.as_ref() {
+                                Value::Function(fid) => Some(FunctionId(*fid as u64)),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+
+                        let packed = fields
+                            .iter()
+                            .map(|field| {
+                                if !field.has_default {
+                                    return None;
+                                }
+                                let default_val = fid_opt
+                                    .and_then(|fid| self.get_default_arg_call(field.key, fid))?;
+                                (!matches!(default_val.as_ref(), Value::None))
+                                    .then_some((default_val, field.ty))
+                            })
+                            .collect::<Option<Vec<_>>>();
+
+                        packed.unwrap_or_else(|| vec![(arg_val, ty)])
                     } else if should_unpack_single_arg
                         && matches!(call_arg_ty.to_type(), Type::Record(ref fields) if fields.len() > 1)
                     {
@@ -4573,16 +4609,16 @@ impl MacroFileEnvGuard {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-        let previous = std::env::var_os(Self::KEY);
-        match file_path {
-            Some(path) => {
-                unsafe { std::env::set_var(Self::KEY, path) };
+            let previous = std::env::var_os(Self::KEY);
+            match file_path {
+                Some(path) => {
+                    unsafe { std::env::set_var(Self::KEY, path) };
+                }
+                None => {
+                    unsafe { std::env::remove_var(Self::KEY) };
+                }
             }
-            None => {
-                unsafe { std::env::remove_var(Self::KEY) };
-            }
-        }
-        Self { previous }
+            Self { previous }
         }
     }
 }
@@ -4596,10 +4632,10 @@ impl Drop for MacroFileEnvGuard {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-        match &self.previous {
-            Some(value) => unsafe { std::env::set_var(Self::KEY, value) },
-            None => unsafe { std::env::remove_var(Self::KEY) },
-        }
+            match &self.previous {
+                Some(value) => unsafe { std::env::set_var(Self::KEY, value) },
+                None => unsafe { std::env::remove_var(Self::KEY) },
+            }
         }
     }
 }

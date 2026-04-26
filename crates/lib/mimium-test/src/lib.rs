@@ -309,6 +309,29 @@ pub fn run_annotated_file_test_wasm(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_annotated_file_test_wasm_with_plugins(
+    path: &str,
+    with_scheduler: bool,
+) -> Result<(Vec<f64>, AnnotatedFileTestSpec), String> {
+    let (file, src) = load_src(path);
+    let spec = parse_annotated_file_test_spec(&src)?;
+
+    let result = run_source_with_scheduler_wasm(
+        &src,
+        Some(&file.to_string_lossy()),
+        spec.times,
+        with_scheduler,
+    );
+    match result {
+        Ok(samples) => Ok((samples, spec)),
+        Err(errs) => {
+            report(&src, file, &errs);
+            Err("Compilation/runtime failed for annotated WASM file test with plugins".to_string())
+        }
+    }
+}
+
 pub fn run_annotated_file_test_with_plugins(
     path: &str,
     with_scheduler: bool,

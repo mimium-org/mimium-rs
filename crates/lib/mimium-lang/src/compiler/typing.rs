@@ -1732,9 +1732,10 @@ impl InferContext {
     ) -> TypeNodeId {
         match body.to_expr() {
             Expr::Lambda(params, rtype, _) => {
-                let has_explicit_lambda_signature =
-                    params.iter().any(|param| !matches!(param.ty.to_type(), Type::Unknown))
-                        || rtype.is_some();
+                let has_explicit_lambda_signature = params
+                    .iter()
+                    .any(|param| !matches!(param.ty.to_type(), Type::Unknown))
+                    || rtype.is_some();
 
                 if has_explicit_lambda_signature || matches!(id.ty.to_type(), Type::Unknown) {
                     self.provisional_lambda_function_type(params.as_slice(), rtype, loc)
@@ -2573,6 +2574,10 @@ impl InferContext {
                     }
 
                     let try_record_default_pack = || -> Result<Option<TypeNodeId>, Vec<Error>> {
+                        let accepts_all_defaults = matches!(
+                            callee[0].to_expr(),
+                            Expr::ImcompleteRecord(fields) if fields.is_empty()
+                        );
                         let fn_ty = self.peel_to_inner(fnl);
                         let arg_ty_resolved = self.peel_to_inner(arg_ty);
                         let (fn_arg, fn_ret) = match fn_ty.to_type() {
@@ -2600,7 +2605,7 @@ impl InferContext {
                             }
                         }
 
-                        Ok(matched_any.then_some(fn_ret))
+                        Ok((matched_any || accepts_all_defaults).then_some(fn_ret))
                     };
 
                     if let Some(ret_ty) = try_record_default_pack()? {
@@ -3281,8 +3286,8 @@ fn dsp(){
 }
 "#;
 
-        let ext_fns = plugin::get_extfun_types(&[plugin::get_builtin_fns_as_plugins()])
-            .collect::<Vec<_>>();
+        let ext_fns =
+            plugin::get_extfun_types(&[plugin::get_builtin_fns_as_plugins()]).collect::<Vec<_>>();
         let macros = plugin::get_macro_functions(&[plugin::get_builtin_fns_as_plugins()])
             .collect::<Vec<_>>();
         let ctx = compiler::Context::new(
@@ -3377,10 +3382,8 @@ fn dsp(){
         .expect("fixture main should be written");
 
         let src = fs::read_to_string(&fixture_main).expect("fixture main should be readable");
-        let (_ast, module_info, parse_errs) = crate::compiler::parser::parse_to_expr(
-            &src,
-            Some(fixture_main.clone()),
-        );
+        let (_ast, module_info, parse_errs) =
+            crate::compiler::parser::parse_to_expr(&src, Some(fixture_main.clone()));
         assert!(parse_errs.is_empty(), "fixture should parse cleanly");
         assert!(
             module_info
@@ -3394,8 +3397,8 @@ fn dsp(){
                 .map(|name| name.as_str().to_string())
                 .collect::<Vec<_>>()
         );
-        let ext_fns = plugin::get_extfun_types(&[plugin::get_builtin_fns_as_plugins()])
-            .collect::<Vec<_>>();
+        let ext_fns =
+            plugin::get_extfun_types(&[plugin::get_builtin_fns_as_plugins()]).collect::<Vec<_>>();
         let macros = plugin::get_macro_functions(&[plugin::get_builtin_fns_as_plugins()])
             .collect::<Vec<_>>();
         let ctx = compiler::Context::new(
@@ -3454,7 +3457,9 @@ fn dsp(){
             .into_id(loc.clone());
         let let_expr = crate::ast::Expr::Let(pat, body, None).into_id(loc);
 
-        let ty = ctx.infer_type(let_expr).expect("type inference should succeed");
+        let ty = ctx
+            .infer_type(let_expr)
+            .expect("type inference should succeed");
         let ty = InferContext::substitute_type(ty);
 
         assert!(
@@ -3477,10 +3482,12 @@ fn dsp(){
         let body_lit = crate::ast::Expr::Literal(crate::ast::Literal::Float("1.0".to_symbol()))
             .into_id(loc.clone());
         let body = crate::ast::Expr::Let(pat, body_lit, None).into_id(loc.clone());
-        
+
         let lambda = crate::ast::Expr::Lambda(vec![], None, body).into_id(loc);
 
-        let ty = ctx.infer_type(lambda).expect("type inference should succeed");
+        let ty = ctx
+            .infer_type(lambda)
+            .expect("type inference should succeed");
         let ty = InferContext::substitute_type(ty);
 
         match ty.to_type() {
@@ -3518,10 +3525,12 @@ fn dsp(){
         let body_x = crate::ast::Expr::Literal(crate::ast::Literal::Float("1.0".to_symbol()))
             .into_id(loc.clone());
         let outer_let = crate::ast::Expr::Let(pat_x, body_x, Some(inner_let)).into_id(loc.clone());
-        
+
         let lambda = crate::ast::Expr::Lambda(vec![], None, outer_let).into_id(loc);
 
-        let ty = ctx.infer_type(lambda).expect("type inference should succeed");
+        let ty = ctx
+            .infer_type(lambda)
+            .expect("type inference should succeed");
         let ty = InferContext::substitute_type(ty);
 
         match ty.to_type() {
@@ -3552,10 +3561,12 @@ fn dsp(){
             Type::Unknown.into_id_with_location(loc.clone()),
         );
         let let_expr = crate::ast::Expr::Let(pat, call, None).into_id(loc.clone());
-        
+
         let lambda = crate::ast::Expr::Lambda(vec![], None, let_expr).into_id(loc);
 
-        let ty = ctx.infer_type(lambda).expect("type inference should succeed");
+        let ty = ctx
+            .infer_type(lambda)
+            .expect("type inference should succeed");
         let ty = InferContext::substitute_type(ty);
 
         match ty.to_type() {

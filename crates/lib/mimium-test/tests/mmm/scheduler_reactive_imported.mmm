@@ -1,4 +1,4 @@
-// @test {"times":10,"stereo":false,"expected":[0.0,1.0,1.0,1.0,2.0,2.0,2.0,3.0,3.0,3.0],"web":true}
+// @test {"times":10,"stereo":false,"expected":[0.0,1.0,1.0,1.0,2.0,2.0,2.0,3.0,3.0,3.0],"web":true,"plugins":true}
 
 use reactive::metro
 use modulation::*
