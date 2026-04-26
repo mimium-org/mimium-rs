@@ -1910,11 +1910,7 @@ impl Context {
         log::trace!("alloc_aggregates: items = {items:?}, ty = {alloc_ty:?}");
         let len = items.len();
         if len == 0 {
-            return (
-                Arc::new(Value::None),
-                Type::Record(vec![]).into_id(),
-                vec![],
-            );
+            return (Arc::new(Value::None), unit!(), vec![]);
         }
         let alloc_insert_point = self.get_current_basicblock().0.len();
         let dst = self.gen_new_register();
@@ -2887,23 +2883,23 @@ impl Context {
                 let is_global = self.get_ctxdata().func_i.0 == 0;
                 self.fn_label = Some(id.id);
                 let nextfunid = self.program.functions.len();
-                let t = self
+                let binding_ty = self
                     .typeenv
-                    .infer_type(e)
+                    .infer_type(*body)
                     .expect("type inference failed, should be an error at type checker stage");
-                let t = InferContext::substitute_type(t);
+                let binding_ty = InferContext::substitute_type(binding_ty);
 
                 let v = if is_global {
                     Arc::new(Value::Function(nextfunid))
                 } else {
-                    self.push_inst(Instruction::Alloc(t))
+                    self.push_inst(Instruction::Alloc(binding_ty))
                 };
                 let bind = (id.id, v.clone());
                 self.add_bind(bind);
                 let (b, _bt, states) = self.eval_expr(*body);
 
                 if !is_global {
-                    let _ = self.push_inst(Instruction::Store(v.clone(), b.clone(), t));
+                    let _ = self.push_inst(Instruction::Store(v.clone(), b.clone(), binding_ty));
                 }
                 if let Some(then_e) = then {
                     let (r, t, s) = self.eval_expr(*then_e);
