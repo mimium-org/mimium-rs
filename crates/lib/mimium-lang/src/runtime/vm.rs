@@ -844,9 +844,7 @@ impl Machine {
                         *upv = UpValue::Closed(ov_raw.to_vec(), is_closure);
                         is_closure.then_some(ov_raw[0])
                     }
-                    UpValue::Closed(v, is_closure) => {
-                        (*is_closure).then_some(v[0])
-                    }
+                    UpValue::Closed(v, is_closure) => (*is_closure).then_some(v[0]),
                 }
             })
             .collect::<Vec<_>>();

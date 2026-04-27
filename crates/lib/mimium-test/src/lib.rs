@@ -1,5 +1,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
+#[cfg(target_arch = "wasm32")]
+use include_dir::{Dir, DirEntry, include_dir};
 use mimium_audiodriver::{
     backends::local_buffer::LocalBufferDriver,
     driver::{Driver, RuntimeData},
@@ -18,6 +20,51 @@ use serde::Deserialize;
 
 #[cfg(not(target_arch = "wasm32"))]
 use mimium_lang::runtime::wasm::WasmRuntime;
+
+#[cfg(target_arch = "wasm32")]
+use std::sync::OnceLock;
+
+#[cfg(target_arch = "wasm32")]
+static TEST_FIXTURE_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/tests/mmm");
+
+#[cfg(target_arch = "wasm32")]
+static STDLIB_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../../lib");
+
+#[cfg(target_arch = "wasm32")]
+static WASM_TEST_CACHE_INIT: OnceLock<()> = OnceLock::new();
+
+#[cfg(target_arch = "wasm32")]
+fn seed_virtual_cache(dir: &Dir<'_>, root: &std::path::Path) {
+    dir.find("**/*.mmm")
+        .expect("fixture glob should be valid")
+        .for_each(|entry| {
+            let DirEntry::File(file) = entry else {
+                return;
+            };
+            let path = root.join(file.path());
+            let content = file
+                .contents_utf8()
+                .expect("test fixture should be valid UTF-8");
+            fileloader::put_virtual_file_cache(&path.to_string_lossy(), content)
+                .expect("failed to seed browser virtual cache");
+        });
+}
+
+#[cfg(target_arch = "wasm32")]
+fn ensure_wasm_test_virtual_cache() {
+    WASM_TEST_CACHE_INIT.get_or_init(|| {
+        let test_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = test_root
+            .parent()
+            .and_then(|path| path.parent())
+            .and_then(|path| path.parent())
+            .expect("failed to resolve workspace root");
+
+        fileloader::clear_virtual_file_cache().expect("failed to clear browser virtual cache");
+        seed_virtual_cache(&TEST_FIXTURE_DIR, &test_root.join("tests/mmm"));
+        seed_virtual_cache(&STDLIB_DIR, &workspace_root.join("lib"));
+    });
+}
 
 /// Check if WASM backend should be used based on MIMIUM_BACKEND environment variable.
 ///
@@ -207,6 +254,7 @@ pub fn load_src(path: &str) -> (PathBuf, String) {
     };
     #[cfg(target_arch = "wasm32")]
     let file = {
+        ensure_wasm_test_virtual_cache();
         let crate_root = fileloader::get_env("TEST_ROOT")
             .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
         format!("{}/tests/mmm/{}", crate_root, path)
@@ -305,6 +353,29 @@ pub fn run_annotated_file_test_wasm(
         Err(errs) => {
             report(&src, file, &errs);
             Err("Compilation/runtime failed for annotated WASM file test".to_string())
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_annotated_file_test_wasm_with_plugins(
+    path: &str,
+    with_scheduler: bool,
+) -> Result<(Vec<f64>, AnnotatedFileTestSpec), String> {
+    let (file, src) = load_src(path);
+    let spec = parse_annotated_file_test_spec(&src)?;
+
+    let result = run_source_with_scheduler_wasm(
+        &src,
+        Some(&file.to_string_lossy()),
+        spec.times,
+        with_scheduler,
+    );
+    match result {
+        Ok(samples) => Ok((samples, spec)),
+        Err(errs) => {
+            report(&src, file, &errs);
+            Err("Compilation/runtime failed for annotated WASM file test with plugins".to_string())
         }
     }
 }

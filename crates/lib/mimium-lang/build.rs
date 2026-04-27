@@ -4,6 +4,7 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rustc-env=TEST_ROOT={}", env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
     // When building tests (not on wasm32), ensure plugin cdylibs are built
     let target = env::var("TARGET").unwrap_or_default();
@@ -19,7 +20,6 @@ fn main() {
             println!("cargo:warning=Building plugin cdylibs for integration tests...");
 
             // Get the workspace root
-            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
             let workspace_root = manifest_dir
                 .parent()
                 .and_then(|p| p.parent())

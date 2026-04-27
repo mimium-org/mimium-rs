@@ -22,6 +22,8 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+      - name: Set up Chrome
+        uses: browser-actions/setup-chrome@v2
       - name: Cache cargo registry
         uses: actions/cache@v5
         with:
@@ -37,10 +39,10 @@ jobs:
       - name: Install wasm-pack
         run: which wasm-pack || cargo install wasm-pack
       - name: "mimium-test for web"
-        run: wasm-pack test --node
+        run: wasm-pack test --chrome --headless
         working-directory: crates/lib/mimium-test
       - name: "mimium-lang test for web"
-        run: wasm-pack test --node
+        run: wasm-pack test --chrome --headless
         working-directory: crates/lib/mimium-lang
 
       - name: Setup Node.js

@@ -1910,11 +1910,7 @@ impl Context {
         log::trace!("alloc_aggregates: items = {items:?}, ty = {alloc_ty:?}");
         let len = items.len();
         if len == 0 {
-            return (
-                Arc::new(Value::None),
-                Type::Record(vec![]).into_id(),
-                vec![],
-            );
+            return (Arc::new(Value::None), unit!(), vec![]);
         }
         let alloc_insert_point = self.get_current_basicblock().0.len();
         let dst = self.gen_new_register();
@@ -2007,16 +2003,17 @@ impl Context {
                 // directly.  Otherwise (e.g. after VM staging which produces
                 // Tuple-typed function args), recover parameter names from the
                 // MIR function definition.
-                let param_fields: Option<Vec<RecordTypeField>> =
-                    if let Type::Record(param_types) = at.to_type() {
-                        let tuple_tys = param_types.iter().map(|field| field.ty).collect::<Vec<_>>();
-                        self.get_function_param_fields(&f_val, &tuple_tys)
-                            .or(Some(param_types))
-                    } else if let Type::Tuple(tuple_tys) = at.to_type() {
-                        self.get_function_param_fields(&f_val, &tuple_tys)
-                    } else {
-                        None
-                    };
+                let param_fields: Option<Vec<RecordTypeField>> = if let Type::Record(param_types) =
+                    at.to_type()
+                {
+                    let tuple_tys = param_types.iter().map(|field| field.ty).collect::<Vec<_>>();
+                    self.get_function_param_fields(&f_val, &tuple_tys)
+                        .or(Some(param_types))
+                } else if let Type::Tuple(tuple_tys) = at.to_type() {
+                    self.get_function_param_fields(&f_val, &tuple_tys)
+                } else {
+                    None
+                };
 
                 if let Some(param_types) = param_fields {
                     let fid_opt = match f_val.as_ref() {
@@ -2595,6 +2592,10 @@ impl Context {
 
                 let atvvec = if args.len() == 1 {
                     let (arg_val, ty) = evaluated_args.first().unwrap().clone();
+                    let is_empty_incomplete_record_arg = matches!(
+                        args[0].to_expr(),
+                        Expr::ImcompleteRecord(fields) if fields.is_empty()
+                    );
                     let should_unpack_single_arg = match f_to_call.as_ref() {
                         Value::Function(_) | Value::ExtFunction(_, _) => true,
                         Value::Global(v) => {
@@ -2614,6 +2615,37 @@ impl Context {
                         && ty.to_type().can_be_unpacked()
                     {
                         self.unpack_argument(f_to_call.clone(), arg_val, call_arg_ty, ty)
+                    } else if should_unpack_single_arg
+                        && is_empty_incomplete_record_arg
+                        && matches!(call_arg_ty.to_type(), Type::Record(ref fields) if !fields.is_empty())
+                    {
+                        let fields = match call_arg_ty.to_type() {
+                            Type::Record(fields) => fields,
+                            _ => unreachable!(),
+                        };
+                        let fid_opt = match f_to_call.as_ref() {
+                            Value::Function(fid) => Some(FunctionId(*fid as u64)),
+                            Value::Global(inner) => match inner.as_ref() {
+                                Value::Function(fid) => Some(FunctionId(*fid as u64)),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+
+                        let packed = fields
+                            .iter()
+                            .map(|field| {
+                                if !field.has_default {
+                                    return None;
+                                }
+                                let default_val = fid_opt
+                                    .and_then(|fid| self.get_default_arg_call(field.key, fid))?;
+                                (!matches!(default_val.as_ref(), Value::None))
+                                    .then_some((default_val, field.ty))
+                            })
+                            .collect::<Option<Vec<_>>>();
+
+                        packed.unwrap_or_else(|| vec![(arg_val, ty)])
                     } else if should_unpack_single_arg
                         && matches!(call_arg_ty.to_type(), Type::Record(ref fields) if fields.len() > 1)
                     {
@@ -2887,23 +2919,23 @@ impl Context {
                 let is_global = self.get_ctxdata().func_i.0 == 0;
                 self.fn_label = Some(id.id);
                 let nextfunid = self.program.functions.len();
-                let t = self
+                let binding_ty = self
                     .typeenv
-                    .infer_type(e)
+                    .infer_type(*body)
                     .expect("type inference failed, should be an error at type checker stage");
-                let t = InferContext::substitute_type(t);
+                let binding_ty = InferContext::substitute_type(binding_ty);
 
                 let v = if is_global {
                     Arc::new(Value::Function(nextfunid))
                 } else {
-                    self.push_inst(Instruction::Alloc(t))
+                    self.push_inst(Instruction::Alloc(binding_ty))
                 };
                 let bind = (id.id, v.clone());
                 self.add_bind(bind);
                 let (b, _bt, states) = self.eval_expr(*body);
 
                 if !is_global {
-                    let _ = self.push_inst(Instruction::Store(v.clone(), b.clone(), t));
+                    let _ = self.push_inst(Instruction::Store(v.clone(), b.clone(), binding_ty));
                 }
                 if let Some(then_e) = then {
                     let (r, t, s) = self.eval_expr(*then_e);
@@ -4577,16 +4609,16 @@ impl MacroFileEnvGuard {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-        let previous = std::env::var_os(Self::KEY);
-        match file_path {
-            Some(path) => {
-                unsafe { std::env::set_var(Self::KEY, path) };
+            let previous = std::env::var_os(Self::KEY);
+            match file_path {
+                Some(path) => {
+                    unsafe { std::env::set_var(Self::KEY, path) };
+                }
+                None => {
+                    unsafe { std::env::remove_var(Self::KEY) };
+                }
             }
-            None => {
-                unsafe { std::env::remove_var(Self::KEY) };
-            }
-        }
-        Self { previous }
+            Self { previous }
         }
     }
 }
@@ -4600,10 +4632,10 @@ impl Drop for MacroFileEnvGuard {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-        match &self.previous {
-            Some(value) => unsafe { std::env::set_var(Self::KEY, value) },
-            None => unsafe { std::env::remove_var(Self::KEY) },
-        }
+            match &self.previous {
+                Some(value) => unsafe { std::env::set_var(Self::KEY, value) },
+                None => unsafe { std::env::remove_var(Self::KEY) },
+            }
         }
     }
 }

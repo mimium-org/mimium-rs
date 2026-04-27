@@ -348,9 +348,7 @@ impl GuiToolPlugin {
                 let (min, max) = Self::default_slider_range(*init);
                 self.build_slider_code_from_name(&label, *init, min, max)
             }
-            Value::Code(expr) => {
-                Value::Code(self.make_control_code_rec(*expr, current_path))
-            }
+            Value::Code(expr) => Value::Code(self.make_control_code_rec(*expr, current_path)),
             Value::Record(fields) => {
                 let record_fields = fields
                     .iter()
