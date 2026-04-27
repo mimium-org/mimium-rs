@@ -424,7 +424,10 @@ fn code_lam_finish_typed(machine: &mut Machine) -> ReturnCode {
     let params: Vec<TypedId> = (0..len as usize)
         .map(|i| {
             let sym = raw_to_symbol(machine, data[i]);
-            let ty = param_tys.get(i).copied().unwrap_or_else(|| Type::Unknown.into_id());
+            let ty = param_tys
+                .get(i)
+                .copied()
+                .unwrap_or_else(|| Type::Unknown.into_id());
             TypedId::new(sym, ty)
         })
         .collect();
@@ -512,7 +515,10 @@ fn code_lam_finish_defaults_typed(machine: &mut Machine) -> ReturnCode {
     let params: Vec<TypedId> = (0..names_len)
         .map(|i| {
             let sym = raw_to_symbol(machine, names_data[i]);
-            let ty = param_tys.get(i).copied().unwrap_or_else(|| Type::Unknown.into_id());
+            let ty = param_tys
+                .get(i)
+                .copied()
+                .unwrap_or_else(|| Type::Unknown.into_id());
             let mut param = TypedId::new(sym, ty);
 
             let has_default = mask_data
@@ -1037,9 +1043,17 @@ pub fn codegen_combinator_signatures() -> Vec<ExtClsInfo> {
         mk_cls("code_app1", code_app1, fty(vec![f, f], f)),
         mk_cls("code_app2", code_app2, fty(vec![f, f, f], f)),
         mk_cls("code_lam1_finish", code_lam1_finish, fty(vec![s, f], f)),
-        mk_cls("code_lam1_finish_typed", code_lam1_finish_typed, fty(vec![s, i, i, f], f)),
+        mk_cls(
+            "code_lam1_finish_typed",
+            code_lam1_finish_typed,
+            fty(vec![s, i, i, f], f),
+        ),
         mk_cls("code_lam_finish", code_lam_finish, fty(vec![as_, f], f)),
-        mk_cls("code_lam_finish_typed", code_lam_finish_typed, fty(vec![as_, Type::Array(i).into_id(), i, f], f)),
+        mk_cls(
+            "code_lam_finish_typed",
+            code_lam_finish_typed,
+            fty(vec![as_, Type::Array(i).into_id(), i, f], f),
+        ),
         mk_cls(
             "code_lam_finish_defaults",
             code_lam_finish_defaults,
@@ -1053,7 +1067,11 @@ pub fn codegen_combinator_signatures() -> Vec<ExtClsInfo> {
         mk_cls("code_let", code_let, fty(vec![s, f, f], f)),
         mk_cls("code_let_tuple", code_let_tuple, fty(vec![as_, f, f], f)),
         mk_cls("code_letrec", code_letrec, fty(vec![s, f, f], f)),
-        mk_cls("code_letrec_typed", code_letrec_typed, fty(vec![s, i, f, f], f)),
+        mk_cls(
+            "code_letrec_typed",
+            code_letrec_typed,
+            fty(vec![s, i, f, f], f),
+        ),
         mk_cls("code_if", code_if, fty(vec![f, f, f], f)),
         mk_cls("code_tuple", code_tuple, fty(vec![af], f)),
         mk_cls("code_proj", code_proj, fty(vec![f, i], f)),

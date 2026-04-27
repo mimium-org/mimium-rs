@@ -6,6 +6,8 @@ use mimium_lang::{ExecContext, plugin::Plugin};
 use mimium_test::*;
 use wasm_bindgen_test::*;
 
+wasm_bindgen_test_configure!(run_in_browser);
+
 #[wasm_bindgen_test(unsupported = test)]
 fn scheduler_global_recursion() {
     let res = run_file_with_scheduler("scheduler_global_recursion.mmm", 10).unwrap();

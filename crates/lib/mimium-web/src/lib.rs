@@ -61,7 +61,15 @@ impl Context {
     fn compile_inner(&mut self, src: String) -> Result<(), JsValue> {
         let (sender, receiver) = mpsc::channel();
         let mut ctx = get_default_context();
+        let effective_sample_rate = if self.config.sample_rate > 0.0 {
+            self.config.sample_rate as u32
+        } else {
+            48_000
+        };
         let mut driver = LocalBufferDriver::new(self.config.buffer_size as usize);
+        driver.set_sample_rate(mimium_audiodriver::driver::SampleRate::from(
+            effective_sample_rate,
+        ));
         ctx.add_plugin(driver.get_as_plugin());
 
         let prepare_result = ctx.prepare_machine(src.as_str());
@@ -84,7 +92,7 @@ impl Context {
         let iochannels = driver.init(
             runtimedata,
             Some(mimium_audiodriver::driver::SampleRate::from(
-                self.config.sample_rate as u32,
+                effective_sample_rate,
             )),
         );
         let (ichannels, ochannels) = iochannels.map_or((0, 0), |io| (io.input, io.output));
@@ -181,7 +189,15 @@ impl Context {
 
     fn recompile_inner(&mut self, src: String) -> Result<(), JsValue> {
         let mut ctx = get_default_context();
-        let driver = LocalBufferDriver::new(self.config.buffer_size as usize);
+        let effective_sample_rate = if self.config.sample_rate > 0.0 {
+            self.config.sample_rate as u32
+        } else {
+            48_000
+        };
+        let mut driver = LocalBufferDriver::new(self.config.buffer_size as usize);
+        driver.set_sample_rate(mimium_audiodriver::driver::SampleRate::from(
+            effective_sample_rate,
+        ));
         ctx.add_plugin(driver.get_as_plugin());
         let prepare_result = ctx.prepare_machine(src.as_str());
         if let Err(e) = prepare_result {

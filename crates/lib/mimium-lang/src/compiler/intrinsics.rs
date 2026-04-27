@@ -2,6 +2,8 @@ use std::cell::LazyCell;
 
 use crate::interner::{Symbol, ToSymbol};
 
+pub(crate) const OP_INTRINSIC_MARKER_NS: &str = "__mimium_op_intrinsic";
+
 // unary
 pub(crate) const NEG: &str = "neg";
 pub(crate) const TOFLOAT: &str = "tofloat";

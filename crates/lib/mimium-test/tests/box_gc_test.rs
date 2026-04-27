@@ -1,6 +1,8 @@
 use mimium_test::*;
 use wasm_bindgen_test::*;
 
+wasm_bindgen_test_configure!(run_in_browser);
+
 // Test that boxed heap objects are properly garbage collected
 // by running the same program multiple times and checking that
 // the heap size doesn't grow unboundedly

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use super::intrinsics;
 use crate::ast::operators::Op;
 use crate::ast::program::QualifiedPath;
 use crate::ast::{Expr, Literal, RecordField};
@@ -11,7 +12,7 @@ use crate::utils::metadata::Location;
 use crate::utils::miniprint::MiniPrint;
 pub type Error = SimpleError;
 
-const OP_INTRINSIC_MARKER_NS: &str = "__mimium_op_intrinsic";
+const OP_INTRINSIC_MARKER_NS: &str = intrinsics::OP_INTRINSIC_MARKER_NS;
 
 #[derive(Clone)]
 struct ConvertResult {

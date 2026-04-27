@@ -57,6 +57,8 @@ mod test {
     use crate::utils::fileloader;
     use wasm_bindgen_test::*;
 
+    wasm_bindgen_test_configure!(run_in_browser);
+
     fn normalize_test_path(path: &str) -> String {
         use std::path::Component;
 
@@ -78,13 +80,23 @@ mod test {
             .into_owned()
     }
 
+    fn setup_file() -> String {
+        let file = normalize_test_path(&format!(
+            "{}/../mimium-test/tests/mmm/error_include_itself.mmm",
+            env!("TEST_ROOT")
+        ));
+        let source = r#"include("error_include_itself.mmm")
+fn dsp(){
+    0.0
+}"#;
+        fileloader::clear_virtual_file_cache().expect("clear cache failed");
+        fileloader::put_virtual_file_cache(&file, source).expect("put cache failed");
+        file
+    }
+
     #[wasm_bindgen_test]
     fn test_resolve_include() {
-        let file = normalize_test_path(&format!(
-            "{}/../mimium-test/tests/mmm/{}",
-            fileloader::get_env("TEST_ROOT").expect("TEST_ROOT is not set"),
-            "error_include_itself.mmm"
-        ));
+        let file = setup_file();
         let (res, errs) = resolve_include(&file, "error_include_itself.mmm", 0..0);
         let id = res.program;
         assert_eq!(errs.len(), 1);

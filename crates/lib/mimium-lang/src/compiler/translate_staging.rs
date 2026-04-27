@@ -30,6 +30,7 @@
 //!   when hitting `Escape(inner)`, switch back to `translate_stage0(inner)`.
 
 use crate::ast::{Expr, Literal, MatchArm, MatchPattern, RecordField};
+use crate::compiler::intrinsics;
 use crate::interner::{ExprNodeId, Symbol, ToSymbol, TypeNodeId};
 use crate::pattern::{Pattern, TypedId, TypedPattern};
 use crate::types::Type;
@@ -46,12 +47,27 @@ pub fn translate(expr: ExprNodeId) -> ExprNodeId {
     translate_stage0(expr)
 }
 
+fn mangle_qualified_segments(segments: &[Symbol]) -> Symbol {
+    match segments {
+        [] => "".to_symbol(),
+        [ns, name] if ns.as_str() == intrinsics::OP_INTRINSIC_MARKER_NS => *name,
+        [single] => *single,
+        _ => segments
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("$")
+            .to_symbol(),
+    }
+}
+
 fn type_id_to_int_literal(ty: TypeNodeId) -> ExprNodeId {
     Expr::Literal(Literal::Int(ty.0.data().as_ffi() as i64)).into_id_without_span()
 }
 
 fn type_ids_to_int_array_literal(types: impl IntoIterator<Item = TypeNodeId>) -> ExprNodeId {
-    Expr::ArrayLiteral(types.into_iter().map(type_id_to_int_literal).collect()).into_id_without_span()
+    Expr::ArrayLiteral(types.into_iter().map(type_id_to_int_literal).collect())
+        .into_id_without_span()
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +87,7 @@ fn type_ids_to_int_array_literal(types: impl IntoIterator<Item = TypeNodeId>) ->
 /// the top level or nested inside function/tuple/record types — must be
 /// rewritten so the stage-0 type checker sees `Numeric` instead of `Code(T)`.
 fn strip_code_type(ty: TypeNodeId) -> TypeNodeId {
-    use crate::types::{PType, RecordTypeField};
+    use crate::types::RecordTypeField;
     match ty.to_type() {
         Type::Code(_) => crate::numeric!(),
         Type::Function { arg, ret } => {
@@ -257,7 +273,11 @@ fn translate_stage0(expr: ExprNodeId) -> ExprNodeId {
         }
 
         // Leaves: literals, variables, errors — return as-is.
-        Expr::Literal(_) | Expr::Var(_) | Expr::QualifiedVar(_) | Expr::Error => expr,
+        Expr::Literal(_) | Expr::Var(_) | Expr::Error => expr,
+        Expr::QualifiedVar(path) => {
+            let mangled = mangle_qualified_segments(&path.segments);
+            Expr::Var(mangled).into_id_without_span()
+        }
 
         // These should already be desugared before this pass.
         Expr::BinOp(..) | Expr::UniOp(..) | Expr::MacroExpand(..) => {
@@ -376,7 +396,8 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
         Expr::Lambda(params, _rtype, body) => {
             let translated_body = translate_code(body);
             let param_types = type_ids_to_int_array_literal(params.iter().map(|p| p.ty));
-            let return_type = type_id_to_int_literal(_rtype.unwrap_or_else(|| Type::Unknown.into_id()));
+            let return_type =
+                type_id_to_int_literal(_rtype.unwrap_or_else(|| Type::Unknown.into_id()));
             let has_default_params = params.iter().any(|p| p.default_value.is_some());
             if has_default_params {
                 let name_lits: Vec<ExprNodeId> =
@@ -411,7 +432,14 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
                 let defaults_arr = Expr::ArrayLiteral(default_codes).into_id_without_span();
                 make_apply(
                     "code_lam_finish_defaults_typed",
-                    vec![names_arr, param_types, mask_arr, defaults_arr, return_type, translated_body],
+                    vec![
+                        names_arr,
+                        param_types,
+                        mask_arr,
+                        defaults_arr,
+                        return_type,
+                        translated_body,
+                    ],
                 )
             } else {
                 match params.len() {
@@ -439,9 +467,7 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
         // -- Let binding ----------------------------------------------------
         Expr::Let(tp, val, then) => {
             let translated_val = translate_code(val);
-            let translated_body = then
-                .map(translate_code)
-                .unwrap_or_else(|| pattern_to_var_code(&tp.pat));
+            let translated_body = then.map(translate_code).unwrap_or_else(code_unit_expr);
             translate_let_pattern(&tp.pat, translated_val, translated_body)
         }
 
@@ -450,37 +476,18 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
             let name_lit = sym_to_string_literal(id.id);
             let type_lit = type_id_to_int_literal(id.ty);
             let translated_val = translate_code(val);
-            match then {
-                Some(body) => {
-                    let translated_body = translate_code(body);
-                    make_apply(
-                        "code_letrec_typed",
-                        vec![name_lit, type_lit, translated_val, translated_body],
-                    )
-                }
-                None => {
-                    let var_ref = make_apply_str("code_var", id.id);
-                    make_apply(
-                        "code_letrec_typed",
-                        vec![name_lit, type_lit, translated_val, var_ref],
-                    )
-                }
-            }
+            let translated_body = then.map(translate_code).unwrap_or_else(code_unit_expr);
+            make_apply(
+                "code_letrec_typed",
+                vec![name_lit, type_lit, translated_val, translated_body],
+            )
         }
 
         // -- If expression --------------------------------------------------
         Expr::If(cond, then, else_opt) => {
             let translated_cond = translate_code(cond);
             let translated_then = translate_code(then);
-            let translated_else = else_opt
-                .map(translate_code)
-                // When there is no else branch, generate `code_lit_f(0.0)` as
-                // a placeholder unit-like value.
-                .unwrap_or_else(|| {
-                    let zero =
-                        Expr::Literal(Literal::Float("0.0".to_symbol())).into_id_without_span();
-                    make_apply1("code_lit_f", zero)
-                });
+            let translated_else = else_opt.map(translate_code).unwrap_or_else(code_unit_expr);
             make_apply(
                 "code_if",
                 vec![translated_cond, translated_then, translated_else],
@@ -567,11 +574,7 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
                 let translated = translate_code(e);
                 make_apply1("code_block", translated)
             }
-            None => {
-                // Empty block: produce a placeholder.
-                let zero = Expr::Literal(Literal::Float("0.0".to_symbol())).into_id_without_span();
-                make_apply1("code_lit_f", zero)
-            }
+            None => code_unit_expr(),
         },
 
         // -- Match ----------------------------------------------------------
@@ -582,9 +585,9 @@ fn translate_code(expr: ExprNodeId) -> ExprNodeId {
         Expr::Paren(inner) => translate_code(inner),
 
         // -- Nodes that should not appear inside brackets -------------------
-        Expr::QualifiedVar(_) => {
-            log::warn!("translate_staging: QualifiedVar in translate_code");
-            expr
+        Expr::QualifiedVar(path) => {
+            let mangled = mangle_qualified_segments(&path.segments);
+            make_apply_str("code_var", mangled)
         }
         Expr::BinOp(..) | Expr::UniOp(..) | Expr::MacroExpand(..) => {
             log::warn!("translate_staging: desugared-only node in translate_code");
@@ -733,6 +736,12 @@ fn make_apply_str(name: &str, sym: Symbol) -> ExprNodeId {
     make_apply1(name, lit)
 }
 
+/// Create stage-0 code that rebuilds a unit value as `Tuple([])`.
+fn code_unit_expr() -> ExprNodeId {
+    let empty = Expr::ArrayLiteral(vec![]).into_id_without_span();
+    make_apply1("code_tuple", empty)
+}
+
 /// Create a `Literal::String(sym)` expression node.
 fn sym_to_string_literal(sym: Symbol) -> ExprNodeId {
     Expr::Literal(Literal::String(sym)).into_id_without_span()
@@ -851,42 +860,6 @@ fn translate_let_tuple_pattern(
 
     let names_arr = Expr::ArrayLiteral(top_names).into_id_without_span();
     make_apply("code_let_tuple", vec![names_arr, translated_val, body])
-}
-
-/// Produce a code value representing the pattern's variables.
-///
-/// For `Single(x)` → `code_var(x)`.  For `Tuple(a, b)` → `code_tuple([code_var(a), code_var(b)])`.
-fn pattern_to_var_code(pat: &Pattern) -> ExprNodeId {
-    match pat {
-        Pattern::Single(name) => make_apply_str("code_var", *name),
-        Pattern::Placeholder => {
-            // Placeholder without body — produce a unit-like value.
-            let zero = Expr::Literal(Literal::Float("0.0".to_symbol())).into_id_without_span();
-            make_apply1("code_lit_f", zero)
-        }
-        Pattern::Tuple(pats) => {
-            let var_refs: Vec<ExprNodeId> = pats.iter().map(pattern_to_var_code).collect();
-            let arr = Expr::ArrayLiteral(var_refs).into_id_without_span();
-            make_apply1("code_tuple", arr)
-        }
-        Pattern::Record(fields) => {
-            let names: Vec<ExprNodeId> = fields
-                .iter()
-                .map(|(name, _)| sym_to_string_literal(*name))
-                .collect();
-            let vals: Vec<ExprNodeId> = fields
-                .iter()
-                .map(|(_, pat)| pattern_to_var_code(pat))
-                .collect();
-            let names_arr = Expr::ArrayLiteral(names).into_id_without_span();
-            let vals_arr = Expr::ArrayLiteral(vals).into_id_without_span();
-            make_apply("code_record", vec![names_arr, vals_arr])
-        }
-        Pattern::Error => {
-            let zero = Expr::Literal(Literal::Float("0.0".to_symbol())).into_id_without_span();
-            make_apply1("code_lit_f", zero)
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1012,6 +985,67 @@ mod tests {
                 }
             }
             other => panic!("expected Apply(code_lam1_finish_typed, ...), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn let_without_then_translates_to_unit_body() {
+        let pat = TypedPattern::new(Pattern::Placeholder, unknown_ty());
+        let value = Expr::Literal(Literal::Float("1.0".to_symbol())).into_id_without_span();
+        let let_expr = Expr::Let(pat, value, None).into_id_without_span();
+        let bracket = Expr::Bracket(let_expr).into_id_without_span();
+
+        let result = translate(bracket);
+        match result.to_expr() {
+            Expr::Apply(func, args) => {
+                assert!(matches!(func.to_expr(), Expr::Var(name) if name.as_str() == "code_let"));
+                assert_eq!(args.len(), 3);
+                match args[2].to_expr() {
+                    Expr::Apply(unit_func, unit_args) => {
+                        assert!(
+                            matches!(unit_func.to_expr(), Expr::Var(name) if name.as_str() == "code_tuple")
+                        );
+                        assert_eq!(unit_args.len(), 1);
+                        assert!(
+                            matches!(unit_args[0].to_expr(), Expr::ArrayLiteral(items) if items.is_empty())
+                        );
+                    }
+                    other => panic!("expected code_tuple([]) as let body, got {other:?}"),
+                }
+            }
+            other => panic!("expected Apply(code_let, ...), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn letrec_without_then_translates_to_unit_body() {
+        let id = TypedId::new("loop_fn".to_symbol(), unknown_ty());
+        let literal = Expr::Literal(Literal::Float("1.0".to_symbol())).into_id_without_span();
+        let lambda = Expr::Lambda(vec![], None, literal).into_id_without_span();
+        let letrec = Expr::LetRec(id, lambda, None).into_id_without_span();
+        let bracket = Expr::Bracket(letrec).into_id_without_span();
+
+        let result = translate(bracket);
+        match result.to_expr() {
+            Expr::Apply(func, args) => {
+                assert!(
+                    matches!(func.to_expr(), Expr::Var(name) if name.as_str() == "code_letrec_typed")
+                );
+                assert_eq!(args.len(), 4);
+                match args[3].to_expr() {
+                    Expr::Apply(unit_func, unit_args) => {
+                        assert!(
+                            matches!(unit_func.to_expr(), Expr::Var(name) if name.as_str() == "code_tuple")
+                        );
+                        assert_eq!(unit_args.len(), 1);
+                        assert!(
+                            matches!(unit_args[0].to_expr(), Expr::ArrayLiteral(items) if items.is_empty())
+                        );
+                    }
+                    other => panic!("expected code_tuple([]) as letrec body, got {other:?}"),
+                }
+            }
+            other => panic!("expected Apply(code_letrec_typed, ...), got {other:?}"),
         }
     }
 

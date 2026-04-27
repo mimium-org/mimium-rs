@@ -650,8 +650,7 @@ impl WasmGenerator {
         self.type_section
             .ty()
             .function(vec![ValType::I64], vec![ValType::F64]);
-        self.rt.builtin_length_array =
-            self.add_import_from("builtin", "len", type_idx_i64_f64);
+        self.rt.builtin_length_array = self.add_import_from("builtin", "len", type_idx_i64_f64);
 
         // Type: (i64, i32) -> () for split_head / split_tail
         //   arg1: array handle (i64),  arg2: destination pointer (i32)

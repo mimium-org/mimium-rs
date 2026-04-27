@@ -1,0 +1,14 @@
+// @test {"times":10,"stereo":false,"expected":[0.0,1.0,1.0,1.0,2.0,2.0,2.0,3.0,3.0,3.0],"web":true,"plugins":true}
+
+use reactive::metro
+use modulation::*
+
+fn counter(){
+    self+1.0
+}
+
+let myv = metro(3.0, counter);
+
+fn dsp(){
+    myv()
+}

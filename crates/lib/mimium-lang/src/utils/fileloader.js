@@ -21,15 +21,24 @@ if (isNode) {
 const DEFAULT_GITHUB_LIB_BASE = 'https://raw.githubusercontent.com/mimium-org/mimium-rs/';
 const DEFAULT_GITHUB_TAG = 'dev';
 const LIB_FILES = [
+  'composition.mmm',
   'core.mmm',
   'delay.mmm',
+  'drive.mmm',
+  'dynamics.mmm',
   'env.mmm',
   'filter.mmm',
   'math.mmm',
+  'mininotation.mmm',
+  'modulation.mmm',
   'noise.mmm',
   'osc.mmm',
+  'parser.mmm',
+  'pattern.mmm',
   'reactive.mmm',
-  'reverb.mmm'
+  'reverb.mmm',
+  'sequencer.mmm',
+  'space.mmm'
 ];
 
 const memoryCache = new Map();
@@ -145,6 +154,11 @@ function getTagFromBaseUrl(baseUrl) {
   const suffix = normalized.slice(markerIdx + marker.length);
   const tag = suffix.split('/')[0];
   return tag || DEFAULT_GITHUB_TAG;
+}
+
+function isMutableGitRefTag(tag) {
+  const normalized = (tag || '').toLowerCase();
+  return normalized === 'dev' || normalized === 'main' || normalized === 'master' || normalized === 'head';
 }
 
 function getCacheDirName() {
@@ -289,6 +303,8 @@ async function preload_mimium_lib_cache(base_url) {
       : `${DEFAULT_GITHUB_LIB_BASE}${DEFAULT_GITHUB_TAG}/lib/`;
   const normalizedBaseUrl = normalizeBaseUrlCandidate(baseUrlCandidate);
   const baseUrl = normalizedBaseUrl.endsWith('/') ? normalizedBaseUrl : `${normalizedBaseUrl}/`;
+  const resolvedTag = getTagFromBaseUrl(baseUrl);
+  const shouldRefreshMutableRef = isMutableGitRefTag(resolvedTag);
   globalThis.__mimium_lib_base_url = baseUrl;
   lastPreloadBaseUrl = baseUrl;
 
@@ -304,14 +320,22 @@ async function preload_mimium_lib_cache(base_url) {
     }
 
     const fromOpfs = await readFromOpfs(filename);
-    if (fromOpfs !== null) {
+    if (!shouldRefreshMutableRef && fromOpfs !== null) {
       putMemoryAliases(filename, fromOpfs);
       continue;
     }
 
-    const fetched = await fetchLibFile(baseUrl, filename);
-    putMemoryAliases(filename, fetched);
-    await writeToOpfs(filename, fetched);
+    try {
+      const fetched = await fetchLibFile(baseUrl, filename);
+      putMemoryAliases(filename, fetched);
+      await writeToOpfs(filename, fetched);
+    } catch (e) {
+      if (fromOpfs !== null) {
+        putMemoryAliases(filename, fromOpfs);
+        continue;
+      }
+      throw e;
+    }
   }
 }
 

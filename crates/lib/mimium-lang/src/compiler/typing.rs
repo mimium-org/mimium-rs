@@ -1732,9 +1732,10 @@ impl InferContext {
     ) -> TypeNodeId {
         match body.to_expr() {
             Expr::Lambda(params, rtype, _) => {
-                let has_explicit_lambda_signature =
-                    params.iter().any(|param| !matches!(param.ty.to_type(), Type::Unknown))
-                        || rtype.is_some();
+                let has_explicit_lambda_signature = params
+                    .iter()
+                    .any(|param| !matches!(param.ty.to_type(), Type::Unknown))
+                    || rtype.is_some();
 
                 if has_explicit_lambda_signature || matches!(id.ty.to_type(), Type::Unknown) {
                     self.provisional_lambda_function_type(params.as_slice(), rtype, loc)
@@ -1948,6 +1949,7 @@ impl InferContext {
             _ => t.apply_fn(Self::substitute_type),
         }
     }
+
     fn substitute_all_intermediates(&mut self) {
         let mut e_list = self
             .result_memo
@@ -2229,6 +2231,7 @@ impl InferContext {
     fn infer_vec(&mut self, e: &[ExprNodeId]) -> Result<Vec<TypeNodeId>, Vec<Error>> {
         e.iter().map(|e| self.infer_type(*e)).try_collect()
     }
+
     fn infer_type_levelup(&mut self, e: ExprNodeId) -> TypeNodeId {
         self.level += 1;
         let res = self.infer_type_unwrapping(e);
@@ -2244,7 +2247,11 @@ impl InferContext {
         let res: Result<TypeNodeId, Vec<Error>> = match &e.to_expr() {
             Expr::Literal(l) => Self::infer_type_literal(l, loc).map_err(|e| vec![e]),
             Expr::Tuple(e) => {
-                Ok(Type::Tuple(self.infer_vec(e.as_slice())?).into_id_with_location(loc))
+                if e.is_empty() {
+                    Ok(Type::Primitive(PType::Unit).into_id_with_location(loc))
+                } else {
+                    Ok(Type::Tuple(self.infer_vec(e.as_slice())?).into_id_with_location(loc))
+                }
             }
             Expr::ArrayLiteral(e) => {
                 let elem_types = self.infer_vec(e.as_slice())?;
@@ -2534,6 +2541,7 @@ impl InferContext {
             }
             Expr::Apply(fun, callee) => {
                 let loc_f = fun.to_location();
+
                 if callee.len() == 2 && self.try_get_tuple_arithmetic_binop_label(*fun).is_some() {
                     let lhs_ty = self.infer_type_unwrapping(callee[0]);
                     let rhs_ty = self.infer_type_unwrapping(callee[1]);
@@ -2566,6 +2574,10 @@ impl InferContext {
                     }
 
                     let try_record_default_pack = || -> Result<Option<TypeNodeId>, Vec<Error>> {
+                        let accepts_all_defaults = matches!(
+                            callee[0].to_expr(),
+                            Expr::ImcompleteRecord(fields) if fields.is_empty()
+                        );
                         let fn_ty = self.peel_to_inner(fnl);
                         let arg_ty_resolved = self.peel_to_inner(arg_ty);
                         let (fn_arg, fn_ret) = match fn_ty.to_type() {
@@ -2593,7 +2605,7 @@ impl InferContext {
                             }
                         }
 
-                        Ok(matched_any.then_some(fn_ret))
+                        Ok((matched_any || accepts_all_defaults).then_some(fn_ret))
                     };
 
                     if let Some(ret_ty) = try_record_default_pack()? {
@@ -3274,8 +3286,8 @@ fn dsp(){
 }
 "#;
 
-        let ext_fns = plugin::get_extfun_types(&[plugin::get_builtin_fns_as_plugins()])
-            .collect::<Vec<_>>();
+        let ext_fns =
+            plugin::get_extfun_types(&[plugin::get_builtin_fns_as_plugins()]).collect::<Vec<_>>();
         let macros = plugin::get_macro_functions(&[plugin::get_builtin_fns_as_plugins()])
             .collect::<Vec<_>>();
         let ctx = compiler::Context::new(
@@ -3370,10 +3382,8 @@ fn dsp(){
         .expect("fixture main should be written");
 
         let src = fs::read_to_string(&fixture_main).expect("fixture main should be readable");
-        let (_ast, module_info, parse_errs) = crate::compiler::parser::parse_to_expr(
-            &src,
-            Some(fixture_main.clone()),
-        );
+        let (_ast, module_info, parse_errs) =
+            crate::compiler::parser::parse_to_expr(&src, Some(fixture_main.clone()));
         assert!(parse_errs.is_empty(), "fixture should parse cleanly");
         assert!(
             module_info
@@ -3387,8 +3397,8 @@ fn dsp(){
                 .map(|name| name.as_str().to_string())
                 .collect::<Vec<_>>()
         );
-        let ext_fns = plugin::get_extfun_types(&[plugin::get_builtin_fns_as_plugins()])
-            .collect::<Vec<_>>();
+        let ext_fns =
+            plugin::get_extfun_types(&[plugin::get_builtin_fns_as_plugins()]).collect::<Vec<_>>();
         let macros = plugin::get_macro_functions(&[plugin::get_builtin_fns_as_plugins()])
             .collect::<Vec<_>>();
         let ctx = compiler::Context::new(
@@ -3415,5 +3425,162 @@ fn dsp(){
             printed.contains("split_head$arity5"),
             "imported staged split_head should specialize for full Event width, got MIR:\n{printed}"
         );
+    }
+
+    #[test]
+    fn test_empty_tuple_literal_is_inferred_as_unit() {
+        let mut ctx = create_test_context();
+        let loc = create_test_location();
+        let expr = crate::ast::Expr::Tuple(vec![]).into_id(loc);
+
+        let ty = ctx.infer_type(expr).expect("type inference should succeed");
+        let ty = InferContext::substitute_type(ty);
+
+        assert!(
+            matches!(ty.to_type(), Type::Primitive(crate::types::PType::Unit)),
+            "empty tuple literal should infer to unit, got {:?}",
+            ty.to_type()
+        );
+    }
+
+    #[test]
+    fn test_let_with_no_then_clause_is_unit() {
+        let mut ctx = create_test_context();
+        let loc = create_test_location();
+
+        // Create: let x = 1.0;  (no then clause)
+        let pat = TypedPattern::new(
+            Pattern::Single("x".to_symbol()),
+            Type::Unknown.into_id_with_location(loc.clone()),
+        );
+        let body = crate::ast::Expr::Literal(crate::ast::Literal::Float("1.0".to_symbol()))
+            .into_id(loc.clone());
+        let let_expr = crate::ast::Expr::Let(pat, body, None).into_id(loc);
+
+        let ty = ctx
+            .infer_type(let_expr)
+            .expect("type inference should succeed");
+        let ty = InferContext::substitute_type(ty);
+
+        assert!(
+            matches!(ty.to_type(), Type::Primitive(crate::types::PType::Unit)),
+            "let with no then clause should infer to unit, got {:?}",
+            ty.to_type()
+        );
+    }
+
+    #[test]
+    fn test_lambda_with_let_body_has_unit_return_type() {
+        let mut ctx = create_test_context();
+        let loc = create_test_location();
+
+        // Create lambda with Let body: || { let x = 1.0; }
+        let pat = TypedPattern::new(
+            Pattern::Single("x".to_symbol()),
+            Type::Unknown.into_id_with_location(loc.clone()),
+        );
+        let body_lit = crate::ast::Expr::Literal(crate::ast::Literal::Float("1.0".to_symbol()))
+            .into_id(loc.clone());
+        let body = crate::ast::Expr::Let(pat, body_lit, None).into_id(loc.clone());
+
+        let lambda = crate::ast::Expr::Lambda(vec![], None, body).into_id(loc);
+
+        let ty = ctx
+            .infer_type(lambda)
+            .expect("type inference should succeed");
+        let ty = InferContext::substitute_type(ty);
+
+        match ty.to_type() {
+            Type::Function { arg: _, ret } => {
+                let ret_resolved = InferContext::substitute_type(ret);
+                assert!(
+                    matches!(ret_resolved.to_type(), Type::Primitive(PType::Unit)),
+                    "lambda body is Let with no then, should return unit, got {:?}",
+                    ret_resolved.to_type()
+                );
+            }
+            _ => panic!("Expected lambda type, got {:?}", ty.to_type()),
+        }
+    }
+
+    #[test]
+    fn test_lambda_with_nested_let_multiple_statements() {
+        let mut ctx = create_test_context();
+        let loc = create_test_location();
+
+        // Create lambda body: let x = 1.0; let y = 2.0;
+        // This is parsed as: Let(x, 1.0, Some(Let(y, 2.0, None)))
+        let pat_y = TypedPattern::new(
+            Pattern::Single("y".to_symbol()),
+            Type::Unknown.into_id_with_location(loc.clone()),
+        );
+        let body_y = crate::ast::Expr::Literal(crate::ast::Literal::Float("2.0".to_symbol()))
+            .into_id(loc.clone());
+        let inner_let = crate::ast::Expr::Let(pat_y, body_y, None).into_id(loc.clone());
+
+        let pat_x = TypedPattern::new(
+            Pattern::Single("x".to_symbol()),
+            Type::Unknown.into_id_with_location(loc.clone()),
+        );
+        let body_x = crate::ast::Expr::Literal(crate::ast::Literal::Float("1.0".to_symbol()))
+            .into_id(loc.clone());
+        let outer_let = crate::ast::Expr::Let(pat_x, body_x, Some(inner_let)).into_id(loc.clone());
+
+        let lambda = crate::ast::Expr::Lambda(vec![], None, outer_let).into_id(loc);
+
+        let ty = ctx
+            .infer_type(lambda)
+            .expect("type inference should succeed");
+        let ty = InferContext::substitute_type(ty);
+
+        match ty.to_type() {
+            Type::Function { arg: _, ret } => {
+                let ret_resolved = InferContext::substitute_type(ret);
+                assert!(
+                    matches!(ret_resolved.to_type(), Type::Primitive(PType::Unit)),
+                    "lambda body is Let with Let in then clause (final Let has no then), should return unit, got {:?}",
+                    ret_resolved.to_type()
+                );
+            }
+            _ => panic!("Expected lambda type, got {:?}", ty.to_type()),
+        }
+    }
+
+    #[test]
+    fn test_lambda_with_let_and_call_expression() {
+        let mut ctx = create_test_context();
+        let loc = create_test_location();
+
+        // Build: let _ = some_call();
+        // where some_call is represented as a variable reference
+        let call_var = crate::ast::Expr::Var("f".to_symbol()).into_id(loc.clone());
+        let call = crate::ast::Expr::Apply(call_var, vec![]).into_id(loc.clone());
+
+        let pat = TypedPattern::new(
+            Pattern::Placeholder,
+            Type::Unknown.into_id_with_location(loc.clone()),
+        );
+        let let_expr = crate::ast::Expr::Let(pat, call, None).into_id(loc.clone());
+
+        let lambda = crate::ast::Expr::Lambda(vec![], None, let_expr).into_id(loc);
+
+        let ty = ctx
+            .infer_type(lambda)
+            .expect("type inference should succeed");
+        let ty = InferContext::substitute_type(ty);
+
+        match ty.to_type() {
+            Type::Function { arg: _, ret } => {
+                let ret_resolved = InferContext::substitute_type(ret);
+                // Even if body has a function call, if the final expression is Let with no then,
+                // the lambda should return unit
+                assert!(
+                    matches!(ret_resolved.to_type(), Type::Primitive(PType::Unit)),
+                    "lambda body is Let(_, call(), None), should return unit, got {:?}",
+                    ret_resolved.to_type()
+                );
+            }
+            _ => panic!("Expected lambda type, got {:?}", ty.to_type()),
+        }
     }
 }

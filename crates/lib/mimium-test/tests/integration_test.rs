@@ -67,11 +67,10 @@ fn run_all_annotated_fixtures() {
         let spec = read_annotated_file_test_spec(name)
             .unwrap_or_else(|e| panic!("{name} metadata failed to load: {e}"));
         let (res, spec) = if spec.plugins {
-            run_annotated_file_test_with_plugins(name, false)
+            run_annotated_file_test_with_plugins(name, true)
                 .unwrap_or_else(|e| panic!("{name} failed to run with plugins: {e}"))
         } else {
-            run_annotated_file_test(name)
-                .unwrap_or_else(|e| panic!("{name} failed to run: {e}"))
+            run_annotated_file_test(name).unwrap_or_else(|e| panic!("{name} failed to run: {e}"))
         };
         assert_with_spec(&res, &spec);
     });
@@ -100,8 +99,15 @@ fn run_all_web_annotated_fixtures_wasm() {
     assert!(!fixture_names.is_empty());
 
     fixture_names.iter().for_each(|name| {
-        let (res, spec) = run_annotated_file_test_wasm(name)
-            .unwrap_or_else(|e| panic!("{name} failed to run on WASM: {e}"));
+        let spec = read_annotated_file_test_spec(name)
+            .unwrap_or_else(|e| panic!("{name} metadata failed to load: {e}"));
+        let (res, spec) = if spec.plugins {
+            run_annotated_file_test_wasm_with_plugins(name, true)
+                .unwrap_or_else(|e| panic!("{name} failed to run on WASM with plugins: {e}"))
+        } else {
+            run_annotated_file_test_wasm(name)
+                .unwrap_or_else(|e| panic!("{name} failed to run on WASM: {e}"))
+        };
         assert_with_spec(&res, &spec);
     });
 }
