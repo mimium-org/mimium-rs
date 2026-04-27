@@ -16,6 +16,7 @@ This document summarizes the current implementation status of the backend that g
 - The generator does not try to reconstruct higher-level syntax. It preserves backend-oriented control flow as-is.
 - Instead of embedding indentation directly in strings, `CodeWriter` manages indentation levels numerically.
 - Output is not limited to `String`; the generator also provides `generate_to`, which writes to any `std::io::Write`.
+- Generated function arguments and local registers are materialized as fixed-size word arrays instead of `Vec<Word>`.
 
 ## Implemented Runtime Pieces
 
@@ -23,6 +24,7 @@ The generated Rust includes a small supporting runtime.
 
 - `Word = u64`-based value representation and `f64` / `i64` conversion helpers
 - `MimiumHost` plus `PanicHost`, which fails when an external function is not wired up
+- `MimiumHost::current_time` / `sample_rate` hooks for `now` and `samplerate`
 - `StateStorage`
   - state for `self`
   - `mem`
@@ -31,6 +33,7 @@ The generated Rust includes a small supporting runtime.
   - `alloc`
   - pointer-like `get_element`
   - `load` / `store`
+  - shared within a single generated call chain so nested direct calls can see the same aggregate temporaries
 - `ArrayStorage`
   - allocation, read, and write for fixed-length arrays
 - `MimiumProgram`
@@ -54,8 +57,10 @@ At minimum, the following can currently be lowered to Rust.
 - Calls
   - `Call`
   - direct function call
+  - static direct-call default argument expansion through synthesized `__default_*` helpers
   - ext function call
   - dispatch through function handles
+  - `CallIndirect` for zero-argument runtime literal shims `_mimium_getnow` and `_mimium_getsamplerate`
 - Globals
   - `GetGlobal`
   - `SetGlobal`
@@ -119,6 +124,8 @@ Some parts still use transitional behavior because the representation has not ye
 - `call_main` is exposed not only when a literal `main` function exists, but also when only a global-initialization function exists, by treating the first function as the initialization entry point.
 - Function dispatch accepts not only tagged handles but also raw function indices.
 - `MemoryStore::load` includes a temporary path for reading a 1-word immediate value, to match cases where a scalar reaches `Load` directly in MIR.
+- Aggregate temporaries still flow through `MemoryStore`; the current Rust backend keeps that storage scoped to a single generated call chain instead of treating it as program-global state.
+- Missing default arguments are currently synthesized only when the callee can be resolved statically during Rust generation.
 - Transitions from `JmpIf` / `Switch` arms into merge blocks are supplemented on the Rust side to account for implicit MIR fallthrough.
 
 These behaviors exist to get the initial implementation working. Long term, the value representation and calling convention should be cleaned up further.
@@ -128,15 +135,17 @@ These behaviors exist to get the initial implementation working. Long term, the 
 At this point, the following has been verified.
 
 - The generator can emit Rust source containing `MimiumProgram`, `call_dsp`, and each `func_N`
-- The generated Rust can be compiled with `rustc`
+- The generated Rust can be compiled with plain `rustc --edition=2024`
 - The generated Rust binary can be executed successfully
 - Expected outputs have been verified for a scalar DSP program that includes a global array, `if`, user function calls, `self`, and `mem`
-- `cargo check -p mimium-cli` passes
+- Host-provided `now` and `samplerate` literals have been verified through compile-and-run tests
+- `examples/sinewave.mmm` can be emitted, compiled, and run with the manual harness, and now produces non-zero output
 
 The relevant unit tests currently live in `crates/lib/mimium-lang/src/compiler.rs`.
 
 - `emit_rust_generates_program_scaffold`
 - `emit_rust_compiles_and_runs_generated_program`
+- `emit_rust_supports_runtime_literals_from_host`
 
 ## What Is Not Implemented Yet
 
@@ -151,8 +160,8 @@ The following are not supported yet. At the moment, they fail explicitly during 
   - `CloneHeap`
   - `GetUpValue`
   - `SetUpValue`
-- Indirect calls
-  - `CallIndirect`
+- Indirect calls other than the built-in runtime literal shims
+  - general `CallIndirect`
 - Strings
   - `String`
 - Tagged union / sum-related instructions
@@ -176,6 +185,8 @@ The following are not supported yet. At the moment, they fail explicitly during 
 ## Known Limitations
 
 - The compile-and-run test is currently biased toward scalar DSP output. Tuple returns and aggregate calling conventions are not fully sorted out yet.
+- Aggregate arguments still use a transitional memory-based representation internally. The current fix is scoped to nested call execution, but the representation itself is not the final ABI.
+- Default arguments are only expanded for statically resolvable direct calls.
 - Normal ext function calls are supported, but cases where a function value ends up as `CallIndirect` are still unsupported.
 - This is still an initial Rust backend. It does not yet cover the full language.
 
@@ -187,13 +198,13 @@ For example, the following CLI invocation currently fails.
 cargo run --bin mimium-cli --release examples/biquad.mmm --emit-rust
 ```
 
-In this case, the `_mimium_getsamplerate` path appears in MIR as `CallIndirect`, and the backend reports the following error.
+This is no longer blocked by `samplerate` access itself. The current blocker is a general `CallIndirect` that still appears in the lowered filter path, and the backend reports the following error.
 
 ```text
-instruction CallIndirect(...) is not supported by the initial Rust backend
+instruction CallIndirect(Register(...), [...], TypeScheme(...), ...) is not supported by the initial Rust backend
 ```
 
-In other words, practical examples that include sample-rate access or closure-like execution paths are still outside the current Rust backend's supported subset.
+In other words, the Rust backend now supports the specific runtime-literal shims for `now` and `samplerate`, but practical examples that depend on general indirect calls or closure-like execution paths are still outside the supported subset.
 
 ## Next Areas to Tackle
 
@@ -201,6 +212,6 @@ The highest-priority remaining items are the following.
 
 1. Implement closure support and `CallIndirect`
 2. Clean up aggregate-value representation
-3. Clean up calling conventions for tuple returns and aggregate arguments
+3. Clean up calling conventions for tuple returns, aggregate arguments, and dynamic-call default handling
 4. Implement boxed values and tagged unions
 5. Expand compile-and-run tests based on real examples
