@@ -2,6 +2,7 @@ pub mod bytecodegen;
 pub(crate) mod intrinsics;
 pub mod mirgen;
 pub mod parser;
+pub mod rustgen;
 pub mod translate_staging;
 pub mod typing;
 
@@ -198,6 +199,26 @@ impl Context {
         Ok(bytecodegen::gen_bytecode(mir, config))
     }
 
+    /// Compile source code to Rust source via MIR.
+    pub fn emit_rust(&self, src: &str) -> Result<RustOutput, Vec<Box<dyn ReportableError>>> {
+        let mir = self.emit_mir(src)?;
+        let io_channels = mir.get_dsp_iochannels();
+        let dsp_state_skeleton = mir.get_dsp_state_skeleton().cloned();
+        let source = rustgen::RustGenerator::new(std::sync::Arc::new(mir), self.config)
+            .generate()
+            .map_err(|e| {
+                vec![Box::new(crate::utils::error::SimpleError {
+                    message: e,
+                    span: crate::utils::metadata::Location::default(),
+                }) as Box<dyn ReportableError>]
+            })?;
+        Ok(RustOutput {
+            source,
+            dsp_state_skeleton,
+            io_channels,
+        })
+    }
+
     /// Compile source code to a WASM module.
     ///
     /// Returns the WASM binary bytes together with the DSP function's
@@ -236,6 +257,16 @@ pub struct WasmOutput {
     pub io_channels: Option<IoChannelInfo>,
     /// External function type infos required to instantiate the generated module.
     pub ext_fns: Vec<crate::plugin::ExtFunTypeInfo>,
+}
+
+/// Output of Rust source generation via [`Context::emit_rust`].
+pub struct RustOutput {
+    /// The generated Rust source.
+    pub source: String,
+    /// State tree skeleton of the DSP function.
+    pub dsp_state_skeleton: Option<state_tree::tree::StateTreeSkeleton<crate::mir::StateType>>,
+    /// I/O channel info extracted from the DSP function signature.
+    pub io_channels: Option<IoChannelInfo>,
 }
 
 // pub fn interpret_top(
@@ -322,5 +353,22 @@ fn dsp(input:(float,float)){
         let iochannels = prog.iochannels.unwrap();
         assert_eq!(iochannels.input, 2);
         assert_eq!(iochannels.output, 2);
+    }
+
+    #[test]
+    fn emit_rust_generates_program_scaffold() {
+        let src = r#"
+fn counter(){
+    self + 1
+}
+fn dsp(input:float){
+    input + counter()
+}
+"#;
+
+        let output = test_context().emit_rust(src).unwrap();
+        assert!(output.source.contains("pub struct MimiumProgram"));
+        assert!(output.source.contains("pub fn call_dsp"));
+        assert!(output.source.contains("fn func_"));
     }
 }
