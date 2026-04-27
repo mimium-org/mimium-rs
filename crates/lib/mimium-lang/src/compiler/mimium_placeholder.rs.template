@@ -1,0 +1,268 @@
+pub type Word = u64;
+
+fn f64_to_word(value: f64) -> Word { value.to_bits() }
+fn word_to_f64(value: Word) -> f64 { f64::from_bits(value) }
+fn i64_to_word(value: i64) -> Word { u64::from_ne_bytes(value.to_ne_bytes()) }
+fn word_to_i64(value: Word) -> i64 { i64::from_ne_bytes(value.to_ne_bytes()) }
+fn truthy(value: Word) -> bool { word_to_f64(value) > 0.0 }
+const FUNCTION_HANDLE_TAG: Word = 1 << 63;
+fn encode_function(index: usize) -> Word { FUNCTION_HANDLE_TAG | index as Word }
+fn decode_function(handle: Word) -> Option<usize> {
+    if handle & FUNCTION_HANDLE_TAG != 0 {
+        Some((handle & !FUNCTION_HANDLE_TAG) as usize)
+    } else {
+        Some(handle as usize)
+    }
+}
+
+pub trait MimiumHost {
+    fn call_ext(&mut self, name: &str, args: &[Word], ret_words: usize) -> Result<Vec<Word>, String>;
+
+    fn current_time(&mut self) -> f64 {
+        0.0
+    }
+
+    fn sample_rate(&mut self) -> f64 {
+        48_000.0
+    }
+}
+
+#[derive(Default)]
+pub struct PanicHost;
+
+impl MimiumHost for PanicHost {
+    fn call_ext(&mut self, name: &str, _args: &[Word], _ret_words: usize) -> Result<Vec<Word>, String> {
+        Err(format!("external function '{}' is not available in the generated Rust host", name))
+    }
+}
+
+#[derive(Clone, Default)]
+struct StateStorage {
+    pos: usize,
+    rawdata: Vec<Word>,
+}
+
+impl StateStorage {
+    fn new(size: usize) -> Self {
+        Self {
+            pos: 0,
+            rawdata: vec![0; size],
+        }
+    }
+
+    fn ensure(&mut self, size: usize) {
+        let needed = self.pos.saturating_add(size);
+        if self.rawdata.len() < needed {
+            self.rawdata.resize(needed, 0);
+        }
+    }
+
+    fn push_pos(&mut self, offset: usize) {
+        self.pos = self.pos.saturating_add(offset);
+    }
+
+    fn pop_pos(&mut self, offset: usize) {
+        self.pos = self.pos.saturating_sub(offset);
+    }
+
+    fn get_state(&mut self, size: usize) -> Vec<Word> {
+        self.ensure(size);
+        self.rawdata[self.pos..self.pos + size].to_vec()
+    }
+
+    fn set_state(&mut self, src: &[Word], size: usize) {
+        self.ensure(size);
+        self.rawdata[self.pos..self.pos + size].copy_from_slice(&src[..size]);
+    }
+
+    fn mem(&mut self, src: Word) -> Word {
+        self.ensure(1);
+        let prev = self.rawdata[self.pos];
+        self.rawdata[self.pos] = src;
+        prev
+    }
+
+    fn delay(&mut self, input: Word, time_raw: Word, max_len: usize) -> Word {
+        let total_words = max_len.saturating_add(2);
+        self.ensure(total_words);
+        if max_len == 0 {
+            return 0;
+        }
+
+        let delay_samples = word_to_f64(time_raw)
+            .clamp(0.0, max_len.saturating_sub(1) as f64) as usize;
+        let read_slot = self.pos;
+        let write_slot = self.pos + 1;
+        let data_start = self.pos + 2;
+        let write_idx = (self.rawdata[write_slot] as usize) % max_len;
+        let read_idx = (write_idx + max_len - delay_samples) % max_len;
+        let result = self.rawdata[data_start + read_idx];
+        self.rawdata[data_start + write_idx] = input;
+        self.rawdata[read_slot] = read_idx as u64;
+        self.rawdata[write_slot] = ((write_idx + 1) % max_len) as u64;
+        result
+    }
+}
+
+#[derive(Clone, Default)]
+struct Pointer {
+    slot: usize,
+    offset: usize,
+}
+
+#[derive(Default)]
+struct MemoryStore {
+    slots: Vec<Vec<Word>>,
+    ptrs: Vec<Pointer>,
+}
+
+impl MemoryStore {
+    fn alloc(&mut self, size: usize) -> Word {
+        let slot = self.slots.len();
+        self.slots.push(vec![0; size]);
+        self.ptrs.push(Pointer { slot, offset: 0 });
+        self.ptrs.len() as Word
+    }
+
+    fn ptr(&self, handle: Word) -> Result<&Pointer, String> {
+        let index = handle
+            .checked_sub(1)
+            .ok_or_else(|| "invalid memory handle 0".to_string())? as usize;
+        self.ptrs
+            .get(index)
+            .ok_or_else(|| format!("invalid memory handle {}", handle))
+    }
+
+    fn get_element(&mut self, base: Word, tuple_offset: usize) -> Result<Word, String> {
+        let pointer = self.ptr(base)?.clone();
+        self.ptrs.push(Pointer {
+            slot: pointer.slot,
+            offset: pointer.offset + tuple_offset,
+        });
+        Ok(self.ptrs.len() as Word)
+    }
+
+    fn load(&self, ptr: Word, size: usize) -> Result<Vec<Word>, String> {
+        let Some(index) = ptr.checked_sub(1).map(|value| value as usize) else {
+            return Ok(vec![0; size]);
+        };
+        let Some(pointer) = self.ptrs.get(index) else {
+            if size == 1 {
+                return Ok(vec![ptr]);
+            }
+            return Err(format!("invalid memory handle {}", ptr));
+        };
+        let slot = self
+            .slots
+            .get(pointer.slot)
+            .ok_or_else(|| format!("invalid memory slot {}", pointer.slot))?;
+        let end = pointer.offset + size;
+        if end > slot.len() {
+            return Err(format!(
+                "load out of bounds: offset={} size={} len={}",
+                pointer.offset,
+                size,
+                slot.len()
+            ));
+        }
+        Ok(slot[pointer.offset..end].to_vec())
+    }
+
+    fn store(&mut self, ptr: Word, src: &[Word], size: usize) -> Result<(), String> {
+        let pointer = self.ptr(ptr)?.clone();
+        let slot = self
+            .slots
+            .get_mut(pointer.slot)
+            .ok_or_else(|| format!("invalid memory slot {}", pointer.slot))?;
+        let end = pointer.offset + size;
+        if end > slot.len() {
+            return Err(format!(
+                "store out of bounds: offset={} size={} len={}",
+                pointer.offset,
+                size,
+                slot.len()
+            ));
+        }
+        slot[pointer.offset..end].copy_from_slice(&src[..size]);
+        Ok(())
+    }
+}
+
+#[derive(Clone, Default)]
+struct ArrayObject {
+    elem_size_words: usize,
+    data: Vec<Word>,
+}
+
+#[derive(Default)]
+struct ArrayStorage {
+    arrays: Vec<ArrayObject>,
+}
+
+impl ArrayStorage {
+    fn alloc_array(&mut self, len: usize, elem_size_words: usize) -> Word {
+        self.arrays.push(ArrayObject {
+            elem_size_words,
+            data: vec![0; len.saturating_mul(elem_size_words)],
+        });
+        self.arrays.len() as Word
+    }
+
+    fn get(&self, handle: Word) -> Result<&ArrayObject, String> {
+        let index = handle
+            .checked_sub(1)
+            .ok_or_else(|| "invalid array handle 0".to_string())? as usize;
+        self.arrays
+            .get(index)
+            .ok_or_else(|| format!("invalid array handle {}", handle))
+    }
+
+    fn get_mut(&mut self, handle: Word) -> Result<&mut ArrayObject, String> {
+        let index = handle
+            .checked_sub(1)
+            .ok_or_else(|| "invalid array handle 0".to_string())? as usize;
+        self.arrays
+            .get_mut(index)
+            .ok_or_else(|| format!("invalid array handle {}", handle))
+    }
+}
+
+pub struct MimiumProgram<H: MimiumHost = PanicHost> {
+    pub host: H,
+    globals: Vec<Vec<Word>>,
+    function_states: Vec<StateStorage>,
+    arrays: ArrayStorage,
+}
+
+impl MimiumProgram<PanicHost> {
+    pub fn new() -> Self {
+        Self::with_host(PanicHost)
+    }
+}
+
+impl<H: MimiumHost> MimiumProgram<H> {
+    pub fn with_host(host: H) -> Self {
+        Self {
+            host,
+            globals: vec![
+/*__GLOBAL_SLOTS__*/
+            ],
+            function_states: vec![
+/*__FUNCTION_STATES__*/
+            ],
+            arrays: ArrayStorage::default(),
+        }
+    }
+
+/*__CALL_DSP__*/
+/*__CALL_MAIN__*/
+    fn call_function_handle(&mut self, handle: Word, args: &[Word]) -> Result<Vec<Word>, String> {
+        match decode_function(handle) {
+/*__HANDLE_DISPATCH__*/
+            Some(index) => Err(format!("unknown function handle {}", index)),
+            None => Err(format!("unsupported callable handle {}", handle)),
+        }
+    }
+
+/*__FUNCTIONS__*/
+}

@@ -128,7 +128,6 @@ pub fn emit_ast(
         Err(errs)
     }
 }
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Config {
     pub self_eval_mode: bytecodegen::SelfEvalMode,
@@ -282,6 +281,11 @@ pub struct RustOutput {
 
 #[cfg(test)]
 mod test {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use crate::{function, interner::ToSymbol, numeric};
 
     use super::*;
@@ -315,6 +319,41 @@ fn dsp(input:(float,float)){
         );
         let extfns = [addfn];
         Context::new(extfns, [], None, Config::default())
+    }
+
+    fn comprehensive_rust_source() -> &'static str {
+        r#"
+let arr = [10.0, 20.0, 40.0]
+
+fn counter(){
+    self + 1
+}
+
+fn remember(x){
+    mem(x)
+}
+
+fn branch(x){
+    if (x > 2.0) {
+        x + arr[2]
+    } else {
+        x + arr[1]
+    }
+}
+
+fn dsp(input:float){
+    let step = counter()
+    let mixed = input + step + arr[0]
+    let prev = remember(mixed)
+    branch(prev)
+}
+"#
+    }
+
+    fn rust_test_tmp_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tmp")
+            .join("rustgen-tests")
     }
     #[test]
     fn mir_channelcount() {
@@ -370,5 +409,72 @@ fn dsp(input:float){
         assert!(output.source.contains("pub struct MimiumProgram"));
         assert!(output.source.contains("pub fn call_dsp"));
         assert!(output.source.contains("fn func_"));
+    }
+
+    #[test]
+    fn emit_rust_compiles_and_runs_generated_program() {
+        let output = test_context()
+            .emit_rust(comprehensive_rust_source())
+            .unwrap();
+        let maybe_call_main = if output.source.contains("pub fn call_main") {
+            "    program.call_main().unwrap();\n"
+        } else {
+            ""
+        };
+
+        let harness = [
+            "\nfn main() {\n",
+            "    let mut program = MimiumProgram::new();\n",
+            maybe_call_main,
+            "    for input in [1.0f64, 2.0, 3.0, 4.0] {\n",
+            "        let output = program.call_dsp(&[f64_to_word(input)]).unwrap();\n",
+            "        for word in output {\n",
+            "            println!(\"{:.12}\", word_to_f64(word));\n",
+            "        }\n",
+            "    }\n",
+            "}\n",
+        ]
+        .concat();
+
+        let tmp_dir = rust_test_tmp_dir();
+        fs::create_dir_all(&tmp_dir).unwrap();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let source_path = tmp_dir.join(format!("emit_rust_{stamp}.rs"));
+        let binary_path = tmp_dir.join(format!("emit_rust_{stamp}"));
+        fs::write(&source_path, format!("{}{harness}", output.source)).unwrap();
+
+        let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+        let compile = Command::new(&rustc)
+            .arg("--edition=2024")
+            .arg(&source_path)
+            .arg("-o")
+            .arg(&binary_path)
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "generated Rust failed to compile\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+
+        let run = Command::new(&binary_path).output().unwrap();
+        assert!(
+            run.status.success(),
+            "generated Rust binary failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+
+        let actual = String::from_utf8(run.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| line.parse::<f64>().unwrap())
+            .collect::<Vec<_>>();
+        let expected = vec![20.0, 52.0, 54.0, 56.0];
+        assert_eq!(actual, expected);
     }
 }

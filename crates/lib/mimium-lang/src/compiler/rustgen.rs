@@ -1,11 +1,19 @@
 use std::collections::{BTreeMap, HashMap};
-use std::fmt::Write;
+use std::io::Write;
 use std::sync::Arc;
 
 use crate::compiler::Config;
 use crate::compiler::bytecodegen::SelfEvalMode;
 use crate::interner::Symbol;
 use crate::mir::{Function, Instruction, Mir, VPtr, VReg, Value};
+
+const PROGRAM_TEMPLATE: &str = include_str!("mimium_placeholder.rs.template");
+const GLOBAL_SLOTS_MARKER: &str = "/*__GLOBAL_SLOTS__*/";
+const FUNCTION_STATES_MARKER: &str = "/*__FUNCTION_STATES__*/";
+const CALL_DSP_MARKER: &str = "/*__CALL_DSP__*/";
+const CALL_MAIN_MARKER: &str = "/*__CALL_MAIN__*/";
+const HANDLE_DISPATCH_MARKER: &str = "/*__HANDLE_DISPATCH__*/";
+const FUNCTIONS_MARKER: &str = "/*__FUNCTIONS__*/";
 
 pub struct RustGenerator {
     mir: Arc<Mir>,
@@ -17,343 +25,223 @@ enum CallKind {
     Ext(Symbol),
 }
 
+struct CodeWriter<W> {
+    inner: W,
+    indent: usize,
+}
+
+impl<W: Write> CodeWriter<W> {
+    const INDENT_WIDTH: usize = 4;
+
+    fn with_indent(inner: W, indent: usize) -> Self {
+        Self { inner, indent }
+    }
+
+    fn line(&mut self, line: impl AsRef<str>) -> Result<(), String> {
+        self.write_indent()?;
+        self.inner
+            .write_all(line.as_ref().as_bytes())
+            .map_err(|err| format!("failed to write generated Rust line: {err}"))?;
+        self.inner
+            .write_all(b"\n")
+            .map_err(|err| format!("failed to terminate generated Rust line: {err}"))
+    }
+
+    fn blank_line(&mut self) -> Result<(), String> {
+        self.inner
+            .write_all(b"\n")
+            .map_err(|err| format!("failed to write generated Rust blank line: {err}"))
+    }
+
+    fn indented<T>(
+        &mut self,
+        levels: usize,
+        render: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.indent += levels;
+        let result = render(self);
+        self.indent -= levels;
+        result
+    }
+
+    fn write_indent(&mut self) -> Result<(), String> {
+        let padding = " ".repeat(self.indent * Self::INDENT_WIDTH);
+        self.inner
+            .write_all(padding.as_bytes())
+            .map_err(|err| format!("failed to write generated Rust indentation: {err}"))
+    }
+}
+
 impl RustGenerator {
     pub fn new(mir: Arc<Mir>, config: Config) -> Self {
         Self { mir, config }
     }
 
     pub fn generate(&self) -> Result<String, String> {
+        let mut out = Vec::new();
+        self.generate_to(&mut out)?;
+        String::from_utf8(out).map_err(|err| format!("generated Rust was not valid UTF-8: {err}"))
+    }
+
+    pub fn generate_to<W: Write>(&self, mut out: W) -> Result<(), String> {
+        let source = self.render_program()?;
+        out.write_all(source.as_bytes())
+            .map_err(|err| format!("failed to write generated Rust source: {err}"))
+    }
+
+    fn render_program(&self) -> Result<String, String> {
         let global_slots = self.collect_global_slots();
-        let mut out = String::new();
+        let mut program = PROGRAM_TEMPLATE.to_string();
 
-        out.push_str(
-            r#"pub type Word = u64;
+        self.replace_template_marker(
+            &mut program,
+            GLOBAL_SLOTS_MARKER,
+            &self.render_section(4, |writer| self.emit_global_slots(writer, &global_slots))?,
+        )?;
+        self.replace_template_marker(
+            &mut program,
+            FUNCTION_STATES_MARKER,
+            &self.render_section(4, |writer| self.emit_function_states(writer))?,
+        )?;
+        self.replace_template_marker(
+            &mut program,
+            CALL_DSP_MARKER,
+            &self.render_section(1, |writer| self.emit_call_dsp(writer))?,
+        )?;
+        self.replace_template_marker(
+            &mut program,
+            CALL_MAIN_MARKER,
+            &self.render_section(1, |writer| self.emit_call_main(writer))?,
+        )?;
+        self.replace_template_marker(
+            &mut program,
+            HANDLE_DISPATCH_MARKER,
+            &self.render_section(3, |writer| self.emit_function_handle_dispatch(writer))?,
+        )?;
+        self.replace_template_marker(
+            &mut program,
+            FUNCTIONS_MARKER,
+            &self.render_section(1, |writer| self.emit_functions(writer, &global_slots))?,
+        )?;
 
-fn f64_to_word(value: f64) -> Word { value.to_bits() }
-fn word_to_f64(value: Word) -> f64 { f64::from_bits(value) }
-fn i64_to_word(value: i64) -> Word { u64::from_ne_bytes(value.to_ne_bytes()) }
-fn word_to_i64(value: Word) -> i64 { i64::from_ne_bytes(value.to_ne_bytes()) }
-fn truthy(value: Word) -> bool { word_to_f64(value) > 0.0 }
-const FUNCTION_HANDLE_TAG: Word = 1 << 63;
-fn encode_function(index: usize) -> Word { FUNCTION_HANDLE_TAG | index as Word }
-fn decode_function(handle: Word) -> Option<usize> {
-    (handle & FUNCTION_HANDLE_TAG != 0).then_some((handle & !FUNCTION_HANDLE_TAG) as usize)
-}
-
-pub trait MimiumHost {
-    fn call_ext(&mut self, name: &str, args: &[Word], ret_words: usize) -> Result<Vec<Word>, String>;
-
-    fn current_time(&mut self) -> f64 {
-        0.0
+        Ok(program)
     }
 
-    fn sample_rate(&mut self) -> f64 {
-        48_000.0
-    }
-}
-
-#[derive(Default)]
-pub struct PanicHost;
-
-impl MimiumHost for PanicHost {
-    fn call_ext(&mut self, name: &str, _args: &[Word], _ret_words: usize) -> Result<Vec<Word>, String> {
-        Err(format!("external function '{}' is not available in the generated Rust host", name))
-    }
-}
-
-#[derive(Clone, Default)]
-struct StateStorage {
-    pos: usize,
-    rawdata: Vec<Word>,
-}
-
-impl StateStorage {
-    fn new(size: usize) -> Self {
-        Self {
-            pos: 0,
-            rawdata: vec![0; size],
+    fn render_section(
+        &self,
+        base_indent: usize,
+        render: impl FnOnce(&mut CodeWriter<&mut Vec<u8>>) -> Result<(), String>,
+    ) -> Result<String, String> {
+        let mut buffer = Vec::new();
+        {
+            let mut writer = CodeWriter::with_indent(&mut buffer, base_indent);
+            render(&mut writer)?;
         }
+        String::from_utf8(buffer)
+            .map_err(|err| format!("generated Rust section was not valid UTF-8: {err}"))
     }
 
-    fn ensure(&mut self, size: usize) {
-        let needed = self.pos.saturating_add(size);
-        if self.rawdata.len() < needed {
-            self.rawdata.resize(needed, 0);
+    fn replace_template_marker(
+        &self,
+        template: &mut String,
+        marker: &str,
+        replacement: &str,
+    ) -> Result<(), String> {
+        if !template.contains(marker) {
+            return Err(format!("missing Rust template marker: {marker}"));
         }
-    }
-
-    fn push_pos(&mut self, offset: usize) {
-        self.pos = self.pos.saturating_add(offset);
-    }
-
-    fn pop_pos(&mut self, offset: usize) {
-        self.pos = self.pos.saturating_sub(offset);
-    }
-
-    fn get_state(&mut self, size: usize) -> Vec<Word> {
-        self.ensure(size);
-        self.rawdata[self.pos..self.pos + size].to_vec()
-    }
-
-    fn set_state(&mut self, src: &[Word], size: usize) {
-        self.ensure(size);
-        self.rawdata[self.pos..self.pos + size].copy_from_slice(&src[..size]);
-    }
-
-    fn mem(&mut self, src: Word) -> Word {
-        self.ensure(1);
-        let prev = self.rawdata[self.pos];
-        self.rawdata[self.pos] = src;
-        prev
-    }
-
-    fn delay(&mut self, input: Word, time_raw: Word, max_len: usize) -> Word {
-        let total_words = max_len.saturating_add(2);
-        self.ensure(total_words);
-        if max_len == 0 {
-            return 0;
-        }
-
-        let delay_samples = word_to_f64(time_raw)
-            .clamp(0.0, max_len.saturating_sub(1) as f64) as usize;
-        let read_slot = self.pos;
-        let write_slot = self.pos + 1;
-        let data_start = self.pos + 2;
-        let write_idx = (self.rawdata[write_slot] as usize) % max_len;
-        let read_idx = (write_idx + max_len - delay_samples) % max_len;
-        let result = self.rawdata[data_start + read_idx];
-        self.rawdata[data_start + write_idx] = input;
-        self.rawdata[read_slot] = read_idx as u64;
-        self.rawdata[write_slot] = ((write_idx + 1) % max_len) as u64;
-        result
-    }
-}
-
-#[derive(Clone, Default)]
-struct Pointer {
-    slot: usize,
-    offset: usize,
-}
-
-#[derive(Default)]
-struct MemoryStore {
-    slots: Vec<Vec<Word>>,
-    ptrs: Vec<Pointer>,
-}
-
-impl MemoryStore {
-    fn alloc(&mut self, size: usize) -> Word {
-        let slot = self.slots.len();
-        self.slots.push(vec![0; size]);
-        self.ptrs.push(Pointer { slot, offset: 0 });
-        self.ptrs.len() as Word
-    }
-
-    fn ptr(&self, handle: Word) -> Result<&Pointer, String> {
-        let index = handle
-            .checked_sub(1)
-            .ok_or_else(|| "invalid memory handle 0".to_string())? as usize;
-        self.ptrs
-            .get(index)
-            .ok_or_else(|| format!("invalid memory handle {}", handle))
-    }
-
-    fn get_element(&mut self, base: Word, tuple_offset: usize) -> Result<Word, String> {
-        let pointer = self.ptr(base)?.clone();
-        self.ptrs.push(Pointer {
-            slot: pointer.slot,
-            offset: pointer.offset + tuple_offset,
-        });
-        Ok(self.ptrs.len() as Word)
-    }
-
-    fn load(&self, ptr: Word, size: usize) -> Result<Vec<Word>, String> {
-        let pointer = self.ptr(ptr)?;
-        let slot = self
-            .slots
-            .get(pointer.slot)
-            .ok_or_else(|| format!("invalid memory slot {}", pointer.slot))?;
-        let end = pointer.offset + size;
-        if end > slot.len() {
-            return Err(format!(
-                "load out of bounds: offset={} size={} len={}",
-                pointer.offset,
-                size,
-                slot.len()
-            ));
-        }
-        Ok(slot[pointer.offset..end].to_vec())
-    }
-
-    fn store(&mut self, ptr: Word, src: &[Word], size: usize) -> Result<(), String> {
-        let pointer = self.ptr(ptr)?.clone();
-        let slot = self
-            .slots
-            .get_mut(pointer.slot)
-            .ok_or_else(|| format!("invalid memory slot {}", pointer.slot))?;
-        let end = pointer.offset + size;
-        if end > slot.len() {
-            return Err(format!(
-                "store out of bounds: offset={} size={} len={}",
-                pointer.offset,
-                size,
-                slot.len()
-            ));
-        }
-        slot[pointer.offset..end].copy_from_slice(&src[..size]);
+        *template = template.replace(marker, replacement);
         Ok(())
     }
-}
 
-#[derive(Clone, Default)]
-struct ArrayObject {
-    elem_size_words: usize,
-    data: Vec<Word>,
-}
-
-#[derive(Default)]
-struct ArrayStorage {
-    arrays: Vec<ArrayObject>,
-}
-
-impl ArrayStorage {
-    fn alloc_array(&mut self, len: usize, elem_size_words: usize) -> Word {
-        self.arrays.push(ArrayObject {
-            elem_size_words,
-            data: vec![0; len.saturating_mul(elem_size_words)],
-        });
-        self.arrays.len() as Word
+    fn emit_global_slots<W: Write>(
+        &self,
+        writer: &mut CodeWriter<W>,
+        global_slots: &[(String, VPtr, usize)],
+    ) -> Result<(), String> {
+        global_slots
+            .iter()
+            .try_for_each(|(_key, _value, size)| writer.line(format!("vec![0; {size}],")))
     }
 
-    fn get(&self, handle: Word) -> Result<&ArrayObject, String> {
-        let index = handle
-            .checked_sub(1)
-            .ok_or_else(|| "invalid array handle 0".to_string())? as usize;
-        self.arrays
-            .get(index)
-            .ok_or_else(|| format!("invalid array handle {}", handle))
-    }
-
-    fn get_mut(&mut self, handle: Word) -> Result<&mut ArrayObject, String> {
-        let index = handle
-            .checked_sub(1)
-            .ok_or_else(|| "invalid array handle 0".to_string())? as usize;
-        self.arrays
-            .get_mut(index)
-            .ok_or_else(|| format!("invalid array handle {}", handle))
-    }
-}
-
-pub struct MimiumProgram<H: MimiumHost = PanicHost> {
-    pub host: H,
-    globals: Vec<Vec<Word>>,
-    function_states: Vec<StateStorage>,
-    arrays: ArrayStorage,
-}
-
-impl MimiumProgram<PanicHost> {
-    pub fn new() -> Self {
-        Self::with_host(PanicHost)
-    }
-}
-
-"#,
-        );
-
-        writeln!(out, "impl<H: MimiumHost> MimiumProgram<H> {{").unwrap();
-        writeln!(out, "    pub fn with_host(host: H) -> Self {{").unwrap();
-        writeln!(out, "        Self {{").unwrap();
-        writeln!(out, "            host,").unwrap();
-        writeln!(out, "            globals: vec![").unwrap();
-        for (_key, _value, size) in &global_slots {
-            writeln!(out, "                vec![0; {size}],").unwrap();
-        }
-        writeln!(out, "            ],").unwrap();
-        writeln!(out, "            function_states: vec![").unwrap();
-        for func in &self.mir.functions {
-            writeln!(
-                out,
-                "                StateStorage::new({}),",
+    fn emit_function_states<W: Write>(&self, writer: &mut CodeWriter<W>) -> Result<(), String> {
+        self.mir.functions.iter().try_for_each(|func| {
+            writer.line(format!(
+                "StateStorage::new({}),",
                 func.state_skeleton.total_size()
-            )
-            .unwrap();
-        }
-        writeln!(out, "            ],").unwrap();
-        writeln!(out, "            arrays: ArrayStorage::default(),").unwrap();
-        writeln!(out, "        }}").unwrap();
-        writeln!(out, "    }}").unwrap();
+            ))
+        })
+    }
 
-        if let Some(dsp_index) = self.find_function_by_name("dsp") {
-            writeln!(
-                out,
-                "    pub fn call_dsp(&mut self, args: &[Word]) -> Result<Vec<Word>, String> {{"
-            )
-            .unwrap();
-            writeln!(
-                out,
-                "        let mut state = std::mem::take(&mut self.function_states[{dsp_index}]);"
-            )
-            .unwrap();
-            writeln!(
-                out,
-                "        let result = self.func_{dsp_index}(&mut state, args);"
-            )
-            .unwrap();
-            writeln!(out, "        self.function_states[{dsp_index}] = state;").unwrap();
-            writeln!(out, "        result").unwrap();
-            writeln!(out, "    }}").unwrap();
-        }
+    fn emit_call_dsp<W: Write>(&self, writer: &mut CodeWriter<W>) -> Result<(), String> {
+        let Some(dsp_index) = self.find_function_by_name("dsp") else {
+            return Ok(());
+        };
 
-        if let Some(main_index) = self.find_function_by_name("main") {
-            writeln!(
-                out,
-                "    pub fn call_main(&mut self) -> Result<Vec<Word>, String> {{"
-            )
-            .unwrap();
-            writeln!(
-                out,
-                "        let mut state = std::mem::take(&mut self.function_states[{main_index}]);"
-            )
-            .unwrap();
-            writeln!(
-                out,
-                "        let result = self.func_{main_index}(&mut state, &[]);"
-            )
-            .unwrap();
-            writeln!(out, "        self.function_states[{main_index}] = state;").unwrap();
-            writeln!(out, "        result").unwrap();
-            writeln!(out, "    }}").unwrap();
-        }
+        writer.line("pub fn call_dsp(&mut self, args: &[Word]) -> Result<Vec<Word>, String> {")?;
+        writer.indented(1, |writer| {
+            writer.line(format!(
+                "self.call_function_handle(encode_function({dsp_index}), args)"
+            ))
+        })?;
+        writer.line("}")?;
+        writer.blank_line()
+    }
 
-        writeln!(out, "    fn call_function_handle(&mut self, handle: Word, state: &mut StateStorage, args: &[Word]) -> Result<Vec<Word>, String> {{").unwrap();
-        writeln!(out, "        match decode_function(handle) {{").unwrap();
-        for func in &self.mir.functions {
-            writeln!(
-                out,
-                "            Some({}) => self.func_{}(state, args),",
-                func.index, func.index
-            )
-            .unwrap();
-        }
-        writeln!(
-            out,
-            "            Some(index) => Err(format!(\"unknown function handle {{}}\", index)),"
-        )
-        .unwrap();
-        writeln!(
-            out,
-            "            None => Err(format!(\"unsupported callable handle {{}}\", handle)),"
-        )
-        .unwrap();
-        writeln!(out, "        }}").unwrap();
-        writeln!(out, "    }}").unwrap();
+    fn emit_call_main<W: Write>(&self, writer: &mut CodeWriter<W>) -> Result<(), String> {
+        let main_index = self.find_function_by_name("main").or_else(|| {
+            (!self.collect_global_slots().is_empty())
+                .then(|| self.mir.functions.first().map(|func| func.index))
+                .flatten()
+        });
+        let Some(main_index) = main_index else {
+            return Ok(());
+        };
 
-        for func in &self.mir.functions {
-            self.emit_function(&mut out, func, &global_slots)?;
-        }
+        writer.line("pub fn call_main(&mut self) -> Result<Vec<Word>, String> {")?;
+        writer.indented(1, |writer| {
+            writer.line(format!(
+                "self.call_function_handle(encode_function({main_index}), &[])"
+            ))
+        })?;
+        writer.line("}")?;
+        writer.blank_line()
+    }
 
-        writeln!(out, "}}").unwrap();
-        Ok(out)
+    fn emit_function_handle_dispatch<W: Write>(
+        &self,
+        writer: &mut CodeWriter<W>,
+    ) -> Result<(), String> {
+        self.mir.functions.iter().try_for_each(|func| {
+            writer.line(format!("Some({}) => {{", func.index))?;
+            writer.indented(1, |writer| {
+                writer.line(format!(
+                    "let mut state = std::mem::take(&mut self.function_states[{}]);",
+                    func.index
+                ))?;
+                writer.line(format!(
+                    "let result = self.func_{}(&mut state, args);",
+                    func.index
+                ))?;
+                writer.line(format!("self.function_states[{}] = state;", func.index))?;
+                writer.line("result")
+            })?;
+            writer.line("},")
+        })
+    }
+
+    fn emit_functions<W: Write>(
+        &self,
+        writer: &mut CodeWriter<W>,
+        global_slots: &[(String, VPtr, usize)],
+    ) -> Result<(), String> {
+        for (index, func) in self.mir.functions.iter().enumerate() {
+            if index != 0 {
+                writer.blank_line()?;
+            }
+            self.emit_function(writer, func, global_slots)?;
+        }
+        Ok(())
     }
 
     fn find_function_by_name(&self, name: &str) -> Option<usize> {
@@ -390,59 +278,84 @@ impl MimiumProgram<PanicHost> {
             .collect()
     }
 
-    fn emit_function(
+    fn emit_function<W: Write>(
         &self,
-        out: &mut String,
+        writer: &mut CodeWriter<W>,
         func: &Function,
         global_slots: &[(String, VPtr, usize)],
     ) -> Result<(), String> {
         let register_sizes = self.collect_register_sizes(func)?;
         let block_preds = self.collect_block_predecessors(func);
+        let fallthrough_targets = self.collect_fallthrough_targets(func);
 
-        writeln!(out, "    fn func_{}(&mut self, state: &mut StateStorage, args: &[Word]) -> Result<Vec<Word>, String> {{", func.index).unwrap();
-        writeln!(out, "        let mut memory = MemoryStore::default();").unwrap();
-        writeln!(out, "        let mut bb: usize = 0;").unwrap();
-        writeln!(out, "        let mut pred_bb: usize = 0;").unwrap();
-        writeln!(out, "        let mut arg_offset = 0usize;").unwrap();
-        for (index, arg) in func.args.iter().enumerate() {
-            let size = arg.1.word_size() as usize;
-            writeln!(
-                out,
-                "        let arg_{index} = args[arg_offset..arg_offset + {size}].to_vec();"
-            )
-            .unwrap();
-            writeln!(out, "        arg_offset += {size};").unwrap();
-        }
+        writer.line(format!(
+            "fn func_{}(&mut self, state: &mut StateStorage, args: &[Word]) -> Result<Vec<Word>, String> {{",
+            func.index
+        ))?;
+        writer.indented(1, |writer| {
+            writer.line("let mut memory = MemoryStore::default();")?;
+            writer.line("let mut bb: usize = 0;")?;
+            writer.line("let mut pred_bb: usize = 0;")?;
+            writer.line("let mut arg_offset = 0usize;")?;
 
-        let mut regs: Vec<_> = register_sizes.into_iter().collect();
-        regs.sort_by_key(|(reg, _size)| *reg);
-        for (reg, size) in regs {
-            writeln!(out, "        let mut reg_{reg} = vec![0; {size}];").unwrap();
-        }
-
-        writeln!(out, "        loop {{").unwrap();
-        writeln!(out, "            match bb {{").unwrap();
-        for (block_index, block) in func.body.iter().enumerate() {
-            writeln!(out, "                {block_index} => {{").unwrap();
-            for (dst, instr) in &block.0 {
-                self.emit_instruction(
-                    out,
-                    func,
-                    block_index,
-                    dst,
-                    instr,
-                    global_slots,
-                    &block_preds,
-                )?;
+            for (index, arg) in func.args.iter().enumerate() {
+                let size = arg.1.word_size() as usize;
+                writer.line(format!(
+                    "let arg_{index} = args[arg_offset..arg_offset + {size}].to_vec();"
+                ))?;
+                writer.line(format!("arg_offset += {size};"))?;
             }
-            writeln!(out, "                    return Err(format!(\"basic block {} in function {} fell through without terminator\"));", block_index, func.index).unwrap();
-            writeln!(out, "                }}").unwrap();
-        }
-        writeln!(out, "                _ => return Err(format!(\"invalid basic block {} in function {}\", bb, {})),", func.index, func.index, func.index).unwrap();
-        writeln!(out, "            }}").unwrap();
-        writeln!(out, "        }}").unwrap();
-        writeln!(out, "    }}").unwrap();
-        Ok(())
+
+            let mut regs: Vec<_> = register_sizes.into_iter().collect();
+            regs.sort_by_key(|(reg, _size)| *reg);
+            for (reg, size) in regs {
+                writer.line(format!("let mut reg_{reg} = vec![0; {size}];"))?;
+            }
+
+            writer.line("loop {")?;
+            writer.indented(1, |writer| {
+                writer.line("match bb {")?;
+                writer.indented(1, |writer| {
+                    for (block_index, block) in func.body.iter().enumerate() {
+                        writer.line(format!("{block_index} => {{"))?;
+                        writer.indented(1, |writer| {
+                            for (dst, instr) in &block.0 {
+                                self.emit_instruction(
+                                    writer,
+                                    func,
+                                    block_index,
+                                    dst,
+                                    instr,
+                                    global_slots,
+                                    &block_preds,
+                                )?;
+                            }
+                            if let Some(target_bb) =
+                                fallthrough_targets.get(block_index).and_then(|target| *target)
+                            {
+                                writer.line(format!("pred_bb = {block_index};"))?;
+                                writer.line(format!("bb = {target_bb}usize;"))?;
+                                writer.line("continue;")
+                            } else {
+                                writer.line(format!(
+                                    "return Err(\"basic block {block_index} in function {} fell through without terminator\".to_string());",
+                                    func.index
+                                ))
+                            }
+                        })?;
+                        writer.line("},")?;
+                    }
+
+                    writer.line(format!(
+                        "_ => return Err(format!(\"invalid basic block {{}} in function {}\", bb)),",
+                        func.index
+                    ))
+                })?;
+                writer.line("}")
+            })?;
+            writer.line("}")
+        })?;
+        writer.line("}")
     }
 
     fn collect_register_sizes(&self, func: &Function) -> Result<HashMap<VReg, usize>, String> {
@@ -615,9 +528,38 @@ impl MimiumProgram<PanicHost> {
         preds
     }
 
-    fn emit_instruction(
+    fn collect_fallthrough_targets(&self, func: &Function) -> Vec<Option<usize>> {
+        let mut targets = vec![None; func.body.len()];
+        for block in &func.body {
+            for (_dst, instr) in &block.0 {
+                match instr {
+                    Instruction::JmpIf(_, then_bb, else_bb, merge_bb) => {
+                        targets[*then_bb as usize] = Some(*merge_bb as usize);
+                        targets[*else_bb as usize] = Some(*merge_bb as usize);
+                    }
+                    Instruction::Switch {
+                        cases,
+                        default_block,
+                        merge_block,
+                        ..
+                    } => {
+                        for (_literal, case_bb) in cases {
+                            targets[*case_bb as usize] = Some(*merge_block as usize);
+                        }
+                        if let Some(default_bb) = default_block {
+                            targets[*default_bb as usize] = Some(*merge_block as usize);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        targets
+    }
+
+    fn emit_instruction<W: Write>(
         &self,
-        out: &mut String,
+        writer: &mut CodeWriter<W>,
         func: &Function,
         block_index: usize,
         dst: &VPtr,
@@ -626,35 +568,35 @@ impl MimiumProgram<PanicHost> {
         block_preds: &[Vec<usize>],
     ) -> Result<(), String> {
         match instr {
-            Instruction::Uinteger(value) => self.assign_scalar(out, dst, format!("{value}u64"))?,
+            Instruction::Uinteger(value) => {
+                self.assign_scalar(writer, dst, format!("{value}u64"))?
+            }
             Instruction::Integer(value) => {
-                self.assign_scalar(out, dst, format!("i64_to_word({value}i64)"))?
+                self.assign_scalar(writer, dst, format!("i64_to_word({value}i64)"))?
             }
             Instruction::Float(value) => {
-                self.assign_scalar(out, dst, format!("f64_to_word({value:?}f64)"))?
+                self.assign_scalar(writer, dst, format!("f64_to_word({value:?}f64)"))?
             }
-            Instruction::Alloc(ty) => {
-                self.assign_scalar(out, dst, format!("memory.alloc({}usize)", ty.word_size()))?
-            }
+            Instruction::Alloc(ty) => self.assign_scalar(
+                writer,
+                dst,
+                format!("memory.alloc({}usize)", ty.word_size()),
+            )?,
             Instruction::Load(ptr, ty) => {
                 let dest = self.reg_name(dst)?;
                 let ptr_expr = self.word0_expr(ptr)?;
-                writeln!(
-                    out,
-                    "                    {dest} = memory.load({ptr_expr}, {}usize)?;",
+                writer.line(format!(
+                    "{dest} = memory.load({ptr_expr}, {}usize)?;",
                     ty.word_size()
-                )
-                .unwrap();
+                ))?;
             }
             Instruction::Store(ptr, src, ty) => {
                 let ptr_expr = self.word0_expr(ptr)?;
                 let src_expr = self.value_vec_expr(src)?;
-                writeln!(
-                    out,
-                    "                    memory.store({ptr_expr}, &{src_expr}, {}usize)?;",
+                writer.line(format!(
+                    "memory.store({ptr_expr}, &{src_expr}, {}usize)?;",
                     ty.word_size()
-                )
-                .unwrap();
+                ))?;
             }
             Instruction::GetElement {
                 value,
@@ -663,81 +605,80 @@ impl MimiumProgram<PanicHost> {
             } => {
                 let dest = self.reg_name(dst)?;
                 let base_expr = self.word0_expr(value)?;
-                writeln!(
-                    out,
-                    "                    {dest}[0] = memory.get_element({base_expr}, {}usize)?;",
+                writer.line(format!(
+                    "{dest}[0] = memory.get_element({base_expr}, {}usize)?;",
                     tuple_offset
-                )
-                .unwrap();
+                ))?;
             }
             Instruction::Call(callee, args, _ret_ty) => {
                 let dest = self.reg_name(dst)?;
                 let call_kind = self.call_kind(callee)?;
-                writeln!(out, "                    let mut call_args = Vec::new();").unwrap();
+                writer.line("let mut call_args = Vec::new();")?;
                 for (arg, _ty) in args {
                     let expr = self.value_vec_expr(arg)?;
-                    writeln!(
-                        out,
-                        "                    call_args.extend_from_slice(&{expr});"
-                    )
-                    .unwrap();
+                    writer.line(format!("call_args.extend_from_slice(&{expr});"))?;
                 }
                 match call_kind {
                     CallKind::FunctionHandle(handle_expr) => {
-                        writeln!(out, "                    {dest} = self.call_function_handle({handle_expr}, state, &call_args)?;").unwrap();
+                        writer.line(format!(
+                            "{dest} = self.call_function_handle({handle_expr}, &call_args)?;"
+                        ))?;
                     }
                     CallKind::Ext(symbol) => {
                         let name = format!("{:?}", symbol.as_str());
                         let ret_words = self.instruction_result_size(func, instr)?;
-                        writeln!(out, "                    {dest} = self.host.call_ext({name}, &call_args, {ret_words})?;").unwrap();
+                        writer.line(format!(
+                            "{dest} = self.host.call_ext({name}, &call_args, {ret_words})?;"
+                        ))?;
                     }
                 }
             }
             Instruction::GetGlobal(global, ty) => {
                 let dest = self.reg_name(dst)?;
                 let global_index = self.global_index(global_slots, global)?;
-                writeln!(
-                    out,
-                    "                    {dest} = self.globals[{global_index}][..{}].to_vec();",
+                writer.line(format!(
+                    "{dest} = self.globals[{global_index}][..{}].to_vec();",
                     ty.word_size()
-                )
-                .unwrap();
+                ))?;
             }
             Instruction::SetGlobal(global, src, ty) => {
                 let global_index = self.global_index(global_slots, global)?;
                 let src_expr = self.value_vec_expr(src)?;
-                writeln!(out, "                    self.globals[{global_index}][..{}].copy_from_slice(&{src_expr}[..{}]);", ty.word_size(), ty.word_size()).unwrap();
+                writer.line(format!(
+                    "self.globals[{global_index}][..{}].copy_from_slice(&{src_expr}[..{}]);",
+                    ty.word_size(),
+                    ty.word_size()
+                ))?;
             }
             Instruction::PushStateOffset(offset) => {
-                writeln!(out, "                    state.push_pos({offset}usize);").unwrap();
+                writer.line(format!("state.push_pos({offset}usize);"))?;
             }
             Instruction::PopStateOffset(offset) => {
-                writeln!(out, "                    state.pop_pos({offset}usize);").unwrap();
+                writer.line(format!("state.pop_pos({offset}usize);"))?;
             }
             Instruction::GetState(ty) => {
                 let dest = self.reg_name(dst)?;
-                writeln!(
-                    out,
-                    "                    {dest} = state.get_state({}usize);",
+                writer.line(format!(
+                    "{dest} = state.get_state({}usize);",
                     ty.word_size()
-                )
-                .unwrap();
+                ))?;
             }
             Instruction::JmpIf(cond, then_bb, else_bb, _merge_bb) => {
                 let cond_expr = self.word0_expr(cond)?;
-                writeln!(out, "                    pred_bb = {block_index};").unwrap();
-                writeln!(out, "                    bb = if truthy({cond_expr}) {{ {}usize }} else {{ {}usize }};", then_bb, else_bb).unwrap();
-                writeln!(out, "                    continue;").unwrap();
+                writer.line(format!("pred_bb = {block_index};"))?;
+                writer.line(format!(
+                    "bb = if truthy({cond_expr}) {{ {}usize }} else {{ {}usize }};",
+                    then_bb, else_bb
+                ))?;
+                writer.line("continue;")?;
             }
             Instruction::Jmp(offset) => {
-                writeln!(out, "                    pred_bb = {block_index};").unwrap();
-                writeln!(
-                    out,
-                    "                    bb = (({block_index}isize) + ({}isize)) as usize;",
+                writer.line(format!("pred_bb = {block_index};"))?;
+                writer.line(format!(
+                    "bb = (({block_index}isize) + ({}isize)) as usize;",
                     offset
-                )
-                .unwrap();
-                writeln!(out, "                    continue;").unwrap();
+                ))?;
+                writer.line("continue;")?;
             }
             Instruction::Phi(left, right) => {
                 let preds = block_preds.get(block_index).cloned().unwrap_or_default();
@@ -749,7 +690,17 @@ impl MimiumProgram<PanicHost> {
                 let dest = self.reg_name(dst)?;
                 let left_expr = self.value_vec_expr(left)?;
                 let right_expr = self.value_vec_expr(right)?;
-                writeln!(out, "                    if pred_bb == {}usize {{ {dest} = {left_expr}; }} else if pred_bb == {}usize {{ {dest} = {right_expr}; }} else {{ return Err(format!(\"phi predecessor mismatch in block {}: {}\", {}, pred_bb)); }}", preds[0], preds[1], block_index, "{}", block_index).unwrap();
+                writer.line(format!("if pred_bb == {}usize {{", preds[0]))?;
+                writer.indented(1, |writer| writer.line(format!("{dest} = {left_expr};")))?;
+                writer.line(format!("}} else if pred_bb == {}usize {{", preds[1]))?;
+                writer.indented(1, |writer| writer.line(format!("{dest} = {right_expr};")))?;
+                writer.line("} else {")?;
+                writer.indented(1, |writer| {
+                    writer.line(format!(
+                        "return Err(format!(\"phi predecessor mismatch in block {block_index}: {{}}\", pred_bb));"
+                    ))
+                })?;
+                writer.line("}")?;
             }
             Instruction::Switch {
                 scrutinee,
@@ -758,28 +709,24 @@ impl MimiumProgram<PanicHost> {
                 ..
             } => {
                 let scrutinee_expr = self.word0_expr(scrutinee)?;
-                writeln!(
-                    out,
-                    "                    let scrutinee = word_to_i64({scrutinee_expr});"
-                )
-                .unwrap();
-                writeln!(out, "                    pred_bb = {block_index};").unwrap();
-                writeln!(out, "                    bb = match scrutinee {{").unwrap();
-                for (literal, case_bb) in cases {
-                    writeln!(
-                        out,
-                        "                        {literal} => {}usize,",
-                        case_bb
-                    )
-                    .unwrap();
-                }
-                if let Some(default_bb) = default_block {
-                    writeln!(out, "                        _ => {}usize,", default_bb).unwrap();
-                } else {
-                    writeln!(out, "                        _ => return Err(format!(\"non exhaustive switch in block {}\", {})),", block_index, block_index).unwrap();
-                }
-                writeln!(out, "                    }};").unwrap();
-                writeln!(out, "                    continue;").unwrap();
+                writer.line(format!("let scrutinee = word_to_i64({scrutinee_expr});"))?;
+                writer.line(format!("pred_bb = {block_index};"))?;
+                writer.line("bb = match scrutinee {")?;
+                writer.indented(1, |writer| {
+                    for (literal, case_bb) in cases {
+                        writer.line(format!("{literal} => {}usize,", case_bb))?;
+                    }
+                    if let Some(default_bb) = default_block {
+                        writer.line(format!("_ => {}usize,", default_bb))?;
+                    } else {
+                        writer.line(format!(
+                            "_ => return Err(\"non exhaustive switch in block {block_index}\".to_string()),"
+                        ))?;
+                    }
+                    Ok(())
+                })?;
+                writer.line("};")?;
+                writer.line("continue;")?;
             }
             Instruction::PhiSwitch(inputs) => {
                 let preds = block_preds.get(block_index).cloned().unwrap_or_default();
@@ -791,50 +738,48 @@ impl MimiumProgram<PanicHost> {
                     ));
                 }
                 let dest = self.reg_name(dst)?;
-                writeln!(out, "                    {dest} = match pred_bb {{").unwrap();
-                for (pred, input) in preds.iter().zip(inputs.iter()) {
-                    let expr = self.value_vec_expr(input)?;
-                    writeln!(out, "                        {pred}usize => {expr},").unwrap();
-                }
-                writeln!(out, "                        _ => return Err(format!(\"phi switch predecessor mismatch in block {}\", {})),", block_index, block_index).unwrap();
-                writeln!(out, "                    }};").unwrap();
+                writer.line(format!("{dest} = match pred_bb {{"))?;
+                writer.indented(1, |writer| {
+                    for (pred, input) in preds.iter().zip(inputs.iter()) {
+                        let expr = self.value_vec_expr(input)?;
+                        writer.line(format!("{pred}usize => {expr},"))?;
+                    }
+                    writer.line(format!(
+                        "_ => return Err(\"phi switch predecessor mismatch in block {block_index}\".to_string()),"
+                    ))
+                })?;
+                writer.line("};")?;
             }
             Instruction::Return(value, ty) => {
                 if matches!(value.as_ref(), Value::None) || ty.word_size() == 0 {
-                    writeln!(out, "                    return Ok(Vec::new());").unwrap();
+                    writer.line("return Ok(Vec::new());")?;
                 } else {
                     let expr = self.value_vec_expr(value)?;
-                    writeln!(out, "                    return Ok({expr});").unwrap();
+                    writer.line(format!("return Ok({expr});"))?;
                 }
             }
             Instruction::ReturnFeed(value, ty) => {
                 let expr = self.value_vec_expr(value)?;
                 match self.config.self_eval_mode {
                     SelfEvalMode::SimpleState => {
-                        writeln!(out, "                    let result = {expr};").unwrap();
-                        writeln!(
-                            out,
-                            "                    state.set_state(&result, {}usize);",
+                        writer.line(format!("let result = {expr};"))?;
+                        writer.line(format!(
+                            "state.set_state(&result, {}usize);",
                             ty.word_size()
-                        )
-                        .unwrap();
-                        writeln!(out, "                    return Ok(result);").unwrap();
+                        ))?;
+                        writer.line("return Ok(result);")?;
                     }
                     SelfEvalMode::ZeroAtInit => {
-                        writeln!(
-                            out,
-                            "                    let previous = state.get_state({}usize);",
+                        writer.line(format!(
+                            "let previous = state.get_state({}usize);",
                             ty.word_size()
-                        )
-                        .unwrap();
-                        writeln!(out, "                    let result = {expr};").unwrap();
-                        writeln!(
-                            out,
-                            "                    state.set_state(&result, {}usize);",
+                        ))?;
+                        writer.line(format!("let result = {expr};"))?;
+                        writer.line(format!(
+                            "state.set_state(&result, {}usize);",
                             ty.word_size()
-                        )
-                        .unwrap();
-                        writeln!(out, "                    return Ok(previous);").unwrap();
+                        ))?;
+                        writer.line("return Ok(previous);")?;
                     }
                 }
             }
@@ -842,200 +787,173 @@ impl MimiumProgram<PanicHost> {
                 let dest = self.reg_name(dst)?;
                 let src_expr = self.word0_expr(src)?;
                 let time_expr = self.word0_expr(time)?;
-                writeln!(out, "                    {dest}[0] = state.delay({src_expr}, {time_expr}, {}usize);", max_len).unwrap();
+                writer.line(format!(
+                    "{dest}[0] = state.delay({src_expr}, {time_expr}, {}usize);",
+                    max_len
+                ))?;
             }
             Instruction::Mem(src) => {
                 let dest = self.reg_name(dst)?;
                 let src_expr = self.word0_expr(src)?;
-                writeln!(
-                    out,
-                    "                    {dest}[0] = state.mem({src_expr});"
-                )
-                .unwrap();
+                writer.line(format!("{dest}[0] = state.mem({src_expr});"))?;
             }
             Instruction::AddF(left, right) => {
-                self.assign_float_binop(out, dst, left, right, "+")?
+                self.assign_float_binop(writer, dst, left, right, "+")?
             }
             Instruction::SubF(left, right) => {
-                self.assign_float_binop(out, dst, left, right, "-")?
+                self.assign_float_binop(writer, dst, left, right, "-")?
             }
             Instruction::MulF(left, right) => {
-                self.assign_float_binop(out, dst, left, right, "*")?
+                self.assign_float_binop(writer, dst, left, right, "*")?
             }
             Instruction::DivF(left, right) => {
-                self.assign_float_binop(out, dst, left, right, "/")?
+                self.assign_float_binop(writer, dst, left, right, "/")?
             }
             Instruction::ModF(left, right) => {
-                self.assign_float_binop(out, dst, left, right, "%")?
+                self.assign_float_binop(writer, dst, left, right, "%")?
             }
             Instruction::PowF(left, right) => {
-                self.assign_float_method2(out, dst, left, right, "powf")?
+                self.assign_float_method2(writer, dst, left, right, "powf")?
             }
-            Instruction::NegF(value) => self.assign_float_unop(out, dst, value, "-")?,
-            Instruction::AbsF(value) => self.assign_float_method1(out, dst, value, "abs")?,
-            Instruction::SinF(value) => self.assign_float_method1(out, dst, value, "sin")?,
-            Instruction::CosF(value) => self.assign_float_method1(out, dst, value, "cos")?,
-            Instruction::LogF(value) => self.assign_float_method1(out, dst, value, "ln")?,
-            Instruction::SqrtF(value) => self.assign_float_method1(out, dst, value, "sqrt")?,
-            Instruction::AddI(left, right) => self.assign_int_binop(out, dst, left, right, "+")?,
-            Instruction::SubI(left, right) => self.assign_int_binop(out, dst, left, right, "-")?,
-            Instruction::MulI(left, right) => self.assign_int_binop(out, dst, left, right, "*")?,
-            Instruction::DivI(left, right) => self.assign_int_binop(out, dst, left, right, "/")?,
-            Instruction::ModI(left, right) => self.assign_int_binop(out, dst, left, right, "%")?,
-            Instruction::NegI(value) => self.assign_int_unop(out, dst, value, "-")?,
-            Instruction::AbsI(value) => self.assign_int_method1(out, dst, value, "abs")?,
-            Instruction::Gt(left, right) => self.assign_cmp(out, dst, left, right, ">")?,
-            Instruction::Ge(left, right) => self.assign_cmp(out, dst, left, right, ">=")?,
-            Instruction::Lt(left, right) => self.assign_cmp(out, dst, left, right, "<")?,
-            Instruction::Le(left, right) => self.assign_cmp(out, dst, left, right, "<=")?,
-            Instruction::Eq(left, right) => self.assign_cmp(out, dst, left, right, "==")?,
-            Instruction::Ne(left, right) => self.assign_cmp(out, dst, left, right, "!=")?,
+            Instruction::NegF(value) => self.assign_float_unop(writer, dst, value, "-")?,
+            Instruction::AbsF(value) => self.assign_float_method1(writer, dst, value, "abs")?,
+            Instruction::SinF(value) => self.assign_float_method1(writer, dst, value, "sin")?,
+            Instruction::CosF(value) => self.assign_float_method1(writer, dst, value, "cos")?,
+            Instruction::LogF(value) => self.assign_float_method1(writer, dst, value, "ln")?,
+            Instruction::SqrtF(value) => self.assign_float_method1(writer, dst, value, "sqrt")?,
+            Instruction::AddI(left, right) => {
+                self.assign_int_binop(writer, dst, left, right, "+")?
+            }
+            Instruction::SubI(left, right) => {
+                self.assign_int_binop(writer, dst, left, right, "-")?
+            }
+            Instruction::MulI(left, right) => {
+                self.assign_int_binop(writer, dst, left, right, "*")?
+            }
+            Instruction::DivI(left, right) => {
+                self.assign_int_binop(writer, dst, left, right, "/")?
+            }
+            Instruction::ModI(left, right) => {
+                self.assign_int_binop(writer, dst, left, right, "%")?
+            }
+            Instruction::NegI(value) => self.assign_int_unop(writer, dst, value, "-")?,
+            Instruction::AbsI(value) => self.assign_int_method1(writer, dst, value, "abs")?,
+            Instruction::Gt(left, right) => self.assign_cmp(writer, dst, left, right, ">")?,
+            Instruction::Ge(left, right) => self.assign_cmp(writer, dst, left, right, ">=")?,
+            Instruction::Lt(left, right) => self.assign_cmp(writer, dst, left, right, "<")?,
+            Instruction::Le(left, right) => self.assign_cmp(writer, dst, left, right, "<=")?,
+            Instruction::Eq(left, right) => self.assign_cmp(writer, dst, left, right, "==")?,
+            Instruction::Ne(left, right) => self.assign_cmp(writer, dst, left, right, "!=")?,
             Instruction::And(left, right) => {
-                self.assign_truthy_binop(out, dst, left, right, "&&")?
+                self.assign_truthy_binop(writer, dst, left, right, "&&")?
             }
             Instruction::Or(left, right) => {
-                self.assign_truthy_binop(out, dst, left, right, "||")?
+                self.assign_truthy_binop(writer, dst, left, right, "||")?
             }
             Instruction::Not(value) => {
                 let dest = self.reg_name(dst)?;
                 let expr = self.word0_expr(value)?;
-                writeln!(out, "                    {dest}[0] = f64_to_word(if !truthy({expr}) {{ 1.0 }} else {{ 0.0 }});").unwrap();
+                writer.line(format!(
+                    "{dest}[0] = f64_to_word(if !truthy({expr}) {{ 1.0 }} else {{ 0.0 }});"
+                ))?;
             }
             Instruction::CastFtoI(value) => {
                 let dest = self.reg_name(dst)?;
                 let expr = self.word0_expr(value)?;
-                writeln!(
-                    out,
-                    "                    {dest}[0] = i64_to_word(word_to_f64({expr}) as i64);"
-                )
-                .unwrap();
+                writer.line(format!(
+                    "{dest}[0] = i64_to_word(word_to_f64({expr}) as i64);"
+                ))?;
             }
             Instruction::CastItoF(value) => {
                 let dest = self.reg_name(dst)?;
                 let expr = self.word0_expr(value)?;
-                writeln!(
-                    out,
-                    "                    {dest}[0] = f64_to_word(word_to_i64({expr}) as f64);"
-                )
-                .unwrap();
+                writer.line(format!(
+                    "{dest}[0] = f64_to_word(word_to_i64({expr}) as f64);"
+                ))?;
             }
             Instruction::CastItoB(value) => {
                 let dest = self.reg_name(dst)?;
                 let expr = self.word0_expr(value)?;
-                writeln!(out, "                    {dest}[0] = f64_to_word(if word_to_i64({expr}) != 0 {{ 1.0 }} else {{ 0.0 }});").unwrap();
+                writer.line(format!(
+                    "{dest}[0] = f64_to_word(if word_to_i64({expr}) != 0 {{ 1.0 }} else {{ 0.0 }});"
+                ))?;
             }
             Instruction::Array(values, elem_ty) => {
                 let dest = self.reg_name(dst)?;
                 let elem_words = elem_ty.word_size() as usize;
-                writeln!(
-                    out,
-                    "                    let array_handle = self.arrays.alloc_array({}, {}usize);",
+                writer.line(format!(
+                    "let array_handle = self.arrays.alloc_array({}, {}usize);",
                     values.len(),
                     elem_words
-                )
-                .unwrap();
+                ))?;
                 for (index, value) in values.iter().enumerate() {
                     let expr = self.value_vec_expr(value)?;
-                    writeln!(out, "                    {{").unwrap();
-                    writeln!(
-                        out,
-                        "                        let array = self.arrays.get_mut(array_handle)?;"
-                    )
-                    .unwrap();
-                    writeln!(
-                        out,
-                        "                        let start = {index}usize * {}usize;",
-                        elem_words
-                    )
-                    .unwrap();
-                    writeln!(
-                        out,
-                        "                        let end = start + {}usize;",
-                        elem_words
-                    )
-                    .unwrap();
-                    writeln!(out, "                        array.data[start..end].copy_from_slice(&{expr}[..{}]);", elem_words).unwrap();
-                    writeln!(out, "                    }}").unwrap();
+                    writer.line("{")?;
+                    writer.indented(1, |writer| {
+                        writer.line("let array = self.arrays.get_mut(array_handle)?;")?;
+                        writer.line(format!("let start = {index}usize * {}usize;", elem_words))?;
+                        writer.line(format!("let end = start + {}usize;", elem_words))?;
+                        writer.line(format!(
+                            "array.data[start..end].copy_from_slice(&{expr}[..{}]);",
+                            elem_words
+                        ))
+                    })?;
+                    writer.line("}")?;
                 }
-                writeln!(out, "                    {dest}[0] = array_handle;").unwrap();
+                writer.line(format!("{dest}[0] = array_handle;"))?;
             }
             Instruction::GetArrayElem(arr, idx, elem_ty) => {
                 let dest = self.reg_name(dst)?;
                 let arr_expr = self.word0_expr(arr)?;
                 let idx_expr = self.word0_expr(idx)?;
                 let elem_words = elem_ty.word_size() as usize;
-                writeln!(out, "                    {{").unwrap();
-                writeln!(
-                    out,
-                    "                        let array = self.arrays.get({arr_expr})?;"
-                )
-                .unwrap();
-                writeln!(out, "                        let len = if array.elem_size_words == 0 {{ 0usize }} else {{ array.data.len() / array.elem_size_words }};").unwrap();
-                writeln!(
-                    out,
-                    "                        let index_value = word_to_f64({idx_expr});"
-                )
-                .unwrap();
-                writeln!(out, "                        let index = if len == 0 {{ 0usize }} else if !index_value.is_finite() {{ 0usize }} else {{ (index_value as i64).clamp(0, (len - 1) as i64) as usize }};").unwrap();
-                writeln!(
-                    out,
-                    "                        if len == 0 {{ {dest}.fill(0); }} else {{"
-                )
-                .unwrap();
-                writeln!(
-                    out,
-                    "                            let start = index * {}usize;",
-                    elem_words
-                )
-                .unwrap();
-                writeln!(
-                    out,
-                    "                            let end = start + {}usize;",
-                    elem_words
-                )
-                .unwrap();
-                writeln!(
-                    out,
-                    "                            {dest} = array.data[start..end].to_vec();"
-                )
-                .unwrap();
-                writeln!(out, "                        }}").unwrap();
-                writeln!(out, "                    }}").unwrap();
+                writer.line("{")?;
+                writer.indented(1, |writer| {
+                    writer.line(format!("let array = self.arrays.get({arr_expr})?;"))?;
+                    writer.line(
+                        "let len = if array.elem_size_words == 0 { 0usize } else { array.data.len() / array.elem_size_words };",
+                    )?;
+                    writer.line(format!("let index_value = word_to_f64({idx_expr});"))?;
+                    writer.line(
+                        "let index = if len == 0 { 0usize } else if !index_value.is_finite() { 0usize } else { (index_value as i64).clamp(0, (len - 1) as i64) as usize };",
+                    )?;
+                    writer.line(format!("if len == 0 {{ {dest}.fill(0); }} else {{"))?;
+                    writer.indented(1, |writer| {
+                        writer.line(format!("let start = index * {}usize;", elem_words))?;
+                        writer.line(format!("let end = start + {}usize;", elem_words))?;
+                        writer.line(format!("{dest} = array.data[start..end].to_vec();"))
+                    })?;
+                    writer.line("}")
+                })?;
+                writer.line("}")?;
             }
             Instruction::SetArrayElem(arr, idx, value, elem_ty) => {
                 let arr_expr = self.word0_expr(arr)?;
                 let idx_expr = self.word0_expr(idx)?;
                 let value_expr = self.value_vec_expr(value)?;
                 let elem_words = elem_ty.word_size() as usize;
-                writeln!(out, "                    {{").unwrap();
-                writeln!(
-                    out,
-                    "                        let array = self.arrays.get_mut({arr_expr})?;"
-                )
-                .unwrap();
-                writeln!(out, "                        let len = if array.elem_size_words == 0 {{ 0usize }} else {{ array.data.len() / array.elem_size_words }};").unwrap();
-                writeln!(
-                    out,
-                    "                        let index_value = word_to_f64({idx_expr});"
-                )
-                .unwrap();
-                writeln!(out, "                        let index = if len == 0 {{ 0usize }} else if !index_value.is_finite() {{ 0usize }} else {{ (index_value as i64).clamp(0, (len - 1) as i64) as usize }};").unwrap();
-                writeln!(out, "                        if len != 0 {{").unwrap();
-                writeln!(
-                    out,
-                    "                            let start = index * {}usize;",
-                    elem_words
-                )
-                .unwrap();
-                writeln!(
-                    out,
-                    "                            let end = start + {}usize;",
-                    elem_words
-                )
-                .unwrap();
-                writeln!(out, "                            array.data[start..end].copy_from_slice(&{value_expr}[..{}]);", elem_words).unwrap();
-                writeln!(out, "                        }}").unwrap();
-                writeln!(out, "                    }}").unwrap();
+                writer.line("{")?;
+                writer.indented(1, |writer| {
+                    writer.line(format!("let array = self.arrays.get_mut({arr_expr})?;"))?;
+                    writer.line(
+                        "let len = if array.elem_size_words == 0 { 0usize } else { array.data.len() / array.elem_size_words };",
+                    )?;
+                    writer.line(format!("let index_value = word_to_f64({idx_expr});"))?;
+                    writer.line(
+                        "let index = if len == 0 { 0usize } else if !index_value.is_finite() { 0usize } else { (index_value as i64).clamp(0, (len - 1) as i64) as usize };",
+                    )?;
+                    writer.line("if len != 0 {")?;
+                    writer.indented(1, |writer| {
+                        writer.line(format!("let start = index * {}usize;", elem_words))?;
+                        writer.line(format!("let end = start + {}usize;", elem_words))?;
+                        writer.line(format!(
+                            "array.data[start..end].copy_from_slice(&{value_expr}[..{}]);",
+                            elem_words
+                        ))
+                    })?;
+                    writer.line("}")
+                })?;
+                writer.line("}")?;
             }
             Instruction::Closure(_)
             | Instruction::CallCls(_, _, _)
@@ -1069,15 +987,19 @@ impl MimiumProgram<PanicHost> {
         Ok(())
     }
 
-    fn assign_scalar(&self, out: &mut String, dst: &VPtr, expr: String) -> Result<(), String> {
+    fn assign_scalar<W: Write>(
+        &self,
+        writer: &mut CodeWriter<W>,
+        dst: &VPtr,
+        expr: String,
+    ) -> Result<(), String> {
         let dest = self.reg_name(dst)?;
-        writeln!(out, "                    {dest}[0] = {expr};").unwrap();
-        Ok(())
+        writer.line(format!("{dest}[0] = {expr};"))
     }
 
-    fn assign_float_binop(
+    fn assign_float_binop<W: Write>(
         &self,
-        out: &mut String,
+        writer: &mut CodeWriter<W>,
         dst: &VPtr,
         left: &VPtr,
         right: &VPtr,
@@ -1086,30 +1008,28 @@ impl MimiumProgram<PanicHost> {
         let dest = self.reg_name(dst)?;
         let left_expr = self.word0_expr(left)?;
         let right_expr = self.word0_expr(right)?;
-        writeln!(out, "                    {dest}[0] = f64_to_word(word_to_f64({left_expr}) {op} word_to_f64({right_expr}));").unwrap();
-        Ok(())
+        writer.line(format!(
+            "{dest}[0] = f64_to_word(word_to_f64({left_expr}) {op} word_to_f64({right_expr}));"
+        ))
     }
 
-    fn assign_float_method1(
+    fn assign_float_method1<W: Write>(
         &self,
-        out: &mut String,
+        writer: &mut CodeWriter<W>,
         dst: &VPtr,
         value: &VPtr,
         method: &str,
     ) -> Result<(), String> {
         let dest = self.reg_name(dst)?;
         let expr = self.word0_expr(value)?;
-        writeln!(
-            out,
-            "                    {dest}[0] = f64_to_word(word_to_f64({expr}).{method}());"
-        )
-        .unwrap();
-        Ok(())
+        writer.line(format!(
+            "{dest}[0] = f64_to_word(word_to_f64({expr}).{method}());"
+        ))
     }
 
-    fn assign_float_method2(
+    fn assign_float_method2<W: Write>(
         &self,
-        out: &mut String,
+        writer: &mut CodeWriter<W>,
         dst: &VPtr,
         left: &VPtr,
         right: &VPtr,
@@ -1118,30 +1038,26 @@ impl MimiumProgram<PanicHost> {
         let dest = self.reg_name(dst)?;
         let left_expr = self.word0_expr(left)?;
         let right_expr = self.word0_expr(right)?;
-        writeln!(out, "                    {dest}[0] = f64_to_word(word_to_f64({left_expr}).{method}(word_to_f64({right_expr})));").unwrap();
-        Ok(())
+        writer.line(format!(
+            "{dest}[0] = f64_to_word(word_to_f64({left_expr}).{method}(word_to_f64({right_expr})));"
+        ))
     }
 
-    fn assign_float_unop(
+    fn assign_float_unop<W: Write>(
         &self,
-        out: &mut String,
+        writer: &mut CodeWriter<W>,
         dst: &VPtr,
         value: &VPtr,
         op: &str,
     ) -> Result<(), String> {
         let dest = self.reg_name(dst)?;
         let expr = self.word0_expr(value)?;
-        writeln!(
-            out,
-            "                    {dest}[0] = f64_to_word({op}word_to_f64({expr}));"
-        )
-        .unwrap();
-        Ok(())
+        writer.line(format!("{dest}[0] = f64_to_word({op}word_to_f64({expr}));"))
     }
 
-    fn assign_int_binop(
+    fn assign_int_binop<W: Write>(
         &self,
-        out: &mut String,
+        writer: &mut CodeWriter<W>,
         dst: &VPtr,
         left: &VPtr,
         right: &VPtr,
@@ -1150,47 +1066,40 @@ impl MimiumProgram<PanicHost> {
         let dest = self.reg_name(dst)?;
         let left_expr = self.word0_expr(left)?;
         let right_expr = self.word0_expr(right)?;
-        writeln!(out, "                    {dest}[0] = i64_to_word(word_to_i64({left_expr}) {op} word_to_i64({right_expr}));").unwrap();
-        Ok(())
+        writer.line(format!(
+            "{dest}[0] = i64_to_word(word_to_i64({left_expr}) {op} word_to_i64({right_expr}));"
+        ))
     }
 
-    fn assign_int_unop(
+    fn assign_int_unop<W: Write>(
         &self,
-        out: &mut String,
+        writer: &mut CodeWriter<W>,
         dst: &VPtr,
         value: &VPtr,
         op: &str,
     ) -> Result<(), String> {
         let dest = self.reg_name(dst)?;
         let expr = self.word0_expr(value)?;
-        writeln!(
-            out,
-            "                    {dest}[0] = i64_to_word({op}word_to_i64({expr}));"
-        )
-        .unwrap();
-        Ok(())
+        writer.line(format!("{dest}[0] = i64_to_word({op}word_to_i64({expr}));"))
     }
 
-    fn assign_int_method1(
+    fn assign_int_method1<W: Write>(
         &self,
-        out: &mut String,
+        writer: &mut CodeWriter<W>,
         dst: &VPtr,
         value: &VPtr,
         method: &str,
     ) -> Result<(), String> {
         let dest = self.reg_name(dst)?;
         let expr = self.word0_expr(value)?;
-        writeln!(
-            out,
-            "                    {dest}[0] = i64_to_word(word_to_i64({expr}).{method}());"
-        )
-        .unwrap();
-        Ok(())
+        writer.line(format!(
+            "{dest}[0] = i64_to_word(word_to_i64({expr}).{method}());"
+        ))
     }
 
-    fn assign_cmp(
+    fn assign_cmp<W: Write>(
         &self,
-        out: &mut String,
+        writer: &mut CodeWriter<W>,
         dst: &VPtr,
         left: &VPtr,
         right: &VPtr,
@@ -1199,13 +1108,14 @@ impl MimiumProgram<PanicHost> {
         let dest = self.reg_name(dst)?;
         let left_expr = self.word0_expr(left)?;
         let right_expr = self.word0_expr(right)?;
-        writeln!(out, "                    {dest}[0] = f64_to_word(if word_to_f64({left_expr}) {op} word_to_f64({right_expr}) {{ 1.0 }} else {{ 0.0 }});").unwrap();
-        Ok(())
+        writer.line(format!(
+            "{dest}[0] = f64_to_word(if word_to_f64({left_expr}) {op} word_to_f64({right_expr}) {{ 1.0 }} else {{ 0.0 }});"
+        ))
     }
 
-    fn assign_truthy_binop(
+    fn assign_truthy_binop<W: Write>(
         &self,
-        out: &mut String,
+        writer: &mut CodeWriter<W>,
         dst: &VPtr,
         left: &VPtr,
         right: &VPtr,
@@ -1214,8 +1124,9 @@ impl MimiumProgram<PanicHost> {
         let dest = self.reg_name(dst)?;
         let left_expr = self.word0_expr(left)?;
         let right_expr = self.word0_expr(right)?;
-        writeln!(out, "                    {dest}[0] = f64_to_word(if truthy({left_expr}) {op} truthy({right_expr}) {{ 1.0 }} else {{ 0.0 }});").unwrap();
-        Ok(())
+        writer.line(format!(
+            "{dest}[0] = f64_to_word(if truthy({left_expr}) {op} truthy({right_expr}) {{ 1.0 }} else {{ 0.0 }});"
+        ))
     }
 
     fn call_kind(&self, callee: &VPtr) -> Result<CallKind, String> {
