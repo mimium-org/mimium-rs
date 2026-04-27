@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## v4.0.2
+
+### Fixed bugs
+
+- Fixed midi plugin was not properly loaded on default build config(#200)
+- Fixed crashes when scheduler is used on wasm backend(#200)
+
+
 ## v4.0.1
 
 ### Fixed bugs
