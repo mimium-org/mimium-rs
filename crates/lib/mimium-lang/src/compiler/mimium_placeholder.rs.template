@@ -1,9 +1,19 @@
+use std::convert::TryInto;
+
 pub type Word = u64;
 
 fn f64_to_word(value: f64) -> Word { value.to_bits() }
 fn word_to_f64(value: Word) -> f64 { f64::from_bits(value) }
 fn i64_to_word(value: i64) -> Word { u64::from_ne_bytes(value.to_ne_bytes()) }
 fn word_to_i64(value: Word) -> i64 { i64::from_ne_bytes(value.to_ne_bytes()) }
+fn copy_words<const N: usize>(slice: &[Word]) -> Result<[Word; N], String> {
+    slice
+        .try_into()
+        .map_err(|_| format!("expected {} words, got {}", N, slice.len()))
+}
+fn vec_to_words<const N: usize>(words: Vec<Word>) -> Result<[Word; N], String> {
+    copy_words::<N>(&words)
+}
 fn truthy(value: Word) -> bool { word_to_f64(value) > 0.0 }
 const FUNCTION_HANDLE_TAG: Word = 1 << 63;
 fn encode_function(index: usize) -> Word { FUNCTION_HANDLE_TAG | index as Word }

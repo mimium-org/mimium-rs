@@ -301,7 +301,7 @@ impl RustGenerator {
             for (index, arg) in func.args.iter().enumerate() {
                 let size = arg.1.word_size() as usize;
                 writer.line(format!(
-                    "let arg_{index} = args[arg_offset..arg_offset + {size}].to_vec();"
+                    "let arg_{index} = copy_words::<{size}>(&args[arg_offset..arg_offset + {size}])?;"
                 ))?;
                 writer.line(format!("arg_offset += {size};"))?;
             }
@@ -309,7 +309,7 @@ impl RustGenerator {
             let mut regs: Vec<_> = register_sizes.into_iter().collect();
             regs.sort_by_key(|(reg, _size)| *reg);
             for (reg, size) in regs {
-                writer.line(format!("let mut reg_{reg} = vec![0; {size}];"))?;
+                writer.line(format!("let mut reg_{reg} = [0u64; {size}];"))?;
             }
 
             writer.line("loop {")?;
@@ -363,7 +363,7 @@ impl RustGenerator {
         for block in &func.body {
             for (dst, instr) in &block.0 {
                 if let Value::Register(reg) = dst.as_ref() {
-                    let size = self.instruction_result_size(func, instr)?.max(1);
+                    let size = self.instruction_result_size(func, instr)?;
                     sizes.entry(*reg).or_insert(size);
                 }
             }
@@ -586,15 +586,18 @@ impl RustGenerator {
                 let dest = self.reg_name(dst)?;
                 let ptr_expr = self.word0_expr(ptr)?;
                 writer.line(format!(
-                    "{dest} = memory.load({ptr_expr}, {}usize)?;",
-                    ty.word_size()
+                    "{dest} = {};",
+                    self.vec_to_array_expr(
+                        format!("memory.load({ptr_expr}, {}usize)?", ty.word_size()),
+                        ty.word_size() as usize,
+                    )
                 ))?;
             }
             Instruction::Store(ptr, src, ty) => {
                 let ptr_expr = self.word0_expr(ptr)?;
-                let src_expr = self.value_vec_expr(src)?;
+                let src_expr = self.value_slice_expr(src)?;
                 writer.line(format!(
-                    "memory.store({ptr_expr}, &{src_expr}, {}usize)?;",
+                    "memory.store({ptr_expr}, {src_expr}, {}usize)?;",
                     ty.word_size()
                 ))?;
             }
@@ -613,40 +616,76 @@ impl RustGenerator {
             Instruction::Call(callee, args, _ret_ty) => {
                 let dest = self.reg_name(dst)?;
                 let call_kind = self.call_kind(callee)?;
+                let result_size = self.instruction_result_size(func, instr)?;
                 writer.line("let mut call_args = Vec::new();")?;
                 for (arg, _ty) in args {
-                    let expr = self.value_vec_expr(arg)?;
-                    writer.line(format!("call_args.extend_from_slice(&{expr});"))?;
+                    let expr = self.value_slice_expr(arg)?;
+                    writer.line(format!("call_args.extend_from_slice({expr});"))?;
                 }
                 match call_kind {
                     CallKind::FunctionHandle(handle_expr) => {
                         writer.line(format!(
-                            "{dest} = self.call_function_handle({handle_expr}, &call_args)?;"
+                            "{dest} = {};",
+                            self.vec_to_array_expr(
+                                format!("self.call_function_handle({handle_expr}, &call_args)?"),
+                                result_size,
+                            )
                         ))?;
                     }
                     CallKind::Ext(symbol) => {
                         let name = format!("{:?}", symbol.as_str());
                         let ret_words = self.instruction_result_size(func, instr)?;
                         writer.line(format!(
-                            "{dest} = self.host.call_ext({name}, &call_args, {ret_words})?;"
+                            "{dest} = {};",
+                            self.vec_to_array_expr(
+                                format!("self.host.call_ext({name}, &call_args, {ret_words})?"),
+                                result_size,
+                            )
                         ))?;
                     }
+                }
+            }
+            Instruction::CallIndirect(callee, args, ret_ty) => {
+                let runtime_expr = match callee.as_ref() {
+                    Value::ExtFunction(symbol, _) if args.is_empty() && ret_ty.word_size() == 1 => {
+                        match symbol.as_str() {
+                            "_mimium_getnow" => {
+                                Some("f64_to_word(self.host.current_time())".to_string())
+                            }
+                            "_mimium_getsamplerate" => {
+                                Some("f64_to_word(self.host.sample_rate())".to_string())
+                            }
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+
+                if let Some(expr) = runtime_expr {
+                    self.assign_scalar(writer, dst, expr)?;
+                } else {
+                    return Err(format!(
+                        "instruction {:?} is not supported by the initial Rust backend",
+                        instr
+                    ));
                 }
             }
             Instruction::GetGlobal(global, ty) => {
                 let dest = self.reg_name(dst)?;
                 let global_index = self.global_index(global_slots, global)?;
                 writer.line(format!(
-                    "{dest} = self.globals[{global_index}][..{}].to_vec();",
-                    ty.word_size()
+                    "{dest} = {};",
+                    self.slice_to_array_expr(
+                        format!("&self.globals[{global_index}][..{}]", ty.word_size()),
+                        ty.word_size() as usize,
+                    )
                 ))?;
             }
             Instruction::SetGlobal(global, src, ty) => {
                 let global_index = self.global_index(global_slots, global)?;
-                let src_expr = self.value_vec_expr(src)?;
+                let src_expr = self.value_slice_expr(src)?;
                 writer.line(format!(
-                    "self.globals[{global_index}][..{}].copy_from_slice(&{src_expr}[..{}]);",
-                    ty.word_size(),
+                    "self.globals[{global_index}][..{}].copy_from_slice({src_expr});",
                     ty.word_size()
                 ))?;
             }
@@ -659,8 +698,11 @@ impl RustGenerator {
             Instruction::GetState(ty) => {
                 let dest = self.reg_name(dst)?;
                 writer.line(format!(
-                    "{dest} = state.get_state({}usize);",
-                    ty.word_size()
+                    "{dest} = {};",
+                    self.vec_to_array_expr(
+                        format!("state.get_state({}usize)", ty.word_size()),
+                        ty.word_size() as usize,
+                    )
                 ))?;
             }
             Instruction::JmpIf(cond, then_bb, else_bb, _merge_bb) => {
@@ -688,8 +730,8 @@ impl RustGenerator {
                     ));
                 }
                 let dest = self.reg_name(dst)?;
-                let left_expr = self.value_vec_expr(left)?;
-                let right_expr = self.value_vec_expr(right)?;
+                let left_expr = self.value_array_expr(left)?;
+                let right_expr = self.value_array_expr(right)?;
                 writer.line(format!("if pred_bb == {}usize {{", preds[0]))?;
                 writer.indented(1, |writer| writer.line(format!("{dest} = {left_expr};")))?;
                 writer.line(format!("}} else if pred_bb == {}usize {{", preds[1]))?;
@@ -741,7 +783,7 @@ impl RustGenerator {
                 writer.line(format!("{dest} = match pred_bb {{"))?;
                 writer.indented(1, |writer| {
                     for (pred, input) in preds.iter().zip(inputs.iter()) {
-                        let expr = self.value_vec_expr(input)?;
+                        let expr = self.value_array_expr(input)?;
                         writer.line(format!("{pred}usize => {expr},"))?;
                     }
                     writer.line(format!(
@@ -759,7 +801,7 @@ impl RustGenerator {
                 }
             }
             Instruction::ReturnFeed(value, ty) => {
-                let expr = self.value_vec_expr(value)?;
+                let expr = self.value_array_expr(value)?;
                 match self.config.self_eval_mode {
                     SelfEvalMode::SimpleState => {
                         writer.line(format!("let result = {expr};"))?;
@@ -767,7 +809,7 @@ impl RustGenerator {
                             "state.set_state(&result, {}usize);",
                             ty.word_size()
                         ))?;
-                        writer.line("return Ok(result);")?;
+                        writer.line("return Ok(result.to_vec());")?;
                     }
                     SelfEvalMode::ZeroAtInit => {
                         writer.line(format!(
@@ -887,16 +929,13 @@ impl RustGenerator {
                     elem_words
                 ))?;
                 for (index, value) in values.iter().enumerate() {
-                    let expr = self.value_vec_expr(value)?;
+                    let expr = self.value_slice_expr(value)?;
                     writer.line("{")?;
                     writer.indented(1, |writer| {
                         writer.line("let array = self.arrays.get_mut(array_handle)?;")?;
                         writer.line(format!("let start = {index}usize * {}usize;", elem_words))?;
                         writer.line(format!("let end = start + {}usize;", elem_words))?;
-                        writer.line(format!(
-                            "array.data[start..end].copy_from_slice(&{expr}[..{}]);",
-                            elem_words
-                        ))
+                        writer.line(format!("array.data[start..end].copy_from_slice({expr});"))
                     })?;
                     writer.line("}")?;
                 }
@@ -921,7 +960,13 @@ impl RustGenerator {
                     writer.indented(1, |writer| {
                         writer.line(format!("let start = index * {}usize;", elem_words))?;
                         writer.line(format!("let end = start + {}usize;", elem_words))?;
-                        writer.line(format!("{dest} = array.data[start..end].to_vec();"))
+                        writer.line(format!(
+                            "{dest} = {};",
+                            self.slice_to_array_expr(
+                                format!("&array.data[start..end]"),
+                                elem_words,
+                            )
+                        ))
                     })?;
                     writer.line("}")
                 })?;
@@ -930,7 +975,7 @@ impl RustGenerator {
             Instruction::SetArrayElem(arr, idx, value, elem_ty) => {
                 let arr_expr = self.word0_expr(arr)?;
                 let idx_expr = self.word0_expr(idx)?;
-                let value_expr = self.value_vec_expr(value)?;
+                let value_expr = self.value_slice_expr(value)?;
                 let elem_words = elem_ty.word_size() as usize;
                 writer.line("{")?;
                 writer.indented(1, |writer| {
@@ -946,10 +991,7 @@ impl RustGenerator {
                     writer.indented(1, |writer| {
                         writer.line(format!("let start = index * {}usize;", elem_words))?;
                         writer.line(format!("let end = start + {}usize;", elem_words))?;
-                        writer.line(format!(
-                            "array.data[start..end].copy_from_slice(&{value_expr}[..{}]);",
-                            elem_words
-                        ))
+                        writer.line(format!("array.data[start..end].copy_from_slice({value_expr});"))
                     })?;
                     writer.line("}")
                 })?;
@@ -962,7 +1004,6 @@ impl RustGenerator {
             | Instruction::MakeClosure { .. }
             | Instruction::CloseHeapClosure(_)
             | Instruction::CloneHeap(_)
-            | Instruction::CallIndirect(_, _, _)
             | Instruction::GetUpValue(_, _)
             | Instruction::SetUpValue(_, _, _)
             | Instruction::TaggedUnionWrap { .. }
@@ -1166,8 +1207,8 @@ impl RustGenerator {
 
     fn value_vec_expr(&self, value: &VPtr) -> Result<String, String> {
         match value.as_ref() {
-            Value::Argument(index) => Ok(format!("arg_{index}.clone()")),
-            Value::Register(reg) => Ok(format!("reg_{reg}.clone()")),
+            Value::Argument(index) => Ok(format!("arg_{index}.to_vec()")),
+            Value::Register(reg) => Ok(format!("reg_{reg}.to_vec()")),
             Value::Function(index) => Ok(format!("vec![encode_function({index})]")),
             Value::None => Ok("Vec::new()".to_string()),
             _ => Err(format!(
@@ -1175,6 +1216,40 @@ impl RustGenerator {
                 value
             )),
         }
+    }
+
+    fn value_array_expr(&self, value: &VPtr) -> Result<String, String> {
+        match value.as_ref() {
+            Value::Argument(index) => Ok(format!("arg_{index}")),
+            Value::Register(reg) => Ok(format!("reg_{reg}")),
+            Value::Function(index) => Ok(format!("[encode_function({index})]")),
+            Value::None => Ok("[0u64; 0]".to_string()),
+            _ => Err(format!(
+                "value is not representable as a fixed-size word array in the initial Rust backend: {:?}",
+                value
+            )),
+        }
+    }
+
+    fn value_slice_expr(&self, value: &VPtr) -> Result<String, String> {
+        match value.as_ref() {
+            Value::Argument(index) => Ok(format!("&arg_{index}")),
+            Value::Register(reg) => Ok(format!("&reg_{reg}")),
+            Value::Function(index) => Ok(format!("&[encode_function({index})]")),
+            Value::None => Ok("&[]".to_string()),
+            _ => Err(format!(
+                "value is not representable as a word slice in the initial Rust backend: {:?}",
+                value
+            )),
+        }
+    }
+
+    fn slice_to_array_expr(&self, slice_expr: String, size: usize) -> String {
+        format!("copy_words::<{size}>({slice_expr})?")
+    }
+
+    fn vec_to_array_expr(&self, vec_expr: String, size: usize) -> String {
+        format!("vec_to_words::<{size}>({vec_expr})?")
     }
 
     fn global_index(
