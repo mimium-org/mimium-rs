@@ -220,7 +220,7 @@ impl RustGenerator {
                     func.index
                 ))?;
                 writer.line(format!(
-                    "let result = self.func_{}(&mut state, args);",
+                    "let result = self.func_{}(&mut state, args, memory);",
                     func.index
                 ))?;
                 writer.line(format!("self.function_states[{}] = state;", func.index))?;
@@ -250,6 +250,19 @@ impl RustGenerator {
             .iter()
             .find(|func| func.label.as_str() == name)
             .map(|func| func.index)
+    }
+
+    fn default_argument_functions(&self, target_index: usize) -> Vec<usize> {
+        let prefix = format!("__default_{target_index}_");
+        let mut defaults = self
+            .mir
+            .functions
+            .iter()
+            .filter(|func| func.label.as_str().starts_with(&prefix))
+            .map(|func| func.index)
+            .collect::<Vec<_>>();
+        defaults.sort_unstable();
+        defaults
     }
 
     fn collect_global_slots(&self) -> Vec<(String, VPtr, usize)> {
@@ -289,11 +302,10 @@ impl RustGenerator {
         let fallthrough_targets = self.collect_fallthrough_targets(func);
 
         writer.line(format!(
-            "fn func_{}(&mut self, state: &mut StateStorage, args: &[Word]) -> Result<Vec<Word>, String> {{",
+            "fn func_{}(&mut self, state: &mut StateStorage, args: &[Word], memory: &mut MemoryStore) -> Result<Vec<Word>, String> {{",
             func.index
         ))?;
         writer.indented(1, |writer| {
-            writer.line("let mut memory = MemoryStore::default();")?;
             writer.line("let mut bb: usize = 0;")?;
             writer.line("let mut pred_bb: usize = 0;")?;
             writer.line("let mut arg_offset = 0usize;")?;
@@ -617,17 +629,48 @@ impl RustGenerator {
                 let dest = self.reg_name(dst)?;
                 let call_kind = self.call_kind(callee)?;
                 let result_size = self.instruction_result_size(func, instr)?;
+                let static_callee = self.resolve_function_index(func, callee);
                 writer.line("let mut call_args = Vec::new();")?;
                 for (arg, _ty) in args {
                     let expr = self.value_slice_expr(arg)?;
                     writer.line(format!("call_args.extend_from_slice({expr});"))?;
+                }
+                if let Some(target_index) = static_callee {
+                    let target_func = self
+                        .mir
+                        .functions
+                        .iter()
+                        .find(|candidate| candidate.index == target_index)
+                        .ok_or_else(|| {
+                            format!("missing target function for index {target_index}")
+                        })?;
+                    let provided_args = args.len();
+                    let expected_args = target_func.args.len();
+                    if provided_args < expected_args {
+                        let default_functions = self.default_argument_functions(target_index);
+                        let missing_args = expected_args - provided_args;
+                        if default_functions.len() < missing_args {
+                            return Err(format!(
+                                "function {} expects {} args but only {} provided and {} defaults found",
+                                target_func.label,
+                                expected_args,
+                                provided_args,
+                                default_functions.len()
+                            ));
+                        }
+                        for default_index in default_functions.into_iter().take(missing_args) {
+                            writer.line(format!(
+                                "call_args.extend_from_slice(&self.call_function_handle_with_memory(encode_function({default_index}), &[], memory)?);"
+                            ))?;
+                        }
+                    }
                 }
                 match call_kind {
                     CallKind::FunctionHandle(handle_expr) => {
                         writer.line(format!(
                             "{dest} = {};",
                             self.vec_to_array_expr(
-                                format!("self.call_function_handle({handle_expr}, &call_args)?"),
+                                format!("self.call_function_handle_with_memory({handle_expr}, &call_args, memory)?"),
                                 result_size,
                             )
                         ))?;
@@ -1183,6 +1226,33 @@ impl RustGenerator {
                 callee
             )),
         }
+    }
+
+    fn resolve_function_index(&self, func: &Function, callee: &VPtr) -> Option<usize> {
+        match callee.as_ref() {
+            Value::Function(index) => Some(*index),
+            Value::Register(reg) => self.resolve_register_function_index(func, *reg),
+            _ => None,
+        }
+    }
+
+    fn resolve_register_function_index(&self, func: &Function, target_reg: VReg) -> Option<usize> {
+        func.body.iter().find_map(|block| {
+            block
+                .0
+                .iter()
+                .find_map(|(dst, instr)| match (dst.as_ref(), instr) {
+                    (Value::Register(reg), Instruction::Uinteger(value)) if *reg == target_reg => {
+                        Some(*value as usize)
+                    }
+                    (Value::Register(reg), Instruction::Integer(value))
+                        if *reg == target_reg && *value >= 0 =>
+                    {
+                        Some(*value as usize)
+                    }
+                    _ => None,
+                })
+        })
     }
 
     fn reg_name(&self, value: &VPtr) -> Result<String, String> {

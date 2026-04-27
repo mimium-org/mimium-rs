@@ -281,6 +281,8 @@ pub struct RustOutput {
 
 #[cfg(test)]
 mod test {
+    const RUST_TEST_MAIN_TEMPLATE: &str = include_str!("compiler/mimium_test_main.rs.template");
+
     use std::fs;
     use std::path::PathBuf;
     use std::process::Command;
@@ -363,6 +365,20 @@ fn dsp(input:float){
             .join("../../../tmp")
             .join("rustgen-tests")
     }
+
+    fn render_rust_test_main(
+        decls: &str,
+        program_init: &str,
+        call_main: Option<&str>,
+        run_body: &str,
+    ) -> String {
+        RUST_TEST_MAIN_TEMPLATE
+            .replace("/*__DECLS__*/", decls)
+            .replace("/*__PROGRAM_INIT__*/", program_init)
+            .replace("/*__CALL_MAIN__*/", call_main.unwrap_or_default())
+            .replace("/*__RUN_BODY__*/", run_body)
+    }
+
     #[test]
     fn mir_channelcount() {
         let src = &get_source();
@@ -425,24 +441,16 @@ fn dsp(input:float){
             .emit_rust(comprehensive_rust_source())
             .unwrap();
         let maybe_call_main = if output.source.contains("pub fn call_main") {
-            "    program.call_main().unwrap();\n"
+            Some("    program.call_main().unwrap();\n")
         } else {
-            ""
+            None
         };
-
-        let harness = [
-            "\nfn main() {\n",
-            "    let mut program = MimiumProgram::new();\n",
+        let harness = render_rust_test_main(
+            "",
+            "let mut program = MimiumProgram::new();",
             maybe_call_main,
-            "    for input in [1.0f64, 2.0, 3.0, 4.0] {\n",
-            "        let output = program.call_dsp(&[f64_to_word(input)]).unwrap();\n",
-            "        for word in output {\n",
-            "            println!(\"{:.12}\", word_to_f64(word));\n",
-            "        }\n",
-            "    }\n",
-            "}\n",
-        ]
-        .concat();
+            "    for input in [1.0f64, 2.0, 3.0, 4.0] {\n        let output = program.call_dsp(&[f64_to_word(input)]).unwrap();\n        for word in output {\n            println!(\"{:.12}\", word_to_f64(word));\n        }\n    }\n",
+        );
 
         let tmp_dir = rust_test_tmp_dir();
         fs::create_dir_all(&tmp_dir).unwrap();
@@ -491,37 +499,12 @@ fn dsp(input:float){
         let output = test_context()
             .emit_rust(runtime_literals_rust_source())
             .unwrap();
-
-        let harness = [
-            "\nstruct TestHost {\n",
-            "    now: f64,\n",
-            "    sample_rate: f64,\n",
-            "}\n\n",
-            "impl MimiumHost for TestHost {\n",
-            "    fn call_ext(&mut self, name: &str, _args: &[Word], _ret_words: usize) -> Result<Vec<Word>, String> {\n",
-            "        Err(format!(\"unexpected external call: {}\", name))\n",
-            "    }\n\n",
-            "    fn current_time(&mut self) -> f64 {\n",
-            "        let value = self.now;\n",
-            "        self.now += 0.5;\n",
-            "        value\n",
-            "    }\n\n",
-            "    fn sample_rate(&mut self) -> f64 {\n",
-            "        self.sample_rate\n",
-            "    }\n",
-            "}\n\n",
-            "fn main() {\n",
-            "    let host = TestHost { now: 1.5, sample_rate: 48_000.0 };\n",
-            "    let mut program = MimiumProgram::with_host(host);\n",
-            "    for input in [1.0f64, 2.0, 3.0] {\n",
-            "        let output = program.call_dsp(&[f64_to_word(input)]).unwrap();\n",
-            "        for word in output {\n",
-            "            println!(\"{:.12}\", word_to_f64(word));\n",
-            "        }\n",
-            "    }\n",
-            "}\n",
-        ]
-        .concat();
+        let harness = render_rust_test_main(
+            "struct TestHost {\n    now: f64,\n    sample_rate: f64,\n}\n\nimpl MimiumHost for TestHost {\n    fn call_ext(&mut self, name: &str, _args: &[Word], _ret_words: usize) -> Result<Vec<Word>, String> {\n        Err(format!(\"unexpected external call: {}\", name))\n    }\n\n    fn current_time(&mut self) -> f64 {\n        let value = self.now;\n        self.now += 0.5;\n        value\n    }\n\n    fn sample_rate(&mut self) -> f64 {\n        self.sample_rate\n    }\n}\n",
+            "let host = TestHost { now: 1.5, sample_rate: 48_000.0 };\n    let mut program = MimiumProgram::with_host(host);",
+            None,
+            "    for input in [1.0f64, 2.0, 3.0] {\n        let output = program.call_dsp(&[f64_to_word(input)]).unwrap();\n        for word in output {\n            println!(\"{:.12}\", word_to_f64(word));\n        }\n    }\n",
+        );
 
         let tmp_dir = rust_test_tmp_dir();
         fs::create_dir_all(&tmp_dir).unwrap();

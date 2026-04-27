@@ -267,6 +267,16 @@ impl<H: MimiumHost> MimiumProgram<H> {
 /*__CALL_DSP__*/
 /*__CALL_MAIN__*/
     fn call_function_handle(&mut self, handle: Word, args: &[Word]) -> Result<Vec<Word>, String> {
+        let mut memory = MemoryStore::default();
+        self.call_function_handle_with_memory(handle, args, &mut memory)
+    }
+
+    fn call_function_handle_with_memory(
+        &mut self,
+        handle: Word,
+        args: &[Word],
+        memory: &mut MemoryStore,
+    ) -> Result<Vec<Word>, String> {
         match decode_function(handle) {
 /*__HANDLE_DISPATCH__*/
             Some(index) => Err(format!("unknown function handle {}", index)),
