@@ -1,6 +1,8 @@
 use mimium_test::*;
 use wasm_bindgen_test::*;
 
+wasm_bindgen_test_configure!(run_in_browser);
+
 fn prep_box_gc_test_machine(src: &str) -> mimium_lang::ExecContext {
     let mut ctx = mimium_lang::ExecContext::new([].into_iter(), None, Default::default());
     ctx.prepare_machine(src).expect("Failed to prepare machine");

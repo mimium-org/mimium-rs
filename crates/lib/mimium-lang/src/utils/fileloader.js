@@ -330,7 +330,6 @@ async function preload_mimium_lib_cache(base_url) {
       putMemoryAliases(filename, fetched);
       await writeToOpfs(filename, fetched);
     } catch (e) {
-      // Keep mutable refs fresh when online, but remain usable offline via OPFS fallback.
       if (fromOpfs !== null) {
         putMemoryAliases(filename, fromOpfs);
         continue;

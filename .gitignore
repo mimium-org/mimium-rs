@@ -7,4 +7,3 @@ crates/lib/mimium-web/node_modules/
 crates/lib/mimium-web/test-results/
 crates/lib/mimium-web/playwright-report/
 crates/lib/mimium-lang/testdata/generated
-crates/lib/mimium-lang/src/utils/fileloader.cjs

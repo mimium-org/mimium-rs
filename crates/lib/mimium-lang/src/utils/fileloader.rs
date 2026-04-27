@@ -251,7 +251,7 @@ pub fn import_virtual_file_cache_json(payload: &str) -> Result<(), String> {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[wasm_bindgen(module = "/src/utils/fileloader.mjs")]
+#[wasm_bindgen(module = "/src/utils/fileloader.js")]
 extern "C" {
     #[wasm_bindgen(catch)]
     fn read_file(path: &str) -> Result<String, JsValue>;
@@ -282,7 +282,7 @@ mod test {
     use super::*;
     use wasm_bindgen_test::*;
 
-    // wasm_bindgen_test_configure!(run_in_browser);
+    wasm_bindgen_test_configure!(run_in_browser);
 
     fn normalize_test_path(path: &str) -> String {
         normalize_lexical_path(std::path::Path::new(path))
@@ -291,15 +291,16 @@ mod test {
     }
 
     fn setup_file() -> (String, String) {
+        clear_virtual_file_cache().expect("clear cache failed");
         let ans = r#"include("error_include_itself.mmm")
 fn dsp(){
     0.0
 }"#;
         let file = normalize_test_path(&format!(
-            "{}/../mimium-test/tests/mmm/{}",
-            get_env("TEST_ROOT").expect("TEST_ROOT is not set"),
-            "error_include_itself.mmm"
+            "{}/../mimium-test/tests/mmm/error_include_itself.mmm",
+            env!("TEST_ROOT")
         ));
+        put_virtual_file_cache(&file, ans).expect("put cache failed");
         (ans.to_string(), file)
     }
     #[wasm_bindgen_test] //wasm only test
