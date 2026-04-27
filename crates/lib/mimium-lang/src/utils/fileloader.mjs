@@ -21,15 +21,24 @@ if (isNode) {
 const DEFAULT_GITHUB_LIB_BASE = 'https://raw.githubusercontent.com/mimium-org/mimium-rs/';
 const DEFAULT_GITHUB_TAG = 'dev';
 const LIB_FILES = [
+  'composition.mmm',
   'core.mmm',
   'delay.mmm',
+  'drive.mmm',
+  'dynamics.mmm',
   'env.mmm',
   'filter.mmm',
   'math.mmm',
+  'mininotation.mmm',
+  'modulation.mmm',
   'noise.mmm',
   'osc.mmm',
+  'parser.mmm',
+  'pattern.mmm',
   'reactive.mmm',
-  'reverb.mmm'
+  'reverb.mmm',
+  'sequencer.mmm',
+  'space.mmm'
 ];
 
 const memoryCache = new Map();
