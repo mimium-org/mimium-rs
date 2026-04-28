@@ -183,20 +183,17 @@ impl RustGenerator {
 
         writer.line("pub fn call_dsp(&mut self, args: &[Word]) -> Result<Vec<Word>, String> {")?;
         writer.indented(1, |writer| {
-            writer.line("let mut memory = std::mem::take(&mut self.memory);")?;
             writer.line(format!(
-                "let result = self.call_function_handle_with_memory(encode_function({dsp_index}), args, &mut memory)?;"
+                "let result = self.call_function_handle(encode_function({dsp_index}), args);"
             ))?;
             if let Some(ret_ty) = dsp_return.filter(|ty| self.is_deepcopy_aggregate_type(*ty)) {
                 let size = ret_ty.word_size() as usize;
                 writer.line(format!(
-                    "let final_result = if result.is_empty() {{ Ok(Vec::new()) }} else {{ memory.load(result[0], {size}usize) }};"
+                    "let final_result = if result.is_empty() {{ Ok(Vec::new()) }} else {{ self.memory.load(result[0], {size}usize) }};"
                 ))
                 ?;
-                writer.line("self.memory = memory;")?;
                 writer.line("final_result")
             } else {
-                writer.line("self.memory = memory;")?;
                 writer.line("Ok(result)")
             }
         })?;
@@ -218,20 +215,17 @@ impl RustGenerator {
 
         writer.line("pub fn call_main(&mut self) -> Result<Vec<Word>, String> {")?;
         writer.indented(1, |writer| {
-            writer.line("let mut memory = std::mem::take(&mut self.memory);")?;
             writer.line(format!(
-                "let result = self.call_function_handle_with_memory(encode_function({main_index}), &[], &mut memory)?;"
+                "let result = self.call_function_handle(encode_function({main_index}), &[]);"
             ))?;
             if let Some(ret_ty) = main_return.filter(|ty| self.is_deepcopy_aggregate_type(*ty)) {
                 let size = ret_ty.word_size() as usize;
                 writer.line(format!(
-                    "let final_result = if result.is_empty() {{ Ok(Vec::new()) }} else {{ memory.load(result[0], {size}usize) }};"
+                    "let final_result = if result.is_empty() {{ Ok(Vec::new()) }} else {{ self.memory.load(result[0], {size}usize) }};"
                 ))
                 ?;
-                writer.line("self.memory = memory;")?;
                 writer.line("final_result")
             } else {
-                writer.line("self.memory = memory;")?;
                 writer.line("Ok(result)")
             }
         })?;
@@ -247,16 +241,8 @@ impl RustGenerator {
             writer.line(format!("Some({}) => {{", func.index))?;
             writer.indented(1, |writer| {
                 writer.line(format!(
-                    "let mut state = self.take_call_state(handle, {})?;",
-                    func.index
-                ))?;
-                writer.line(format!(
-                    "let result = self.{}(&mut state, args, current_closure, memory);",
+                    "let result = self.{}(args);",
                     self.function_dispatch_name(func)
-                ))?;
-                writer.line(format!(
-                    "self.restore_call_state(handle, {}, state)?;",
-                    func.index
                 ))?;
                 writer.line("result")
             })?;
@@ -290,7 +276,7 @@ impl RustGenerator {
         let return_ty = self.function_return_type(func)?;
 
         writer.line(format!(
-            "fn {wrapper_name}(&mut self, state: &mut StateStorage, args: &[Word], current_closure: Option<Word>, memory: &mut MemoryStore) -> Result<Vec<Word>, String> {{"
+            "fn {wrapper_name}(&mut self, args: &[Word]) -> Vec<Word> {{"
         ))?;
         writer.indented(1, |writer| {
             writer.line("let mut arg_offset = 0usize;")?;
@@ -301,7 +287,7 @@ impl RustGenerator {
                     writer.line(format!("let arg_{index}_value = ();"))?;
                 } else {
                     writer.line(format!(
-                        "let arg_{index}_words = copy_words::<{size}>(&args[arg_offset..arg_offset + {size}])?;"
+                        "let arg_{index}_words = copy_words::<{size}>(&args[arg_offset..arg_offset + {size}]).unwrap();"
                     ))?;
                     writer.line(format!("arg_offset += {size};"))?;
                     writer.line(format!(
@@ -311,14 +297,10 @@ impl RustGenerator {
                 }
             }
 
-            let mut call_args = vec![
-                "state".to_string(),
-                "current_closure".to_string(),
-                "memory".to_string(),
-            ];
+            let mut call_args = Vec::new();
             call_args.extend((0..func.args.len()).map(|index| format!("arg_{index}_value")));
             writer.line(format!(
-                "let result = self.{direct_name}({})?;",
+                "let result = self.{direct_name}({});",
                 call_args.join(", ")
             ))?;
             self.emit_pack_abi_result(writer, "result", return_ty)
@@ -391,18 +373,13 @@ impl RustGenerator {
         let fallthrough_edges = self.collect_fallthrough_edges(func);
         let direct_name = self.function_direct_name(func);
         let return_ty = self.function_return_type(func)?;
-        let mut signature_args = vec![
-            "&mut self".to_string(),
-            "state: &mut StateStorage".to_string(),
-            "current_closure: Option<Word>".to_string(),
-            "memory: &mut MemoryStore".to_string(),
-        ];
+        let mut signature_args = vec!["&mut self".to_string()];
         for (index, arg) in func.args.iter().enumerate() {
             signature_args.push(format!("arg_{index}_value: {}", self.abi_type_expr(arg.1)?));
         }
 
         writer.line(format!(
-            "fn {direct_name}({}) -> Result<{}, String> {{",
+            "fn {direct_name}({}) -> {} {{",
             signature_args.join(", "),
             self.abi_type_expr(return_ty)?
         ))?;
@@ -420,68 +397,154 @@ impl RustGenerator {
                 writer.line(format!("let mut reg_{reg} = [0u64; {size}];"))?;
             }
 
-            if self.can_emit_straight_line_function(func) {
-                for (dst, instr) in &func.body[0].0 {
-                    self.emit_instruction(writer, func, 0, dst, instr, global_slots, &block_preds)?;
-                }
-                if self.block_can_fall_through(&func.body[0]) {
-                    writer.line(format!(
-                        "return Err(\"basic block 0 in function {} fell through without terminator\".to_string());",
-                        func.index
-                    ))
-                } else {
-                    Ok(())
-                }
-            } else {
-                writer.line("let mut bb: usize = 0;")?;
-                writer.line("let mut pred_bb: usize = 0;")?;
-                writer.line("loop {")?;
-                writer.indented(1, |writer| {
-                    writer.line("match bb {")?;
-                    writer.indented(1, |writer| {
-                        for (block_index, block) in func.body.iter().enumerate() {
-                            writer.line(format!("{block_index} => {{"))?;
-                            writer.indented(1, |writer| {
-                                for (dst, instr) in &block.0 {
-                                    self.emit_instruction(
-                                        writer,
-                                        func,
-                                        block_index,
-                                        dst,
-                                        instr,
-                                        global_slots,
-                                        &block_preds,
-                                    )?;
-                                }
-                                if let Some((target_bb, pred_source)) =
-                                    fallthrough_edges.get(block_index).and_then(|target| *target)
-                                {
-                                    writer.line(format!("pred_bb = {pred_source};"))?;
-                                    writer.line(format!("bb = {target_bb}usize;"))?;
-                                    writer.line("continue;")
-                                } else if self.block_can_fall_through(block) {
-                                    writer.line(format!(
-                                        "return Err(\"basic block {block_index} in function {} fell through without terminator\".to_string());",
-                                        func.index
-                                    ))
-                                } else {
-                                    Ok(())
-                                }
-                            })?;
-                            writer.line("},")?;
-                        }
-
+            let body = self.render_section(0, |writer| {
+                if self.can_emit_straight_line_function(func) {
+                    for (dst, instr) in &func.body[0].0 {
+                        self.emit_instruction(
+                            writer,
+                            func,
+                            0,
+                            dst,
+                            instr,
+                            global_slots,
+                            &block_preds,
+                        )?;
+                    }
+                    if self.block_can_fall_through(&func.body[0]) {
                         writer.line(format!(
-                            "_ => return Err(format!(\"invalid basic block {{}} in function {}\", bb)),",
+                            "return Err(\"basic block 0 in function {} fell through without terminator\".to_string());",
                             func.index
                         ))
+                    } else {
+                        Ok(())
+                    }
+                } else {
+                    writer.line("let mut bb: usize = 0;")?;
+                    writer.line("let mut pred_bb: usize = 0;")?;
+                    writer.line("loop {")?;
+                    writer.indented(1, |writer| {
+                        writer.line("match bb {")?;
+                        writer.indented(1, |writer| {
+                            for (block_index, block) in func.body.iter().enumerate() {
+                                writer.line(format!("{block_index} => {{"))?;
+                                writer.indented(1, |writer| {
+                                    for (dst, instr) in &block.0 {
+                                        self.emit_instruction(
+                                            writer,
+                                            func,
+                                            block_index,
+                                            dst,
+                                            instr,
+                                            global_slots,
+                                            &block_preds,
+                                        )?;
+                                    }
+                                    if let Some((target_bb, pred_source)) = fallthrough_edges
+                                        .get(block_index)
+                                        .and_then(|target| *target)
+                                    {
+                                        writer.line(format!("pred_bb = {pred_source};"))?;
+                                        writer.line(format!("bb = {target_bb}usize;"))?;
+                                        writer.line("continue;")
+                                    } else if self.block_can_fall_through(block) {
+                                        writer.line(format!(
+                                            "return Err(\"basic block {block_index} in function {} fell through without terminator\".to_string());",
+                                            func.index
+                                        ))
+                                    } else {
+                                        Ok(())
+                                    }
+                                })?;
+                                writer.line("},")?;
+                            }
+
+                            writer.line(format!(
+                                "_ => return Err(format!(\"invalid basic block {{}} in function {}\", bb)),",
+                                func.index
+                            ))
+                        })?;
+                        writer.line("}")
                     })?;
                     writer.line("}")
-                })?;
-                writer.line("}")
-            }
+                }
+            })?;
+
+            self.emit_infallible_generated_body(writer, &body)
         })?;
         writer.line("}")
+    }
+
+    fn emit_infallible_generated_body<W: Write>(
+        &self,
+        writer: &mut CodeWriter<W>,
+        body: &str,
+    ) -> Result<(), String> {
+        for line in self.rewrite_infallible_generated_body(body).lines() {
+            if line.is_empty() {
+                writer.blank_line()?;
+            } else {
+                writer.line(line)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn rewrite_infallible_generated_body(&self, body: &str) -> String {
+        body.lines()
+            .map(Self::rewrite_infallible_generated_line)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn rewrite_infallible_generated_line(line: &str) -> String {
+        let line = line.replace("memory.", "self.memory.");
+        let line = line.replace('?', ".unwrap()");
+        if let Some(rewritten) =
+            Self::rewrite_generated_return(&line, "return Ok(", |prefix, inner, suffix| {
+                format!("{prefix}return {inner}{suffix}")
+            })
+        {
+            return rewritten;
+        }
+        if let Some(rewritten) =
+            Self::rewrite_generated_return(&line, "return Err(", |prefix, inner, suffix| {
+                format!("{prefix}panic!(\"{{}}\", {inner}){suffix}")
+            })
+        {
+            return rewritten;
+        }
+        line
+    }
+
+    fn rewrite_generated_return(
+        line: &str,
+        marker: &str,
+        build: impl FnOnce(&str, &str, &str) -> String,
+    ) -> Option<String> {
+        let start = line.find(marker)?;
+        let prefix = &line[..start];
+        let expr_start = start + marker.len();
+        let mut depth = 1usize;
+        let mut expr_end = None;
+
+        for (offset, ch) in line[expr_start..].char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        expr_end = Some(expr_start + offset);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let expr_end = expr_end?;
+        let inner = &line[expr_start..expr_end];
+        let suffix = &line[expr_end + 1..];
+        Some(build(prefix, inner, suffix))
     }
 
     fn can_emit_straight_line_function(&self, func: &Function) -> bool {
@@ -865,19 +928,15 @@ impl RustGenerator {
                                     format!("missing default function for index {default_index}")
                                 })?;
                             call_args.push(format!(
-                                "self.{}(state, None, memory)?",
+                                "self.{}()",
                                 self.function_direct_name(default_func)
                             ));
                         }
                     }
-                    let mut direct_call_args = vec![
-                        "state".to_string(),
-                        "None".to_string(),
-                        "memory".to_string(),
-                    ];
+                    let mut direct_call_args = Vec::new();
                     direct_call_args.extend(call_args);
                     writer.line(format!(
-                        "let call_result = self.{direct_name}({})?;",
+                        "let call_result = self.{direct_name}({});",
                         direct_call_args.join(", ")
                     ))?;
                     self.emit_assign_abi_value_to_runtime(writer, dst, "call_result", *ret_ty)?;
@@ -893,7 +952,7 @@ impl RustGenerator {
                         writer.line(format!(
                             "{dest} = {};",
                             self.vec_to_array_expr(
-                                format!("self.call_function_handle_with_memory({handle_expr}, &call_args, memory)?"),
+                                format!("self.call_function_handle({handle_expr}, &call_args)"),
                                 result_size,
                             )
                         ))?;
@@ -951,7 +1010,7 @@ impl RustGenerator {
                     writer.line(format!(
                         "{dest} = {};",
                         self.vec_to_array_expr(
-                            format!("self.call_function_handle_with_memory({handle_expr}, &call_args, memory)?"),
+                            format!("self.call_function_handle({handle_expr}, &call_args)"),
                             result_size,
                         )
                     ))?;
@@ -1088,14 +1147,14 @@ impl RustGenerator {
             }
             Instruction::GetUpValue(index, ty) => {
                 let size = ty.word_size() as usize;
-                writer.line("let closure_handle = current_closure.ok_or_else(|| \"missing closure context for GetUpValue\".to_string())?;")?;
+                writer.line("let closure_handle = self.get_current_closure().ok_or_else(|| \"missing closure context for GetUpValue\".to_string())?;")?;
                 if self.is_deepcopy_aggregate_type(*ty) {
                     let dest = self.reg_name(dst)?;
                     writer.line(format!("{dest}[0] = memory.alloc({size}usize);"))?;
                     writer.line("{")?;
                     writer.indented(1, |writer| {
                         writer.line(format!(
-                            "let copied_words = self.load_upvalue(closure_handle, {}usize, {size}usize, memory)?;",
+                            "let copied_words = self.load_upvalue(closure_handle, {}usize, {size}usize)?;",
                             *index as usize
                         ))?;
                         writer.line(format!(
@@ -1109,7 +1168,7 @@ impl RustGenerator {
                         "{dest} = {};",
                         self.vec_to_array_expr(
                             format!(
-                                "self.load_upvalue(closure_handle, {}usize, {size}usize, memory)?",
+                                "self.load_upvalue(closure_handle, {}usize, {size}usize)?",
                                 *index as usize
                             ),
                             size,
@@ -1122,9 +1181,9 @@ impl RustGenerator {
                 let src_expr = self.boundary_value_slice_expr(func, src, *ty)?;
                 let src_array = self.context_value_array_expr(func, src, *ty)?;
                 let size = ty.word_size() as usize;
-                writer.line("let closure_handle = current_closure.ok_or_else(|| \"missing closure context for SetUpValue\".to_string())?;")?;
+                writer.line("let closure_handle = self.get_current_closure().ok_or_else(|| \"missing closure context for SetUpValue\".to_string())?;")?;
                 writer.line(format!(
-                    "self.store_upvalue(closure_handle, {}usize, {src_expr}, {size}usize, memory)?;",
+                    "self.store_upvalue(closure_handle, {}usize, {src_expr}, {size}usize)?;",
                     *index as usize
                 ))?;
                 writer.line(format!("{dest} = {src_array};"))?;
@@ -1170,25 +1229,45 @@ impl RustGenerator {
                 }
             }
             Instruction::PushStateOffset(offset) => {
-                writer.line(format!("state.push_pos({offset}usize);"))?;
+                writer.line("{")?;
+                writer.indented(1, |writer| {
+                    writer.line("let state = self.get_current_statestorage();")?;
+                    writer.line(format!("state.push_pos({offset}usize);"))
+                })?;
+                writer.line("}")?;
             }
             Instruction::PopStateOffset(offset) => {
-                writer.line(format!("state.pop_pos({offset}usize);"))?;
+                writer.line("{")?;
+                writer.indented(1, |writer| {
+                    writer.line("let state = self.get_current_statestorage();")?;
+                    writer.line(format!("state.pop_pos({offset}usize);"))
+                })?;
+                writer.line("}")?;
             }
             Instruction::GetState(ty) => {
                 if self.is_deepcopy_aggregate_type(*ty) {
                     let dest = self.reg_name(dst)?;
                     let size = ty.word_size() as usize;
                     writer.line(format!("{dest}[0] = memory.alloc({size}usize);"))?;
-                    writer.line(format!(
-                        "memory.store({dest}[0], &state.get_state({size}usize), {size}usize)?;"
-                    ))?;
+                    writer.line("{")?;
+                    writer.indented(1, |writer| {
+                        writer.line(format!(
+                            "let state_words = {{ let state = self.get_current_statestorage(); state.get_state({size}usize) }};"
+                        ))?;
+                        writer.line(format!(
+                            "memory.store({dest}[0], &state_words, {size}usize)?;"
+                        ))
+                    })?;
+                    writer.line("}")?;
                 } else {
                     let dest = self.reg_name(dst)?;
                     writer.line(format!(
                         "{dest} = {};",
                         self.vec_to_array_expr(
-                            format!("state.get_state({}usize)", ty.word_size()),
+                            format!(
+                                "{{ let state = self.get_current_statestorage(); state.get_state({}usize) }}",
+                                ty.word_size()
+                            ),
                             ty.word_size() as usize,
                         )
                     ))?;
@@ -1295,30 +1374,42 @@ impl RustGenerator {
                     SelfEvalMode::SimpleState => {
                         writer.line(format!("let result = {expr};"))?;
                         let state_expr = self.boundary_value_slice_expr(func, value, *ty)?;
-                        writer.line(format!(
-                            "state.set_state({state_expr}, {}usize);",
-                            ty.word_size()
-                        ))?;
+                        writer.line(format!("let next_state_words = {state_expr}.to_vec();"))?;
+                        writer.line("{")?;
+                        writer.indented(1, |writer| {
+                            writer.line("let state = self.get_current_statestorage();")?;
+                            writer.line(format!(
+                                "state.set_state(&next_state_words, {}usize);",
+                                ty.word_size()
+                            ))
+                        })?;
+                        writer.line("}")?;
                         writer.line("return Ok(result);")?;
                     }
                     SelfEvalMode::ZeroAtInit => {
                         if self.is_deepcopy_aggregate_type(*ty) {
                             let size = ty.word_size() as usize;
                             writer.line(format!(
-                                "let previous_words = state.get_state({size}usize);"
+                                "let previous_words = {{ let state = self.get_current_statestorage(); state.get_state({size}usize) }};"
                             ))?;
                         } else {
                             writer.line(format!(
-                                "let previous = state.get_state({}usize);",
+                                "let previous = {{ let state = self.get_current_statestorage(); state.get_state({}usize) }};",
                                 ty.word_size()
                             ))?;
                         }
                         writer.line(format!("let result = {expr};"))?;
                         let state_expr = self.boundary_value_slice_expr(func, value, *ty)?;
-                        writer.line(format!(
-                            "state.set_state({state_expr}, {}usize);",
-                            ty.word_size()
-                        ))?;
+                        writer.line(format!("let next_state_words = {state_expr}.to_vec();"))?;
+                        writer.line("{")?;
+                        writer.indented(1, |writer| {
+                            writer.line("let state = self.get_current_statestorage();")?;
+                            writer.line(format!(
+                                "state.set_state(&next_state_words, {}usize);",
+                                ty.word_size()
+                            ))
+                        })?;
+                        writer.line("}")?;
                         if self.is_deepcopy_aggregate_type(*ty) {
                             writer.line(format!(
                                 "return Ok({});",
@@ -1337,15 +1428,25 @@ impl RustGenerator {
                 let dest = self.reg_name(dst)?;
                 let src_expr = self.scalar_word_expr(func, src)?;
                 let time_expr = self.word0_expr(time)?;
-                writer.line(format!(
-                    "{dest}[0] = state.delay({src_expr}, {time_expr}, {}usize);",
-                    max_len
-                ))?;
+                writer.line("{")?;
+                writer.indented(1, |writer| {
+                    writer.line("let state = self.get_current_statestorage();")?;
+                    writer.line(format!(
+                        "{dest}[0] = state.delay({src_expr}, {time_expr}, {}usize);",
+                        max_len
+                    ))
+                })?;
+                writer.line("}")?;
             }
             Instruction::Mem(src) => {
                 let dest = self.reg_name(dst)?;
                 let src_expr = self.scalar_word_expr(func, src)?;
-                writer.line(format!("{dest}[0] = state.mem({src_expr});"))?;
+                writer.line("{")?;
+                writer.indented(1, |writer| {
+                    writer.line("let state = self.get_current_statestorage();")?;
+                    writer.line(format!("{dest}[0] = state.mem({src_expr});"))
+                })?;
+                writer.line("}")?;
             }
             Instruction::AddF(left, right) => {
                 self.assign_float_binop(writer, func, dst, left, right, "+")?
@@ -2152,21 +2253,23 @@ impl RustGenerator {
         ty: TypeNodeId,
     ) -> Result<(), String> {
         if ty.word_size() == 0 {
-            writer.line("Ok(Vec::new())")
+            writer.line("Vec::new()")
         } else if self.is_deepcopy_aggregate_type(ty) {
             let size = ty.word_size() as usize;
             writer.line(format!(
                 "let abi_words = {};",
                 self.abi_to_words_array_expr(result_expr, ty)?
             ))?;
-            writer.line(format!("let result_handle = memory.alloc({size}usize);"))?;
             writer.line(format!(
-                "memory.store(result_handle, &abi_words, {size}usize)?;"
+                "let result_handle = self.memory.alloc({size}usize);"
             ))?;
-            writer.line("Ok(vec![result_handle])")
+            writer.line(format!(
+                "self.memory.store(result_handle, &abi_words, {size}usize).unwrap();"
+            ))?;
+            writer.line("vec![result_handle]")
         } else {
             writer.line(format!(
-                "Ok({}.to_vec())",
+                "{}.to_vec()",
                 self.abi_to_words_array_expr(result_expr, ty)?
             ))
         }

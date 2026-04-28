@@ -334,6 +334,8 @@ pub struct MimiumProgram<H: MimiumHost = PanicHost> {
     pub host: H,
     globals: Vec<Vec<Word>>,
     function_states: Vec<StateStorage>,
+    current_function_state: Option<usize>,
+    state_storage_stack: Vec<Word>,
     memory: MemoryStore,
     closures: ClosureStorage,
     arrays: ArrayStorage,
@@ -356,6 +358,8 @@ impl<H: MimiumHost> MimiumProgram<H> {
             function_states: vec![
 /*__FUNCTION_STATES__*/
             ],
+            current_function_state: None,
+            state_storage_stack: Vec::new(),
             memory: MemoryStore::default(),
             closures: ClosureStorage::default(),
             arrays: ArrayStorage::default(),
@@ -365,33 +369,27 @@ impl<H: MimiumHost> MimiumProgram<H> {
 
 /*__CALL_DSP__*/
 /*__CALL_MAIN__*/
-    fn call_function_handle(&mut self, handle: Word, args: &[Word]) -> Result<Vec<Word>, String> {
-        let mut memory = std::mem::take(&mut self.memory);
-        let result = self.call_function_handle_with_memory(handle, args, &mut memory);
-        self.memory = memory;
-        result
+    fn call_function_handle(&mut self, handle: Word, args: &[Word]) -> Vec<Word> {
+        self.call_function_handle_with_memory(handle, args)
     }
 
-    fn take_call_state(&mut self, handle: Word, function_index: usize) -> Result<StateStorage, String> {
-        if decode_closure(handle).is_some() {
-            Ok(std::mem::take(&mut self.closures.get_mut(handle)?.state_storage))
+    fn get_current_statestorage(&mut self) -> &mut StateStorage {
+        if let Some(&closure_handle) = self.state_storage_stack.last() {
+            &mut self
+                .closures
+                .get_mut(closure_handle)
+                .unwrap_or_else(|err| unreachable!("{err}"))
+                .state_storage
         } else {
-            Ok(std::mem::take(&mut self.function_states[function_index]))
+            let function_index = self
+                .current_function_state
+                .unwrap_or_else(|| unreachable!("missing active function state"));
+            &mut self.function_states[function_index]
         }
     }
 
-    fn restore_call_state(
-        &mut self,
-        handle: Word,
-        function_index: usize,
-        state: StateStorage,
-    ) -> Result<(), String> {
-        if decode_closure(handle).is_some() {
-            self.closures.get_mut(handle)?.state_storage = state;
-        } else {
-            self.function_states[function_index] = state;
-        }
-        Ok(())
+    fn get_current_closure(&self) -> Option<Word> {
+        self.state_storage_stack.last().copied()
     }
 
     fn call_ext(&mut self, name: &str, args: &[Word], ret_words: usize) -> Result<Vec<Word>, String> {
@@ -531,20 +529,37 @@ impl<H: MimiumHost> MimiumProgram<H> {
         &mut self,
         handle: Word,
         args: &[Word],
-        memory: &mut MemoryStore,
-    ) -> Result<Vec<Word>, String> {
+    ) -> Vec<Word> {
+        let previous_function_state = self.current_function_state;
         let (dispatch_handle, current_closure) = if decode_closure(handle).is_some() {
-            let function = self.closures.get(handle)?.function;
+            let function = self
+                .closures
+                .get(handle)
+                .unwrap_or_else(|err| unreachable!("{err}"))
+                .function;
+            self.state_storage_stack.push(handle);
             (function, Some(handle))
         } else {
             (handle, None)
         };
 
-        match decode_function(dispatch_handle) {
-/*__HANDLE_DISPATCH__*/
-            Some(index) => Err(format!("unknown function handle {}", index)),
-            None => Err(format!("unsupported callable handle {}", handle)),
+        if let Some(function_index) = decode_function(dispatch_handle) {
+            self.current_function_state = Some(function_index);
         }
+
+        let result = match decode_function(dispatch_handle) {
+/*__HANDLE_DISPATCH__*/
+            Some(index) => unreachable!("unknown function handle {}", index),
+            None => unreachable!("unsupported callable handle {}", handle),
+        };
+
+        if current_closure.is_some() {
+            self.state_storage_stack
+                .pop()
+                .unwrap_or_else(|| unreachable!("closure state stack underflow"));
+        }
+        self.current_function_state = previous_function_state;
+        result
     }
 
     fn load_upvalue(
@@ -552,7 +567,6 @@ impl<H: MimiumHost> MimiumProgram<H> {
         closure_handle: Word,
         index: usize,
         size: usize,
-        memory: &MemoryStore,
     ) -> Result<Vec<Word>, String> {
         let closure = self.closures.get(closure_handle)?;
         let value = *closure
@@ -565,7 +579,7 @@ impl<H: MimiumHost> MimiumProgram<H> {
             .ok_or_else(|| format!("missing upvalue metadata {}", index))?;
 
         if indirect {
-            memory.load(value, size)
+            self.memory.load(value, size)
         } else if size == 1 {
             Ok(vec![value])
         } else {
@@ -582,22 +596,26 @@ impl<H: MimiumHost> MimiumProgram<H> {
         index: usize,
         src: &[Word],
         size: usize,
-        memory: &mut MemoryStore,
     ) -> Result<(), String> {
-        let closure = self.closures.get_mut(closure_handle)?;
-        let indirect = *closure
+        let indirect = *self
+            .closures
+            .get(closure_handle)?
             .indirect
             .get(index)
             .ok_or_else(|| format!("missing upvalue metadata {}", index))?;
 
         if indirect {
-            let ptr = *closure
+            let ptr = *self
+                .closures
+                .get(closure_handle)?
                 .upvalues
                 .get(index)
                 .ok_or_else(|| format!("invalid upvalue index {}", index))?;
-            memory.store(ptr, src, size)
+            self.memory.store(ptr, src, size)
         } else if size == 1 {
-            let slot = closure
+            let slot = self
+                .closures
+                .get_mut(closure_handle)?
                 .upvalues
                 .get_mut(index)
                 .ok_or_else(|| format!("invalid upvalue index {}", index))?;
