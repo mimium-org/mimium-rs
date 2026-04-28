@@ -73,6 +73,8 @@ mimium can describe digital signal processing algorithm from very low-level, lik
 
 mimium's VM design is inspired by Lua, that can be easily embedded on Rust application through the plugin system. External functions (closures) defined in Rust can be easily called from mimium.
 
+Also, the code itself can be transpiled into Rust code which enables a quick prototyping of the development of native audio application.
+
 ## Installation
 
 The easiest way to start mimium is using [Visual Studio Code Extension](https://github.com/mimium-org/mimium-language). The extention will automatically download CLI tool `mimium-cli` and language server (support for syntactic highlight and error reporting) when installed.

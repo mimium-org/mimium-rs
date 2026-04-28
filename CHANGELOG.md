@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v4.1.0
+
+### Added features
+
+- Experimental Rust code transpiler has added with `--emit-rust` option.(#201)
+
 ## v4.0.2
 
 ### Fixed bugs

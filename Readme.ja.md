@@ -74,6 +74,8 @@ mimiumはFaustのように非常に低レベルなデジタル信号処理アル
 
 mimiumのVM設計はLuaに着想を得ており、プラグインシステムを通じてRustアプリケーションへ容易に組み込めます。Rust側で定義した外部関数（クロージャ）をmimiumから簡単に呼び出せます。
 
+また、コード全体をRustへとトランスパイルする機能も備わっているため、ネイティブオーディオアプリケーション開発の高速なプロトタイプングにも適しています。
+
 ## Installation
 
 mimiumを始める最も簡単な方法は [Visual Studio Code 拡張機能](https://github.com/mimium-org/mimium-language)を使うことです。拡張機能をインストールすると、CLI ツール `mimium-cli` とLanguage Server（シンタックスハイライトおよびエラー表示が可能）が自動でダウンロードされます。
