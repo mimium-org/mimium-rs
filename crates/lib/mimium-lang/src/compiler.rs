@@ -466,7 +466,9 @@ fn dsp(input:float){
         let output = test_context().emit_rust(src).unwrap();
         assert!(output.source.contains("pub struct MimiumProgram"));
         assert!(output.source.contains("pub fn call_dsp"));
-        assert!(output.source.contains("fn func_"));
+        assert!(output.source.contains("fn counter("));
+        assert!(output.source.contains("fn dispatch_counter("));
+        assert!(!output.source.contains("fn func_"));
     }
 
     #[test]

@@ -251,8 +251,8 @@ impl RustGenerator {
                     func.index
                 ))?;
                 writer.line(format!(
-                    "let result = self.func_{}(&mut state, args, current_closure, memory);",
-                    func.index
+                    "let result = self.{}(&mut state, args, current_closure, memory);",
+                    self.function_dispatch_name(func)
                 ))?;
                 writer.line(format!(
                     "self.restore_call_state(handle, {}, state)?;",
@@ -273,9 +273,57 @@ impl RustGenerator {
             if index != 0 {
                 writer.blank_line()?;
             }
+            self.emit_function_dispatch_wrapper(writer, func)?;
+            writer.blank_line()?;
             self.emit_function(writer, func, global_slots)?;
         }
         Ok(())
+    }
+
+    fn emit_function_dispatch_wrapper<W: Write>(
+        &self,
+        writer: &mut CodeWriter<W>,
+        func: &Function,
+    ) -> Result<(), String> {
+        let direct_name = self.function_direct_name(func);
+        let wrapper_name = self.function_dispatch_name(func);
+        let return_ty = self.function_return_type(func)?;
+
+        writer.line(format!(
+            "fn {wrapper_name}(&mut self, state: &mut StateStorage, args: &[Word], current_closure: Option<Word>, memory: &mut MemoryStore) -> Result<Vec<Word>, String> {{"
+        ))?;
+        writer.indented(1, |writer| {
+            writer.line("let mut arg_offset = 0usize;")?;
+
+            for (index, arg) in func.args.iter().enumerate() {
+                let size = arg.1.word_size() as usize;
+                if size == 0 {
+                    writer.line(format!("let arg_{index}_value = ();"))?;
+                } else {
+                    writer.line(format!(
+                        "let arg_{index}_words = copy_words::<{size}>(&args[arg_offset..arg_offset + {size}])?;"
+                    ))?;
+                    writer.line(format!("arg_offset += {size};"))?;
+                    writer.line(format!(
+                        "let arg_{index}_value = {};",
+                        self.abi_expr_from_word_source(&format!("arg_{index}_words"), arg.1)?
+                    ))?;
+                }
+            }
+
+            let mut call_args = vec![
+                "state".to_string(),
+                "current_closure".to_string(),
+                "memory".to_string(),
+            ];
+            call_args.extend((0..func.args.len()).map(|index| format!("arg_{index}_value")));
+            writer.line(format!(
+                "let result = self.{direct_name}({})?;",
+                call_args.join(", ")
+            ))?;
+            self.emit_pack_abi_result(writer, "result", return_ty)
+        })?;
+        writer.line("}")
     }
 
     fn find_function_by_name(&self, name: &str) -> Option<usize> {
@@ -341,20 +389,29 @@ impl RustGenerator {
         let register_sizes = self.collect_register_sizes(func)?;
         let block_preds = self.collect_block_predecessors(func);
         let fallthrough_edges = self.collect_fallthrough_edges(func);
+        let direct_name = self.function_direct_name(func);
+        let return_ty = self.function_return_type(func)?;
+        let mut signature_args = vec![
+            "&mut self".to_string(),
+            "state: &mut StateStorage".to_string(),
+            "current_closure: Option<Word>".to_string(),
+            "memory: &mut MemoryStore".to_string(),
+        ];
+        for (index, arg) in func.args.iter().enumerate() {
+            signature_args.push(format!("arg_{index}_value: {}", self.abi_type_expr(arg.1)?));
+        }
 
         writer.line(format!(
-            "fn func_{}(&mut self, state: &mut StateStorage, args: &[Word], current_closure: Option<Word>, memory: &mut MemoryStore) -> Result<Vec<Word>, String> {{",
-            func.index
+            "fn {direct_name}({}) -> Result<{}, String> {{",
+            signature_args.join(", "),
+            self.abi_type_expr(return_ty)?
         ))?;
         writer.indented(1, |writer| {
-            writer.line("let mut arg_offset = 0usize;")?;
-
             for (index, arg) in func.args.iter().enumerate() {
-                let size = arg.1.word_size() as usize;
                 writer.line(format!(
-                    "let arg_{index} = copy_words::<{size}>(&args[arg_offset..arg_offset + {size}])?;"
+                    "let arg_{index} = {};",
+                    self.abi_to_words_array_expr(&format!("arg_{index}_value"), arg.1)?
                 ))?;
-                writer.line(format!("arg_offset += {size};"))?;
             }
 
             let mut regs: Vec<_> = register_sizes.into_iter().collect();
@@ -442,19 +499,16 @@ impl RustGenerator {
     }
 
     fn block_can_fall_through(&self, block: &Block) -> bool {
-        block
-            .0
-            .last()
-            .is_none_or(|(_dst, instr)| {
-                !matches!(
-                    instr,
-                    Instruction::Return(_, _)
-                        | Instruction::ReturnFeed(_, _)
-                        | Instruction::JmpIf(_, _, _, _)
-                        | Instruction::Jmp(_)
-                        | Instruction::Switch { .. }
-                )
-            })
+        block.0.last().is_none_or(|(_dst, instr)| {
+            !matches!(
+                instr,
+                Instruction::Return(_, _)
+                    | Instruction::ReturnFeed(_, _)
+                    | Instruction::JmpIf(_, _, _, _)
+                    | Instruction::Jmp(_)
+                    | Instruction::Switch { .. }
+            )
+        })
     }
 
     fn collect_register_sizes(&self, func: &Function) -> Result<HashMap<VReg, usize>, String> {
@@ -749,11 +803,6 @@ impl RustGenerator {
                 let call_kind = self.call_kind(callee)?;
                 let result_size = self.instruction_result_size(func, instr)?;
                 let static_callee = self.resolve_function_index(func, callee);
-                writer.line("let mut call_args = Vec::new();")?;
-                for (arg, ty) in args {
-                    let expr = self.boundary_value_slice_expr(func, arg, *ty)?;
-                    writer.line(format!("call_args.extend_from_slice({expr});"))?;
-                }
                 if let Some(target_index) = static_callee {
                     let target_func = self
                         .mir
@@ -777,34 +826,77 @@ impl RustGenerator {
                                 default_functions.len()
                             ));
                         }
+                    }
+                    let direct_name = self.function_direct_name(target_func);
+                    let mut provided_cursor = 0usize;
+                    let mut call_args = target_func
+                        .args
+                        .iter()
+                        .take(args.len().min(target_func.args.len()))
+                        .map(|target_arg| {
+                            self.consume_direct_call_arg_expr(
+                                func,
+                                args,
+                                &mut provided_cursor,
+                                target_arg.1,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if provided_cursor != args.len() && call_args.len() == target_func.args.len() {
+                        return Err(format!(
+                            "direct call argument packing mismatch for {}: consumed {} of {} MIR operands",
+                            target_func.label,
+                            provided_cursor,
+                            args.len()
+                        ));
+                    }
+                    let provided_args = call_args.len();
+                    let expected_args = target_func.args.len();
+                    if provided_args < expected_args {
+                        let default_functions = self.default_argument_functions(target_index);
+                        let missing_args = expected_args - provided_args;
                         for default_index in default_functions.into_iter().take(missing_args) {
-                            writer.line(format!(
-                                "call_args.extend_from_slice(&self.func_{default_index}(state, &[], None, memory)?);"
-                            ))?;
+                            let default_func = self
+                                .mir
+                                .functions
+                                .iter()
+                                .find(|candidate| candidate.index == default_index)
+                                .ok_or_else(|| {
+                                    format!("missing default function for index {default_index}")
+                                })?;
+                            call_args.push(format!(
+                                "self.{}(state, None, memory)?",
+                                self.function_direct_name(default_func)
+                            ));
                         }
                     }
+                    let mut direct_call_args = vec![
+                        "state".to_string(),
+                        "None".to_string(),
+                        "memory".to_string(),
+                    ];
+                    direct_call_args.extend(call_args);
+                    writer.line(format!(
+                        "let call_result = self.{direct_name}({})?;",
+                        direct_call_args.join(", ")
+                    ))?;
+                    self.emit_assign_abi_value_to_runtime(writer, dst, "call_result", *ret_ty)?;
+                    return Ok(());
+                }
+                writer.line("let mut call_args = Vec::new();")?;
+                for (arg, ty) in args {
+                    let expr = self.boundary_value_slice_expr(func, arg, *ty)?;
+                    writer.line(format!("call_args.extend_from_slice({expr});"))?;
                 }
                 match call_kind {
                     CallKind::FunctionHandle(handle_expr) => {
-                        if let Some(target_index) = static_callee {
-                            writer.line(format!(
-                                "{dest} = {};",
-                                self.vec_to_array_expr(
-                                    format!(
-                                        "self.func_{target_index}(state, &call_args, None, memory)?"
-                                    ),
-                                    result_size,
-                                )
-                            ))?;
-                        } else {
-                            writer.line(format!(
-                                "{dest} = {};",
-                                self.vec_to_array_expr(
-                                    format!("self.call_function_handle_with_memory({handle_expr}, &call_args, memory)?"),
-                                    result_size,
-                                )
-                            ))?;
-                        }
+                        writer.line(format!(
+                            "{dest} = {};",
+                            self.vec_to_array_expr(
+                                format!("self.call_function_handle_with_memory({handle_expr}, &call_args, memory)?"),
+                                result_size,
+                            )
+                        ))?;
                     }
                     CallKind::Ext(symbol) => {
                         let name = format!("{:?}", symbol.as_str());
@@ -1191,14 +1283,14 @@ impl RustGenerator {
             }
             Instruction::Return(value, ty) => {
                 if matches!(value.as_ref(), Value::None) || ty.word_size() == 0 {
-                    writer.line("return Ok(Vec::new());")?;
+                    writer.line("return Ok(());")?;
                 } else {
-                    let expr = self.context_value_vec_expr(func, value, *ty)?;
+                    let expr = self.abi_value_expr(func, value, *ty)?;
                     writer.line(format!("return Ok({expr});"))?;
                 }
             }
             Instruction::ReturnFeed(value, ty) => {
-                let expr = self.context_value_array_expr(func, value, *ty)?;
+                let expr = self.abi_value_expr(func, value, *ty)?;
                 match self.config.self_eval_mode {
                     SelfEvalMode::SimpleState => {
                         writer.line(format!("let result = {expr};"))?;
@@ -1207,7 +1299,7 @@ impl RustGenerator {
                             "state.set_state({state_expr}, {}usize);",
                             ty.word_size()
                         ))?;
-                        writer.line("return Ok(result.to_vec());")?;
+                        writer.line("return Ok(result);")?;
                     }
                     SelfEvalMode::ZeroAtInit => {
                         if self.is_deepcopy_aggregate_type(*ty) {
@@ -1215,10 +1307,6 @@ impl RustGenerator {
                             writer.line(format!(
                                 "let previous_words = state.get_state({size}usize);"
                             ))?;
-                            writer.line(
-                                "let previous_handle = memory.alloc(previous_words.len());",
-                            )?;
-                            writer.line("memory.store(previous_handle, &previous_words, previous_words.len())?;")?;
                         } else {
                             writer.line(format!(
                                 "let previous = state.get_state({}usize);",
@@ -1232,9 +1320,15 @@ impl RustGenerator {
                             ty.word_size()
                         ))?;
                         if self.is_deepcopy_aggregate_type(*ty) {
-                            writer.line("return Ok(vec![previous_handle]);")?;
+                            writer.line(format!(
+                                "return Ok({});",
+                                self.abi_expr_from_word_source("previous_words", *ty)?
+                            ))?;
                         } else {
-                            writer.line("return Ok(previous);")?;
+                            writer.line(format!(
+                                "return Ok({});",
+                                self.abi_expr_from_word_source("previous", *ty)?
+                            ))?;
                         }
                     }
                 }
@@ -1678,6 +1772,404 @@ impl RustGenerator {
         writer.line(format!(
             "{dest}[0] = f64_to_word(if truthy({left_expr}) {op} truthy({right_expr}) {{ 1.0 }} else {{ 0.0 }});"
         ))
+    }
+
+    fn function_return_type(&self, func: &Function) -> Result<TypeNodeId, String> {
+        func.return_type
+            .get()
+            .copied()
+            .ok_or_else(|| format!("function {} is missing an inferred return type", func.label))
+    }
+
+    fn function_direct_name(&self, func: &Function) -> String {
+        Self::escape_rust_identifier(&self.function_name_stem(func))
+    }
+
+    fn function_dispatch_name(&self, func: &Function) -> String {
+        format!("dispatch_{}", self.function_name_stem(func))
+    }
+
+    fn function_name_stem(&self, func: &Function) -> String {
+        let base = Self::sanitize_rust_identifier_base(func.label.as_str());
+        let collisions = self
+            .mir
+            .functions
+            .iter()
+            .filter(|candidate| {
+                Self::sanitize_rust_identifier_base(candidate.label.as_str()) == base
+            })
+            .count();
+        if collisions > 1 || base == "_" {
+            format!("{base}__{}", func.index)
+        } else {
+            base
+        }
+    }
+
+    fn sanitize_rust_identifier_base(raw: &str) -> String {
+        let mut ident = String::new();
+        for ch in raw.chars() {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ident.push(ch);
+            } else {
+                ident.push('_');
+            }
+        }
+        if ident.is_empty() {
+            ident.push_str("mimium");
+        }
+        if ident
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_digit())
+        {
+            ident.insert(0, '_');
+        }
+        ident
+    }
+
+    fn escape_rust_identifier(ident: &str) -> String {
+        const KEYWORDS: &[&str] = &[
+            "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn",
+            "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
+            "return", "self", "Self", "static", "struct", "super", "trait", "true", "type",
+            "unsafe", "use", "where", "while", "async", "await", "dyn", "abstract", "become",
+            "box", "do", "final", "macro", "override", "priv", "try", "typeof", "unsized",
+            "virtual", "yield",
+        ];
+        if KEYWORDS.contains(&ident) {
+            format!("r#{ident}")
+        } else {
+            ident.to_string()
+        }
+    }
+
+    fn abi_type_expr(&self, ty: TypeNodeId) -> Result<String, String> {
+        Ok(match ty.to_type() {
+            Type::Primitive(crate::types::PType::Unit) => "()".to_string(),
+            Type::Primitive(_)
+            | Type::Array(_)
+            | Type::Function { .. }
+            | Type::Ref(_)
+            | Type::Code(_)
+            | Type::Boxed(_) => "Word".to_string(),
+            Type::Tuple(elems) => self.abi_tuple_type_expr(
+                elems
+                    .iter()
+                    .map(|elem| self.abi_type_expr(*elem))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Type::Record(fields) => self.abi_tuple_type_expr(
+                fields
+                    .iter()
+                    .map(|field| self.abi_type_expr(field.ty))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Type::Union(_) | Type::UserSum { .. } => {
+                let payload_words = ty.word_size().saturating_sub(1) as usize;
+                format!("(Word, [Word; {payload_words}])")
+            }
+            _ => self.opaque_abi_type_expr(ty),
+        })
+    }
+
+    fn abi_tuple_type_expr(&self, items: Vec<String>) -> String {
+        match items.len() {
+            0 => "()".to_string(),
+            1 => format!("({},)", items[0]),
+            _ => format!("({})", items.join(", ")),
+        }
+    }
+
+    fn abi_tuple_expr(&self, items: Vec<String>) -> String {
+        match items.len() {
+            0 => "()".to_string(),
+            1 => format!("({},)", items[0]),
+            _ => format!("({})", items.join(", ")),
+        }
+    }
+
+    fn abi_word_exprs(&self, value_expr: &str, ty: TypeNodeId) -> Result<Vec<String>, String> {
+        Ok(match ty.to_type() {
+            Type::Primitive(crate::types::PType::Unit) => Vec::new(),
+            Type::Primitive(_)
+            | Type::Array(_)
+            | Type::Function { .. }
+            | Type::Ref(_)
+            | Type::Code(_)
+            | Type::Boxed(_) => vec![value_expr.to_string()],
+            Type::Tuple(elems) => elems
+                .iter()
+                .enumerate()
+                .map(|(index, elem)| self.abi_word_exprs(&format!("{value_expr}.{index}"), *elem))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect(),
+            Type::Record(fields) => fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| {
+                    self.abi_word_exprs(&format!("{value_expr}.{index}"), field.ty)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect(),
+            Type::Union(_) | Type::UserSum { .. } => {
+                let payload_words = ty.word_size().saturating_sub(1) as usize;
+                let mut words = vec![format!("{value_expr}.0")];
+                words.extend((0..payload_words).map(|index| format!("{value_expr}.1[{index}]")));
+                words
+            }
+            _ => self.opaque_abi_word_exprs(value_expr, ty),
+        })
+    }
+
+    fn abi_to_words_array_expr(&self, value_expr: &str, ty: TypeNodeId) -> Result<String, String> {
+        let words = self.abi_word_exprs(value_expr, ty)?;
+        if words.is_empty() {
+            Ok("[0u64; 0]".to_string())
+        } else {
+            Ok(format!("[{}]", words.join(", ")))
+        }
+    }
+
+    fn abi_expr_from_word_source(
+        &self,
+        source_expr: &str,
+        ty: TypeNodeId,
+    ) -> Result<String, String> {
+        let mut offset = 0usize;
+        self.abi_expr_from_word_source_at(source_expr, ty, &mut offset)
+    }
+
+    fn abi_expr_from_word_source_at(
+        &self,
+        source_expr: &str,
+        ty: TypeNodeId,
+        offset: &mut usize,
+    ) -> Result<String, String> {
+        Ok(match ty.to_type() {
+            Type::Primitive(crate::types::PType::Unit) => "()".to_string(),
+            Type::Primitive(_)
+            | Type::Array(_)
+            | Type::Function { .. }
+            | Type::Ref(_)
+            | Type::Code(_)
+            | Type::Boxed(_) => {
+                let expr = format!("{source_expr}[{}]", *offset);
+                *offset += 1;
+                expr
+            }
+            Type::Tuple(elems) => self.abi_tuple_expr(
+                elems
+                    .iter()
+                    .map(|elem| self.abi_expr_from_word_source_at(source_expr, *elem, offset))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Type::Record(fields) => self.abi_tuple_expr(
+                fields
+                    .iter()
+                    .map(|field| self.abi_expr_from_word_source_at(source_expr, field.ty, offset))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Type::Union(_) | Type::UserSum { .. } => {
+                let tag_expr = format!("{source_expr}[{}]", *offset);
+                *offset += 1;
+                let payload_words = ty.word_size().saturating_sub(1) as usize;
+                let payload_expr = if payload_words == 0 {
+                    "[0u64; 0]".to_string()
+                } else {
+                    let payload = (*offset..(*offset + payload_words))
+                        .map(|index| format!("{source_expr}[{index}]"))
+                        .collect::<Vec<_>>();
+                    format!("[{}]", payload.join(", "))
+                };
+                *offset += payload_words;
+                format!("({tag_expr}, {payload_expr})")
+            }
+            _ => self.opaque_abi_expr_from_word_source(source_expr, ty, offset),
+        })
+    }
+
+    fn opaque_abi_type_expr(&self, ty: TypeNodeId) -> String {
+        match ty.word_size() as usize {
+            0 => "()".to_string(),
+            1 => "Word".to_string(),
+            size => format!("[Word; {size}]"),
+        }
+    }
+
+    fn opaque_abi_word_exprs(&self, value_expr: &str, ty: TypeNodeId) -> Vec<String> {
+        match ty.word_size() as usize {
+            0 => Vec::new(),
+            1 => vec![value_expr.to_string()],
+            size => (0..size)
+                .map(|index| format!("{value_expr}[{index}]"))
+                .collect(),
+        }
+    }
+
+    fn opaque_abi_expr_from_word_source(
+        &self,
+        source_expr: &str,
+        ty: TypeNodeId,
+        offset: &mut usize,
+    ) -> String {
+        match ty.word_size() as usize {
+            0 => "()".to_string(),
+            1 => {
+                let expr = format!("{source_expr}[{}]", *offset);
+                *offset += 1;
+                expr
+            }
+            size => {
+                let items = (*offset..(*offset + size))
+                    .map(|index| format!("{source_expr}[{index}]"))
+                    .collect::<Vec<_>>();
+                *offset += size;
+                format!("[{}]", items.join(", "))
+            }
+        }
+    }
+
+    fn abi_value_expr(
+        &self,
+        func: &Function,
+        value: &VPtr,
+        ty: TypeNodeId,
+    ) -> Result<String, String> {
+        if ty.word_size() == 0 || matches!(value.as_ref(), Value::None) {
+            return Ok("()".to_string());
+        }
+        if self.is_deepcopy_aggregate_type(ty) {
+            return match value.as_ref() {
+                Value::Argument(index) => {
+                    self.abi_expr_from_word_source(&format!("arg_{index}"), ty)
+                }
+                _ => {
+                    let ptr_expr = self.word0_expr(value)?;
+                    Ok(format!(
+                        "({{ let words = memory.load({ptr_expr}, {}usize)?; {} }})",
+                        ty.word_size(),
+                        self.abi_expr_from_word_source("words", ty)?
+                    ))
+                }
+            };
+        }
+
+        if ty.word_size() == 1 {
+            return self.scalar_word_expr(func, value);
+        }
+
+        match value.as_ref() {
+            Value::Argument(index) => self.abi_expr_from_word_source(&format!("arg_{index}"), ty),
+            Value::Register(reg) => self.abi_expr_from_word_source(&format!("reg_{reg}"), ty),
+            _ => Err(format!(
+                "value is not representable as a concrete ABI value in Rust codegen: {:?}",
+                value
+            )),
+        }
+    }
+
+    fn consume_direct_call_arg_expr(
+        &self,
+        func: &Function,
+        args: &[(VPtr, TypeNodeId)],
+        cursor: &mut usize,
+        target_ty: TypeNodeId,
+    ) -> Result<String, String> {
+        if target_ty.word_size() == 0 {
+            return Ok("()".to_string());
+        }
+
+        let Some((value, value_ty)) = args.get(*cursor) else {
+            return Err(format!(
+                "missing MIR operand while packing direct call argument of type {:?}",
+                target_ty.to_type()
+            ));
+        };
+
+        if *value_ty == target_ty {
+            *cursor += 1;
+            return self.abi_value_expr(func, value, target_ty);
+        }
+
+        match target_ty.to_type() {
+            Type::Tuple(elems) => Ok(self.abi_tuple_expr(
+                elems
+                    .iter()
+                    .map(|elem| self.consume_direct_call_arg_expr(func, args, cursor, *elem))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
+            Type::Record(fields) => Ok(self.abi_tuple_expr(
+                fields
+                    .iter()
+                    .map(|field| self.consume_direct_call_arg_expr(func, args, cursor, field.ty))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
+            _ => {
+                *cursor += 1;
+                self.abi_value_expr(func, value, *value_ty)
+            }
+        }
+    }
+
+    fn emit_assign_abi_value_to_runtime<W: Write>(
+        &self,
+        writer: &mut CodeWriter<W>,
+        dst: &VPtr,
+        abi_expr: &str,
+        ty: TypeNodeId,
+    ) -> Result<(), String> {
+        if ty.word_size() == 0 {
+            return Ok(());
+        }
+        let dest = self.reg_name(dst)?;
+        if self.is_deepcopy_aggregate_type(ty) {
+            let size = ty.word_size() as usize;
+            writer.line(format!(
+                "let abi_words = {};",
+                self.abi_to_words_array_expr(abi_expr, ty)?
+            ))?;
+            writer.line(format!("{dest}[0] = memory.alloc({size}usize);"))?;
+            writer.line(format!(
+                "memory.store({dest}[0], &abi_words, {size}usize)?;"
+            ))
+        } else {
+            writer.line(format!(
+                "{dest} = {};",
+                self.abi_to_words_array_expr(abi_expr, ty)?
+            ))
+        }
+    }
+
+    fn emit_pack_abi_result<W: Write>(
+        &self,
+        writer: &mut CodeWriter<W>,
+        result_expr: &str,
+        ty: TypeNodeId,
+    ) -> Result<(), String> {
+        if ty.word_size() == 0 {
+            writer.line("Ok(Vec::new())")
+        } else if self.is_deepcopy_aggregate_type(ty) {
+            let size = ty.word_size() as usize;
+            writer.line(format!(
+                "let abi_words = {};",
+                self.abi_to_words_array_expr(result_expr, ty)?
+            ))?;
+            writer.line(format!("let result_handle = memory.alloc({size}usize);"))?;
+            writer.line(format!(
+                "memory.store(result_handle, &abi_words, {size}usize)?;"
+            ))?;
+            writer.line("Ok(vec![result_handle])")
+        } else {
+            writer.line(format!(
+                "Ok({}.to_vec())",
+                self.abi_to_words_array_expr(result_expr, ty)?
+            ))
+        }
     }
 
     fn call_kind(&self, callee: &VPtr) -> Result<CallKind, String> {
