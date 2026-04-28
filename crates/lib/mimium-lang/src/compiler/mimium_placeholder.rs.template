@@ -252,6 +252,8 @@ impl ArrayStorage {
 #[derive(Clone)]
 struct ClosureObject {
     function: Word,
+    upvalues: Vec<Word>,
+    indirect: Vec<bool>,
 }
 
 #[derive(Default)]
@@ -260,10 +262,26 @@ struct ClosureStorage {
 }
 
 impl ClosureStorage {
-    fn alloc(&mut self, function: Word) -> Word {
+    fn alloc(
+        &mut self,
+        function: Word,
+        upvalues: Vec<Word>,
+        indirect: Vec<bool>,
+    ) -> Result<Word, String> {
+        if upvalues.len() != indirect.len() {
+            return Err(format!(
+                "closure upvalue metadata mismatch: {} values, {} flags",
+                upvalues.len(),
+                indirect.len()
+            ));
+        }
         let index = self.closures.len();
-        self.closures.push(ClosureObject { function });
-        encode_closure(index)
+        self.closures.push(ClosureObject {
+            function,
+            upvalues,
+            indirect,
+        });
+        Ok(encode_closure(index))
     }
 
     fn get(&self, handle: Word) -> Result<&ClosureObject, String> {
@@ -271,6 +289,14 @@ impl ClosureStorage {
             .ok_or_else(|| format!("invalid closure handle {}", handle))?;
         self.closures
             .get(index)
+            .ok_or_else(|| format!("invalid closure handle {}", handle))
+    }
+
+    fn get_mut(&mut self, handle: Word) -> Result<&mut ClosureObject, String> {
+        let index = decode_closure(handle)
+            .ok_or_else(|| format!("invalid closure handle {}", handle))?;
+        self.closures
+            .get_mut(index)
             .ok_or_else(|| format!("invalid closure handle {}", handle))
     }
 }
@@ -317,14 +343,81 @@ impl<H: MimiumHost> MimiumProgram<H> {
         args: &[Word],
         memory: &mut MemoryStore,
     ) -> Result<Vec<Word>, String> {
-        if decode_closure(handle).is_some() {
+        let (dispatch_handle, current_closure) = if decode_closure(handle).is_some() {
             let function = self.closures.get(handle)?.function;
-            return self.call_function_handle_with_memory(function, args, memory);
-        }
-        match decode_function(handle) {
+            (function, Some(handle))
+        } else {
+            (handle, None)
+        };
+
+        match decode_function(dispatch_handle) {
 /*__HANDLE_DISPATCH__*/
             Some(index) => Err(format!("unknown function handle {}", index)),
             None => Err(format!("unsupported callable handle {}", handle)),
+        }
+    }
+
+    fn load_upvalue(
+        &self,
+        closure_handle: Word,
+        index: usize,
+        size: usize,
+        memory: &MemoryStore,
+    ) -> Result<Vec<Word>, String> {
+        let closure = self.closures.get(closure_handle)?;
+        let value = *closure
+            .upvalues
+            .get(index)
+            .ok_or_else(|| format!("invalid upvalue index {}", index))?;
+        let indirect = *closure
+            .indirect
+            .get(index)
+            .ok_or_else(|| format!("missing upvalue metadata {}", index))?;
+
+        if indirect {
+            memory.load(value, size)
+        } else if size == 1 {
+            Ok(vec![value])
+        } else {
+            Err(format!(
+                "direct upvalue {} does not support {} words in the initial Rust backend",
+                index, size
+            ))
+        }
+    }
+
+    fn store_upvalue(
+        &mut self,
+        closure_handle: Word,
+        index: usize,
+        src: &[Word],
+        size: usize,
+        memory: &mut MemoryStore,
+    ) -> Result<(), String> {
+        let closure = self.closures.get_mut(closure_handle)?;
+        let indirect = *closure
+            .indirect
+            .get(index)
+            .ok_or_else(|| format!("missing upvalue metadata {}", index))?;
+
+        if indirect {
+            let ptr = *closure
+                .upvalues
+                .get(index)
+                .ok_or_else(|| format!("invalid upvalue index {}", index))?;
+            memory.store(ptr, src, size)
+        } else if size == 1 {
+            let slot = closure
+                .upvalues
+                .get_mut(index)
+                .ok_or_else(|| format!("invalid upvalue index {}", index))?;
+            *slot = src[0];
+            Ok(())
+        } else {
+            Err(format!(
+                "direct upvalue {} does not support {} words in the initial Rust backend",
+                index, size
+            ))
         }
     }
 

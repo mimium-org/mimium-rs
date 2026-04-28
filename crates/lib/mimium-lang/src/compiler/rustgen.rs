@@ -220,7 +220,7 @@ impl RustGenerator {
                     func.index
                 ))?;
                 writer.line(format!(
-                    "let result = self.func_{}(&mut state, args, memory);",
+                    "let result = self.func_{}(&mut state, args, current_closure, memory);",
                     func.index
                 ))?;
                 writer.line(format!("self.function_states[{}] = state;", func.index))?;
@@ -302,7 +302,7 @@ impl RustGenerator {
         let fallthrough_targets = self.collect_fallthrough_targets(func);
 
         writer.line(format!(
-            "fn func_{}(&mut self, state: &mut StateStorage, args: &[Word], memory: &mut MemoryStore) -> Result<Vec<Word>, String> {{",
+            "fn func_{}(&mut self, state: &mut StateStorage, args: &[Word], current_closure: Option<Word>, memory: &mut MemoryStore) -> Result<Vec<Word>, String> {{",
             func.index
         ))?;
         writer.indented(1, |writer| {
@@ -725,12 +725,89 @@ impl RustGenerator {
                 }
             }
             Instruction::MakeClosure { fn_proto, .. } => {
+                let dest = self.reg_name(dst)?;
                 let handle_expr = self.word0_expr(fn_proto)?;
-                self.assign_scalar(writer, dst, format!("self.closures.alloc({handle_expr})"))?;
+                let closure_function =
+                    self.resolve_function_index(func, fn_proto).ok_or_else(|| {
+                        format!("could not resolve closure target for {:?}", fn_proto)
+                    })?;
+                let closure_func = self
+                    .mir
+                    .functions
+                    .iter()
+                    .find(|candidate| candidate.index == closure_function)
+                    .ok_or_else(|| format!("missing closure function {}", closure_function))?;
+
+                writer.line("let mut closure_upvalues = Vec::new();")?;
+                writer.line("let mut closure_indirect = Vec::new();")?;
+                for upvalue in &closure_func.upindexes {
+                    match upvalue.as_ref() {
+                        Value::Register(reg) => {
+                            if let Some(alloc_size) = self.resolve_register_alloc_size(func, *reg) {
+                                let upvalue_expr = self.word0_expr(upvalue)?;
+                                if alloc_size == 1 {
+                                    writer
+                                        .line(format!("closure_upvalues.push({upvalue_expr});"))?;
+                                    writer.line("closure_indirect.push(true);")?;
+                                } else {
+                                    writer
+                                        .line(format!("closure_upvalues.push({upvalue_expr});"))?;
+                                    writer.line("closure_indirect.push(false);")?;
+                                }
+                            } else {
+                                let upvalue_expr = self.word0_expr(upvalue)?;
+                                writer.line(format!("closure_upvalues.push({upvalue_expr});"))?;
+                                writer.line("closure_indirect.push(false);")?;
+                            }
+                        }
+                        Value::Argument(_) | Value::Function(_) => {
+                            let upvalue_expr = self.word0_expr(upvalue)?;
+                            writer.line(format!("closure_upvalues.push({upvalue_expr});"))?;
+                            writer.line("closure_indirect.push(false);")?;
+                        }
+                        _ => {
+                            return Err(format!(
+                                "unsupported upvalue for initial Rust backend: {:?}",
+                                upvalue
+                            ));
+                        }
+                    }
+                }
+
+                writer.line(format!(
+                    "{dest}[0] = self.closures.alloc({handle_expr}, closure_upvalues, closure_indirect)?;"
+                ))?;
             }
             Instruction::CloneHeap(src) | Instruction::CloseHeapClosure(src) => {
                 let src_expr = self.word0_expr(src)?;
                 self.assign_scalar(writer, dst, src_expr)?;
+            }
+            Instruction::GetUpValue(index, ty) => {
+                let dest = self.reg_name(dst)?;
+                let size = ty.word_size() as usize;
+                writer.line("let closure_handle = current_closure.ok_or_else(|| \"missing closure context for GetUpValue\".to_string())?;")?;
+                writer.line(format!(
+                    "{dest} = {};",
+                    self.vec_to_array_expr(
+                        format!(
+                            "self.load_upvalue(closure_handle, {}usize, {size}usize, memory)?",
+                            *index as usize
+                        ),
+                        size,
+                    )
+                ))?;
+            }
+            Instruction::SetUpValue(index, src, ty) => {
+                let dest = self.reg_name(dst)?;
+                let src_expr = self.value_slice_expr(src)?;
+                let src_array = self.value_array_expr(src)?;
+                let size = ty.word_size() as usize;
+                writer.line("let closure_handle = current_closure.ok_or_else(|| \"missing closure context for SetUpValue\".to_string())?;")?;
+                writer.line(format!(
+                    "self.store_upvalue(closure_handle, {}usize, {src_expr}, {size}usize, memory)?;",
+                    *index as usize
+                ))?;
+                writer.line(format!("{dest} = {src_array};"))?;
             }
             Instruction::GetGlobal(global, ty) => {
                 let dest = self.reg_name(dst)?;
@@ -1063,8 +1140,6 @@ impl RustGenerator {
             | Instruction::CallCls(_, _, _)
             | Instruction::String(_)
             | Instruction::CloseUpValues(_, _)
-            | Instruction::GetUpValue(_, _)
-            | Instruction::SetUpValue(_, _, _)
             | Instruction::TaggedUnionWrap { .. }
             | Instruction::TaggedUnionGetTag(_)
             | Instruction::TaggedUnionGetValue(_, _)
@@ -1265,6 +1340,20 @@ impl RustGenerator {
                         if *reg == target_reg && *value >= 0 =>
                     {
                         Some(*value as usize)
+                    }
+                    _ => None,
+                })
+        })
+    }
+
+    fn resolve_register_alloc_size(&self, func: &Function, target_reg: VReg) -> Option<usize> {
+        func.body.iter().find_map(|block| {
+            block
+                .0
+                .iter()
+                .find_map(|(dst, instr)| match (dst.as_ref(), instr) {
+                    (Value::Register(reg), Instruction::Alloc(ty)) if *reg == target_reg => {
+                        Some(ty.word_size() as usize)
                     }
                     _ => None,
                 })
