@@ -2,6 +2,7 @@ pub mod bytecodegen;
 pub(crate) mod intrinsics;
 pub mod mirgen;
 pub mod parser;
+pub mod rustgen;
 pub mod translate_staging;
 pub mod typing;
 
@@ -127,7 +128,6 @@ pub fn emit_ast(
         Err(errs)
     }
 }
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Config {
     pub self_eval_mode: bytecodegen::SelfEvalMode,
@@ -198,6 +198,26 @@ impl Context {
         Ok(bytecodegen::gen_bytecode(mir, config))
     }
 
+    /// Compile source code to Rust source via MIR.
+    pub fn emit_rust(&self, src: &str) -> Result<RustOutput, Vec<Box<dyn ReportableError>>> {
+        let mir = self.emit_mir(src)?;
+        let io_channels = mir.get_dsp_iochannels();
+        let dsp_state_skeleton = mir.get_dsp_state_skeleton().cloned();
+        let source = rustgen::RustGenerator::new(std::sync::Arc::new(mir), self.config)
+            .generate()
+            .map_err(|e| {
+                vec![Box::new(crate::utils::error::SimpleError {
+                    message: e,
+                    span: crate::utils::metadata::Location::default(),
+                }) as Box<dyn ReportableError>]
+            })?;
+        Ok(RustOutput {
+            source,
+            dsp_state_skeleton,
+            io_channels,
+        })
+    }
+
     /// Compile source code to a WASM module.
     ///
     /// Returns the WASM binary bytes together with the DSP function's
@@ -238,6 +258,16 @@ pub struct WasmOutput {
     pub ext_fns: Vec<crate::plugin::ExtFunTypeInfo>,
 }
 
+/// Output of Rust source generation via [`Context::emit_rust`].
+pub struct RustOutput {
+    /// The generated Rust source.
+    pub source: String,
+    /// State tree skeleton of the DSP function.
+    pub dsp_state_skeleton: Option<state_tree::tree::StateTreeSkeleton<crate::mir::StateType>>,
+    /// I/O channel info extracted from the DSP function signature.
+    pub io_channels: Option<IoChannelInfo>,
+}
+
 // pub fn interpret_top(
 //     content: String,
 //     global_ctx: &mut ast_interpreter::Context,
@@ -251,6 +281,13 @@ pub struct WasmOutput {
 
 #[cfg(test)]
 mod test {
+    const RUST_TEST_MAIN_TEMPLATE: &str = include_str!("compiler/mimium_test_main.rs.template");
+
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use crate::{function, interner::ToSymbol, numeric};
 
     use super::*;
@@ -285,6 +322,97 @@ fn dsp(input:(float,float)){
         let extfns = [addfn];
         Context::new(extfns, [], None, Config::default())
     }
+
+    fn comprehensive_rust_source() -> &'static str {
+        r#"
+let arr = [10.0, 20.0, 40.0]
+
+fn counter(){
+    self + 1
+}
+
+fn remember(x){
+    mem(x)
+}
+
+fn branch(x){
+    if (x > 2.0) {
+        x + arr[2]
+    } else {
+        x + arr[1]
+    }
+}
+
+fn dsp(input:float){
+    let step = counter()
+    let mixed = input + step + arr[0]
+    let prev = remember(mixed)
+    branch(prev)
+}
+"#
+    }
+
+    fn runtime_literals_rust_source() -> &'static str {
+        r#"
+fn dsp(input:float){
+    input + samplerate / 1000.0 + now
+}
+"#
+    }
+
+    fn indirect_call_rust_source() -> &'static str {
+        r#"
+fn apply(f,input){
+    f(input)
+}
+
+fn inc(x){
+    x + 1.0
+}
+
+fn dsp(input:float){
+    apply(inc, input)
+}
+"#
+    }
+
+    fn mutable_upvalue_rust_source() -> &'static str {
+        r#"
+fn make_counter(){
+    let c = 0.0
+    |x| {
+        c = c + x
+        c
+    }
+}
+
+fn dsp(input:float){
+    let counter = make_counter()
+    counter(input)
+    counter(input)
+}
+"#
+    }
+
+    fn rust_test_tmp_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tmp")
+            .join("rustgen-tests")
+    }
+
+    fn render_rust_test_main(
+        decls: &str,
+        program_init: &str,
+        call_main: Option<&str>,
+        run_body: &str,
+    ) -> String {
+        RUST_TEST_MAIN_TEMPLATE
+            .replace("/*__DECLS__*/", decls)
+            .replace("/*__PROGRAM_INIT__*/", program_init)
+            .replace("/*__CALL_MAIN__*/", call_main.unwrap_or_default())
+            .replace("/*__RUN_BODY__*/", run_body)
+    }
+
     #[test]
     fn mir_channelcount() {
         let src = &get_source();
@@ -322,5 +450,245 @@ fn dsp(input:(float,float)){
         let iochannels = prog.iochannels.unwrap();
         assert_eq!(iochannels.input, 2);
         assert_eq!(iochannels.output, 2);
+    }
+
+    #[test]
+    fn emit_rust_generates_program_scaffold() {
+        let src = r#"
+fn counter(){
+    self + 1
+}
+fn dsp(input:float){
+    input + counter()
+}
+"#;
+
+        let output = test_context().emit_rust(src).unwrap();
+        assert!(output.source.contains("pub struct MimiumProgram"));
+        assert!(output.source.contains("pub fn call_dsp"));
+        assert!(output.source.contains("fn counter("));
+        assert!(output.source.contains("fn dispatch_counter("));
+        assert!(!output.source.contains("fn func_"));
+    }
+
+    #[test]
+    fn emit_rust_compiles_and_runs_generated_program() {
+        let output = test_context()
+            .emit_rust(comprehensive_rust_source())
+            .unwrap();
+        let maybe_call_main = if output.source.contains("pub fn call_main") {
+            Some("    program.call_main().unwrap();\n")
+        } else {
+            None
+        };
+        let harness = render_rust_test_main(
+            "",
+            "let mut program = MimiumProgram::new();",
+            maybe_call_main,
+            "    for input in [1.0f64, 2.0, 3.0, 4.0] {\n        let output = program.call_dsp(&[f64_to_word(input)]).unwrap();\n        for word in output {\n            println!(\"{:.12}\", word_to_f64(word));\n        }\n    }\n",
+        );
+
+        let tmp_dir = rust_test_tmp_dir();
+        fs::create_dir_all(&tmp_dir).unwrap();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let source_path = tmp_dir.join(format!("emit_rust_{stamp}.rs"));
+        let binary_path = tmp_dir.join(format!("emit_rust_{stamp}"));
+        fs::write(&source_path, format!("{}{harness}", output.source)).unwrap();
+
+        let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+        let compile = Command::new(&rustc)
+            .arg("--edition=2024")
+            .arg(&source_path)
+            .arg("-o")
+            .arg(&binary_path)
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "generated Rust failed to compile\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+
+        let run = Command::new(&binary_path).output().unwrap();
+        assert!(
+            run.status.success(),
+            "generated Rust binary failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+
+        let actual = String::from_utf8(run.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| line.parse::<f64>().unwrap())
+            .collect::<Vec<_>>();
+        let expected = vec![20.0, 52.0, 54.0, 56.0];
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn emit_rust_supports_runtime_literals_from_host() {
+        let output = test_context()
+            .emit_rust(runtime_literals_rust_source())
+            .unwrap();
+        let harness = render_rust_test_main(
+            "struct TestHost {\n    now: f64,\n    sample_rate: f64,\n}\n\nimpl MimiumHost for TestHost {\n    fn call_ext(&mut self, name: &str, _args: &[Word], _ret_words: usize) -> Result<Vec<Word>, String> {\n        Err(format!(\"unexpected external call: {}\", name))\n    }\n\n    fn current_time(&mut self) -> f64 {\n        let value = self.now;\n        self.now += 0.5;\n        value\n    }\n\n    fn sample_rate(&mut self) -> f64 {\n        self.sample_rate\n    }\n}\n",
+            "let host = TestHost { now: 1.5, sample_rate: 48_000.0 };\n    let mut program = MimiumProgram::with_host(host);",
+            None,
+            "    for input in [1.0f64, 2.0, 3.0] {\n        let output = program.call_dsp(&[f64_to_word(input)]).unwrap();\n        for word in output {\n            println!(\"{:.12}\", word_to_f64(word));\n        }\n    }\n",
+        );
+
+        let tmp_dir = rust_test_tmp_dir();
+        fs::create_dir_all(&tmp_dir).unwrap();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let source_path = tmp_dir.join(format!("emit_rust_runtime_literals_{stamp}.rs"));
+        let binary_path = tmp_dir.join(format!("emit_rust_runtime_literals_{stamp}"));
+        fs::write(&source_path, format!("{}{harness}", output.source)).unwrap();
+
+        let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+        let compile = Command::new(&rustc)
+            .arg("--edition=2024")
+            .arg(&source_path)
+            .arg("-o")
+            .arg(&binary_path)
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "generated Rust failed to compile\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+
+        let run = Command::new(&binary_path).output().unwrap();
+        assert!(
+            run.status.success(),
+            "generated Rust binary failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+
+        let actual = String::from_utf8(run.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| line.parse::<f64>().unwrap())
+            .collect::<Vec<_>>();
+        let expected = vec![50.5, 52.0, 53.5];
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn emit_rust_supports_indirect_calls_via_no_capture_closures() {
+        let output = test_context()
+            .emit_rust(indirect_call_rust_source())
+            .unwrap();
+        let harness = render_rust_test_main(
+            "",
+            "let mut program = MimiumProgram::new();",
+            None,
+            "    for input in [1.0f64, 2.0, 3.0] {\n        let output = program.call_dsp(&[f64_to_word(input)]).unwrap();\n        for word in output {\n            println!(\"{:.12}\", word_to_f64(word));\n        }\n    }\n",
+        );
+
+        let tmp_dir = rust_test_tmp_dir();
+        fs::create_dir_all(&tmp_dir).unwrap();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let source_path = tmp_dir.join(format!("emit_rust_indirect_call_{stamp}.rs"));
+        let binary_path = tmp_dir.join(format!("emit_rust_indirect_call_{stamp}"));
+        fs::write(&source_path, format!("{}{harness}", output.source)).unwrap();
+
+        let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+        let compile = Command::new(&rustc)
+            .arg("--edition=2024")
+            .arg(&source_path)
+            .arg("-o")
+            .arg(&binary_path)
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "generated Rust failed to compile\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+
+        let run = Command::new(&binary_path).output().unwrap();
+        assert!(
+            run.status.success(),
+            "generated Rust binary failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+
+        let actual = String::from_utf8(run.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| line.parse::<f64>().unwrap())
+            .collect::<Vec<_>>();
+        let expected = vec![2.0, 3.0, 4.0];
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn emit_rust_supports_mutable_upvalues() {
+        let output = test_context()
+            .emit_rust(mutable_upvalue_rust_source())
+            .unwrap();
+        let harness = render_rust_test_main(
+            "",
+            "let mut program = MimiumProgram::new();",
+            None,
+            "    for input in [1.0f64, 2.0, 3.0] {\n        let output = program.call_dsp(&[f64_to_word(input)]).unwrap();\n        for word in output {\n            println!(\"{:.12}\", word_to_f64(word));\n        }\n    }\n",
+        );
+
+        let tmp_dir = rust_test_tmp_dir();
+        fs::create_dir_all(&tmp_dir).unwrap();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let source_path = tmp_dir.join(format!("emit_rust_mutable_upvalue_{stamp}.rs"));
+        let binary_path = tmp_dir.join(format!("emit_rust_mutable_upvalue_{stamp}"));
+        fs::write(&source_path, format!("{}{harness}", output.source)).unwrap();
+
+        let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+        let compile = Command::new(&rustc)
+            .arg("--edition=2024")
+            .arg(&source_path)
+            .arg("-o")
+            .arg(&binary_path)
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "generated Rust failed to compile\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+
+        let run = Command::new(&binary_path).output().unwrap();
+        assert!(
+            run.status.success(),
+            "generated Rust binary failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+
+        let actual = String::from_utf8(run.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| line.parse::<f64>().unwrap())
+            .collect::<Vec<_>>();
+        let expected = vec![2.0, 4.0, 6.0];
+        assert_eq!(actual, expected);
     }
 }

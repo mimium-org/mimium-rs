@@ -227,6 +227,10 @@ pub struct Mode {
     #[arg(long, default_value_t = false)]
     pub emit_bytecode: bool,
 
+    /// Generate Rust source from MIR and exit
+    #[arg(long, default_value_t = false)]
+    pub emit_rust: bool,
+
     /// Generate WASM module and exit
     #[arg(long, default_value_t = false)]
     pub emit_wasm: bool,
@@ -237,6 +241,7 @@ pub enum RunMode {
     EmitAst,
     EmitMir,
     EmitByteCode,
+    EmitRust,
     #[cfg(not(target_arch = "wasm32"))]
     EmitWasm {
         output: Option<PathBuf>,
@@ -303,6 +308,16 @@ impl RunOptions {
             return Self {
                 mode: RunMode::EmitByteCode,
                 with_gui: true,
+                use_wasm: false,
+                audio_setting: audio_setting.clone(),
+                config,
+            };
+        }
+
+        if args.mode.emit_rust {
+            return Self {
+                mode: RunMode::EmitRust,
+                with_gui: false,
                 use_wasm: false,
                 audio_setting: audio_setting.clone(),
                 config,
@@ -951,6 +966,12 @@ pub fn run_file(
             ctx.add_plugin(plug);
             ctx.prepare_machine(content)?;
             println!("{}", ctx.get_vm().unwrap().prog);
+            Ok(())
+        }
+        RunMode::EmitRust => {
+            ctx.prepare_compiler();
+            let output = ctx.get_compiler().unwrap().emit_rust(content)?;
+            println!("{}", output.source);
             Ok(())
         }
         #[cfg(not(target_arch = "wasm32"))]
