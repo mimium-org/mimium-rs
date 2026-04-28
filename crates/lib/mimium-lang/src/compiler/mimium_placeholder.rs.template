@@ -17,8 +17,17 @@ fn vec_to_words<const N: usize>(words: Vec<Word>) -> Result<[Word; N], String> {
 fn truthy(value: Word) -> bool { word_to_f64(value) > 0.0 }
 const FUNCTION_HANDLE_TAG: Word = 1 << 63;
 const CLOSURE_HANDLE_TAG: Word = 1 << 62;
+const MEMORY_HANDLE_TAG: Word = 1 << 61;
 fn encode_function(index: usize) -> Word { FUNCTION_HANDLE_TAG | index as Word }
 fn encode_closure(index: usize) -> Word { CLOSURE_HANDLE_TAG | index as Word }
+fn encode_memory(index: usize) -> Word { MEMORY_HANDLE_TAG | index as Word }
+fn decode_memory(handle: Word) -> Option<usize> {
+    if handle & MEMORY_HANDLE_TAG != 0 {
+        Some((handle & !MEMORY_HANDLE_TAG) as usize)
+    } else {
+        None
+    }
+}
 fn decode_function(handle: Word) -> Option<usize> {
     if handle & FUNCTION_HANDLE_TAG != 0 {
         Some((handle & !FUNCTION_HANDLE_TAG) as usize)
@@ -35,6 +44,12 @@ fn decode_closure(handle: Word) -> Option<usize> {
     } else {
         None
     }
+}
+
+fn parse_specialized_arity(name: &str, prefix: &str, default: usize) -> Option<usize> {
+    name.strip_prefix(prefix)
+        .map(|suffix| suffix.parse::<usize>().ok())
+        .unwrap_or(Some(default))
 }
 
 pub trait MimiumHost {
@@ -143,13 +158,13 @@ impl MemoryStore {
         let slot = self.slots.len();
         self.slots.push(vec![0; size]);
         self.ptrs.push(Pointer { slot, offset: 0 });
-        self.ptrs.len() as Word
+        encode_memory(self.ptrs.len())
     }
 
     fn ptr(&self, handle: Word) -> Result<&Pointer, String> {
-        let index = handle
-            .checked_sub(1)
-            .ok_or_else(|| "invalid memory handle 0".to_string())? as usize;
+        let index = decode_memory(handle)
+            .and_then(|value| value.checked_sub(1))
+            .ok_or_else(|| format!("invalid memory handle {}", handle))?;
         self.ptrs
             .get(index)
             .ok_or_else(|| format!("invalid memory handle {}", handle))
@@ -161,12 +176,15 @@ impl MemoryStore {
             slot: pointer.slot,
             offset: pointer.offset + tuple_offset,
         });
-        Ok(self.ptrs.len() as Word)
+        Ok(encode_memory(self.ptrs.len()))
     }
 
     fn load(&self, ptr: Word, size: usize) -> Result<Vec<Word>, String> {
-        let Some(index) = ptr.checked_sub(1).map(|value| value as usize) else {
-            return Ok(vec![0; size]);
+        let Some(index) = decode_memory(ptr).and_then(|value| value.checked_sub(1)) else {
+            if size == 1 {
+                return Ok(vec![ptr]);
+            }
+            return Err(format!("invalid memory handle {}", ptr));
         };
         let Some(pointer) = self.ptrs.get(index) else {
             if size == 1 {
@@ -230,6 +248,14 @@ impl ArrayStorage {
         self.arrays.len() as Word
     }
 
+    fn alloc_array_with_data(&mut self, data: Vec<Word>, elem_size_words: usize) -> Word {
+        self.arrays.push(ArrayObject {
+            elem_size_words,
+            data,
+        });
+        self.arrays.len() as Word
+    }
+
     fn get(&self, handle: Word) -> Result<&ArrayObject, String> {
         let index = handle
             .checked_sub(1)
@@ -254,6 +280,7 @@ struct ClosureObject {
     function: Word,
     upvalues: Vec<Word>,
     indirect: Vec<bool>,
+    state_storage: StateStorage,
 }
 
 #[derive(Default)]
@@ -267,6 +294,7 @@ impl ClosureStorage {
         function: Word,
         upvalues: Vec<Word>,
         indirect: Vec<bool>,
+        state_size: usize,
     ) -> Result<Word, String> {
         if upvalues.len() != indirect.len() {
             return Err(format!(
@@ -280,6 +308,7 @@ impl ClosureStorage {
             function,
             upvalues,
             indirect,
+            state_storage: StateStorage::new(state_size),
         });
         Ok(encode_closure(index))
     }
@@ -305,8 +334,10 @@ pub struct MimiumProgram<H: MimiumHost = PanicHost> {
     pub host: H,
     globals: Vec<Vec<Word>>,
     function_states: Vec<StateStorage>,
+    memory: MemoryStore,
     closures: ClosureStorage,
     arrays: ArrayStorage,
+    strings: Vec<String>,
 }
 
 impl MimiumProgram<PanicHost> {
@@ -325,16 +356,175 @@ impl<H: MimiumHost> MimiumProgram<H> {
             function_states: vec![
 /*__FUNCTION_STATES__*/
             ],
+            memory: MemoryStore::default(),
             closures: ClosureStorage::default(),
             arrays: ArrayStorage::default(),
+            strings: Vec::new(),
         }
     }
 
 /*__CALL_DSP__*/
 /*__CALL_MAIN__*/
     fn call_function_handle(&mut self, handle: Word, args: &[Word]) -> Result<Vec<Word>, String> {
-        let mut memory = MemoryStore::default();
-        self.call_function_handle_with_memory(handle, args, &mut memory)
+        let mut memory = std::mem::take(&mut self.memory);
+        let result = self.call_function_handle_with_memory(handle, args, &mut memory);
+        self.memory = memory;
+        result
+    }
+
+    fn take_call_state(&mut self, handle: Word, function_index: usize) -> Result<StateStorage, String> {
+        if decode_closure(handle).is_some() {
+            Ok(std::mem::take(&mut self.closures.get_mut(handle)?.state_storage))
+        } else {
+            Ok(std::mem::take(&mut self.function_states[function_index]))
+        }
+    }
+
+    fn restore_call_state(
+        &mut self,
+        handle: Word,
+        function_index: usize,
+        state: StateStorage,
+    ) -> Result<(), String> {
+        if decode_closure(handle).is_some() {
+            self.closures.get_mut(handle)?.state_storage = state;
+        } else {
+            self.function_states[function_index] = state;
+        }
+        Ok(())
+    }
+
+    fn call_ext(&mut self, name: &str, args: &[Word], ret_words: usize) -> Result<Vec<Word>, String> {
+        match name {
+            "min" => {
+                let lhs = word_to_f64(*args.get(0).ok_or_else(|| "min expects 2 args".to_string())?);
+                let rhs = word_to_f64(*args.get(1).ok_or_else(|| "min expects 2 args".to_string())?);
+                Ok(vec![f64_to_word(lhs.min(rhs))])
+            }
+            "max" => {
+                let lhs = word_to_f64(*args.get(0).ok_or_else(|| "max expects 2 args".to_string())?);
+                let rhs = word_to_f64(*args.get(1).ok_or_else(|| "max expects 2 args".to_string())?);
+                Ok(vec![f64_to_word(lhs.max(rhs))])
+            }
+            "probe" => Ok(args.first().copied().into_iter().collect()),
+            "probeln" => Ok(args.first().copied().into_iter().collect()),
+            "len" => {
+                let handle = *args.get(0).ok_or_else(|| "len expects 1 arg".to_string())?;
+                if handle == 0 {
+                    Ok(vec![f64_to_word(0.0)])
+                } else {
+                    let array = self.arrays.get(handle)?;
+                    Ok(vec![f64_to_word(array.data.len() as f64)])
+                }
+            }
+            _ if name == "split_head" || name.starts_with("split_head$arity") => {
+                let elem_words = parse_specialized_arity(name, "split_head$arity", 1)
+                    .ok_or_else(|| format!("invalid split_head specialization: {}", name))?;
+                let handle = *args.get(0).ok_or_else(|| format!("{} expects 1 arg", name))?;
+                if handle == 0 {
+                    let mut result = vec![0; elem_words];
+                    result.push(0);
+                    return Ok(result);
+                }
+                let array = self.arrays.get(handle)?.clone();
+                if array.data.len() < elem_words {
+                    return Err(format!("{}: array shorter than one element", name));
+                }
+                if array.data.len() % elem_words != 0 {
+                    return Err(format!(
+                        "{}: array length {} is not divisible by elem_words {}",
+                        name,
+                        array.data.len(),
+                        elem_words
+                    ));
+                }
+                let head_words = array.data[..elem_words].to_vec();
+                let rest_data = array.data[elem_words..].to_vec();
+                let rest_handle = self
+                    .arrays
+                    .alloc_array_with_data(rest_data, array.elem_size_words);
+                let mut result = head_words;
+                result.push(rest_handle);
+                Ok(result)
+            }
+            _ if name == "split_tail" || name.starts_with("split_tail$arity") => {
+                let elem_words = parse_specialized_arity(name, "split_tail$arity", 1)
+                    .ok_or_else(|| format!("invalid split_tail specialization: {}", name))?;
+                let handle = *args.get(0).ok_or_else(|| format!("{} expects 1 arg", name))?;
+                if handle == 0 {
+                    let mut result = vec![0];
+                    result.resize(elem_words + 1, 0);
+                    return Ok(result);
+                }
+                let array = self.arrays.get(handle)?.clone();
+                if array.data.len() < elem_words {
+                    return Err(format!("{}: array shorter than one element", name));
+                }
+                if array.data.len() % elem_words != 0 {
+                    return Err(format!(
+                        "{}: array length {} is not divisible by elem_words {}",
+                        name,
+                        array.data.len(),
+                        elem_words
+                    ));
+                }
+                let tail_start = array.data.len() - elem_words;
+                let tail_words = array.data[tail_start..].to_vec();
+                let rest_data = array.data[..tail_start].to_vec();
+                let rest_handle = self
+                    .arrays
+                    .alloc_array_with_data(rest_data, array.elem_size_words);
+                let mut result = vec![rest_handle];
+                result.extend_from_slice(&tail_words);
+                Ok(result)
+            }
+            _ if name == "prepend" || name.starts_with("prepend$arity") => {
+                let elem_words = parse_specialized_arity(name, "prepend$arity", 1)
+                    .ok_or_else(|| format!("invalid prepend specialization: {}", name))?;
+                let handle = *args
+                    .get(elem_words)
+                    .ok_or_else(|| format!("{} expects element + array args", name))?;
+                let mut data = args[..elem_words].to_vec();
+                if handle != 0 {
+                    let array = self.arrays.get(handle)?.clone();
+                    if array.elem_size_words != elem_words {
+                        return Err(format!(
+                            "{}: elem size mismatch, expected {} got {}",
+                            name, elem_words, array.elem_size_words
+                        ));
+                    }
+                    data.extend_from_slice(&array.data);
+                }
+                Ok(vec![self.arrays.alloc_array_with_data(data, elem_words)])
+            }
+            _ if name == "append" || name.starts_with("append$arity") => {
+                let elem_words = parse_specialized_arity(name, "append$arity", 1)
+                    .ok_or_else(|| format!("invalid append specialization: {}", name))?;
+                let handle = *args
+                    .first()
+                    .ok_or_else(|| format!("{} expects array + element args", name))?;
+                let mut data = if handle == 0 {
+                    Vec::new()
+                } else {
+                    let array = self.arrays.get(handle)?.clone();
+                    if array.elem_size_words != elem_words {
+                        return Err(format!(
+                            "{}: elem size mismatch, expected {} got {}",
+                            name, elem_words, array.elem_size_words
+                        ));
+                    }
+                    array.data
+                };
+                data.extend_from_slice(&args[1..1 + elem_words]);
+                Ok(vec![self.arrays.alloc_array_with_data(data, elem_words)])
+            }
+            _ => self.host.call_ext(name, args, ret_words),
+        }
+    }
+
+    fn alloc_string(&mut self, value: &str) -> Word {
+        self.strings.push(value.to_string());
+        self.strings.len() as Word
     }
 
     fn call_function_handle_with_memory(
