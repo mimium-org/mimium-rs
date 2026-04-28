@@ -59,6 +59,35 @@ await ctx.compile(sourceCode);
 
 Use direct APIs only when all dependencies are already available in virtual cache.
 
+## Rust transpilation API behavior
+
+- `emit_rust(...)`
+  - run stdlib preload
+  - run network dependency preload for `mod` and `include`
+  - return generated Rust source as a string
+- `emit_rust_direct(...)`
+  - skip preload steps
+  - return generated Rust source as a string
+
+Use `emit_rust_direct(...)` only when all dependencies are already available in virtual cache.
+
+### Example
+
+```js
+import init, { Config, Context } from './pkg/mimium_web.js';
+
+await init();
+
+const ctx = new Context(Config.new());
+const rustSource = await ctx.emit_rust(`
+fn dsp(input: float) {
+  input
+}
+`);
+
+console.log(rustSource);
+```
+
 ## Testing
 
 E2E tests are in `crates/lib/mimium-web/e2e` and can be run with:
