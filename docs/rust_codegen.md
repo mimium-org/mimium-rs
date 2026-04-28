@@ -1,66 +1,82 @@
 # Rust Codegen Current Status
 
-This document summarizes the current implementation status of the backend that generates Rust source code from mimium MIR.
+This document summarizes the current state of the backend that emits Rust source from mimium MIR.
 
 ## Overview
 
-- The input to the backend is MIR, not Expr.
+- The Rust backend lowers from MIR, not Expr.
 - The public entry point is `mimium_lang::compiler::Context::emit_rust`.
 - It is available from the CLI via `mimium-cli --emit-rust`.
 - The generator implementation lives in `crates/lib/mimium-lang/src/compiler/rustgen.rs`.
-- The fixed portion of the generated Rust is loaded from `crates/lib/mimium-lang/src/compiler/mimium_placeholder.rs.template` via `include_str!`, and only the variable sections are injected.
+- The fixed runtime scaffold is loaded from `crates/lib/mimium-lang/src/compiler/mimium_placeholder.rs.template` via `include_str!`, and the generator injects the variable sections around it.
+- Generated Rust now uses MIR-derived function names where possible instead of anonymous `func_N` names.
 
-## Current Generation Strategy
+## Generation Strategy
 
 - MIR basic blocks are lowered directly into a Rust state machine using `loop + match bb`.
-- The generator does not try to reconstruct higher-level syntax. It preserves backend-oriented control flow as-is.
-- Instead of embedding indentation directly in strings, `CodeWriter` manages indentation levels numerically.
-- Output is not limited to `String`; the generator also provides `generate_to`, which writes to any `std::io::Write`.
-- Generated function arguments and local registers are materialized as fixed-size word arrays instead of `Vec<Word>`.
+- The backend preserves MIR-oriented control flow instead of reconstructing higher-level syntax.
+- `CodeWriter` manages indentation structurally instead of embedding indentation directly into ad-hoc strings.
+- The backend can write either to `String` or to any `std::io::Write` via `generate_to`.
+- Generated arguments, locals, and most transient values are materialized as fixed-size word arrays.
 
-## Implemented Runtime Pieces
+## Embedded Runtime Model
 
-The generated Rust includes a small supporting runtime.
+The emitted Rust includes a small runtime that is sufficient to execute generated programs without depending on the VM implementation.
 
-- `Word = u64`-based value representation and `f64` / `i64` conversion helpers
-- `MimiumHost` plus `PanicHost`, which fails when an external function is not wired up
-- `MimiumHost::current_time` / `sample_rate` hooks for `now` and `samplerate`
+- `Word = u64` value representation
+- conversion helpers for `f64` and `i64`
+- `MimiumHost` and `PanicHost`
+- host hooks for `current_time` and `sample_rate`
 - `StateStorage`
-  - state for `self`
+  - feed and `self` state
   - `mem`
   - `delay`
 - `MemoryStore`
-  - `alloc`
+  - aggregate temporary allocation
   - pointer-like `get_element`
   - `load` / `store`
-  - shared within a single generated call chain so nested direct calls can see the same aggregate temporaries
+  - shared within a single generated call chain so nested calls can see the same aggregate temporaries
 - `ArrayStorage`
-  - allocation, read, and write for fixed-length arrays
+  - allocation and element access for array values
+- `ClosureStorage`
+  - heap-allocated closures
+  - upvalue storage
+  - closure-local state storage
 - `MimiumProgram`
   - `call_dsp`
   - `call_main`
   - function-handle dispatch
+  - closure-handle dispatch
+  - self-managed access to current state storage, current closure, and runtime memory
 
-## MIR Instructions Currently Supported
+## MIR Coverage
 
-At minimum, the following can currently be lowered to Rust.
+For ordinary supported mimium programs, the Rust backend now covers the MIR that the current frontend emits in practice.
+
+Implemented categories include:
 
 - Constants
   - `Uinteger`
   - `Integer`
   - `Float`
-- Memory and aggregate-value related
+  - `String`
+- Memory and aggregate operations
   - `Alloc`
   - `Load`
   - `Store`
   - `GetElement`
-- Calls
+- Calls and closures
   - `Call`
-  - direct function call
-  - static direct-call default argument expansion through synthesized `__default_*` helpers
-  - ext function call
-  - dispatch through function handles
-  - `CallIndirect` for zero-argument runtime literal shims `_mimium_getnow` and `_mimium_getsamplerate`
+  - direct function calls
+  - static default-argument expansion through synthesized `__default_*` helpers
+  - external function calls through the generated host
+  - function-handle dispatch
+  - `CallIndirect`
+  - `MakeClosure`
+  - `CloseHeapClosure`
+  - `CloneHeap`
+  - `GetUpValue`
+  - `SetUpValue`
 - Globals
   - `GetGlobal`
   - `SetGlobal`
@@ -116,102 +132,84 @@ At minimum, the following can currently be lowered to Rust.
   - `Array`
   - `GetArrayElem`
   - `SetArrayElem`
-
-## Current Transitional Behavior
-
-Some parts still use transitional behavior because the representation has not yet been fully cleaned up.
-
-- `call_main` is exposed not only when a literal `main` function exists, but also when only a global-initialization function exists, by treating the first function as the initialization entry point.
-- Function dispatch accepts not only tagged handles but also raw function indices.
-- `MemoryStore::load` includes a temporary path for reading a 1-word immediate value, to match cases where a scalar reaches `Load` directly in MIR.
-- Aggregate temporaries still flow through `MemoryStore`; the current Rust backend keeps that storage scoped to a single generated call chain instead of treating it as program-global state.
-- Missing default arguments are currently synthesized only when the callee can be resolved statically during Rust generation.
-- Transitions from `JmpIf` / `Switch` arms into merge blocks are supplemented on the Rust side to account for implicit MIR fallthrough.
-
-These behaviors exist to get the initial implementation working. Long term, the value representation and calling convention should be cleaned up further.
-
-## What Has Been Verified
-
-At this point, the following has been verified.
-
-- The generator can emit Rust source containing `MimiumProgram`, `call_dsp`, and each `func_N`
-- The generated Rust can be compiled with plain `rustc --edition=2024`
-- The generated Rust binary can be executed successfully
-- Expected outputs have been verified for a scalar DSP program that includes a global array, `if`, user function calls, `self`, and `mem`
-- Host-provided `now` and `samplerate` literals have been verified through compile-and-run tests
-- `examples/sinewave.mmm` can be emitted, compiled, and run with the manual harness, and now produces non-zero output
-
-The relevant unit tests currently live in `crates/lib/mimium-lang/src/compiler.rs`.
-
-- `emit_rust_generates_program_scaffold`
-- `emit_rust_compiles_and_runs_generated_program`
-- `emit_rust_supports_runtime_literals_from_host`
-
-## What Is Not Implemented Yet
-
-The following are not supported yet. At the moment, they fail explicitly during code generation.
-
-- Closure-related instructions
-  - `Closure`
-  - `CallCls`
-  - `MakeClosure`
-  - `CloseUpValues`
-  - `CloseHeapClosure`
-  - `CloneHeap`
-  - `GetUpValue`
-  - `SetUpValue`
-- Indirect calls other than the built-in runtime literal shims
-  - general `CallIndirect`
-- Strings
-  - `String`
-- Tagged union / sum-related instructions
+- Tagged unions and user sums
   - `TaggedUnionWrap`
   - `TaggedUnionGetTag`
   - `TaggedUnionGetValue`
   - `CloneUserSum`
   - `ReleaseUserSum`
-- Box-related instructions
-  - `BoxAlloc`
-  - `BoxLoad`
-  - `BoxClone`
-  - `BoxRelease`
-  - `BoxStore`
-- Some integer operations
-  - `PowI`
-  - `LogI`
-- Other
-  - `Error`
+
+## Current Transitional Behavior
+
+Some behavior is still intentionally transitional because the ABI and runtime representation are not fully finalized yet.
+
+- `call_main` is exposed not only when a literal `main` function exists, but also when only a global-initialization function exists, by treating the first function as the initialization entry point.
+- Function dispatch accepts not only tagged handles but also raw function indices.
+- `MemoryStore::load` still includes a fallback path for reading a 1-word immediate value, to match cases where a scalar reaches `Load` directly in MIR.
+- Aggregate temporaries still flow through `MemoryStore`; the current Rust backend keeps that storage scoped to a single generated call chain instead of treating it as fully program-global state.
+- Missing default arguments are currently synthesized only when the callee can be resolved statically during Rust generation.
+- Transitions from `JmpIf` and `Switch` arms into merge blocks are supplemented on the Rust side to account for implicit MIR fallthrough.
+
+These behaviors exist to keep the backend practical while the representation and calling convention continue to settle.
+
+## What Has Been Verified
+
+At this point, the following has been verified.
+
+- The generator emits Rust source containing `MimiumProgram`, `call_dsp`, and MIR-derived generated function names.
+- The generated Rust compiles with plain `rustc --edition=2024`.
+- The generated Rust binary executes successfully.
+- Dedicated compile-and-run tests cover generated programs with globals, arrays, branches, user functions, `self`, `mem`, runtime literals, indirect calls, and mutable upvalues.
+- Annotated fixture programs are executed through Rust code generation in the regression suite.
+- CI runs the Rust codegen compile-and-run tests as part of the normal cargo test workflow.
+
+Relevant tests currently live in:
+
+- `crates/lib/mimium-lang/src/compiler.rs`
+- `crates/lib/mimium-test/tests/rust_codegen_test.rs`
+
+Representative tests include:
+
+- `emit_rust_generates_program_scaffold`
+- `emit_rust_compiles_and_runs_generated_program`
+- `emit_rust_supports_runtime_literals_from_host`
+- `emit_rust_supports_indirect_calls_via_no_capture_closures`
+- `emit_rust_supports_mutable_upvalues`
+- `run_all_annotated_fixtures_via_rust_codegen`
+
+## Practical Unsupported Area
+
+The main user-visible unsupported area is no longer ordinary MIR lowering. The remaining practical gap is plugin-backed functionality.
+
+In particular, Rust codegen does not yet provide runtime host integration for plugin-dependent macros and externals such as:
+
+- `Control`
+- `Probe`
+
+These features depend on plugin-side runtime wiring, and the generated Rust host currently does not provide that integration. In the current Rust codegen regression suite, plugin-backed fixtures are explicitly skipped for this reason.
+
+This means:
+
+- ordinary core-language Rust emission is broadly covered
+- generated Rust can be compiled and executed for a large supported subset of real programs
+- plugin-driven GUI and interception features are still outside the supported subset
+- `Control!` and `Probe!` style programs should still be documented as unsupported in the Rust backend
 
 ## Known Limitations
 
-- The compile-and-run test is currently biased toward scalar DSP output. Tuple returns and aggregate calling conventions are not fully sorted out yet.
-- Aggregate arguments still use a transitional memory-based representation internally. The current fix is scoped to nested call execution, but the representation itself is not the final ABI.
-- Default arguments are only expanded for statically resolvable direct calls.
-- Normal ext function calls are supported, but cases where a function value ends up as `CallIndirect` are still unsupported.
-- This is still an initial Rust backend. It does not yet cover the full language.
+- The generated Rust host is intentionally minimal and does not yet load or emulate the plugin runtime environment.
+- Aggregate arguments and returns still use a transitional runtime representation internally, even though the external generated ABI is much cleaner than the initial version.
+- Default arguments are only expanded for statically resolvable calls.
+- The Rust backend is now practical for a broad subset of the language, but it is still a dedicated alternate backend rather than a full replacement for the VM and plugin runtime stack.
 
-## Concrete Unsupported Example
+## Notes on Legacy MIR Variants
 
-For example, the following CLI invocation currently fails.
-
-```sh
-cargo run --bin mimium-cli --release examples/biquad.mmm --emit-rust
-```
-
-This is no longer blocked by `samplerate` access itself. The current blocker is a general `CallIndirect` that still appears in the lowered filter path, and the backend reports the following error.
-
-```text
-instruction CallIndirect(Register(...), [...], TypeScheme(...), ...) is not supported by the initial Rust backend
-```
-
-In other words, the Rust backend now supports the specific runtime-literal shims for `now` and `samplerate`, but practical examples that depend on general indirect calls or closure-like execution paths are still outside the supported subset.
+The MIR enum still contains a small number of legacy or backend-specific variants that are not the main practical limitation described above. The important user-facing status is that the Rust backend now covers the MIR exercised by the currently supported Rust-codegen test and fixture paths, while plugin-backed features such as `Control` and `Probe` remain unsupported.
 
 ## Next Areas to Tackle
 
 The highest-priority remaining items are the following.
 
-1. Implement closure support and `CallIndirect`
-2. Clean up aggregate-value representation
-3. Clean up calling conventions for tuple returns, aggregate arguments, and dynamic-call default handling
-4. Implement boxed values and tagged unions
-5. Expand compile-and-run tests based on real examples
+1. Add host/runtime integration for plugin-backed features such as `Control` and `Probe`
+2. Continue cleaning up aggregate-value representation and calling conventions
+3. Expand compile-and-run coverage using more real examples, especially examples that currently rely on plugin infrastructure
