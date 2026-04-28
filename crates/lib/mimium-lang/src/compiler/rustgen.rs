@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::compiler::Config;
 use crate::compiler::bytecodegen::SelfEvalMode;
 use crate::interner::{Symbol, TypeNodeId};
-use crate::mir::{Function, Instruction, Mir, VPtr, VReg, Value};
+use crate::mir::{Block, Function, Instruction, Mir, VPtr, VReg, Value};
 use crate::types::Type;
 
 const PROGRAM_TEMPLATE: &str = include_str!("mimium_placeholder.rs.template");
@@ -347,8 +347,6 @@ impl RustGenerator {
             func.index
         ))?;
         writer.indented(1, |writer| {
-            writer.line("let mut bb: usize = 0;")?;
-            writer.line("let mut pred_bb: usize = 0;")?;
             writer.line("let mut arg_offset = 0usize;")?;
 
             for (index, arg) in func.args.iter().enumerate() {
@@ -365,50 +363,98 @@ impl RustGenerator {
                 writer.line(format!("let mut reg_{reg} = [0u64; {size}];"))?;
             }
 
-            writer.line("loop {")?;
-            writer.indented(1, |writer| {
-                writer.line("match bb {")?;
-                writer.indented(1, |writer| {
-                    for (block_index, block) in func.body.iter().enumerate() {
-                        writer.line(format!("{block_index} => {{"))?;
-                        writer.indented(1, |writer| {
-                            for (dst, instr) in &block.0 {
-                                self.emit_instruction(
-                                    writer,
-                                    func,
-                                    block_index,
-                                    dst,
-                                    instr,
-                                    global_slots,
-                                    &block_preds,
-                                )?;
-                            }
-                            if let Some((target_bb, pred_source)) =
-                                fallthrough_edges.get(block_index).and_then(|target| *target)
-                            {
-                                writer.line(format!("pred_bb = {pred_source};"))?;
-                                writer.line(format!("bb = {target_bb}usize;"))?;
-                                writer.line("continue;")
-                            } else {
-                                writer.line(format!(
-                                    "return Err(\"basic block {block_index} in function {} fell through without terminator\".to_string());",
-                                    func.index
-                                ))
-                            }
-                        })?;
-                        writer.line("},")?;
-                    }
-
+            if self.can_emit_straight_line_function(func) {
+                for (dst, instr) in &func.body[0].0 {
+                    self.emit_instruction(writer, func, 0, dst, instr, global_slots, &block_preds)?;
+                }
+                if self.block_can_fall_through(&func.body[0]) {
                     writer.line(format!(
-                        "_ => return Err(format!(\"invalid basic block {{}} in function {}\", bb)),",
+                        "return Err(\"basic block 0 in function {} fell through without terminator\".to_string());",
                         func.index
                     ))
+                } else {
+                    Ok(())
+                }
+            } else {
+                writer.line("let mut bb: usize = 0;")?;
+                writer.line("let mut pred_bb: usize = 0;")?;
+                writer.line("loop {")?;
+                writer.indented(1, |writer| {
+                    writer.line("match bb {")?;
+                    writer.indented(1, |writer| {
+                        for (block_index, block) in func.body.iter().enumerate() {
+                            writer.line(format!("{block_index} => {{"))?;
+                            writer.indented(1, |writer| {
+                                for (dst, instr) in &block.0 {
+                                    self.emit_instruction(
+                                        writer,
+                                        func,
+                                        block_index,
+                                        dst,
+                                        instr,
+                                        global_slots,
+                                        &block_preds,
+                                    )?;
+                                }
+                                if let Some((target_bb, pred_source)) =
+                                    fallthrough_edges.get(block_index).and_then(|target| *target)
+                                {
+                                    writer.line(format!("pred_bb = {pred_source};"))?;
+                                    writer.line(format!("bb = {target_bb}usize;"))?;
+                                    writer.line("continue;")
+                                } else if self.block_can_fall_through(block) {
+                                    writer.line(format!(
+                                        "return Err(\"basic block {block_index} in function {} fell through without terminator\".to_string());",
+                                        func.index
+                                    ))
+                                } else {
+                                    Ok(())
+                                }
+                            })?;
+                            writer.line("},")?;
+                        }
+
+                        writer.line(format!(
+                            "_ => return Err(format!(\"invalid basic block {{}} in function {}\", bb)),",
+                            func.index
+                        ))
+                    })?;
+                    writer.line("}")
                 })?;
                 writer.line("}")
-            })?;
-            writer.line("}")
+            }
         })?;
         writer.line("}")
+    }
+
+    fn can_emit_straight_line_function(&self, func: &Function) -> bool {
+        func.body.len() == 1
+            && func.body[0].0.iter().all(|(_dst, instr)| {
+                !matches!(
+                    instr,
+                    Instruction::JmpIf(_, _, _, _)
+                        | Instruction::Jmp(_)
+                        | Instruction::Switch { .. }
+                        | Instruction::Phi(_, _)
+                        | Instruction::PhiSwitch(_)
+                )
+            })
+    }
+
+    fn block_can_fall_through(&self, block: &Block) -> bool {
+        block
+            .0
+            .last()
+            .is_none_or(|(_dst, instr)| {
+                !matches!(
+                    instr,
+                    Instruction::Return(_, _)
+                        | Instruction::ReturnFeed(_, _)
+                        | Instruction::JmpIf(_, _, _, _)
+                        | Instruction::Jmp(_)
+                        | Instruction::Switch { .. }
+                )
+            })
     }
 
     fn collect_register_sizes(&self, func: &Function) -> Result<HashMap<VReg, usize>, String> {
