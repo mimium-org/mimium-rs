@@ -707,11 +707,30 @@ impl RustGenerator {
                 if let Some(expr) = runtime_expr {
                     self.assign_scalar(writer, dst, expr)?;
                 } else {
-                    return Err(format!(
-                        "instruction {:?} is not supported by the initial Rust backend",
-                        instr
-                    ));
+                    let dest = self.reg_name(dst)?;
+                    let result_size = ret_ty.word_size() as usize;
+                    let handle_expr = self.word0_expr(callee)?;
+                    writer.line("let mut call_args = Vec::new();")?;
+                    for (arg, _ty) in args {
+                        let expr = self.value_slice_expr(arg)?;
+                        writer.line(format!("call_args.extend_from_slice({expr});"))?;
+                    }
+                    writer.line(format!(
+                        "{dest} = {};",
+                        self.vec_to_array_expr(
+                            format!("self.call_function_handle_with_memory({handle_expr}, &call_args, memory)?"),
+                            result_size,
+                        )
+                    ))?;
                 }
+            }
+            Instruction::MakeClosure { fn_proto, .. } => {
+                let handle_expr = self.word0_expr(fn_proto)?;
+                self.assign_scalar(writer, dst, format!("self.closures.alloc({handle_expr})"))?;
+            }
+            Instruction::CloneHeap(src) | Instruction::CloseHeapClosure(src) => {
+                let src_expr = self.word0_expr(src)?;
+                self.assign_scalar(writer, dst, src_expr)?;
             }
             Instruction::GetGlobal(global, ty) => {
                 let dest = self.reg_name(dst)?;
@@ -1044,9 +1063,6 @@ impl RustGenerator {
             | Instruction::CallCls(_, _, _)
             | Instruction::String(_)
             | Instruction::CloseUpValues(_, _)
-            | Instruction::MakeClosure { .. }
-            | Instruction::CloseHeapClosure(_)
-            | Instruction::CloneHeap(_)
             | Instruction::GetUpValue(_, _)
             | Instruction::SetUpValue(_, _, _)
             | Instruction::TaggedUnionWrap { .. }

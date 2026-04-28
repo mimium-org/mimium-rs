@@ -16,12 +16,24 @@ fn vec_to_words<const N: usize>(words: Vec<Word>) -> Result<[Word; N], String> {
 }
 fn truthy(value: Word) -> bool { word_to_f64(value) > 0.0 }
 const FUNCTION_HANDLE_TAG: Word = 1 << 63;
+const CLOSURE_HANDLE_TAG: Word = 1 << 62;
 fn encode_function(index: usize) -> Word { FUNCTION_HANDLE_TAG | index as Word }
+fn encode_closure(index: usize) -> Word { CLOSURE_HANDLE_TAG | index as Word }
 fn decode_function(handle: Word) -> Option<usize> {
     if handle & FUNCTION_HANDLE_TAG != 0 {
         Some((handle & !FUNCTION_HANDLE_TAG) as usize)
     } else {
         Some(handle as usize)
+    }
+}
+
+fn decode_closure(handle: Word) -> Option<usize> {
+    if handle & FUNCTION_HANDLE_TAG != 0 {
+        None
+    } else if handle & CLOSURE_HANDLE_TAG != 0 {
+        Some((handle & !CLOSURE_HANDLE_TAG) as usize)
+    } else {
+        None
     }
 }
 
@@ -237,10 +249,37 @@ impl ArrayStorage {
     }
 }
 
+#[derive(Clone)]
+struct ClosureObject {
+    function: Word,
+}
+
+#[derive(Default)]
+struct ClosureStorage {
+    closures: Vec<ClosureObject>,
+}
+
+impl ClosureStorage {
+    fn alloc(&mut self, function: Word) -> Word {
+        let index = self.closures.len();
+        self.closures.push(ClosureObject { function });
+        encode_closure(index)
+    }
+
+    fn get(&self, handle: Word) -> Result<&ClosureObject, String> {
+        let index = decode_closure(handle)
+            .ok_or_else(|| format!("invalid closure handle {}", handle))?;
+        self.closures
+            .get(index)
+            .ok_or_else(|| format!("invalid closure handle {}", handle))
+    }
+}
+
 pub struct MimiumProgram<H: MimiumHost = PanicHost> {
     pub host: H,
     globals: Vec<Vec<Word>>,
     function_states: Vec<StateStorage>,
+    closures: ClosureStorage,
     arrays: ArrayStorage,
 }
 
@@ -260,6 +299,7 @@ impl<H: MimiumHost> MimiumProgram<H> {
             function_states: vec![
 /*__FUNCTION_STATES__*/
             ],
+            closures: ClosureStorage::default(),
             arrays: ArrayStorage::default(),
         }
     }
@@ -277,6 +317,10 @@ impl<H: MimiumHost> MimiumProgram<H> {
         args: &[Word],
         memory: &mut MemoryStore,
     ) -> Result<Vec<Word>, String> {
+        if decode_closure(handle).is_some() {
+            let function = self.closures.get(handle)?.function;
+            return self.call_function_handle_with_memory(function, args, memory);
+        }
         match decode_function(handle) {
 /*__HANDLE_DISPATCH__*/
             Some(index) => Err(format!("unknown function handle {}", index)),
