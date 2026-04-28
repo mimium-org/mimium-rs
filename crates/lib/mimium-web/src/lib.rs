@@ -122,6 +122,24 @@ impl Context {
         Ok(())
     }
 
+    fn emit_rust_inner(&self, src: String) -> Result<String, JsValue> {
+        let mut ctx = get_default_context();
+        ctx.prepare_compiler();
+        let compiler = ctx
+            .get_compiler()
+            .ok_or_else(|| JsValue::from_str("Failed to initialize compiler context"))?;
+        compiler.emit_rust(src.as_str()).map(|output| output.source).map_err(|e| {
+            report(&src, PathBuf::from("/"), &e);
+            let message = dump_to_string(&e);
+            let message = if message.is_empty() {
+                "Rust transpilation failed".to_string()
+            } else {
+                message
+            };
+            JsValue::from_str(&message)
+        })
+    }
+
     #[wasm_bindgen]
     pub async fn compile(&mut self, src: String) -> Result<(), JsValue> {
         if fileloader::has_network_api() {
@@ -136,6 +154,22 @@ impl Context {
     #[wasm_bindgen]
     pub fn compile_direct(&mut self, src: String) -> Result<(), JsValue> {
         self.compile_inner(src)
+    }
+
+    #[wasm_bindgen]
+    pub async fn emit_rust(&self, src: String) -> Result<String, JsValue> {
+        if fileloader::has_network_api() {
+            self.init_github_lib_cache().await?;
+            fileloader::preload_user_module_cache(src.as_str(), self.module_base_url.as_deref())
+                .await
+                .map_err(|e| JsValue::from_str(&e))?;
+        }
+        self.emit_rust_inner(src)
+    }
+
+    #[wasm_bindgen]
+    pub fn emit_rust_direct(&self, src: String) -> Result<String, JsValue> {
+        self.emit_rust_inner(src)
     }
 
     #[wasm_bindgen]
