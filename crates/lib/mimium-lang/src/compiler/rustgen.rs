@@ -219,7 +219,7 @@ impl RustGenerator {
         writer.blank_line()?;
 
         writer.line(
-            "pub fn call_dsp_buffer(&mut self, input: &[f64], output: &mut [f64], frames: usize) -> Result<(), String> {",
+            "pub fn call_dsp_buffer(&mut self, input: &[mmmfloat], output: &mut [mmmfloat], frames: usize) -> Result<(), String> {",
         )?;
         writer.indented(1, |writer| {
             if dsp_io_channels.is_none() {
@@ -1474,7 +1474,7 @@ impl RustGenerator {
                 self.assign_scalar(writer, dst, format!("{value}i64"))?
             }
             Instruction::Float(value) => {
-                self.assign_scalar(writer, dst, format!("{value:?}f64"))?
+                self.assign_scalar(writer, dst, format!("{value:?} as mmmfloat"))?
             }
             Instruction::Alloc(ty) => {
                 if self.stack_pointer_for_value(stack_pointers, dst).is_none() {
@@ -2467,7 +2467,7 @@ impl RustGenerator {
             }
             Instruction::CastItoF(value) => {
                 let expr = self.scalar_expr_as(func, value, ScalarStorageKind::I64)?;
-                self.assign_scalar(writer, dst, format!("({expr} as f64)"))?;
+                self.assign_scalar(writer, dst, format!("({expr} as mmmfloat)"))?;
             }
             Instruction::CastItoB(value) => {
                 let expr = self.scalar_expr_as(func, value, ScalarStorageKind::I64)?;
@@ -3525,7 +3525,7 @@ impl RustGenerator {
         match kind {
             ScalarStorageKind::Word => "Word",
             ScalarStorageKind::I64 => "i64",
-            ScalarStorageKind::F64 => "f64",
+            ScalarStorageKind::F64 => "mmmfloat",
         }
     }
 
@@ -3533,7 +3533,7 @@ impl RustGenerator {
         match kind {
             ScalarStorageKind::Word => "0u64",
             ScalarStorageKind::I64 => "0i64",
-            ScalarStorageKind::F64 => "0.0f64",
+            ScalarStorageKind::F64 => "0.0 as mmmfloat",
         }
     }
 
@@ -3569,7 +3569,7 @@ impl RustGenerator {
         match (from, to) {
             (ScalarStorageKind::Word, kind) => self.scalar_from_word_expr(expr, kind),
             (kind, ScalarStorageKind::Word) => self.scalar_to_word_expr(expr, kind),
-            (ScalarStorageKind::I64, ScalarStorageKind::F64) => format!("({expr} as f64)"),
+            (ScalarStorageKind::I64, ScalarStorageKind::F64) => format!("({expr} as mmmfloat)"),
             (ScalarStorageKind::F64, ScalarStorageKind::I64) => format!("({expr} as i64)"),
             _ => expr,
         }
