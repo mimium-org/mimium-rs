@@ -180,13 +180,11 @@ impl RustGenerator {
         };
         let dsp_index = dsp_func.index;
         let dsp_dispatch = self.function_dispatch_name(dsp_func);
+        let dsp_direct = self.function_direct_name(dsp_func);
         let dsp_return = dsp_func.return_type.get().copied();
-        let dsp_input_words = dsp_func
-            .args
-            .iter()
-            .map(|arg| arg.1.word_size() as usize)
-            .sum::<usize>();
-        let dsp_output_words = dsp_return.map_or(0usize, |ty| ty.word_size() as usize);
+        let dsp_io_channels = self.mir.get_dsp_iochannels();
+        let dsp_input_channels = dsp_io_channels.map_or(0usize, |info| info.input as usize);
+        let dsp_output_channels = dsp_io_channels.map_or(0usize, |info| info.output as usize);
 
         writer.line("pub fn call_dsp(&mut self, args: &[Word]) -> Result<Vec<Word>, String> {")?;
         writer.indented(1, |writer| {
@@ -200,50 +198,103 @@ impl RustGenerator {
         writer.blank_line()?;
 
         writer.line(
-            "pub fn call_dsp_buffer(&mut self, args: &[Word], frames: usize) -> Result<Vec<Word>, String> {",
+            "pub fn call_dsp_buffer(&mut self, input: &[f64], output: &mut [f64], frames: usize) -> Result<(), String> {",
         )?;
         writer.indented(1, |writer| {
-            writer.line("let previous_function_state = self.current_function_state;")?;
-            writer.line(format!("self.current_function_state = Some({dsp_index});"))?;
-            if dsp_input_words == 0 {
-                writer.line("if !args.is_empty() {")?;
+            if dsp_io_channels.is_none() {
+                writer.line(
+                    "return Err(\"call_dsp_buffer requires dsp I/O types that can be flattened to audio channels\".to_string());",
+                )?;
+                return Ok(());
+            }
+
+            if dsp_input_channels == 0 {
+                writer.line("if !input.is_empty() {")?;
                 writer.indented(1, |writer| {
                     writer.line(
-                        "return Err(format!(\"expected 0 input words for {} dsp frames, got {}\", frames, args.len()));",
+                        "return Err(format!(\"expected 0 input samples for {} dsp frames, got {}\", frames, input.len()));",
                     )
                 })?;
                 writer.line("}")?;
             } else {
                 writer.line(format!(
-                    "let expected_len = frames.saturating_mul({dsp_input_words}usize);"
+                    "let expected_input_len = frames.saturating_mul({dsp_input_channels}usize);"
                 ))?;
-                writer.line("if args.len() != expected_len {")?;
+                writer.line("if input.len() != expected_input_len {")?;
                 writer.indented(1, |writer| {
-                    writer.line(format!(
-                        "return Err(format!(\"expected {{}} input words for {{}} dsp frames, got {{}}\", expected_len, frames, args.len()));"
-                    ))
+                    writer.line(
+                        "return Err(format!(\"expected {} input samples for {} dsp frames, got {}\", expected_input_len, frames, input.len()));",
+                    )
                 })?;
                 writer.line("}")?;
             }
 
             writer.line(format!(
-                "let mut outputs = Vec::with_capacity(frames.saturating_mul({dsp_output_words}usize));"
+                "let expected_output_len = frames.saturating_mul({dsp_output_channels}usize);"
             ))?;
+            writer.line("if output.len() != expected_output_len {")?;
+            writer.indented(1, |writer| {
+                writer.line(
+                    "return Err(format!(\"expected {} output samples for {} dsp frames, got {}\", expected_output_len, frames, output.len()));",
+                )
+            })?;
+            writer.line("}")?;
+
+            writer.line("let previous_function_state = self.current_function_state;")?;
+            writer.line(format!("self.current_function_state = Some({dsp_index});"))?;
             writer.line("for frame in 0..frames {")?;
             writer.indented(1, |writer| {
-                if dsp_input_words == 0 {
-                    writer.line("let frame_args: &[Word] = &[];")?;
-                } else {
-                    writer.line(format!("let frame_start = frame * {dsp_input_words}usize;"))?;
-                    writer.line(format!("let frame_end = frame_start + {dsp_input_words}usize;"))?;
-                    writer.line("let frame_args = &args[frame_start..frame_end];")?;
+                if dsp_output_channels > 0 {
+                    writer.line(format!(
+                        "let frame_output_start = frame * {dsp_output_channels}usize;"
+                    ))?;
                 }
-                writer.line(format!("let result = self.{dsp_dispatch}(frame_args);"))?;
-                self.emit_extend_entrypoint_output(writer, "outputs", "result", dsp_return)
+                if dsp_func.args.is_empty() {
+                    if dsp_output_channels == 0 {
+                        writer.line(format!("self.{dsp_direct}();"))?;
+                    } else {
+                        writer.line(format!("let result = self.{dsp_direct}();"))?;
+                        self.emit_buffer_output_assignments(
+                            writer,
+                            "output",
+                            "frame_output_start",
+                            "result",
+                            dsp_return,
+                        )?;
+                    }
+                } else {
+                    let input_ty = dsp_func
+                        .args
+                        .first()
+                        .ok_or_else(|| "missing dsp input argument".to_string())?
+                        .1;
+                    writer.line(format!(
+                        "let frame_input_start = frame * {dsp_input_channels}usize;"
+                    ))?;
+                    if dsp_output_channels == 0 {
+                        writer.line(format!(
+                            "self.{dsp_direct}({});",
+                            self.abi_expr_from_f64_buffer_frame("input", "frame_input_start", input_ty)?
+                        ))?;
+                    } else {
+                        writer.line(format!(
+                            "let result = self.{dsp_direct}({});",
+                            self.abi_expr_from_f64_buffer_frame("input", "frame_input_start", input_ty)?
+                        ))?;
+                        self.emit_buffer_output_assignments(
+                            writer,
+                            "output",
+                            "frame_output_start",
+                            "result",
+                            dsp_return,
+                        )?;
+                    }
+                }
+                Ok(())
             })?;
             writer.line("}")?;
             writer.line("self.current_function_state = previous_function_state;")?;
-            writer.line("Ok(outputs)")
+            writer.line("Ok(())")
         })?;
         writer.line("}")?;
         writer.blank_line()
@@ -291,22 +342,82 @@ impl RustGenerator {
         }
     }
 
-    fn emit_extend_entrypoint_output<W: Write>(
+    fn emit_buffer_output_assignments<W: Write>(
         &self,
         writer: &mut CodeWriter<W>,
         output_expr: &str,
+        frame_start_expr: &str,
         result_expr: &str,
         return_ty: Option<TypeNodeId>,
     ) -> Result<(), String> {
-        if let Some(ret_ty) = return_ty.filter(|ty| self.is_deepcopy_aggregate_type(*ty)) {
-            let size = ret_ty.word_size() as usize;
-            writer.line(format!("if {result_expr}.is_empty() {{ continue; }}"))?;
-            writer.line(format!(
-                "{output_expr}.extend(self.memory.load({result_expr}[0], {size}usize)?);"
-            ))
-        } else {
-            writer.line(format!("{output_expr}.extend({result_expr});"))
-        }
+        let Some(ret_ty) = return_ty else {
+            return Ok(());
+        };
+
+        self.abi_word_exprs(result_expr, ret_ty)?
+            .into_iter()
+            .enumerate()
+            .try_for_each(|(index, word_expr)| {
+                writer.line(format!(
+                    "{output_expr}[{frame_start_expr} + {index}usize] = word_to_f64({word_expr});"
+                ))
+            })
+    }
+
+    fn abi_expr_from_f64_buffer_frame(
+        &self,
+        buffer_expr: &str,
+        frame_start_expr: &str,
+        ty: TypeNodeId,
+    ) -> Result<String, String> {
+        let mut offset = 0usize;
+        self.abi_expr_from_f64_buffer_frame_at(buffer_expr, frame_start_expr, ty, &mut offset)
+    }
+
+    fn abi_expr_from_f64_buffer_frame_at(
+        &self,
+        buffer_expr: &str,
+        frame_start_expr: &str,
+        ty: TypeNodeId,
+        offset: &mut usize,
+    ) -> Result<String, String> {
+        Ok(match ty.to_type() {
+            Type::Primitive(crate::types::PType::Unit) => "()".to_string(),
+            Type::Tuple(elems) => self.abi_tuple_expr(
+                elems
+                    .iter()
+                    .map(|elem| {
+                        self.abi_expr_from_f64_buffer_frame_at(
+                            buffer_expr,
+                            frame_start_expr,
+                            *elem,
+                            offset,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Type::Record(fields) => self.abi_tuple_expr(
+                fields
+                    .iter()
+                    .map(|field| {
+                        self.abi_expr_from_f64_buffer_frame_at(
+                            buffer_expr,
+                            frame_start_expr,
+                            field.ty,
+                            offset,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            _ => {
+                let expr = format!(
+                    "f64_to_word({buffer_expr}[{frame_start_expr} + {}usize])",
+                    *offset
+                );
+                *offset += 1;
+                expr
+            }
+        })
     }
 
     fn emit_function_handle_dispatch<W: Write>(

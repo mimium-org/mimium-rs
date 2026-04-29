@@ -2,18 +2,25 @@ use std::convert::TryInto;
 
 pub type Word = u64;
 
+#[inline(always)]
 fn f64_to_word(value: f64) -> Word { value.to_bits() }
+#[inline(always)]
 fn word_to_f64(value: Word) -> f64 { f64::from_bits(value) }
+#[inline(always)]
 fn i64_to_word(value: i64) -> Word { u64::from_ne_bytes(value.to_ne_bytes()) }
+#[inline(always)]
 fn word_to_i64(value: Word) -> i64 { i64::from_ne_bytes(value.to_ne_bytes()) }
+#[inline(always)]
 fn copy_words<const N: usize>(slice: &[Word]) -> Result<[Word; N], String> {
     slice
         .try_into()
         .map_err(|_| format!("expected {} words, got {}", N, slice.len()))
 }
+#[inline(always)]
 fn vec_to_words<const N: usize>(words: Vec<Word>) -> Result<[Word; N], String> {
     copy_words::<N>(&words)
 }
+#[inline(always)]
 fn truthy(value: Word) -> bool { word_to_f64(value) > 0.0 }
 const FUNCTION_HANDLE_TAG: Word = 1 << 63;
 const CLOSURE_HANDLE_TAG: Word = 1 << 62;
@@ -179,6 +186,7 @@ impl MemoryStore {
         Ok(encode_memory(self.ptrs.len()))
     }
 
+    #[inline(always)]
     fn load(&self, ptr: Word, size: usize) -> Result<Vec<Word>, String> {
         let Some(index) = decode_memory(ptr).and_then(|value| value.checked_sub(1)) else {
             if size == 1 {
@@ -208,6 +216,7 @@ impl MemoryStore {
         Ok(slot[pointer.offset..end].to_vec())
     }
 
+    #[inline(always)]
     fn store(&mut self, ptr: Word, src: &[Word], size: usize) -> Result<(), String> {
         let pointer = self.ptr(ptr)?.clone();
         let slot = self
