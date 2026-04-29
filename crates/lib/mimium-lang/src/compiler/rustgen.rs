@@ -201,6 +201,8 @@ impl RustGenerator {
         let dsp_dispatch = self.function_dispatch_name(dsp_func);
         let dsp_direct = self.function_direct_name(dsp_func);
         let dsp_return = dsp_func.return_type.get().copied();
+        let dsp_uses_return_pointer =
+            dsp_return.is_some_and(|ty| self.uses_direct_return_pointer(ty));
         let dsp_io_channels = self.mir.get_dsp_iochannels();
         let dsp_input_channels = dsp_io_channels.map_or(0usize, |info| info.input as usize);
         let dsp_output_channels = dsp_io_channels.map_or(0usize, |info| info.output as usize);
@@ -272,14 +274,27 @@ impl RustGenerator {
                     if dsp_output_channels == 0 {
                         writer.line(format!("self.{dsp_direct}();"))?;
                     } else {
-                        writer.line(format!("let result = self.{dsp_direct}();"))?;
-                        self.emit_buffer_output_assignments(
-                            writer,
-                            "output",
-                            "frame_output_start",
-                            "result",
-                            dsp_return,
-                        )?;
+                        if dsp_uses_return_pointer {
+                            let size = dsp_return.map(|ty| ty.word_size() as usize).unwrap_or(0);
+                            writer.line(format!("let mut result_words = [0u64; {size}];"))?;
+                            writer.line(format!("self.{dsp_direct}(&mut result_words);"))?;
+                            self.emit_buffer_output_assignments_from_words(
+                                writer,
+                                "output",
+                                "frame_output_start",
+                                "result_words",
+                                dsp_return,
+                            )?;
+                        } else {
+                            writer.line(format!("let result = self.{dsp_direct}();"))?;
+                            self.emit_buffer_output_assignments(
+                                writer,
+                                "output",
+                                "frame_output_start",
+                                "result",
+                                dsp_return,
+                            )?;
+                        }
                     }
                 } else {
                     let input_ty = dsp_func
@@ -296,17 +311,32 @@ impl RustGenerator {
                             self.abi_expr_from_f64_buffer_frame("input", "frame_input_start", input_ty)?
                         ))?;
                     } else {
-                        writer.line(format!(
-                            "let result = self.{dsp_direct}({});",
-                            self.abi_expr_from_f64_buffer_frame("input", "frame_input_start", input_ty)?
-                        ))?;
-                        self.emit_buffer_output_assignments(
-                            writer,
-                            "output",
-                            "frame_output_start",
-                            "result",
-                            dsp_return,
-                        )?;
+                        let dsp_input_expr =
+                            self.abi_expr_from_f64_buffer_frame("input", "frame_input_start", input_ty)?;
+                        if dsp_uses_return_pointer {
+                            let size = dsp_return.map(|ty| ty.word_size() as usize).unwrap_or(0);
+                            writer.line(format!("let mut result_words = [0u64; {size}];"))?;
+                            writer.line(format!(
+                                "self.{dsp_direct}({}, &mut result_words);",
+                                dsp_input_expr
+                            ))?;
+                            self.emit_buffer_output_assignments_from_words(
+                                writer,
+                                "output",
+                                "frame_output_start",
+                                "result_words",
+                                dsp_return,
+                            )?;
+                        } else {
+                            writer.line(format!("let result = self.{dsp_direct}({dsp_input_expr});"))?;
+                            self.emit_buffer_output_assignments(
+                                writer,
+                                "output",
+                                "frame_output_start",
+                                "result",
+                                dsp_return,
+                            )?;
+                        }
                     }
                 }
                 Ok(())
@@ -381,6 +411,25 @@ impl RustGenerator {
                     "{output_expr}[{frame_start_expr} + {index}usize] = word_to_f64({word_expr});"
                 ))
             })
+    }
+
+    fn emit_buffer_output_assignments_from_words<W: Write>(
+        &self,
+        writer: &mut CodeWriter<W>,
+        output_expr: &str,
+        frame_start_expr: &str,
+        result_words_expr: &str,
+        return_ty: Option<TypeNodeId>,
+    ) -> Result<(), String> {
+        let Some(ret_ty) = return_ty else {
+            return Ok(());
+        };
+
+        (0..ret_ty.word_size() as usize).try_for_each(|index| {
+            writer.line(format!(
+                "{output_expr}[{frame_start_expr} + {index}usize] = word_to_f64({result_words_expr}[{index}]);"
+            ))
+        })
     }
 
     fn abi_expr_from_f64_buffer_frame(
@@ -480,6 +529,7 @@ impl RustGenerator {
         let direct_name = self.function_direct_name(func);
         let wrapper_name = self.function_dispatch_name(func);
         let return_ty = self.function_return_type(func)?;
+        let uses_return_pointer = self.uses_direct_return_pointer(return_ty);
 
         writer.line(format!(
             "fn {wrapper_name}(&mut self, args: &[Word]) -> Vec<Word> {{"
@@ -505,11 +555,25 @@ impl RustGenerator {
 
             let mut call_args = Vec::new();
             call_args.extend((0..func.args.len()).map(|index| format!("arg_{index}_value")));
-            writer.line(format!(
-                "let result = self.{direct_name}({});",
-                call_args.join(", ")
-            ))?;
-            self.emit_pack_abi_result(writer, "result", return_ty)
+            if uses_return_pointer {
+                let size = return_ty.word_size() as usize;
+                writer.line(format!(
+                    "let mut {} = [0u64; {size}];",
+                    self.direct_return_words_name()
+                ))?;
+                call_args.push(format!("&mut {}", self.direct_return_words_name()));
+                writer.line(format!(
+                    "self.{direct_name}({});",
+                    call_args.join(", ")
+                ))?;
+                writer.line(format!("{}.to_vec()", self.direct_return_words_name()))
+            } else {
+                writer.line(format!(
+                    "let result = self.{direct_name}({});",
+                    call_args.join(", ")
+                ))?;
+                self.emit_pack_abi_result(writer, "result", return_ty)
+            }
         })?;
         writer.line("}")
     }
@@ -580,16 +644,24 @@ impl RustGenerator {
         let fallthrough_edges = self.collect_fallthrough_edges(func);
         let direct_name = self.function_direct_name(func);
         let return_ty = self.function_return_type(func)?;
+        let uses_return_pointer = self.uses_direct_return_pointer(return_ty);
         let mut signature_args = vec!["&mut self".to_string()];
         for (index, arg) in func.args.iter().enumerate() {
             signature_args.push(format!("arg_{index}_value: {}", self.abi_type_expr(arg.1)?));
+        }
+        if uses_return_pointer {
+            signature_args.push(format!(
+                "{}: &mut [Word; {}]",
+                self.direct_return_words_name(),
+                return_ty.word_size() as usize
+            ));
         }
 
         writer.line("#[inline(always)]")?;
         writer.line(format!(
             "fn {direct_name}({}) -> {} {{",
             signature_args.join(", "),
-            self.abi_type_expr(return_ty)?
+            self.direct_function_return_type_expr(return_ty)?
         ))?;
         writer.indented(1, |writer| {
             for (index, arg) in func.args.iter().enumerate() {
@@ -1558,25 +1630,38 @@ impl RustGenerator {
                                 .ok_or_else(|| {
                                     format!("missing default function for index {default_index}")
                                 })?;
-                            call_args.push(format!(
-                                "self.{}()",
-                                self.function_direct_name(default_func)
-                            ));
+                            call_args.push(self.default_direct_call_expr(
+                                default_func,
+                                target_func.args[call_args.len()].1,
+                            )?);
                         }
                     }
                     let mut direct_call_args = Vec::new();
                     direct_call_args.extend(call_args);
-                    writer.line(format!(
-                        "let call_result = self.{direct_name}({});",
-                        direct_call_args.join(", ")
-                    ))?;
-                    self.emit_assign_abi_value_to_runtime(
-                        writer,
-                        func,
-                        dst,
-                        "call_result",
-                        *ret_ty,
-                    )?;
+                    if self.uses_direct_return_pointer(*ret_ty) {
+                        let size = ret_ty.word_size() as usize;
+                        writer.line(format!("let mut call_result = [0u64; {size}];"))?;
+                        direct_call_args.push("&mut call_result".to_string());
+                        writer.line(format!(
+                            "self.{direct_name}({});",
+                            direct_call_args.join(", ")
+                        ))?;
+                        writer.line(format!("{dest} = memory.alloc({size}usize);"))?;
+                        writer
+                            .line(format!("memory.store({dest}, &call_result, {size}usize)?;"))?;
+                    } else {
+                        writer.line(format!(
+                            "let call_result = self.{direct_name}({});",
+                            direct_call_args.join(", ")
+                        ))?;
+                        self.emit_assign_abi_value_to_runtime(
+                            writer,
+                            func,
+                            dst,
+                            "call_result",
+                            *ret_ty,
+                        )?;
+                    }
                     return Ok(());
                 }
                 writer.line("let mut call_args = Vec::new();")?;
@@ -2096,16 +2181,25 @@ impl RustGenerator {
             Instruction::Return(value, ty) => {
                 if matches!(value.as_ref(), Value::None) || ty.word_size() == 0 {
                     writer.line("return Ok(());")?;
+                } else if self.uses_direct_return_pointer(*ty) {
+                    let result_expr = self.boundary_value_slice_expr(func, value, *ty)?;
+                    writer.line(format!(
+                        "{}.copy_from_slice({result_expr});",
+                        self.direct_return_words_name()
+                    ))?;
+                    writer.line("return Ok(());")?;
                 } else {
                     let expr = self.abi_value_expr(func, value, *ty)?;
                     writer.line(format!("return Ok({expr});"))?;
                 }
             }
             Instruction::ReturnFeed(value, ty) => {
-                let expr = self.abi_value_expr(func, value, *ty)?;
+                let uses_return_pointer = self.uses_direct_return_pointer(*ty);
+                let expr = (!uses_return_pointer)
+                    .then(|| self.abi_value_expr(func, value, *ty))
+                    .transpose()?;
                 match self.config.self_eval_mode {
                     SelfEvalMode::SimpleState => {
-                        writer.line(format!("let result = {expr};"))?;
                         let state_expr = self.boundary_value_slice_expr(func, value, *ty)?;
                         writer.line(format!("let next_state_words = {state_expr}.to_vec();"))?;
                         writer.line("{")?;
@@ -2117,7 +2211,19 @@ impl RustGenerator {
                             ))
                         })?;
                         writer.line("}")?;
-                        writer.line("return Ok(result);")?;
+                        if uses_return_pointer {
+                            writer.line(format!(
+                                "{}.copy_from_slice(&next_state_words);",
+                                self.direct_return_words_name()
+                            ))?;
+                            writer.line("return Ok(());")?;
+                        } else {
+                            writer.line(format!(
+                                "let result = {};",
+                                expr.as_deref().unwrap_or("()")
+                            ))?;
+                            writer.line("return Ok(result);")?;
+                        }
                     }
                     SelfEvalMode::ZeroAtInit => {
                         if self.is_deepcopy_aggregate_type(*ty) {
@@ -2131,7 +2237,12 @@ impl RustGenerator {
                                 ty.word_size()
                             ))?;
                         }
-                        writer.line(format!("let result = {expr};"))?;
+                        if !uses_return_pointer {
+                            writer.line(format!(
+                                "let result = {};",
+                                expr.as_deref().unwrap_or("()")
+                            ))?;
+                        }
                         let state_expr = self.boundary_value_slice_expr(func, value, *ty)?;
                         writer.line(format!("let next_state_words = {state_expr}.to_vec();"))?;
                         writer.line("{")?;
@@ -2143,7 +2254,13 @@ impl RustGenerator {
                             ))
                         })?;
                         writer.line("}")?;
-                        if self.is_deepcopy_aggregate_type(*ty) {
+                        if uses_return_pointer {
+                            writer.line(format!(
+                                "{}.copy_from_slice(&previous_words);",
+                                self.direct_return_words_name()
+                            ))?;
+                            writer.line("return Ok(());")?;
+                        } else if self.is_deepcopy_aggregate_type(*ty) {
                             writer.line(format!(
                                 "return Ok({});",
                                 self.abi_expr_from_word_source("previous_words", *ty)?
@@ -2697,6 +2814,42 @@ impl RustGenerator {
             }
             _ => self.opaque_abi_type_expr(ty),
         })
+    }
+
+    fn direct_return_words_name(&self) -> &'static str {
+        "ret_words"
+    }
+
+    fn uses_direct_return_pointer(&self, ty: TypeNodeId) -> bool {
+        self.is_deepcopy_aggregate_type(ty)
+    }
+
+    fn direct_function_return_type_expr(&self, ty: TypeNodeId) -> Result<String, String> {
+        if self.uses_direct_return_pointer(ty) {
+            Ok("()".to_string())
+        } else {
+            self.abi_type_expr(ty)
+        }
+    }
+
+    fn default_direct_call_expr(
+        &self,
+        default_func: &Function,
+        target_ty: TypeNodeId,
+    ) -> Result<String, String> {
+        if self.uses_direct_return_pointer(target_ty) {
+            let size = target_ty.word_size() as usize;
+            let wrapper_name = self.function_dispatch_name(default_func);
+            Ok(format!(
+                "({{ let default_result = self.{wrapper_name}(&[]); let words = self.memory.load(default_result[0], {size}usize)?; {} }})",
+                self.abi_expr_from_word_source("words", target_ty)?
+            ))
+        } else {
+            Ok(format!(
+                "self.{}()",
+                self.function_direct_name(default_func)
+            ))
+        }
     }
 
     fn abi_tuple_type_expr(&self, items: Vec<String>) -> String {
