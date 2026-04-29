@@ -1525,9 +1525,13 @@ impl RustGenerator {
                         }
                     }
                 } else if self.is_deepcopy_aggregate_type(*ty) {
-                    let dest = self.reg_name(dst)?;
-                    writer.line(format!("{dest} = memory.alloc({}usize);", ty.word_size()))?;
-                    self.emit_deep_copy_value_into_ptr(writer, func, &dest, ptr, *ty)?;
+                    let is_state_ptr = matches!(ptr.as_ref(),
+                        Value::Register(r) if self.is_getstate_register(func, *r));
+                    if !is_state_ptr {
+                        let dest = self.reg_name(dst)?;
+                        writer.line(format!("{dest} = memory.alloc({}usize);", ty.word_size()))?;
+                        self.emit_deep_copy_value_into_ptr(writer, func, &dest, ptr, *ty)?;
+                    }
                 } else {
                     let dest = self.reg_name(dst)?;
                     let ptr_expr = self.word0_expr(func, ptr)?;
@@ -1553,7 +1557,7 @@ impl RustGenerator {
                 if let Some(stack_pointer) = self.stack_pointer_for_value(stack_pointers, ptr) {
                     let size = ty.word_size() as usize;
                     if self.is_deepcopy_aggregate_type(*ty) {
-                        let src_expr = self.boundary_value_slice_expr(func, src, *ty)?;
+                        let src_expr = self.boundary_value_slice_expr(func, stack_pointers, src, *ty)?;
                         writer.line(format!(
                             "{}.copy_from_slice({src_expr});",
                             self.stack_pointer_slice_target_expr(stack_pointer, size)
@@ -1607,6 +1611,10 @@ impl RustGenerator {
             }
             Instruction::Call(callee, args, ret_ty) => {
                 let dest = self.reg_name(dst)?;
+                let dst_reg = match dst.as_ref() {
+                    Value::Register(r) => *r,
+                    _ => return Err(format!("call destination is not a register: {dst:?}")),
+                };
                 let call_kind = self.call_kind(callee)?;
                 let result_size = self.instruction_result_size(func, instr)?;
                 let static_callee = self.resolve_function_index(func, callee);
@@ -1681,15 +1689,16 @@ impl RustGenerator {
                     direct_call_args.extend(call_args);
                     if self.uses_direct_return_pointer(*ret_ty) {
                         let size = ret_ty.word_size() as usize;
-                        writer.line(format!("let mut call_result = [0u64; {size}];"))?;
-                        direct_call_args.push("&mut call_result".to_string());
+                        let cr_var = format!("call_result_{dst_reg}");
+                        writer.line(format!("let mut {cr_var} = [0u64; {size}];"))?;
+                        direct_call_args.push(format!("&mut {cr_var}"));
                         writer.line(format!(
                             "self.{direct_name}({});",
                             direct_call_args.join(", ")
                         ))?;
                         writer.line(format!("{dest} = memory.alloc({size}usize);"))?;
                         writer
-                            .line(format!("memory.store({dest}, &call_result, {size}usize)?;"))?;
+                            .line(format!("memory.store({dest}, &{cr_var}, {size}usize)?;"))?;
                     } else {
                         writer.line(format!(
                             "let call_result = self.{direct_name}({});",
@@ -1707,21 +1716,22 @@ impl RustGenerator {
                 }
                 writer.line("let mut call_args = Vec::new();")?;
                 for (arg, ty) in args {
-                    let expr = self.boundary_value_slice_expr(func, arg, *ty)?;
+                    let expr = self.boundary_value_slice_expr(func, stack_pointers, arg, *ty)?;
                     writer.line(format!("call_args.extend_from_slice({expr});"))?;
                 }
                 match call_kind {
                     CallKind::FunctionHandle(handle_expr) => {
                         if self.is_deepcopy_aggregate_type(*ret_ty) {
+                            let cr_var = format!("call_result_{dst_reg}");
                             writer.line(format!(
-                                "let call_result = self.call_function_handle({handle_expr}, &call_args);"
+                                "let {cr_var} = self.call_function_handle({handle_expr}, &call_args);"
                             ))?;
                             writer.line(format!(
                                 "{dest} = memory.alloc({}usize);",
                                 ret_ty.word_size()
                             ))?;
                             writer.line(format!(
-                                "memory.store({dest}, &call_result, {}usize)?;",
+                                "memory.store({dest}, &{cr_var}, {}usize)?;",
                                 ret_ty.word_size()
                             ))?;
                         } else if ret_ty.word_size() == 1 {
@@ -1748,12 +1758,13 @@ impl RustGenerator {
                         let name = format!("{:?}", symbol.as_str());
                         let ret_words = ret_ty.word_size() as usize;
                         if self.is_deepcopy_aggregate_type(*ret_ty) {
+                            let cr_var = format!("call_result_{dst_reg}");
                             writer.line(format!(
-                                "let call_result = self.call_ext({name}, &call_args, {ret_words})?;"
+                                "let {cr_var} = self.call_ext({name}, &call_args, {ret_words})?;"
                             ))?;
                             writer.line(format!("{dest} = memory.alloc({ret_words}usize);"))?;
                             writer.line(format!(
-                                "memory.store({dest}, &call_result, {ret_words}usize)?;"
+                                "memory.store({dest}, &{cr_var}, {ret_words}usize)?;"
                             ))?;
                         } else if ret_ty.word_size() == 1 {
                             writer.line(format!(
@@ -1793,23 +1804,28 @@ impl RustGenerator {
                     self.assign_scalar(writer, dst, expr)?;
                 } else {
                     let dest = self.reg_name(dst)?;
+                    let dst_reg = match dst.as_ref() {
+                        Value::Register(r) => *r,
+                        _ => return Err(format!("call-indirect destination is not a register: {dst:?}")),
+                    };
                     let result_size = self.instruction_result_size(func, instr)?;
                     let handle_expr = self.word0_expr(func, callee)?;
                     writer.line("let mut call_args = Vec::new();")?;
                     for (arg, ty) in args {
-                        let expr = self.boundary_value_slice_expr(func, arg, *ty)?;
+                        let expr = self.boundary_value_slice_expr(func, stack_pointers, arg, *ty)?;
                         writer.line(format!("call_args.extend_from_slice({expr});"))?;
                     }
                     if self.is_deepcopy_aggregate_type(*ret_ty) {
+                        let cr_var = format!("call_result_{dst_reg}");
                         writer.line(format!(
-                            "let call_result = self.call_function_handle({handle_expr}, &call_args);"
+                            "let {cr_var} = self.call_function_handle({handle_expr}, &call_args);"
                         ))?;
                         writer.line(format!(
                             "{dest} = memory.alloc({}usize);",
                             ret_ty.word_size()
                         ))?;
                         writer.line(format!(
-                            "memory.store({dest}, &call_result, {}usize)?;",
+                            "memory.store({dest}, &{cr_var}, {}usize)?;",
                             ret_ty.word_size()
                         ))?;
                     } else if ret_ty.word_size() == 1 {
@@ -2003,7 +2019,7 @@ impl RustGenerator {
             }
             Instruction::SetUpValue(index, src, ty) => {
                 let dest = self.reg_name(dst)?;
-                let src_expr = self.boundary_value_slice_expr(func, src, *ty)?;
+                let src_expr = self.boundary_value_slice_expr(func, stack_pointers, src, *ty)?;
                 let size = ty.word_size() as usize;
                 writer.line("let closure_handle = self.get_current_closure().ok_or_else(|| \"missing closure context for SetUpValue\".to_string())?;")?;
                 if size == 1 {
@@ -2063,7 +2079,7 @@ impl RustGenerator {
                 let global_index = self.global_index(global_slots, global)?;
                 if self.is_deepcopy_aggregate_type(*ty) {
                     let size = ty.word_size() as usize;
-                    let src_expr = self.boundary_value_slice_expr(func, src, *ty)?;
+                    let src_expr = self.boundary_value_slice_expr(func, stack_pointers, src, *ty)?;
                     writer.line(format!(
                         "self.globals[{global_index}][..{size}].copy_from_slice({src_expr});"
                     ))?;
@@ -2079,34 +2095,19 @@ impl RustGenerator {
                 }
             }
             Instruction::PushStateOffset(offset) => {
-                writer.line("{")?;
-                writer.indented(1, |writer| {
-                    writer.line("let state = self.get_current_statestorage();")?;
-                    writer.line(format!("state.push_pos({offset}usize);"))
-                })?;
-                writer.line("}")?;
+                writer.line(format!(
+                    "self.get_current_statestorage().push_pos({offset}usize);"
+                ))?;
             }
             Instruction::PopStateOffset(offset) => {
-                writer.line("{")?;
-                writer.indented(1, |writer| {
-                    writer.line("let state = self.get_current_statestorage();")?;
-                    writer.line(format!("state.pop_pos({offset}usize);"))
-                })?;
-                writer.line("}")?;
+                writer.line(format!(
+                    "self.get_current_statestorage().pop_pos({offset}usize);"
+                ))?;
             }
             Instruction::GetState(ty) => {
                 if self.is_deepcopy_aggregate_type(*ty) {
-                    let dest = self.reg_name(dst)?;
-                    let size = ty.word_size() as usize;
-                    writer.line(format!("{dest} = memory.alloc({size}usize);"))?;
-                    writer.line("{")?;
-                    writer.indented(1, |writer| {
-                        writer.line(format!(
-                            "let state_words = {{ let state = self.get_current_statestorage(); state.get_state({size}usize) }};"
-                        ))?;
-                        writer.line(format!("memory.store({dest}, &state_words, {size}usize)?;"))
-                    })?;
-                    writer.line("}")?;
+                    // Bypassed by find_state_load_source in all aggregate slice expressions;
+                    // the downstream Load is also skipped, so no alloc+store is needed.
                 } else if ty.word_size() == 1 {
                     self.assign_runtime_scalar_from_word_expr(
                         writer,
@@ -2264,23 +2265,23 @@ impl RustGenerator {
                         } else {
                             let state_expr =
                                 self.aggregate_source_slice_expr(func, stack_pointers, value, *ty)?;
-                            writer
-                                .line(format!("let next_state_words = {state_expr}.to_vec();"))?;
                             writer.line("{")?;
                             writer.indented(1, |writer| {
                                 writer.line("let state = self.get_current_statestorage();")?;
                                 writer.line(format!(
-                                    "state.set_state(&next_state_words, {}usize);",
+                                    "state.set_state({state_expr}, {}usize);",
                                     ty.word_size()
                                 ))
                             })?;
                             writer.line("}")?;
+                            if uses_return_pointer {
+                                writer.line(format!(
+                                    "{}.copy_from_slice({state_expr});",
+                                    self.direct_return_words_name()
+                                ))?;
+                            }
                         }
                         if uses_return_pointer {
-                            writer.line(format!(
-                                "{}.copy_from_slice(&next_state_words);",
-                                self.direct_return_words_name()
-                            ))?;
                             writer.line("return Ok(());")?;
                         } else {
                             writer.line(format!(
@@ -2323,13 +2324,11 @@ impl RustGenerator {
                         } else {
                             let state_expr =
                                 self.aggregate_source_slice_expr(func, stack_pointers, value, *ty)?;
-                            writer
-                                .line(format!("let next_state_words = {state_expr}.to_vec();"))?;
                             writer.line("{")?;
                             writer.indented(1, |writer| {
                                 writer.line("let state = self.get_current_statestorage();")?;
                                 writer.line(format!(
-                                    "state.set_state(&next_state_words, {}usize);",
+                                    "state.set_state({state_expr}, {}usize);",
                                     ty.word_size()
                                 ))
                             })?;
@@ -3442,16 +3441,33 @@ impl RustGenerator {
 
         match value.as_ref() {
             Value::Argument(index) => Ok(format!("&arg_{index}")),
-            _ => {
-                if let Some(pointer) = self.stack_pointer_for_value(stack_pointers, value) {
-                    Ok(self.stack_pointer_slice_expr(pointer, ty.word_size() as usize))
-                } else {
-                    let ptr_expr = self.word0_expr(func, value)?;
-                    Ok(format!(
-                        "&memory.load({ptr_expr}, {}usize)?",
-                        ty.word_size()
-                    ))
+            Value::Register(reg) => {
+                if let Some(pointer) = stack_pointers.get(reg) {
+                    return Ok(self.stack_pointer_slice_expr(*pointer, ty.word_size() as usize));
                 }
+                if let Some(arg_idx) = self.find_argument_load_source(func, *reg) {
+                    return Ok(format!("&arg_{arg_idx}"));
+                }
+                if let Some(size) = self.find_state_load_source(func, *reg) {
+                    return Ok(format!(
+                        "{{ let state = self.get_current_statestorage(); state.get_state_slice({size}usize) }}"
+                    ));
+                }
+                if let Some(cr_var) = self.find_call_result_var(func, *reg) {
+                    return Ok(format!("&{cr_var}"));
+                }
+                let ptr_expr = self.word0_expr(func, value)?;
+                Ok(format!(
+                    "&memory.load({ptr_expr}, {}usize)?",
+                    ty.word_size()
+                ))
+            }
+            _ => {
+                let ptr_expr = self.word0_expr(func, value)?;
+                Ok(format!(
+                    "&memory.load({ptr_expr}, {}usize)?",
+                    ty.word_size()
+                ))
             }
         }
     }
@@ -3817,9 +3833,78 @@ impl RustGenerator {
         }
     }
 
+    /// Returns true if `reg` was defined by a `GetState` instruction.
+    fn is_getstate_register(&self, func: &Function, reg: VReg) -> bool {
+        func.body.iter().flat_map(|block| block.0.iter()).any(|(dst, instr)| {
+            matches!((dst.as_ref(), instr),
+                (Value::Register(r), Instruction::GetState(_)) if *r == reg)
+        })
+    }
+
+    /// If `reg` was defined by `Load(getstate_reg, deepcopy-aggregate-ty)`, return the state size.
+    /// Used to bypass the heap roundtrip and read state directly via `get_state_slice`.
+    fn find_state_load_source(&self, func: &Function, reg: VReg) -> Option<usize> {
+        func.body.iter().flat_map(|block| block.0.iter()).find_map(|(dst, instr)| {
+            match (dst.as_ref(), instr) {
+                (Value::Register(r), Instruction::Load(ptr, ty))
+                    if *r == reg && self.is_deepcopy_aggregate_type(*ty) =>
+                {
+                    match ptr.as_ref() {
+                        Value::Register(ptr_reg) if self.is_getstate_register(func, *ptr_reg) => {
+                            Some(ty.word_size() as usize)
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        })
+    }
+
+    /// If `reg` was defined by `Load(arg(N), deepcopy-aggregate-ty)`, return Some(N).
+    /// Used to avoid roundtripping through the heap when the source is a direct argument load.
+    fn find_argument_load_source(&self, func: &Function, reg: VReg) -> Option<usize> {
+        func.body.iter().flat_map(|block| block.0.iter()).find_map(|(dst, instr)| {
+            match (dst.as_ref(), instr) {
+                (Value::Register(r), Instruction::Load(ptr, ty))
+                    if *r == reg && self.is_deepcopy_aggregate_type(*ty) =>
+                {
+                    match ptr.as_ref() {
+                        Value::Argument(idx) => Some(*idx),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        })
+    }
+
+    /// If `reg` is the destination of a Call/CallIndirect returning a deepcopy aggregate type,
+    /// return the Rust variable name holding the stack-local result buffer (`call_result_N`).
+    /// Used to bypass the heap memory handle when accessing call results as slices.
+    fn find_call_result_var(&self, func: &Function, reg: VReg) -> Option<String> {
+        func.body.iter().flat_map(|block| block.0.iter()).find_map(|(dst, instr)| {
+            let ret_ty = match instr {
+                Instruction::Call(_, _, ret_ty) | Instruction::CallIndirect(_, _, ret_ty) => {
+                    *ret_ty
+                }
+                _ => return None,
+            };
+            match dst.as_ref() {
+                Value::Register(r)
+                    if *r == reg && self.uses_direct_return_pointer(ret_ty) =>
+                {
+                    Some(format!("call_result_{r}"))
+                }
+                _ => None,
+            }
+        })
+    }
+
     fn boundary_value_slice_expr(
         &self,
         func: &Function,
+        stack_pointers: &HashMap<VReg, StackPointer>,
         value: &VPtr,
         ty: TypeNodeId,
     ) -> Result<String, String> {
@@ -3828,6 +3913,27 @@ impl RustGenerator {
         }
         match value.as_ref() {
             Value::Argument(index) => Ok(format!("&arg_{index}")),
+            Value::Register(reg) => {
+                if let Some(pointer) = stack_pointers.get(reg) {
+                    return Ok(self.stack_pointer_slice_expr(*pointer, ty.word_size() as usize));
+                }
+                if let Some(arg_idx) = self.find_argument_load_source(func, *reg) {
+                    return Ok(format!("&arg_{arg_idx}"));
+                }
+                if let Some(size) = self.find_state_load_source(func, *reg) {
+                    return Ok(format!(
+                        "{{ let state = self.get_current_statestorage(); state.get_state_slice({size}usize) }}"
+                    ));
+                }
+                if let Some(cr_var) = self.find_call_result_var(func, *reg) {
+                    return Ok(format!("&{cr_var}"));
+                }
+                let ptr_expr = self.word0_expr(func, value)?;
+                Ok(format!(
+                    "&memory.load({ptr_expr}, {}usize)?",
+                    ty.word_size()
+                ))
+            }
             _ => {
                 let ptr_expr = self.word0_expr(func, value)?;
                 Ok(format!(

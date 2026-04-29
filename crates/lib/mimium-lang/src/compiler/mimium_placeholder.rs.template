@@ -115,12 +115,14 @@ impl StateStorage {
         }
     }
 
+    #[inline(always)]
     fn push_pos(&mut self, offset: usize) {
-        self.pos = self.pos.saturating_add(offset);
+        self.pos += offset;
     }
 
+    #[inline(always)]
     fn pop_pos(&mut self, offset: usize) {
-        self.pos = self.pos.saturating_sub(offset);
+        self.pos -= offset;
     }
 
     fn get_state(&mut self, size: usize) -> Vec<Word> {
@@ -129,26 +131,34 @@ impl StateStorage {
     }
 
     #[inline(always)]
-    fn get_state_word(&mut self) -> Word {
-        self.ensure(1);
-        self.rawdata[self.pos]
+    fn get_state_slice(&self, size: usize) -> &[Word] {
+        debug_assert!(self.pos + size <= self.rawdata.len(), "state read out of bounds: pos={} size={} len={}", self.pos, size, self.rawdata.len());
+        unsafe { self.rawdata.get_unchecked(self.pos..self.pos + size) }
     }
 
+    #[inline(always)]
+    fn get_state_word(&self) -> Word {
+        debug_assert!(self.pos < self.rawdata.len(), "state read out of bounds: pos={} len={}", self.pos, self.rawdata.len());
+        unsafe { *self.rawdata.get_unchecked(self.pos) }
+    }
+
+    #[inline(always)]
     fn set_state(&mut self, src: &[Word], size: usize) {
-        self.ensure(size);
-        self.rawdata[self.pos..self.pos + size].copy_from_slice(&src[..size]);
+        debug_assert!(self.pos + size <= self.rawdata.len(), "state write out of bounds: pos={} size={} len={}", self.pos, size, self.rawdata.len());
+        unsafe { self.rawdata.get_unchecked_mut(self.pos..self.pos + size) }.copy_from_slice(&src[..size]);
     }
 
     #[inline(always)]
     fn set_state_word(&mut self, src: Word) {
-        self.ensure(1);
-        self.rawdata[self.pos] = src;
+        debug_assert!(self.pos < self.rawdata.len(), "state write out of bounds: pos={} len={}", self.pos, self.rawdata.len());
+        unsafe { *self.rawdata.get_unchecked_mut(self.pos) = src; }
     }
 
+    #[inline(always)]
     fn mem(&mut self, src: Word) -> Word {
-        self.ensure(1);
-        let prev = self.rawdata[self.pos];
-        self.rawdata[self.pos] = src;
+        debug_assert!(self.pos < self.rawdata.len(), "mem out of bounds: pos={} len={}", self.pos, self.rawdata.len());
+        let prev = unsafe { *self.rawdata.get_unchecked(self.pos) };
+        unsafe { *self.rawdata.get_unchecked_mut(self.pos) = src; }
         prev
     }
 
@@ -441,18 +451,14 @@ impl<H: MimiumHost> MimiumProgram<H> {
         self.call_function_handle_with_memory(handle, args)
     }
 
+    #[inline(always)]
     fn get_current_statestorage(&mut self) -> &mut StateStorage {
         if let Some(&closure_handle) = self.state_storage_stack.last() {
-            &mut self
-                .closures
-                .get_mut(closure_handle)
-                .unwrap_or_else(|err| unreachable!("{err}"))
-                .state_storage
+            let index = unsafe { decode_closure(closure_handle).unwrap_unchecked() };
+            unsafe { &mut self.closures.closures.get_unchecked_mut(index).state_storage }
         } else {
-            let function_index = self
-                .current_function_state
-                .unwrap_or_else(|| unreachable!("missing active function state"));
-            &mut self.function_states[function_index]
+            let function_index = unsafe { self.current_function_state.unwrap_unchecked() };
+            unsafe { self.function_states.get_unchecked_mut(function_index) }
         }
     }
 
