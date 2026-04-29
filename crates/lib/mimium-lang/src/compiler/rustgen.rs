@@ -6,7 +6,7 @@ use crate::compiler::Config;
 use crate::compiler::bytecodegen::SelfEvalMode;
 use crate::interner::{Symbol, TypeNodeId};
 use crate::mir::{Block, Function, Instruction, Mir, VPtr, VReg, Value};
-use crate::types::Type;
+use crate::types::{PType, Type};
 
 const PROGRAM_TEMPLATE: &str = include_str!("mimium_placeholder.rs.template");
 const GLOBAL_SLOTS_MARKER: &str = "/*__GLOBAL_SLOTS__*/";
@@ -24,6 +24,19 @@ pub struct RustGenerator {
 enum CallKind {
     FunctionHandle(String),
     Ext(Symbol),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScalarStorageKind {
+    Word,
+    I64,
+    F64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RegisterStorage {
+    Scalar(ScalarStorageKind),
+    Words(usize),
 }
 
 struct CodeWriter<W> {
@@ -555,7 +568,7 @@ impl RustGenerator {
         func: &Function,
         global_slots: &[(String, VPtr, usize)],
     ) -> Result<(), String> {
-        let register_sizes = self.collect_register_sizes(func)?;
+        let register_storage = self.collect_register_storage(func)?;
         let block_preds = self.collect_block_predecessors(func);
         let fallthrough_edges = self.collect_fallthrough_edges(func);
         let direct_name = self.function_direct_name(func);
@@ -577,12 +590,28 @@ impl RustGenerator {
                     "let arg_{index} = {};",
                     self.abi_to_words_array_expr(&format!("arg_{index}_value"), arg.1)?
                 ))?;
+                if let RegisterStorage::Scalar(kind) = self.flat_value_storage_for_type(arg.1) {
+                    writer.line(format!(
+                        "let {} = {};",
+                        self.argument_scalar_name(index),
+                        self.scalar_from_word_expr(format!("arg_{index}_value"), kind)
+                    ))?;
+                }
             }
 
-            let mut regs: Vec<_> = register_sizes.into_iter().collect();
-            regs.sort_by_key(|(reg, _size)| *reg);
-            for (reg, size) in regs {
-                writer.line(format!("let mut reg_{reg} = [0u64; {size}];"))?;
+            let mut regs: Vec<_> = register_storage.into_iter().collect();
+            regs.sort_by_key(|(reg, _storage)| *reg);
+            for (reg, storage) in regs {
+                match storage {
+                    RegisterStorage::Scalar(kind) => writer.line(format!(
+                        "let mut reg_{reg}: {} = {};",
+                        self.scalar_storage_rust_type(kind),
+                        self.scalar_storage_default_expr(kind)
+                    ))?,
+                    RegisterStorage::Words(size) => {
+                        writer.line(format!("let mut reg_{reg} = [0u64; {size}];"))?
+                    }
+                }
             }
 
             let body = self.render_section(0, |writer| {
@@ -762,17 +791,168 @@ impl RustGenerator {
         })
     }
 
-    fn collect_register_sizes(&self, func: &Function) -> Result<HashMap<VReg, usize>, String> {
-        let mut sizes = HashMap::new();
+    fn collect_register_storage(
+        &self,
+        func: &Function,
+    ) -> Result<HashMap<VReg, RegisterStorage>, String> {
+        let mut storage = HashMap::new();
         for block in &func.body {
             for (dst, instr) in &block.0 {
                 if let Value::Register(reg) = dst.as_ref() {
-                    let size = self.instruction_result_size(func, instr)?;
-                    sizes.entry(*reg).or_insert(size);
+                    let register_storage = self.instruction_result_storage(func, instr)?;
+                    storage.entry(*reg).or_insert(register_storage);
                 }
             }
         }
-        Ok(sizes)
+        Ok(storage)
+    }
+
+    fn instruction_result_storage(
+        &self,
+        func: &Function,
+        instr: &Instruction,
+    ) -> Result<RegisterStorage, String> {
+        Ok(match instr {
+            Instruction::Uinteger(_)
+            | Instruction::Alloc(_)
+            | Instruction::GetElement { .. }
+            | Instruction::String(_)
+            | Instruction::Array(_, _)
+            | Instruction::MakeClosure { .. }
+            | Instruction::CloneHeap(_)
+            | Instruction::CloseHeapClosure(_)
+            | Instruction::TaggedUnionWrap { .. }
+            | Instruction::TaggedUnionGetTag(_) => RegisterStorage::Scalar(ScalarStorageKind::Word),
+            Instruction::Integer(_)
+            | Instruction::AddI(_, _)
+            | Instruction::SubI(_, _)
+            | Instruction::MulI(_, _)
+            | Instruction::DivI(_, _)
+            | Instruction::ModI(_, _)
+            | Instruction::NegI(_)
+            | Instruction::AbsI(_)
+            | Instruction::CastFtoI(_) => RegisterStorage::Scalar(ScalarStorageKind::I64),
+            Instruction::Float(_)
+            | Instruction::AddF(_, _)
+            | Instruction::SubF(_, _)
+            | Instruction::MulF(_, _)
+            | Instruction::DivF(_, _)
+            | Instruction::ModF(_, _)
+            | Instruction::NegF(_)
+            | Instruction::AbsF(_)
+            | Instruction::SinF(_)
+            | Instruction::CosF(_)
+            | Instruction::PowF(_, _)
+            | Instruction::LogF(_)
+            | Instruction::SqrtF(_)
+            | Instruction::Not(_)
+            | Instruction::Eq(_, _)
+            | Instruction::Ne(_, _)
+            | Instruction::Gt(_, _)
+            | Instruction::Ge(_, _)
+            | Instruction::Lt(_, _)
+            | Instruction::Le(_, _)
+            | Instruction::And(_, _)
+            | Instruction::Or(_, _)
+            | Instruction::CastItoF(_)
+            | Instruction::CastItoB(_) => RegisterStorage::Scalar(ScalarStorageKind::F64),
+            Instruction::Load(_, ty)
+            | Instruction::Call(_, _, ty)
+            | Instruction::CallIndirect(_, _, ty)
+            | Instruction::GetArrayElem(_, _, ty)
+            | Instruction::GetGlobal(_, ty)
+            | Instruction::GetState(ty)
+            | Instruction::GetUpValue(_, ty)
+            | Instruction::TaggedUnionGetValue(_, ty) => self.register_storage_for_type(*ty),
+            Instruction::Mem(src) => self.value_storage(func, src)?,
+            Instruction::Delay(_, src, _) => self.value_storage(func, src)?,
+            Instruction::SetUpValue(_, src, _) => self.value_storage(func, src)?,
+            Instruction::Phi(left, _) => self.value_storage(func, left)?,
+            Instruction::PhiSwitch(inputs) => {
+                let Some(first) = inputs.first() else {
+                    return Err("PhiSwitch without inputs is invalid".to_string());
+                };
+                self.value_storage(func, first)?
+            }
+            Instruction::CloneUserSum { ty, .. } => self.register_storage_for_type(*ty),
+            Instruction::SetGlobal(_, _, _)
+            | Instruction::Store(_, _, _)
+            | Instruction::PushStateOffset(_)
+            | Instruction::PopStateOffset(_)
+            | Instruction::JmpIf(_, _, _, _)
+            | Instruction::Jmp(_)
+            | Instruction::Switch { .. }
+            | Instruction::SetArrayElem(_, _, _, _)
+            | Instruction::Closure(_)
+            | Instruction::CallCls(_, _, _)
+            | Instruction::CloseUpValues(_, _)
+            | Instruction::BoxAlloc { .. }
+            | Instruction::BoxLoad { .. }
+            | Instruction::BoxClone { .. }
+            | Instruction::BoxRelease { .. }
+            | Instruction::BoxStore { .. }
+            | Instruction::ReleaseUserSum { .. }
+            | Instruction::PowI(_)
+            | Instruction::LogI(_, _)
+            | Instruction::Return(_, _)
+            | Instruction::ReturnFeed(_, _)
+            | Instruction::Error => RegisterStorage::Scalar(ScalarStorageKind::Word),
+        })
+    }
+
+    fn register_storage_for_type(&self, ty: TypeNodeId) -> RegisterStorage {
+        if ty.word_size() == 0 {
+            RegisterStorage::Words(0)
+        } else if self.is_deepcopy_aggregate_type(ty) {
+            RegisterStorage::Scalar(ScalarStorageKind::Word)
+        } else if let Some(kind) = self.scalar_storage_kind_for_type(ty) {
+            RegisterStorage::Scalar(kind)
+        } else {
+            RegisterStorage::Words(self.runtime_value_size(ty))
+        }
+    }
+
+    fn flat_value_storage_for_type(&self, ty: TypeNodeId) -> RegisterStorage {
+        if ty.word_size() == 0 {
+            RegisterStorage::Words(0)
+        } else if let Some(kind) = self.scalar_storage_kind_for_type(ty) {
+            RegisterStorage::Scalar(kind)
+        } else {
+            RegisterStorage::Words(ty.word_size() as usize)
+        }
+    }
+
+    fn value_storage(&self, func: &Function, value: &VPtr) -> Result<RegisterStorage, String> {
+        match value.as_ref() {
+            Value::Argument(index) => func
+                .args
+                .get(*index)
+                .map(|arg| self.flat_value_storage_for_type(arg.1))
+                .ok_or_else(|| format!("invalid argument index {}", index)),
+            Value::Register(reg) => self
+                .resolve_register_storage(func, *reg)
+                .ok_or_else(|| format!("unknown register {}", reg)),
+            Value::Function(_) | Value::ExtFunction(_, _) | Value::Global(_) | Value::State(_) => {
+                Ok(RegisterStorage::Scalar(ScalarStorageKind::Word))
+            }
+            Value::Constructor(_, _, ty) => Ok(self.flat_value_storage_for_type(*ty)),
+            Value::None => Ok(RegisterStorage::Words(0)),
+        }
+    }
+
+    fn resolve_register_storage(
+        &self,
+        func: &Function,
+        target_reg: VReg,
+    ) -> Option<RegisterStorage> {
+        func.body.iter().find_map(|block| {
+            block.0.iter().find_map(|(dst, instr)| match dst.as_ref() {
+                Value::Register(reg) if *reg == target_reg => {
+                    self.instruction_result_storage(func, instr).ok()
+                }
+                _ => None,
+            })
+        })
     }
 
     fn instruction_result_size(
@@ -994,10 +1174,10 @@ impl RustGenerator {
                 self.assign_scalar(writer, dst, format!("{value}u64"))?
             }
             Instruction::Integer(value) => {
-                self.assign_scalar(writer, dst, format!("i64_to_word({value}i64)"))?
+                self.assign_scalar(writer, dst, format!("{value}i64"))?
             }
             Instruction::Float(value) => {
-                self.assign_scalar(writer, dst, format!("f64_to_word({value:?}f64)"))?
+                self.assign_scalar(writer, dst, format!("{value:?}f64"))?
             }
             Instruction::Alloc(ty) => self.assign_scalar(
                 writer,
@@ -1007,27 +1187,33 @@ impl RustGenerator {
             Instruction::Load(ptr, ty) => {
                 if self.is_deepcopy_aggregate_type(*ty) {
                     let dest = self.reg_name(dst)?;
-                    writer.line(format!(
-                        "{dest}[0] = memory.alloc({}usize);",
-                        ty.word_size()
-                    ))?;
-                    self.emit_deep_copy_value_into_ptr(writer, &format!("{dest}[0]"), ptr, *ty)?;
+                    writer.line(format!("{dest} = memory.alloc({}usize);", ty.word_size()))?;
+                    self.emit_deep_copy_value_into_ptr(writer, func, &dest, ptr, *ty)?;
                 } else {
                     let dest = self.reg_name(dst)?;
-                    let ptr_expr = self.word0_expr(ptr)?;
-                    writer.line(format!(
-                        "{dest} = {};",
-                        self.vec_to_array_expr(
-                            format!("memory.load({ptr_expr}, {}usize)?", ty.word_size()),
-                            self.runtime_value_size(*ty),
-                        )
-                    ))?;
+                    let ptr_expr = self.word0_expr(func, ptr)?;
+                    if ty.word_size() == 1 {
+                        self.assign_runtime_scalar_from_word_expr(
+                            writer,
+                            func,
+                            dst,
+                            format!("memory.load({ptr_expr}, 1usize)?[0]"),
+                        )?;
+                    } else {
+                        writer.line(format!(
+                            "{dest} = {};",
+                            self.vec_to_array_expr(
+                                format!("memory.load({ptr_expr}, {}usize)?", ty.word_size()),
+                                self.runtime_value_size(*ty),
+                            )
+                        ))?;
+                    }
                 }
             }
             Instruction::Store(ptr, src, ty) => {
-                let ptr_expr = self.word0_expr(ptr)?;
+                let ptr_expr = self.word0_expr(func, ptr)?;
                 if self.is_deepcopy_aggregate_type(*ty) {
-                    self.emit_deep_copy_value_into_ptr(writer, &ptr_expr, src, *ty)?;
+                    self.emit_deep_copy_value_into_ptr(writer, func, &ptr_expr, src, *ty)?;
                 } else {
                     let src_expr = self.context_value_slice_expr(func, src, *ty)?;
                     writer.line(format!(
@@ -1038,16 +1224,16 @@ impl RustGenerator {
             }
             Instruction::GetElement {
                 value,
-                tuple_offset,
+                tuple_offset: _,
                 ..
             } => {
-                let dest = self.reg_name(dst)?;
-                let base_expr = self.word0_expr(value)?;
+                let base_expr = self.word0_expr(func, value)?;
                 let word_offset = self.getelement_word_offset(instr)?;
-                writer.line(format!(
-                    "{dest}[0] = memory.get_element({base_expr}, {}usize)?;",
-                    word_offset
-                ))?;
+                self.assign_scalar(
+                    writer,
+                    dst,
+                    format!("memory.get_element({base_expr}, {}usize)?", word_offset),
+                )?;
             }
             Instruction::Call(callee, args, ret_ty) => {
                 let dest = self.reg_name(dst)?;
@@ -1127,7 +1313,13 @@ impl RustGenerator {
                         "let call_result = self.{direct_name}({});",
                         direct_call_args.join(", ")
                     ))?;
-                    self.emit_assign_abi_value_to_runtime(writer, dst, "call_result", *ret_ty)?;
+                    self.emit_assign_abi_value_to_runtime(
+                        writer,
+                        func,
+                        dst,
+                        "call_result",
+                        *ret_ty,
+                    )?;
                     return Ok(());
                 }
                 writer.line("let mut call_args = Vec::new();")?;
@@ -1137,13 +1329,37 @@ impl RustGenerator {
                 }
                 match call_kind {
                     CallKind::FunctionHandle(handle_expr) => {
-                        writer.line(format!(
-                            "{dest} = {};",
-                            self.vec_to_array_expr(
-                                format!("self.call_function_handle({handle_expr}, &call_args)"),
-                                result_size,
-                            )
-                        ))?;
+                        if self.is_deepcopy_aggregate_type(*ret_ty) {
+                            writer.line(format!(
+                                "let call_result = self.call_function_handle({handle_expr}, &call_args);"
+                            ))?;
+                            writer.line(format!(
+                                "{dest} = memory.alloc({}usize);",
+                                ret_ty.word_size()
+                            ))?;
+                            writer.line(format!(
+                                "memory.store({dest}, &call_result, {}usize)?;",
+                                ret_ty.word_size()
+                            ))?;
+                        } else if ret_ty.word_size() == 1 {
+                            writer.line(format!(
+                                "let call_result = self.call_function_handle({handle_expr}, &call_args);"
+                            ))?;
+                            self.assign_runtime_scalar_from_word_expr(
+                                writer,
+                                func,
+                                dst,
+                                "call_result[0]".to_string(),
+                            )?;
+                        } else {
+                            writer.line(format!(
+                                "{dest} = {};",
+                                self.vec_to_array_expr(
+                                    format!("self.call_function_handle({handle_expr}, &call_args)"),
+                                    result_size,
+                                )
+                            ))?;
+                        }
                     }
                     CallKind::Ext(symbol) => {
                         let name = format!("{:?}", symbol.as_str());
@@ -1152,10 +1368,20 @@ impl RustGenerator {
                             writer.line(format!(
                                 "let call_result = self.call_ext({name}, &call_args, {ret_words})?;"
                             ))?;
-                            writer.line(format!("{dest}[0] = memory.alloc({ret_words}usize);"))?;
+                            writer.line(format!("{dest} = memory.alloc({ret_words}usize);"))?;
                             writer.line(format!(
-                                "memory.store({dest}[0], &call_result, {ret_words}usize)?;"
+                                "memory.store({dest}, &call_result, {ret_words}usize)?;"
                             ))?;
+                        } else if ret_ty.word_size() == 1 {
+                            writer.line(format!(
+                                "let call_result = self.call_ext({name}, &call_args, {ret_words})?;"
+                            ))?;
+                            self.assign_runtime_scalar_from_word_expr(
+                                writer,
+                                func,
+                                dst,
+                                "call_result[0]".to_string(),
+                            )?;
                         } else {
                             writer.line(format!(
                                 "{dest} = {};",
@@ -1172,12 +1398,8 @@ impl RustGenerator {
                 let runtime_expr = match callee.as_ref() {
                     Value::ExtFunction(symbol, _) if args.is_empty() && ret_ty.word_size() == 1 => {
                         match symbol.as_str() {
-                            "_mimium_getnow" => {
-                                Some("f64_to_word(self.host.current_time())".to_string())
-                            }
-                            "_mimium_getsamplerate" => {
-                                Some("f64_to_word(self.host.sample_rate())".to_string())
-                            }
+                            "_mimium_getnow" => Some("self.host.current_time()".to_string()),
+                            "_mimium_getsamplerate" => Some("self.host.sample_rate()".to_string()),
                             _ => None,
                         }
                     }
@@ -1189,24 +1411,48 @@ impl RustGenerator {
                 } else {
                     let dest = self.reg_name(dst)?;
                     let result_size = self.instruction_result_size(func, instr)?;
-                    let handle_expr = self.word0_expr(callee)?;
+                    let handle_expr = self.word0_expr(func, callee)?;
                     writer.line("let mut call_args = Vec::new();")?;
                     for (arg, ty) in args {
                         let expr = self.boundary_value_slice_expr(func, arg, *ty)?;
                         writer.line(format!("call_args.extend_from_slice({expr});"))?;
                     }
-                    writer.line(format!(
-                        "{dest} = {};",
-                        self.vec_to_array_expr(
-                            format!("self.call_function_handle({handle_expr}, &call_args)"),
-                            result_size,
-                        )
-                    ))?;
+                    if self.is_deepcopy_aggregate_type(*ret_ty) {
+                        writer.line(format!(
+                            "let call_result = self.call_function_handle({handle_expr}, &call_args);"
+                        ))?;
+                        writer.line(format!(
+                            "{dest} = memory.alloc({}usize);",
+                            ret_ty.word_size()
+                        ))?;
+                        writer.line(format!(
+                            "memory.store({dest}, &call_result, {}usize)?;",
+                            ret_ty.word_size()
+                        ))?;
+                    } else if ret_ty.word_size() == 1 {
+                        writer.line(format!(
+                            "let call_result = self.call_function_handle({handle_expr}, &call_args);"
+                        ))?;
+                        self.assign_runtime_scalar_from_word_expr(
+                            writer,
+                            func,
+                            dst,
+                            "call_result[0]".to_string(),
+                        )?;
+                    } else {
+                        writer.line(format!(
+                            "{dest} = {};",
+                            self.vec_to_array_expr(
+                                format!("self.call_function_handle({handle_expr}, &call_args)"),
+                                result_size,
+                            )
+                        ))?;
+                    }
                 }
             }
             Instruction::MakeClosure { fn_proto, .. } => {
                 let dest = self.reg_name(dst)?;
-                let handle_expr = self.word0_expr(fn_proto)?;
+                let handle_expr = self.word0_expr(func, fn_proto)?;
                 let closure_function =
                     self.resolve_function_index(func, fn_proto).ok_or_else(|| {
                         format!("could not resolve closure target for {:?}", fn_proto)
@@ -1225,7 +1471,7 @@ impl RustGenerator {
                         Value::Register(reg) => {
                             if let Some(alloc_ty) = self.resolve_register_alloc_type(func, *reg) {
                                 let alloc_size = alloc_ty.word_size() as usize;
-                                let upvalue_expr = self.word0_expr(upvalue)?;
+                                let upvalue_expr = self.word0_expr(func, upvalue)?;
                                 if alloc_size == 1 {
                                     if self.should_capture_alloc_by_value(alloc_ty) {
                                         writer.line(format!(
@@ -1259,7 +1505,7 @@ impl RustGenerator {
                                 self.resolve_register_value_type(func, *reg)
                             {
                                 if self.is_deepcopy_aggregate_type(value_ty) {
-                                    let upvalue_expr = self.word0_expr(upvalue)?;
+                                    let upvalue_expr = self.word0_expr(func, upvalue)?;
                                     let value_size = value_ty.word_size() as usize;
                                     writer.line(format!(
                                         "let captured_upvalue = memory.alloc({value_size}usize);"
@@ -1310,7 +1556,7 @@ impl RustGenerator {
                             }
                         }
                         Value::Function(_) => {
-                            let upvalue_expr = self.word0_expr(upvalue)?;
+                            let upvalue_expr = self.word0_expr(func, upvalue)?;
                             writer.line(format!("closure_upvalues.push({upvalue_expr});"))?;
                             writer.line("closure_indirect.push(false);")?;
                         }
@@ -1324,7 +1570,7 @@ impl RustGenerator {
                 }
 
                 writer.line(format!(
-                    "{dest}[0] = self.closures.alloc({handle_expr}, closure_upvalues, closure_indirect, {}usize)?;"
+                    "{dest} = self.closures.alloc({handle_expr}, closure_upvalues, closure_indirect, {}usize)?;"
                     ,
                     closure_func.state_skeleton.total_size()
                 ))?;
@@ -1338,18 +1584,26 @@ impl RustGenerator {
                 writer.line("let closure_handle = self.get_current_closure().ok_or_else(|| \"missing closure context for GetUpValue\".to_string())?;")?;
                 if self.is_deepcopy_aggregate_type(*ty) {
                     let dest = self.reg_name(dst)?;
-                    writer.line(format!("{dest}[0] = memory.alloc({size}usize);"))?;
+                    writer.line(format!("{dest} = memory.alloc({size}usize);"))?;
                     writer.line("{")?;
                     writer.indented(1, |writer| {
                         writer.line(format!(
                             "let copied_words = self.load_upvalue(closure_handle, {}usize, {size}usize)?;",
                             *index as usize
                         ))?;
-                        writer.line(format!(
-                            "memory.store({dest}[0], &copied_words, {size}usize)?;"
-                        ))
+                        writer.line(format!("memory.store({dest}, &copied_words, {size}usize)?;"))
                     })?;
                     writer.line("}")?;
+                } else if ty.word_size() == 1 {
+                    self.assign_runtime_scalar_from_word_expr(
+                        writer,
+                        func,
+                        dst,
+                        format!(
+                            "self.load_upvalue(closure_handle, {}usize, {size}usize)?[0]",
+                            *index as usize
+                        ),
+                    )?;
                 } else {
                     let dest = self.reg_name(dst)?;
                     writer.line(format!(
@@ -1367,28 +1621,42 @@ impl RustGenerator {
             Instruction::SetUpValue(index, src, ty) => {
                 let dest = self.reg_name(dst)?;
                 let src_expr = self.boundary_value_slice_expr(func, src, *ty)?;
-                let src_array = self.context_value_array_expr(func, src, *ty)?;
                 let size = ty.word_size() as usize;
                 writer.line("let closure_handle = self.get_current_closure().ok_or_else(|| \"missing closure context for SetUpValue\".to_string())?;")?;
                 writer.line(format!(
                     "self.store_upvalue(closure_handle, {}usize, {src_expr}, {size}usize)?;",
                     *index as usize
                 ))?;
-                writer.line(format!("{dest} = {src_array};"))?;
+                if ty.word_size() == 1 {
+                    let src_scalar = self.scalar_expr_as(
+                        func,
+                        src,
+                        self.scalar_storage_kind_for_type(*ty)
+                            .unwrap_or(ScalarStorageKind::Word),
+                    )?;
+                    writer.line(format!("{dest} = {src_scalar};"))?;
+                } else {
+                    let src_array = self.context_value_array_expr(func, src, *ty)?;
+                    writer.line(format!("{dest} = {src_array};"))?;
+                }
             }
             Instruction::GetGlobal(global, ty) => {
                 let global_index = self.global_index(global_slots, global)?;
                 if self.is_deepcopy_aggregate_type(*ty) {
                     let dest = self.reg_name(dst)?;
+                    writer.line(format!("{dest} = memory.alloc({}usize);", ty.word_size()))?;
                     writer.line(format!(
-                        "{dest}[0] = memory.alloc({}usize);",
-                        ty.word_size()
-                    ))?;
-                    writer.line(format!(
-                        "memory.store({dest}[0], &self.globals[{global_index}][..{}], {}usize)?;",
+                        "memory.store({dest}, &self.globals[{global_index}][..{}], {}usize)?;",
                         ty.word_size(),
                         ty.word_size()
                     ))?;
+                } else if ty.word_size() == 1 {
+                    self.assign_runtime_scalar_from_word_expr(
+                        writer,
+                        func,
+                        dst,
+                        format!("self.globals[{global_index}][0]"),
+                    )?;
                 } else {
                     let dest = self.reg_name(dst)?;
                     writer.line(format!(
@@ -1436,17 +1704,23 @@ impl RustGenerator {
                 if self.is_deepcopy_aggregate_type(*ty) {
                     let dest = self.reg_name(dst)?;
                     let size = ty.word_size() as usize;
-                    writer.line(format!("{dest}[0] = memory.alloc({size}usize);"))?;
+                    writer.line(format!("{dest} = memory.alloc({size}usize);"))?;
                     writer.line("{")?;
                     writer.indented(1, |writer| {
                         writer.line(format!(
                             "let state_words = {{ let state = self.get_current_statestorage(); state.get_state({size}usize) }};"
                         ))?;
-                        writer.line(format!(
-                            "memory.store({dest}[0], &state_words, {size}usize)?;"
-                        ))
+                        writer.line(format!("memory.store({dest}, &state_words, {size}usize)?;"))
                     })?;
                     writer.line("}")?;
+                } else if ty.word_size() == 1 {
+                    self.assign_runtime_scalar_from_word_expr(
+                        writer,
+                        func,
+                        dst,
+                        "{ let state = self.get_current_statestorage(); state.get_state(1usize)[0] }"
+                            .to_string(),
+                    )?;
                 } else {
                     let dest = self.reg_name(dst)?;
                     writer.line(format!(
@@ -1486,8 +1760,17 @@ impl RustGenerator {
                     ));
                 }
                 let dest = self.reg_name(dst)?;
-                let left_expr = self.value_array_expr(left)?;
-                let right_expr = self.value_array_expr(right)?;
+                let dest_storage = self.value_storage(func, dst)?;
+                let (left_expr, right_expr) = match dest_storage {
+                    RegisterStorage::Scalar(kind) => (
+                        self.scalar_expr_as(func, left, kind)?,
+                        self.scalar_expr_as(func, right, kind)?,
+                    ),
+                    RegisterStorage::Words(_) => (
+                        self.value_array_expr(func, left)?,
+                        self.value_array_expr(func, right)?,
+                    ),
+                };
                 writer.line(format!("if pred_bb == {}usize {{", preds[0]))?;
                 writer.indented(1, |writer| writer.line(format!("{dest} = {left_expr};")))?;
                 writer.line(format!("}} else if pred_bb == {}usize {{", preds[1]))?;
@@ -1506,8 +1789,9 @@ impl RustGenerator {
                 default_block,
                 ..
             } => {
-                let scrutinee_expr = self.scalar_word_expr(func, scrutinee)?;
-                writer.line(format!("let scrutinee = word_to_i64({scrutinee_expr});"))?;
+                let scrutinee_expr =
+                    self.scalar_expr_as(func, scrutinee, ScalarStorageKind::I64)?;
+                writer.line(format!("let scrutinee = {scrutinee_expr};"))?;
                 writer.line(format!("pred_bb = {block_index};"))?;
                 writer.line("bb = match scrutinee {")?;
                 writer.indented(1, |writer| {
@@ -1536,10 +1820,14 @@ impl RustGenerator {
                     ));
                 }
                 let dest = self.reg_name(dst)?;
+                let dest_storage = self.value_storage(func, dst)?;
                 writer.line(format!("{dest} = match pred_bb {{"))?;
                 writer.indented(1, |writer| {
                     for (pred, input) in preds.iter().zip(inputs.iter()) {
-                        let expr = self.value_array_expr(input)?;
+                        let expr = match dest_storage {
+                            RegisterStorage::Scalar(kind) => self.scalar_expr_as(func, input, kind)?,
+                            RegisterStorage::Words(_) => self.value_array_expr(func, input)?,
+                        };
                         writer.line(format!("{pred}usize => {expr},"))?;
                     }
                     writer.line(format!(
@@ -1613,26 +1901,31 @@ impl RustGenerator {
                 }
             }
             Instruction::Delay(max_len, src, time) => {
-                let dest = self.reg_name(dst)?;
                 let src_expr = self.scalar_word_expr(func, src)?;
-                let time_expr = self.word0_expr(time)?;
+                let time_expr = self.word0_expr(func, time)?;
                 writer.line("{")?;
                 writer.indented(1, |writer| {
                     writer.line("let state = self.get_current_statestorage();")?;
-                    writer.line(format!(
-                        "{dest}[0] = state.delay({src_expr}, {time_expr}, {}usize);",
-                        max_len
-                    ))
+                    self.assign_runtime_scalar_from_word_expr(
+                        writer,
+                        func,
+                        dst,
+                        format!("state.delay({src_expr}, {time_expr}, {}usize)", max_len),
+                    )
                 })?;
                 writer.line("}")?;
             }
             Instruction::Mem(src) => {
-                let dest = self.reg_name(dst)?;
                 let src_expr = self.scalar_word_expr(func, src)?;
                 writer.line("{")?;
                 writer.indented(1, |writer| {
                     writer.line("let state = self.get_current_statestorage();")?;
-                    writer.line(format!("{dest}[0] = state.mem({src_expr});"))
+                    self.assign_runtime_scalar_from_word_expr(
+                        writer,
+                        func,
+                        dst,
+                        format!("state.mem({src_expr})"),
+                    )
                 })?;
                 writer.line("}")?;
             }
@@ -1708,35 +2001,26 @@ impl RustGenerator {
                 self.assign_truthy_binop(writer, func, dst, left, right, "||")?
             }
             Instruction::Not(value) => {
-                let dest = self.reg_name(dst)?;
-                let expr = self.scalar_word_expr(func, value)?;
-                writer.line(format!(
-                    "{dest}[0] = f64_to_word(if !truthy({expr}) {{ 1.0 }} else {{ 0.0 }});"
-                ))?;
+                let expr = self.scalar_truthy_expr(func, value)?;
+                self.assign_scalar(writer, dst, format!("if !{expr} {{ 1.0 }} else {{ 0.0 }}"))?;
             }
             Instruction::CastFtoI(value) => {
-                let dest = self.reg_name(dst)?;
-                let expr = self.scalar_word_expr(func, value)?;
-                writer.line(format!(
-                    "{dest}[0] = i64_to_word(word_to_f64({expr}) as i64);"
-                ))?;
+                let expr = self.scalar_expr_as(func, value, ScalarStorageKind::F64)?;
+                self.assign_scalar(writer, dst, format!("({expr} as i64)"))?;
             }
             Instruction::CastItoF(value) => {
-                let dest = self.reg_name(dst)?;
-                let expr = self.scalar_word_expr(func, value)?;
-                writer.line(format!(
-                    "{dest}[0] = f64_to_word(word_to_i64({expr}) as f64);"
-                ))?;
+                let expr = self.scalar_expr_as(func, value, ScalarStorageKind::I64)?;
+                self.assign_scalar(writer, dst, format!("({expr} as f64)"))?;
             }
             Instruction::CastItoB(value) => {
-                let dest = self.reg_name(dst)?;
-                let expr = self.scalar_word_expr(func, value)?;
-                writer.line(format!(
-                    "{dest}[0] = f64_to_word(if word_to_i64({expr}) != 0 {{ 1.0 }} else {{ 0.0 }});"
-                ))?;
+                let expr = self.scalar_expr_as(func, value, ScalarStorageKind::I64)?;
+                self.assign_scalar(
+                    writer,
+                    dst,
+                    format!("if {expr} != 0 {{ 1.0 }} else {{ 0.0 }}"),
+                )?;
             }
             Instruction::Array(values, elem_ty) => {
-                let dest = self.reg_name(dst)?;
                 let elem_words = elem_ty.word_size() as usize;
                 writer.line(format!(
                     "let array_handle = self.arrays.alloc_array({}, {}usize);",
@@ -1754,32 +2038,46 @@ impl RustGenerator {
                     })?;
                     writer.line("}")?;
                 }
-                writer.line(format!("{dest}[0] = array_handle;"))?;
+                self.assign_scalar(writer, dst, "array_handle".to_string())?;
             }
             Instruction::GetArrayElem(arr, idx, elem_ty) => {
                 let dest = self.reg_name(dst)?;
-                let arr_expr = self.word0_expr(arr)?;
-                let idx_expr = self.word0_expr(idx)?;
+                let dest_storage = self.value_storage(func, dst)?;
+                let arr_expr = self.word0_expr(func, arr)?;
+                let idx_expr = self.scalar_expr_as(func, idx, ScalarStorageKind::F64)?;
                 let elem_words = elem_ty.word_size() as usize;
+                let empty_assign = match dest_storage {
+                    RegisterStorage::Scalar(kind) => {
+                        format!("{dest} = {};", self.scalar_storage_default_expr(kind))
+                    }
+                    RegisterStorage::Words(_) => format!("{dest}.fill(0);"),
+                };
                 writer.line("{")?;
                 writer.indented(1, |writer| {
                     writer.line(format!("let array = self.arrays.get({arr_expr})?;"))?;
                     writer.line(
                         "let len = if array.elem_size_words == 0 { 0usize } else { array.data.len() / array.elem_size_words };",
                     )?;
-                    writer.line(format!("let index_value = word_to_f64({idx_expr});"))?;
+                    writer.line(format!("let index_value = {idx_expr};"))?;
                     writer.line(
                         "let index = if len == 0 { 0usize } else if !index_value.is_finite() { 0usize } else { (index_value as i64).clamp(0, (len - 1) as i64) as usize };",
                     )?;
-                    writer.line(format!("if len == 0 {{ {dest}.fill(0); }} else {{"))?;
+                    writer.line(format!("if len == 0 {{ {empty_assign} }} else {{"))?;
                     writer.indented(1, |writer| {
                         writer.line(format!("let start = index * {}usize;", elem_words))?;
                         writer.line(format!("let end = start + {}usize;", elem_words))?;
                         if self.is_deepcopy_aggregate_type(*elem_ty) {
-                            writer.line(format!("{dest}[0] = memory.alloc({elem_words}usize);"))?;
+                            writer.line(format!("{dest} = memory.alloc({elem_words}usize);"))?;
                             writer.line(format!(
-                                "memory.store({dest}[0], &array.data[start..end], {elem_words}usize)?;"
+                                "memory.store({dest}, &array.data[start..end], {elem_words}usize)?;"
                             ))
+                        } else if elem_ty.word_size() == 1 {
+                            self.assign_runtime_scalar_from_word_expr(
+                                writer,
+                                func,
+                                dst,
+                                "array.data[start]".to_string(),
+                            )
                         } else {
                             writer.line(format!(
                                 "{dest} = {};",
@@ -1795,8 +2093,8 @@ impl RustGenerator {
                 writer.line("}")?;
             }
             Instruction::SetArrayElem(arr, idx, value, elem_ty) => {
-                let arr_expr = self.word0_expr(arr)?;
-                let idx_expr = self.word0_expr(idx)?;
+                let arr_expr = self.word0_expr(func, arr)?;
+                let idx_expr = self.scalar_expr_as(func, idx, ScalarStorageKind::F64)?;
                 let elem_words = elem_ty.word_size() as usize;
                 let value_expr = self.context_value_slice_expr(func, value, *elem_ty)?;
                 writer.line("{")?;
@@ -1805,7 +2103,7 @@ impl RustGenerator {
                     writer.line(
                         "let len = if array.elem_size_words == 0 { 0usize } else { array.data.len() / array.elem_size_words };",
                     )?;
-                    writer.line(format!("let index_value = word_to_f64({idx_expr});"))?;
+                    writer.line(format!("let index_value = {idx_expr};"))?;
                     writer.line(
                         "let index = if len == 0 { 0usize } else if !index_value.is_finite() { 0usize } else { (index_value as i64).clamp(0, (len - 1) as i64) as usize };",
                     )?;
@@ -1833,9 +2131,9 @@ impl RustGenerator {
             } => {
                 let dest = self.reg_name(dst)?;
                 let union_size = union_type.word_size() as usize;
-                writer.line(format!("{dest}[0] = memory.alloc({union_size}usize);"))?;
+                writer.line(format!("{dest} = memory.alloc({union_size}usize);"))?;
                 writer.line(format!(
-                    "memory.store({dest}[0], &[i64_to_word({}i64)], 1usize)?;",
+                    "memory.store({dest}, &[i64_to_word({}i64)], 1usize)?;",
                     *tag as i64
                 ))?;
                 if let Some(payload_ty) =
@@ -1843,11 +2141,12 @@ impl RustGenerator {
                 {
                     if payload_ty.word_size() > 0 {
                         writer.line(format!(
-                            "let union_value_ptr = memory.get_element({dest}[0], 1usize)?;"
+                            "let union_value_ptr = memory.get_element({dest}, 1usize)?;"
                         ))?;
                         if self.is_deepcopy_aggregate_type(payload_ty) {
                             self.emit_deep_copy_value_into_ptr(
                                 writer,
+                                func,
                                 "union_value_ptr",
                                 value,
                                 payload_ty,
@@ -1864,18 +2163,24 @@ impl RustGenerator {
                 }
             }
             Instruction::TaggedUnionGetTag(value) => {
-                let dest = self.reg_name(dst)?;
-                let ptr_expr = self.word0_expr(value)?;
-                writer.line(format!("{dest}[0] = memory.load({ptr_expr}, 1usize)?[0];"))?;
+                let ptr_expr = self.word0_expr(func, value)?;
+                self.assign_scalar(writer, dst, format!("memory.load({ptr_expr}, 1usize)?[0]"))?;
             }
             Instruction::TaggedUnionGetValue(value, ty) => {
                 let dest = self.reg_name(dst)?;
-                let ptr_expr = self.word0_expr(value)?;
+                let ptr_expr = self.word0_expr(func, value)?;
                 writer.line(format!(
                     "let union_value_ptr = memory.get_element({ptr_expr}, 1usize)?;"
                 ))?;
                 if self.is_deepcopy_aggregate_type(*ty) {
-                    writer.line(format!("{dest}[0] = union_value_ptr;"))?;
+                    writer.line(format!("{dest} = union_value_ptr;"))?;
+                } else if ty.word_size() == 1 {
+                    self.assign_runtime_scalar_from_word_expr(
+                        writer,
+                        func,
+                        dst,
+                        format!("memory.load(union_value_ptr, 1usize)?[0]"),
+                    )?;
                 } else {
                     writer.line(format!(
                         "{dest} = {};",
@@ -1912,16 +2217,6 @@ impl RustGenerator {
         Ok(())
     }
 
-    fn assign_scalar<W: Write>(
-        &self,
-        writer: &mut CodeWriter<W>,
-        dst: &VPtr,
-        expr: String,
-    ) -> Result<(), String> {
-        let dest = self.reg_name(dst)?;
-        writer.line(format!("{dest}[0] = {expr};"))
-    }
-
     fn assign_float_binop<W: Write>(
         &self,
         writer: &mut CodeWriter<W>,
@@ -1931,12 +2226,9 @@ impl RustGenerator {
         right: &VPtr,
         op: &str,
     ) -> Result<(), String> {
-        let dest = self.reg_name(dst)?;
-        let left_expr = self.scalar_word_expr(func, left)?;
-        let right_expr = self.scalar_word_expr(func, right)?;
-        writer.line(format!(
-            "{dest}[0] = f64_to_word(word_to_f64({left_expr}) {op} word_to_f64({right_expr}));"
-        ))
+        let left_expr = self.scalar_expr_as(func, left, ScalarStorageKind::F64)?;
+        let right_expr = self.scalar_expr_as(func, right, ScalarStorageKind::F64)?;
+        self.assign_scalar(writer, dst, format!("{left_expr} {op} {right_expr}"))
     }
 
     fn assign_float_method1<W: Write>(
@@ -1947,11 +2239,8 @@ impl RustGenerator {
         value: &VPtr,
         method: &str,
     ) -> Result<(), String> {
-        let dest = self.reg_name(dst)?;
-        let expr = self.scalar_word_expr(func, value)?;
-        writer.line(format!(
-            "{dest}[0] = f64_to_word(word_to_f64({expr}).{method}());"
-        ))
+        let expr = self.scalar_expr_as(func, value, ScalarStorageKind::F64)?;
+        self.assign_scalar(writer, dst, format!("{expr}.{method}()"))
     }
 
     fn assign_float_method2<W: Write>(
@@ -1963,12 +2252,9 @@ impl RustGenerator {
         right: &VPtr,
         method: &str,
     ) -> Result<(), String> {
-        let dest = self.reg_name(dst)?;
-        let left_expr = self.scalar_word_expr(func, left)?;
-        let right_expr = self.scalar_word_expr(func, right)?;
-        writer.line(format!(
-            "{dest}[0] = f64_to_word(word_to_f64({left_expr}).{method}(word_to_f64({right_expr})));"
-        ))
+        let left_expr = self.scalar_expr_as(func, left, ScalarStorageKind::F64)?;
+        let right_expr = self.scalar_expr_as(func, right, ScalarStorageKind::F64)?;
+        self.assign_scalar(writer, dst, format!("{left_expr}.{method}({right_expr})"))
     }
 
     fn assign_float_unop<W: Write>(
@@ -1979,9 +2265,8 @@ impl RustGenerator {
         value: &VPtr,
         op: &str,
     ) -> Result<(), String> {
-        let dest = self.reg_name(dst)?;
-        let expr = self.scalar_word_expr(func, value)?;
-        writer.line(format!("{dest}[0] = f64_to_word({op}word_to_f64({expr}));"))
+        let expr = self.scalar_expr_as(func, value, ScalarStorageKind::F64)?;
+        self.assign_scalar(writer, dst, format!("{op}{expr}"))
     }
 
     fn assign_int_binop<W: Write>(
@@ -1993,12 +2278,9 @@ impl RustGenerator {
         right: &VPtr,
         op: &str,
     ) -> Result<(), String> {
-        let dest = self.reg_name(dst)?;
-        let left_expr = self.scalar_word_expr(func, left)?;
-        let right_expr = self.scalar_word_expr(func, right)?;
-        writer.line(format!(
-            "{dest}[0] = i64_to_word(word_to_i64({left_expr}) {op} word_to_i64({right_expr}));"
-        ))
+        let left_expr = self.scalar_expr_as(func, left, ScalarStorageKind::I64)?;
+        let right_expr = self.scalar_expr_as(func, right, ScalarStorageKind::I64)?;
+        self.assign_scalar(writer, dst, format!("{left_expr} {op} {right_expr}"))
     }
 
     fn assign_int_unop<W: Write>(
@@ -2009,9 +2291,8 @@ impl RustGenerator {
         value: &VPtr,
         op: &str,
     ) -> Result<(), String> {
-        let dest = self.reg_name(dst)?;
-        let expr = self.scalar_word_expr(func, value)?;
-        writer.line(format!("{dest}[0] = i64_to_word({op}word_to_i64({expr}));"))
+        let expr = self.scalar_expr_as(func, value, ScalarStorageKind::I64)?;
+        self.assign_scalar(writer, dst, format!("{op}{expr}"))
     }
 
     fn assign_int_method1<W: Write>(
@@ -2022,11 +2303,8 @@ impl RustGenerator {
         value: &VPtr,
         method: &str,
     ) -> Result<(), String> {
-        let dest = self.reg_name(dst)?;
-        let expr = self.scalar_word_expr(func, value)?;
-        writer.line(format!(
-            "{dest}[0] = i64_to_word(word_to_i64({expr}).{method}());"
-        ))
+        let expr = self.scalar_expr_as(func, value, ScalarStorageKind::I64)?;
+        self.assign_scalar(writer, dst, format!("{expr}.{method}()"))
     }
 
     fn assign_cmp<W: Write>(
@@ -2038,12 +2316,13 @@ impl RustGenerator {
         right: &VPtr,
         op: &str,
     ) -> Result<(), String> {
-        let dest = self.reg_name(dst)?;
-        let left_expr = self.scalar_word_expr(func, left)?;
-        let right_expr = self.scalar_word_expr(func, right)?;
-        writer.line(format!(
-            "{dest}[0] = f64_to_word(if word_to_f64({left_expr}) {op} word_to_f64({right_expr}) {{ 1.0 }} else {{ 0.0 }});"
-        ))
+        let left_expr = self.scalar_expr_as(func, left, ScalarStorageKind::F64)?;
+        let right_expr = self.scalar_expr_as(func, right, ScalarStorageKind::F64)?;
+        self.assign_scalar(
+            writer,
+            dst,
+            format!("if {left_expr} {op} {right_expr} {{ 1.0 }} else {{ 0.0 }}"),
+        )
     }
 
     fn assign_truthy_binop<W: Write>(
@@ -2055,12 +2334,13 @@ impl RustGenerator {
         right: &VPtr,
         op: &str,
     ) -> Result<(), String> {
-        let dest = self.reg_name(dst)?;
-        let left_expr = self.scalar_word_expr(func, left)?;
-        let right_expr = self.scalar_word_expr(func, right)?;
-        writer.line(format!(
-            "{dest}[0] = f64_to_word(if truthy({left_expr}) {op} truthy({right_expr}) {{ 1.0 }} else {{ 0.0 }});"
-        ))
+        let left_expr = self.scalar_truthy_expr(func, left)?;
+        let right_expr = self.scalar_truthy_expr(func, right)?;
+        self.assign_scalar(
+            writer,
+            dst,
+            format!("if {left_expr} {op} {right_expr} {{ 1.0 }} else {{ 0.0 }}"),
+        )
     }
 
     fn function_return_type(&self, func: &Function) -> Result<TypeNodeId, String> {
@@ -2338,7 +2618,7 @@ impl RustGenerator {
                     self.abi_expr_from_word_source(&format!("arg_{index}"), ty)
                 }
                 _ => {
-                    let ptr_expr = self.word0_expr(value)?;
+                    let ptr_expr = self.word0_expr(func, value)?;
                     Ok(format!(
                         "({{ let words = memory.load({ptr_expr}, {}usize)?; {} }})",
                         ty.word_size(),
@@ -2408,6 +2688,7 @@ impl RustGenerator {
     fn emit_assign_abi_value_to_runtime<W: Write>(
         &self,
         writer: &mut CodeWriter<W>,
+        func: &Function,
         dst: &VPtr,
         abi_expr: &str,
         ty: TypeNodeId,
@@ -2422,10 +2703,10 @@ impl RustGenerator {
                 "let abi_words = {};",
                 self.abi_to_words_array_expr(abi_expr, ty)?
             ))?;
-            writer.line(format!("{dest}[0] = memory.alloc({size}usize);"))?;
-            writer.line(format!(
-                "memory.store({dest}[0], &abi_words, {size}usize)?;"
-            ))
+            writer.line(format!("{dest} = memory.alloc({size}usize);"))?;
+            writer.line(format!("memory.store({dest}, &abi_words, {size}usize)?;"))
+        } else if ty.word_size() == 1 {
+            self.assign_runtime_scalar_from_word_expr(writer, func, dst, abi_expr.to_string())
         } else {
             writer.line(format!(
                 "{dest} = {};",
@@ -2469,8 +2750,10 @@ impl RustGenerator {
                 "encode_function({index})"
             ))),
             Value::ExtFunction(symbol, _) => Ok(CallKind::Ext(*symbol)),
-            Value::Register(reg) => Ok(CallKind::FunctionHandle(format!("reg_{reg}[0]"))),
-            Value::Argument(index) => Ok(CallKind::FunctionHandle(format!("arg_{index}[0]"))),
+            Value::Register(reg) => Ok(CallKind::FunctionHandle(format!("reg_{reg}"))),
+            Value::Argument(index) => {
+                Ok(CallKind::FunctionHandle(self.argument_scalar_name(*index)))
+            }
             _ => Err(format!(
                 "unsupported callee value for initial Rust backend: {:?}",
                 callee
@@ -2582,7 +2865,7 @@ impl RustGenerator {
                 | Type::Array(_)
                 | Type::Code(_)
                 | Type::Boxed(_)
-                | Type::Primitive(crate::types::PType::String)
+                | Type::Primitive(PType::String)
         )
     }
 
@@ -2641,19 +2924,144 @@ impl RustGenerator {
         }
     }
 
-    fn scalar_word_expr(&self, func: &Function, value: &VPtr) -> Result<String, String> {
-        match value.as_ref() {
-            Value::Register(reg)
-                if self
-                    .resolve_register_getelement_type(func, *reg)
-                    .is_some_and(|ty| {
-                        ty.word_size() == 1 && !self.is_deepcopy_aggregate_type(ty)
-                    }) =>
-            {
-                Ok(format!("memory.load(reg_{reg}[0], 1usize)?[0]"))
+    fn scalar_storage_kind_for_type(&self, ty: TypeNodeId) -> Option<ScalarStorageKind> {
+        match ty.to_type() {
+            Type::Primitive(PType::Numeric) => Some(ScalarStorageKind::F64),
+            Type::Primitive(PType::Int) => Some(ScalarStorageKind::I64),
+            Type::Primitive(PType::Unit) => None,
+            Type::Primitive(PType::String)
+            | Type::Array(_)
+            | Type::Function { .. }
+            | Type::Ref(_)
+            | Type::Code(_)
+            | Type::Boxed(_) => Some(ScalarStorageKind::Word),
+            _ if ty.word_size() == 1 && !self.is_deepcopy_aggregate_type(ty) => {
+                Some(ScalarStorageKind::Word)
             }
-            _ => self.word0_expr(value),
+            _ => None,
         }
+    }
+
+    fn scalar_storage_rust_type(&self, kind: ScalarStorageKind) -> &'static str {
+        match kind {
+            ScalarStorageKind::Word => "Word",
+            ScalarStorageKind::I64 => "i64",
+            ScalarStorageKind::F64 => "f64",
+        }
+    }
+
+    fn scalar_storage_default_expr(&self, kind: ScalarStorageKind) -> &'static str {
+        match kind {
+            ScalarStorageKind::Word => "0u64",
+            ScalarStorageKind::I64 => "0i64",
+            ScalarStorageKind::F64 => "0.0f64",
+        }
+    }
+
+    fn argument_scalar_name(&self, index: usize) -> String {
+        format!("arg_{index}_scalar")
+    }
+
+    fn scalar_from_word_expr(&self, word_expr: String, kind: ScalarStorageKind) -> String {
+        match kind {
+            ScalarStorageKind::Word => word_expr,
+            ScalarStorageKind::I64 => format!("word_to_i64({word_expr})"),
+            ScalarStorageKind::F64 => format!("word_to_f64({word_expr})"),
+        }
+    }
+
+    fn scalar_to_word_expr(&self, scalar_expr: String, kind: ScalarStorageKind) -> String {
+        match kind {
+            ScalarStorageKind::Word => scalar_expr,
+            ScalarStorageKind::I64 => format!("i64_to_word({scalar_expr})"),
+            ScalarStorageKind::F64 => format!("f64_to_word({scalar_expr})"),
+        }
+    }
+
+    fn convert_scalar_expr(
+        &self,
+        expr: String,
+        from: ScalarStorageKind,
+        to: ScalarStorageKind,
+    ) -> String {
+        if from == to {
+            return expr;
+        }
+        match (from, to) {
+            (ScalarStorageKind::Word, kind) => self.scalar_from_word_expr(expr, kind),
+            (kind, ScalarStorageKind::Word) => self.scalar_to_word_expr(expr, kind),
+            (ScalarStorageKind::I64, ScalarStorageKind::F64) => format!("({expr} as f64)"),
+            (ScalarStorageKind::F64, ScalarStorageKind::I64) => format!("({expr} as i64)"),
+            _ => expr,
+        }
+    }
+
+    fn scalar_source_expr(
+        &self,
+        func: &Function,
+        value: &VPtr,
+    ) -> Result<(String, ScalarStorageKind), String> {
+        match value.as_ref() {
+            Value::Argument(index) => match self.value_storage(func, value)? {
+                RegisterStorage::Scalar(kind) => Ok((self.argument_scalar_name(*index), kind)),
+                RegisterStorage::Words(_) => Err(format!(
+                    "argument {} is not representable as a scalar value",
+                    index
+                )),
+            },
+            Value::Register(reg) => match self
+                .resolve_register_storage(func, *reg)
+                .ok_or_else(|| format!("unknown register {}", reg))?
+            {
+                RegisterStorage::Scalar(kind) => Ok((format!("reg_{reg}"), kind)),
+                RegisterStorage::Words(_) => Err(format!(
+                    "register {} is not representable as a scalar value",
+                    reg
+                )),
+            },
+            Value::Function(index) => {
+                Ok((format!("encode_function({index})"), ScalarStorageKind::Word))
+            }
+            Value::None => Ok(("0u64".to_string(), ScalarStorageKind::Word)),
+            _ => Err(format!(
+                "value is not representable as a scalar in Rust codegen: {:?}",
+                value
+            )),
+        }
+    }
+
+    fn scalar_expr_as(
+        &self,
+        func: &Function,
+        value: &VPtr,
+        kind: ScalarStorageKind,
+    ) -> Result<String, String> {
+        let (expr, actual_kind) = self.scalar_source_expr(func, value)?;
+        Ok(self.convert_scalar_expr(expr, actual_kind, kind))
+    }
+
+    fn runtime_scalar_expr_from_word_expr(
+        &self,
+        word_expr: String,
+        ty: TypeNodeId,
+    ) -> Result<String, String> {
+        let kind = self
+            .scalar_storage_kind_for_type(ty)
+            .unwrap_or(ScalarStorageKind::Word);
+        Ok(self.scalar_from_word_expr(word_expr, kind))
+    }
+
+    fn scalar_truthy_expr(&self, func: &Function, value: &VPtr) -> Result<String, String> {
+        let (expr, kind) = self.scalar_source_expr(func, value)?;
+        Ok(match kind {
+            ScalarStorageKind::F64 => format!("({expr} > 0.0)"),
+            ScalarStorageKind::I64 => format!("({expr} != 0)"),
+            ScalarStorageKind::Word => format!("truthy({expr})"),
+        })
+    }
+
+    fn scalar_word_expr(&self, func: &Function, value: &VPtr) -> Result<String, String> {
+        self.scalar_expr_as(func, value, ScalarStorageKind::Word)
     }
 
     fn context_value_vec_expr(
@@ -2666,7 +3074,7 @@ impl RustGenerator {
             let expr = self.scalar_word_expr(func, value)?;
             Ok(format!("vec![{expr}]"))
         } else {
-            self.value_vec_expr(value)
+            self.value_vec_expr(func, value)
         }
     }
 
@@ -2680,7 +3088,7 @@ impl RustGenerator {
             let expr = self.scalar_word_expr(func, value)?;
             Ok(format!("[{expr}]"))
         } else {
-            self.value_array_expr(value)
+            self.value_array_expr(func, value)
         }
     }
 
@@ -2694,7 +3102,7 @@ impl RustGenerator {
             return match value.as_ref() {
                 Value::Argument(index) => Ok(format!("&arg_{index}")),
                 _ => {
-                    let ptr_expr = self.word0_expr(value)?;
+                    let ptr_expr = self.word0_expr(func, value)?;
                     Ok(format!(
                         "&memory.load({ptr_expr}, {}usize)?",
                         ty.word_size()
@@ -2706,7 +3114,48 @@ impl RustGenerator {
             let expr = self.scalar_word_expr(func, value)?;
             Ok(format!("&[{expr}]"))
         } else {
-            self.value_slice_expr(value)
+            self.value_slice_expr(func, value)
+        }
+    }
+
+    fn assign_scalar<W: Write>(
+        &self,
+        writer: &mut CodeWriter<W>,
+        dst: &VPtr,
+        expr: String,
+    ) -> Result<(), String> {
+        let dest = self.reg_name(dst)?;
+        writer.line(format!("{dest} = {expr};"))
+    }
+
+    fn assign_from_word_expr<W: Write>(
+        &self,
+        writer: &mut CodeWriter<W>,
+        func: &Function,
+        dst: &VPtr,
+        word_expr: String,
+    ) -> Result<(), String> {
+        let dest_storage = self.value_storage(func, dst)?;
+        match dest_storage {
+            RegisterStorage::Scalar(kind) => {
+                self.assign_scalar(writer, dst, self.scalar_from_word_expr(word_expr, kind))
+            }
+            RegisterStorage::Words(_) => self.assign_scalar(writer, dst, word_expr),
+        }
+    }
+
+    fn assign_runtime_scalar_from_word_expr<W: Write>(
+        &self,
+        writer: &mut CodeWriter<W>,
+        func: &Function,
+        dst: &VPtr,
+        word_expr: String,
+    ) -> Result<(), String> {
+        match self.value_storage(func, dst)? {
+            RegisterStorage::Scalar(kind) => {
+                self.assign_scalar(writer, dst, self.scalar_from_word_expr(word_expr, kind))
+            }
+            RegisterStorage::Words(_) => self.assign_scalar(writer, dst, word_expr),
         }
     }
 
@@ -2717,10 +3166,21 @@ impl RustGenerator {
         }
     }
 
-    fn word0_expr(&self, value: &VPtr) -> Result<String, String> {
+    fn word0_expr(&self, func: &Function, value: &VPtr) -> Result<String, String> {
         match value.as_ref() {
-            Value::Argument(index) => Ok(format!("arg_{index}[0]")),
-            Value::Register(reg) => Ok(format!("reg_{reg}[0]")),
+            Value::Argument(index) => match self.value_storage(func, value)? {
+                RegisterStorage::Scalar(_) => {
+                    self.scalar_expr_as(func, value, ScalarStorageKind::Word)
+                }
+                RegisterStorage::Words(_) => Ok(format!("arg_{index}[0]")),
+            },
+            Value::Register(reg) => match self.resolve_register_storage(func, *reg) {
+                Some(RegisterStorage::Scalar(_)) => {
+                    self.scalar_expr_as(func, value, ScalarStorageKind::Word)
+                }
+                Some(RegisterStorage::Words(_)) => Ok(format!("reg_{reg}[0]")),
+                None => Err(format!("unknown register {}", reg)),
+            },
             Value::Function(index) => Ok(format!("encode_function({index})")),
             Value::None => Ok("0u64".to_string()),
             _ => Err(format!(
@@ -2730,7 +3190,10 @@ impl RustGenerator {
         }
     }
 
-    fn value_vec_expr(&self, value: &VPtr) -> Result<String, String> {
+    fn value_vec_expr(&self, func: &Function, value: &VPtr) -> Result<String, String> {
+        if matches!(self.value_storage(func, value)?, RegisterStorage::Scalar(_)) {
+            return Ok(format!("vec![{}]", self.word0_expr(func, value)?));
+        }
         match value.as_ref() {
             Value::Argument(index) => Ok(format!("arg_{index}.to_vec()")),
             Value::Register(reg) => Ok(format!("reg_{reg}.to_vec()")),
@@ -2743,7 +3206,10 @@ impl RustGenerator {
         }
     }
 
-    fn value_array_expr(&self, value: &VPtr) -> Result<String, String> {
+    fn value_array_expr(&self, func: &Function, value: &VPtr) -> Result<String, String> {
+        if matches!(self.value_storage(func, value)?, RegisterStorage::Scalar(_)) {
+            return Ok(format!("[{}]", self.word0_expr(func, value)?));
+        }
         match value.as_ref() {
             Value::Argument(index) => Ok(format!("arg_{index}")),
             Value::Register(reg) => Ok(format!("reg_{reg}")),
@@ -2756,7 +3222,10 @@ impl RustGenerator {
         }
     }
 
-    fn value_slice_expr(&self, value: &VPtr) -> Result<String, String> {
+    fn value_slice_expr(&self, func: &Function, value: &VPtr) -> Result<String, String> {
+        if matches!(self.value_storage(func, value)?, RegisterStorage::Scalar(_)) {
+            return Ok(format!("&[{}]", self.word0_expr(func, value)?));
+        }
         match value.as_ref() {
             Value::Argument(index) => Ok(format!("&arg_{index}")),
             Value::Register(reg) => Ok(format!("&reg_{reg}")),
@@ -2781,7 +3250,7 @@ impl RustGenerator {
         match value.as_ref() {
             Value::Argument(index) => Ok(format!("&arg_{index}")),
             _ => {
-                let ptr_expr = self.word0_expr(value)?;
+                let ptr_expr = self.word0_expr(func, value)?;
                 Ok(format!(
                     "&memory.load({ptr_expr}, {}usize)?",
                     ty.word_size()
@@ -2810,6 +3279,7 @@ impl RustGenerator {
     fn emit_deep_copy_value_into_ptr<W: Write>(
         &self,
         writer: &mut CodeWriter<W>,
+        func: &Function,
         dest_ptr_expr: &str,
         src: &VPtr,
         ty: TypeNodeId,
@@ -2820,7 +3290,7 @@ impl RustGenerator {
             }
             _ => {
                 let size = ty.word_size() as usize;
-                let src_handle = self.word0_expr(src)?;
+                let src_handle = self.word0_expr(func, src)?;
                 writer.line("{")?;
                 writer.indented(1, |writer| {
                     writer.line(format!(
