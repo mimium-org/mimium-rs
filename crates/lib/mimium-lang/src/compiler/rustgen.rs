@@ -179,23 +179,71 @@ impl RustGenerator {
             return Ok(());
         };
         let dsp_index = dsp_func.index;
+        let dsp_dispatch = self.function_dispatch_name(dsp_func);
         let dsp_return = dsp_func.return_type.get().copied();
+        let dsp_input_words = dsp_func
+            .args
+            .iter()
+            .map(|arg| arg.1.word_size() as usize)
+            .sum::<usize>();
+        let dsp_output_words = dsp_return.map_or(0usize, |ty| ty.word_size() as usize);
 
         writer.line("pub fn call_dsp(&mut self, args: &[Word]) -> Result<Vec<Word>, String> {")?;
         writer.indented(1, |writer| {
-            writer.line(format!(
-                "let result = self.call_function_handle(encode_function({dsp_index}), args);"
-            ))?;
-            if let Some(ret_ty) = dsp_return.filter(|ty| self.is_deepcopy_aggregate_type(*ty)) {
-                let size = ret_ty.word_size() as usize;
-                writer.line(format!(
-                    "let final_result = if result.is_empty() {{ Ok(Vec::new()) }} else {{ self.memory.load(result[0], {size}usize) }};"
-                ))
-                ?;
-                writer.line("final_result")
+            writer.line("let previous_function_state = self.current_function_state;")?;
+            writer.line(format!("self.current_function_state = Some({dsp_index});"))?;
+            writer.line(format!("let result = self.{dsp_dispatch}(args);"))?;
+            writer.line("self.current_function_state = previous_function_state;")?;
+            self.emit_entrypoint_result(writer, "result", dsp_return)
+        })?;
+        writer.line("}")?;
+        writer.blank_line()?;
+
+        writer.line(
+            "pub fn call_dsp_buffer(&mut self, args: &[Word], frames: usize) -> Result<Vec<Word>, String> {",
+        )?;
+        writer.indented(1, |writer| {
+            writer.line("let previous_function_state = self.current_function_state;")?;
+            writer.line(format!("self.current_function_state = Some({dsp_index});"))?;
+            if dsp_input_words == 0 {
+                writer.line("if !args.is_empty() {")?;
+                writer.indented(1, |writer| {
+                    writer.line(
+                        "return Err(format!(\"expected 0 input words for {} dsp frames, got {}\", frames, args.len()));",
+                    )
+                })?;
+                writer.line("}")?;
             } else {
-                writer.line("Ok(result)")
+                writer.line(format!(
+                    "let expected_len = frames.saturating_mul({dsp_input_words}usize);"
+                ))?;
+                writer.line("if args.len() != expected_len {")?;
+                writer.indented(1, |writer| {
+                    writer.line(format!(
+                        "return Err(format!(\"expected {{}} input words for {{}} dsp frames, got {{}}\", expected_len, frames, args.len()));"
+                    ))
+                })?;
+                writer.line("}")?;
             }
+
+            writer.line(format!(
+                "let mut outputs = Vec::with_capacity(frames.saturating_mul({dsp_output_words}usize));"
+            ))?;
+            writer.line("for frame in 0..frames {")?;
+            writer.indented(1, |writer| {
+                if dsp_input_words == 0 {
+                    writer.line("let frame_args: &[Word] = &[];")?;
+                } else {
+                    writer.line(format!("let frame_start = frame * {dsp_input_words}usize;"))?;
+                    writer.line(format!("let frame_end = frame_start + {dsp_input_words}usize;"))?;
+                    writer.line("let frame_args = &args[frame_start..frame_end];")?;
+                }
+                writer.line(format!("let result = self.{dsp_dispatch}(frame_args);"))?;
+                self.emit_extend_entrypoint_output(writer, "outputs", "result", dsp_return)
+            })?;
+            writer.line("}")?;
+            writer.line("self.current_function_state = previous_function_state;")?;
+            writer.line("Ok(outputs)")
         })?;
         writer.line("}")?;
         writer.blank_line()
@@ -211,26 +259,54 @@ impl RustGenerator {
             return Ok(());
         };
         let main_index = main_func.index;
+        let main_dispatch = self.function_dispatch_name(main_func);
         let main_return = main_func.return_type.get().copied();
 
         writer.line("pub fn call_main(&mut self) -> Result<Vec<Word>, String> {")?;
         writer.indented(1, |writer| {
-            writer.line(format!(
-                "let result = self.call_function_handle(encode_function({main_index}), &[]);"
-            ))?;
-            if let Some(ret_ty) = main_return.filter(|ty| self.is_deepcopy_aggregate_type(*ty)) {
-                let size = ret_ty.word_size() as usize;
-                writer.line(format!(
-                    "let final_result = if result.is_empty() {{ Ok(Vec::new()) }} else {{ self.memory.load(result[0], {size}usize) }};"
-                ))
-                ?;
-                writer.line("final_result")
-            } else {
-                writer.line("Ok(result)")
-            }
+            writer.line("let previous_function_state = self.current_function_state;")?;
+            writer.line(format!("self.current_function_state = Some({main_index});"))?;
+            writer.line(format!("let result = self.{main_dispatch}(&[]);"))?;
+            writer.line("self.current_function_state = previous_function_state;")?;
+            self.emit_entrypoint_result(writer, "result", main_return)
         })?;
         writer.line("}")?;
         writer.blank_line()
+    }
+
+    fn emit_entrypoint_result<W: Write>(
+        &self,
+        writer: &mut CodeWriter<W>,
+        result_expr: &str,
+        return_ty: Option<TypeNodeId>,
+    ) -> Result<(), String> {
+        if let Some(ret_ty) = return_ty.filter(|ty| self.is_deepcopy_aggregate_type(*ty)) {
+            let size = ret_ty.word_size() as usize;
+            writer.line(format!(
+                "let final_result = if {result_expr}.is_empty() {{ Ok(Vec::new()) }} else {{ self.memory.load({result_expr}[0], {size}usize) }};"
+            ))?;
+            writer.line("final_result")
+        } else {
+            writer.line(format!("Ok({result_expr})"))
+        }
+    }
+
+    fn emit_extend_entrypoint_output<W: Write>(
+        &self,
+        writer: &mut CodeWriter<W>,
+        output_expr: &str,
+        result_expr: &str,
+        return_ty: Option<TypeNodeId>,
+    ) -> Result<(), String> {
+        if let Some(ret_ty) = return_ty.filter(|ty| self.is_deepcopy_aggregate_type(*ty)) {
+            let size = ret_ty.word_size() as usize;
+            writer.line(format!("if {result_expr}.is_empty() {{ continue; }}"))?;
+            writer.line(format!(
+                "{output_expr}.extend(self.memory.load({result_expr}[0], {size}usize)?);"
+            ))
+        } else {
+            writer.line(format!("{output_expr}.extend({result_expr});"))
+        }
     }
 
     fn emit_function_handle_dispatch<W: Write>(
@@ -378,6 +454,7 @@ impl RustGenerator {
             signature_args.push(format!("arg_{index}_value: {}", self.abi_type_expr(arg.1)?));
         }
 
+        writer.line("#[inline(always)]")?;
         writer.line(format!(
             "fn {direct_name}({}) -> {} {{",
             signature_args.join(", "),
