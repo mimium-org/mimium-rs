@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 use std::sync::Arc;
 
@@ -37,6 +37,12 @@ enum ScalarStorageKind {
 enum RegisterStorage {
     Scalar(ScalarStorageKind),
     Words(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StackPointer {
+    root_reg: VReg,
+    word_offset: usize,
 }
 
 struct CodeWriter<W> {
@@ -569,6 +575,7 @@ impl RustGenerator {
         global_slots: &[(String, VPtr, usize)],
     ) -> Result<(), String> {
         let register_storage = self.collect_register_storage(func)?;
+        let stack_pointers = self.collect_stack_pointers(func)?;
         let block_preds = self.collect_block_predecessors(func);
         let fallthrough_edges = self.collect_fallthrough_edges(func);
         let direct_name = self.function_direct_name(func);
@@ -614,6 +621,19 @@ impl RustGenerator {
                 }
             }
 
+            let mut stack_roots = stack_pointers
+                .values()
+                .map(|pointer| pointer.root_reg)
+                .collect::<Vec<_>>();
+            stack_roots.sort_unstable();
+            stack_roots.dedup();
+            for root_reg in stack_roots {
+                let size = self.resolve_register_alloc_size(func, root_reg).ok_or_else(|| {
+                    format!("missing alloc size for stackified register {root_reg}")
+                })?;
+                writer.line(format!("let mut {} = [0u64; {size}];", self.stack_alloc_name(root_reg)))?;
+            }
+
             let body = self.render_section(0, |writer| {
                 if self.can_emit_straight_line_function(func) {
                     for (dst, instr) in &func.body[0].0 {
@@ -625,6 +645,7 @@ impl RustGenerator {
                             instr,
                             global_slots,
                             &block_preds,
+                            &stack_pointers,
                         )?;
                     }
                     if self.block_can_fall_through(&func.body[0]) {
@@ -654,6 +675,7 @@ impl RustGenerator {
                                             instr,
                                             global_slots,
                                             &block_preds,
+                                            &stack_pointers,
                                         )?;
                                     }
                                     if let Some((target_bb, pred_source)) = fallthrough_edges
@@ -805,6 +827,190 @@ impl RustGenerator {
             }
         }
         Ok(storage)
+    }
+
+    fn collect_stack_pointers(
+        &self,
+        func: &Function,
+    ) -> Result<HashMap<VReg, StackPointer>, String> {
+        let mut stack_pointers = func
+            .body
+            .iter()
+            .flat_map(|block| block.0.iter())
+            .filter_map(|(dst, instr)| match (dst.as_ref(), instr) {
+                (Value::Register(reg), Instruction::Alloc(ty)) if ty.word_size() > 0 => Some((
+                    *reg,
+                    StackPointer {
+                        root_reg: *reg,
+                        word_offset: 0,
+                    },
+                )),
+                _ => None,
+            })
+            .collect::<HashMap<_, _>>();
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for block in &func.body {
+                for (dst, instr) in &block.0 {
+                    let (Value::Register(dst_reg), Instruction::GetElement { value, .. }) =
+                        (dst.as_ref(), instr)
+                    else {
+                        continue;
+                    };
+                    let Value::Register(base_reg) = value.as_ref() else {
+                        continue;
+                    };
+                    let Some(base_pointer) = stack_pointers.get(base_reg).copied() else {
+                        continue;
+                    };
+                    let next_pointer = StackPointer {
+                        root_reg: base_pointer.root_reg,
+                        word_offset: base_pointer.word_offset
+                            + self.getelement_word_offset(instr)?,
+                    };
+                    if stack_pointers.get(dst_reg) != Some(&next_pointer) {
+                        stack_pointers.insert(*dst_reg, next_pointer);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        let escaped_roots = self.collect_escaped_stack_pointer_roots(func, &stack_pointers);
+        stack_pointers.retain(|_, pointer| !escaped_roots.contains(&pointer.root_reg));
+        Ok(stack_pointers)
+    }
+
+    fn collect_escaped_stack_pointer_roots(
+        &self,
+        func: &Function,
+        stack_pointers: &HashMap<VReg, StackPointer>,
+    ) -> HashSet<VReg> {
+        let mut escaped_roots = HashSet::new();
+        let mut mark = |value: &VPtr, safe_pointer_use: bool| {
+            if let Value::Register(reg) = value.as_ref() {
+                if let Some(pointer) = stack_pointers.get(reg) {
+                    if !safe_pointer_use {
+                        escaped_roots.insert(pointer.root_reg);
+                    }
+                }
+            }
+        };
+
+        for block in &func.body {
+            for (_dst, instr) in &block.0 {
+                match instr {
+                    Instruction::Uinteger(_)
+                    | Instruction::Integer(_)
+                    | Instruction::Float(_)
+                    | Instruction::String(_)
+                    | Instruction::Alloc(_)
+                    | Instruction::GetUpValue(_, _)
+                    | Instruction::PushStateOffset(_)
+                    | Instruction::PopStateOffset(_)
+                    | Instruction::GetState(_)
+                    | Instruction::Jmp(_)
+                    | Instruction::Error => {}
+                    Instruction::Load(ptr, _) => mark(ptr, true),
+                    Instruction::Store(ptr, src, _) => {
+                        mark(ptr, true);
+                        mark(src, false);
+                    }
+                    Instruction::GetElement { value, .. } => mark(value, true),
+                    Instruction::Call(callee, args, _)
+                    | Instruction::CallCls(callee, args, _)
+                    | Instruction::CallIndirect(callee, args, _) => {
+                        mark(callee, false);
+                        for (arg, _) in args {
+                            mark(arg, false);
+                        }
+                    }
+                    Instruction::GetGlobal(global, _) => mark(global, false),
+                    Instruction::SetGlobal(global, src, _) => {
+                        mark(global, false);
+                        mark(src, false);
+                    }
+                    Instruction::Closure(value)
+                    | Instruction::CloseUpValues(value, _)
+                    | Instruction::CloseHeapClosure(value)
+                    | Instruction::CloneHeap(value)
+                    | Instruction::SetUpValue(_, value, _)
+                    | Instruction::JmpIf(value, _, _, _)
+                    | Instruction::TaggedUnionGetTag(value)
+                    | Instruction::TaggedUnionGetValue(value, _)
+                    | Instruction::CloneUserSum { value, .. }
+                    | Instruction::ReleaseUserSum { value, .. }
+                    | Instruction::Return(value, _)
+                    | Instruction::ReturnFeed(value, _)
+                    | Instruction::Mem(value)
+                    | Instruction::NegF(value)
+                    | Instruction::AbsF(value)
+                    | Instruction::SinF(value)
+                    | Instruction::CosF(value)
+                    | Instruction::LogF(value)
+                    | Instruction::SqrtF(value)
+                    | Instruction::NegI(value)
+                    | Instruction::AbsI(value)
+                    | Instruction::PowI(value)
+                    | Instruction::Not(value)
+                    | Instruction::CastFtoI(value)
+                    | Instruction::CastItoF(value)
+                    | Instruction::CastItoB(value)
+                    | Instruction::MakeClosure {
+                        fn_proto: value, ..
+                    } => mark(value, false),
+                    Instruction::Switch { scrutinee, .. } => mark(scrutinee, false),
+                    Instruction::Phi(left, right)
+                    | Instruction::Delay(_, left, right)
+                    | Instruction::AddF(left, right)
+                    | Instruction::SubF(left, right)
+                    | Instruction::MulF(left, right)
+                    | Instruction::DivF(left, right)
+                    | Instruction::ModF(left, right)
+                    | Instruction::PowF(left, right)
+                    | Instruction::AddI(left, right)
+                    | Instruction::SubI(left, right)
+                    | Instruction::MulI(left, right)
+                    | Instruction::DivI(left, right)
+                    | Instruction::ModI(left, right)
+                    | Instruction::LogI(left, right)
+                    | Instruction::Eq(left, right)
+                    | Instruction::Ne(left, right)
+                    | Instruction::Gt(left, right)
+                    | Instruction::Ge(left, right)
+                    | Instruction::Lt(left, right)
+                    | Instruction::Le(left, right)
+                    | Instruction::And(left, right)
+                    | Instruction::Or(left, right)
+                    | Instruction::GetArrayElem(left, right, _) => {
+                        mark(left, false);
+                        mark(right, false);
+                    }
+                    Instruction::TaggedUnionWrap { value, .. } => mark(value, false),
+                    Instruction::BoxAlloc { value, .. } => mark(value, false),
+                    Instruction::BoxLoad { ptr, .. }
+                    | Instruction::BoxClone { ptr }
+                    | Instruction::BoxRelease { ptr, .. } => mark(ptr, false),
+                    Instruction::BoxStore { ptr, value, .. } => {
+                        mark(ptr, false);
+                        mark(value, false);
+                    }
+                    Instruction::PhiSwitch(inputs) | Instruction::Array(inputs, _) => {
+                        for input in inputs {
+                            mark(input, false);
+                        }
+                    }
+                    Instruction::SetArrayElem(array, index, value, _) => {
+                        mark(array, false);
+                        mark(index, false);
+                        mark(value, false);
+                    }
+                }
+            }
+        }
+        escaped_roots
     }
 
     fn instruction_result_storage(
@@ -1168,6 +1374,7 @@ impl RustGenerator {
         instr: &Instruction,
         global_slots: &[(String, VPtr, usize)],
         block_preds: &[Vec<usize>],
+        stack_pointers: &HashMap<VReg, StackPointer>,
     ) -> Result<(), String> {
         match instr {
             Instruction::Uinteger(value) => {
@@ -1185,7 +1392,29 @@ impl RustGenerator {
                 format!("memory.alloc({}usize)", ty.word_size()),
             )?,
             Instruction::Load(ptr, ty) => {
-                if self.is_deepcopy_aggregate_type(*ty) {
+                if let Some(stack_pointer) = self.stack_pointer_for_value(stack_pointers, ptr) {
+                    let size = ty.word_size() as usize;
+                    let slice_expr = self.stack_pointer_slice_expr(stack_pointer, size);
+                    if self.is_deepcopy_aggregate_type(*ty) {
+                        let dest = self.reg_name(dst)?;
+                        writer.line(format!("{dest} = memory.alloc({size}usize);"))?;
+                        writer
+                            .line(format!("memory.store({dest}, {slice_expr}, {size}usize)?;"))?;
+                    } else if size == 1 {
+                        self.assign_runtime_scalar_from_word_expr(
+                            writer,
+                            func,
+                            dst,
+                            self.stack_pointer_word_expr(stack_pointer),
+                        )?;
+                    } else {
+                        let dest = self.reg_name(dst)?;
+                        writer.line(format!(
+                            "{dest} = {};",
+                            self.slice_to_array_expr(slice_expr, self.runtime_value_size(*ty))
+                        ))?;
+                    }
+                } else if self.is_deepcopy_aggregate_type(*ty) {
                     let dest = self.reg_name(dst)?;
                     writer.line(format!("{dest} = memory.alloc({}usize);", ty.word_size()))?;
                     self.emit_deep_copy_value_into_ptr(writer, func, &dest, ptr, *ty)?;
@@ -1211,15 +1440,38 @@ impl RustGenerator {
                 }
             }
             Instruction::Store(ptr, src, ty) => {
-                let ptr_expr = self.word0_expr(func, ptr)?;
-                if self.is_deepcopy_aggregate_type(*ty) {
-                    self.emit_deep_copy_value_into_ptr(writer, func, &ptr_expr, src, *ty)?;
+                if let Some(stack_pointer) = self.stack_pointer_for_value(stack_pointers, ptr) {
+                    let size = ty.word_size() as usize;
+                    if self.is_deepcopy_aggregate_type(*ty) {
+                        let src_expr = self.boundary_value_slice_expr(func, src, *ty)?;
+                        writer.line(format!(
+                            "{}.copy_from_slice({src_expr});",
+                            self.stack_pointer_slice_target_expr(stack_pointer, size)
+                        ))?;
+                    } else if size == 1 {
+                        let word_expr = self.scalar_word_expr(func, src)?;
+                        writer.line(format!(
+                            "{} = {word_expr};",
+                            self.stack_pointer_word_expr(stack_pointer)
+                        ))?;
+                    } else {
+                        let src_expr = self.context_value_slice_expr(func, src, *ty)?;
+                        writer.line(format!(
+                            "{}.copy_from_slice({src_expr});",
+                            self.stack_pointer_slice_target_expr(stack_pointer, size)
+                        ))?;
+                    }
                 } else {
-                    let src_expr = self.context_value_slice_expr(func, src, *ty)?;
-                    writer.line(format!(
-                        "memory.store({ptr_expr}, {src_expr}, {}usize)?;",
-                        ty.word_size()
-                    ))?;
+                    let ptr_expr = self.word0_expr(func, ptr)?;
+                    if self.is_deepcopy_aggregate_type(*ty) {
+                        self.emit_deep_copy_value_into_ptr(writer, func, &ptr_expr, src, *ty)?;
+                    } else {
+                        let src_expr = self.context_value_slice_expr(func, src, *ty)?;
+                        writer.line(format!(
+                            "memory.store({ptr_expr}, {src_expr}, {}usize)?;",
+                            ty.word_size()
+                        ))?;
+                    }
                 }
             }
             Instruction::GetElement {
@@ -1227,13 +1479,18 @@ impl RustGenerator {
                 tuple_offset: _,
                 ..
             } => {
-                let base_expr = self.word0_expr(func, value)?;
-                let word_offset = self.getelement_word_offset(instr)?;
-                self.assign_scalar(
-                    writer,
-                    dst,
-                    format!("memory.get_element({base_expr}, {}usize)?", word_offset),
-                )?;
+                if self
+                    .stack_pointer_for_value(stack_pointers, value)
+                    .is_none()
+                {
+                    let base_expr = self.word0_expr(func, value)?;
+                    let word_offset = self.getelement_word_offset(instr)?;
+                    self.assign_scalar(
+                        writer,
+                        dst,
+                        format!("memory.get_element({base_expr}, {}usize)?", word_offset),
+                    )?;
+                }
             }
             Instruction::Call(callee, args, ret_ty) => {
                 let dest = self.reg_name(dst)?;
@@ -2875,6 +3132,42 @@ impl RustGenerator {
             Type::Union(variants) => variants.get(tag).copied(),
             _ => None,
         }
+    }
+
+    fn stack_pointer_for_value(
+        &self,
+        stack_pointers: &HashMap<VReg, StackPointer>,
+        value: &VPtr,
+    ) -> Option<StackPointer> {
+        match value.as_ref() {
+            Value::Register(reg) => stack_pointers.get(reg).copied(),
+            _ => None,
+        }
+    }
+
+    fn stack_alloc_name(&self, root_reg: VReg) -> String {
+        format!("stack_alloc_{root_reg}")
+    }
+
+    fn stack_pointer_word_expr(&self, pointer: StackPointer) -> String {
+        format!(
+            "{}[{}usize]",
+            self.stack_alloc_name(pointer.root_reg),
+            pointer.word_offset
+        )
+    }
+
+    fn stack_pointer_slice_target_expr(&self, pointer: StackPointer, size: usize) -> String {
+        let start = pointer.word_offset;
+        let end = start + size;
+        format!(
+            "{}[{start}usize..{end}usize]",
+            self.stack_alloc_name(pointer.root_reg)
+        )
+    }
+
+    fn stack_pointer_slice_expr(&self, pointer: StackPointer, size: usize) -> String {
+        format!("&{}", self.stack_pointer_slice_target_expr(pointer, size))
     }
 
     fn resolve_register_getelement_type(
