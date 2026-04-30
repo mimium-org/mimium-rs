@@ -466,9 +466,135 @@ fn dsp(input:float){
         let output = test_context().emit_rust(src).unwrap();
         assert!(output.source.contains("pub struct MimiumProgram"));
         assert!(output.source.contains("pub fn call_dsp"));
+        assert!(output.source.contains("pub fn call_dsp_buffer"));
         assert!(output.source.contains("fn counter("));
         assert!(output.source.contains("fn dispatch_counter("));
+        assert!(output.source.contains("#[inline(always)]"));
         assert!(!output.source.contains("fn func_"));
+    }
+
+    #[test]
+    fn emit_rust_compiles_and_runs_buffered_dsp_entrypoint() {
+        let output = test_context()
+            .emit_rust(comprehensive_rust_source())
+            .unwrap();
+        let maybe_call_main = if output.source.contains("pub fn call_main") {
+            Some("    program.call_main().unwrap();\n")
+        } else {
+            None
+        };
+        let harness = render_rust_test_main(
+            "",
+            "let mut program = MimiumProgram::new();",
+            maybe_call_main,
+            "    let inputs = [1.0f64, 2.0, 3.0, 4.0];\n    let mut output = [0.0f64; 4];\n    program.call_dsp_buffer(&inputs, &mut output, 4).unwrap();\n    for sample in output {\n        println!(\"{:.12}\", sample);\n    }\n",
+        );
+
+        let tmp_dir = rust_test_tmp_dir();
+        fs::create_dir_all(&tmp_dir).unwrap();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let source_path = tmp_dir.join(format!("emit_rust_buffered_{stamp}.rs"));
+        let binary_path = tmp_dir.join(format!("emit_rust_buffered_{stamp}"));
+        fs::write(&source_path, format!("{}{harness}", output.source)).unwrap();
+
+        let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+        let compile = Command::new(&rustc)
+            .arg("--edition=2024")
+            .arg(&source_path)
+            .arg("-o")
+            .arg(&binary_path)
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "generated Rust failed to compile\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+
+        let run = Command::new(&binary_path).output().unwrap();
+        assert!(
+            run.status.success(),
+            "generated Rust binary failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+
+        let actual = String::from_utf8(run.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| line.parse::<f64>().unwrap())
+            .collect::<Vec<_>>();
+        let expected = vec![20.0, 52.0, 54.0, 56.0];
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn emit_rust_buffered_entrypoint_supports_zero_input_multi_output() {
+        let output = test_context()
+            .emit_rust(
+                r#"
+fn phase() {
+    self + 1
+}
+
+fn dsp() {
+    let current = phase()
+    (current, current + 1)
+}
+"#,
+            )
+            .unwrap();
+        let harness = render_rust_test_main(
+            "",
+            "let mut program = MimiumProgram::new();",
+            None,
+            "    let input: [f64; 0] = [];\n    let mut output = [0.0f64; 8];\n    program.call_dsp_buffer(&input, &mut output, 4).unwrap();\n    for sample in output {\n        println!(\"{:.12}\", sample);\n    }\n",
+        );
+
+        let tmp_dir = rust_test_tmp_dir();
+        fs::create_dir_all(&tmp_dir).unwrap();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let source_path = tmp_dir.join(format!("emit_rust_zero_input_buffered_{stamp}.rs"));
+        let binary_path = tmp_dir.join(format!("emit_rust_zero_input_buffered_{stamp}"));
+        fs::write(&source_path, format!("{}{harness}", output.source)).unwrap();
+
+        let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+        let compile = Command::new(&rustc)
+            .arg("--edition=2024")
+            .arg(&source_path)
+            .arg("-o")
+            .arg(&binary_path)
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "generated Rust failed to compile\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&compile.stdout),
+            String::from_utf8_lossy(&compile.stderr)
+        );
+
+        let run = Command::new(&binary_path).output().unwrap();
+        assert!(
+            run.status.success(),
+            "generated Rust binary failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+
+        let actual = String::from_utf8(run.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| line.parse::<f64>().unwrap())
+            .collect::<Vec<_>>();
+        let expected = vec![1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 5.0];
+        assert_eq!(actual, expected);
     }
 
     #[test]
