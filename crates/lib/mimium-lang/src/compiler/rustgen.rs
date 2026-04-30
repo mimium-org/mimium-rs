@@ -1174,8 +1174,10 @@ impl RustGenerator {
             | Instruction::GetArrayElem(_, _, ty)
             | Instruction::GetGlobal(_, ty)
             | Instruction::GetState(ty)
-            | Instruction::GetUpValue(_, ty)
-            | Instruction::TaggedUnionGetValue(_, ty) => self.register_storage_for_type(*ty),
+            | Instruction::GetUpValue(_, ty) => self.register_storage_for_type(*ty),
+            Instruction::TaggedUnionGetValue(_, _) => {
+                RegisterStorage::Scalar(ScalarStorageKind::Word)
+            }
             Instruction::Mem(src) => self.value_storage(func, src)?,
             Instruction::Delay(_, src, _) => self.value_storage(func, src)?,
             Instruction::SetUpValue(_, src, _) => self.value_storage(func, src)?,
@@ -1577,7 +1579,13 @@ impl RustGenerator {
                             self.stack_pointer_slice_target_expr(stack_pointer, size)
                         ))?;
                     } else if size == 1 {
-                        let word_expr = self.scalar_word_expr(func, src)?;
+                        let is_pointer = matches!(src.as_ref(), Value::Register(r) if self.is_pointer_register(func, *r));
+                        let word_expr = if is_pointer {
+                            let src_expr = self.word0_expr(func, src)?;
+                            format!("memory.load_word({src_expr}).unwrap()")
+                        } else {
+                            self.scalar_word_expr(func, src)?
+                        };
                         writer.line(format!(
                             "{} = {word_expr};",
                             self.stack_pointer_word_expr(stack_pointer)
@@ -1594,7 +1602,13 @@ impl RustGenerator {
                     if self.is_deepcopy_aggregate_type(*ty) {
                         self.emit_deep_copy_value_into_ptr(writer, func, &ptr_expr, src, *ty)?;
                     } else if ty.word_size() == 1 {
-                        let word_expr = self.scalar_word_expr(func, src)?;
+                        let is_pointer = matches!(src.as_ref(), Value::Register(r) if self.is_pointer_register(func, *r));
+                        let word_expr = if is_pointer {
+                            let src_expr = self.word0_expr(func, src)?;
+                            format!("memory.load_word({src_expr}).unwrap()")
+                        } else {
+                            self.scalar_word_expr(func, src)?
+                        };
                         writer.line(format!("memory.store_word({ptr_expr}, {word_expr})?;"))?;
                     } else {
                         let src_expr = self.context_value_slice_expr(func, src, *ty)?;
@@ -2108,8 +2122,14 @@ impl RustGenerator {
                         "self.globals[{global_index}][..{size}].copy_from_slice({src_expr});"
                     ))?;
                 } else if ty.word_size() == 1 {
-                    let src_expr = self.scalar_word_expr(func, src)?;
-                    writer.line(format!("self.globals[{global_index}][0] = {src_expr};"))?;
+                    let is_getelement = matches!(src.as_ref(), Value::Register(r) if self.is_getelement_register(func, *r));
+                    if is_getelement {
+                        let src_expr = self.word0_expr(func, src)?;
+                        writer.line(format!("self.globals[{global_index}][0] = memory.load_word({src_expr}).unwrap();"))?;
+                    } else {
+                        let src_expr = self.scalar_word_expr(func, src)?;
+                        writer.line(format!("self.globals[{global_index}][0] = {src_expr};"))?;
+                    }
                 } else {
                     let src_expr = self.context_value_slice_expr(func, src, *ty)?;
                     writer.line(format!(
@@ -2646,30 +2666,13 @@ impl RustGenerator {
                 let ptr_expr = self.word0_expr(func, value)?;
                 self.assign_scalar(writer, dst, format!("memory.load_word({ptr_expr})?"))?;
             }
-            Instruction::TaggedUnionGetValue(value, ty) => {
+            Instruction::TaggedUnionGetValue(value, _ty) => {
                 let dest = self.reg_name(dst)?;
                 let ptr_expr = self.word0_expr(func, value)?;
                 writer.line(format!(
                     "let union_value_ptr = memory.get_element({ptr_expr}, 1usize)?;"
                 ))?;
-                if self.is_deepcopy_aggregate_type(*ty) {
-                    writer.line(format!("{dest} = union_value_ptr;"))?;
-                } else if ty.word_size() == 1 {
-                    self.assign_runtime_scalar_from_word_expr(
-                        writer,
-                        func,
-                        dst,
-                        "memory.load_word(union_value_ptr)?".to_string(),
-                    )?;
-                } else {
-                    writer.line(format!(
-                        "{dest} = {};",
-                        self.vec_to_array_expr(
-                            format!("memory.load(union_value_ptr, {}usize)?", ty.word_size()),
-                            self.runtime_value_size(*ty),
-                        )
-                    ))?;
-                }
+                self.assign_scalar(writer, dst, "union_value_ptr".to_string())?;
             }
             Instruction::CloneUserSum { value, ty } => {
                 let dest = self.reg_name(dst)?;
@@ -3182,6 +3185,12 @@ impl RustGenerator {
             let abi_kind = self
                 .scalar_storage_kind_for_type(ty)
                 .unwrap_or(ScalarStorageKind::Word);
+            if let Value::Register(r) = value.as_ref()
+                && self.is_pointer_register(func, *r)
+            {
+                let loaded_expr = format!("memory.load_word(reg_{r}).unwrap()");
+                return Ok(self.convert_scalar_expr(loaded_expr, ScalarStorageKind::Word, abi_kind));
+            }
             return self.scalar_expr_as(func, value, abi_kind);
         }
 
@@ -3401,13 +3410,32 @@ impl RustGenerator {
                     {
                         Some(*union_type)
                     }
-                    (Value::Register(reg), Instruction::TaggedUnionGetValue(_, ty))
-                        if *reg == target_reg =>
-                    {
-                        Some(*ty)
-                    }
+                    // TaggedUnionGetValue returns a pointer; its type is not
+                    // the payload type, so we don't match it here.
                     _ => None,
                 })
+        })
+    }
+
+    fn is_pointer_register(&self, func: &Function, reg: VReg) -> bool {
+        func.body.iter().any(|block| {
+            block.0.iter().any(|(dst, instr)| {
+                matches!(dst.as_ref(), Value::Register(r) if *r == reg)
+                    && matches!(
+                        instr,
+                        Instruction::GetElement { .. }
+                            | Instruction::TaggedUnionGetValue(..)
+                    )
+            })
+        })
+    }
+
+    fn is_getelement_register(&self, func: &Function, reg: VReg) -> bool {
+        func.body.iter().any(|block| {
+            block.0.iter().any(|(dst, instr)| {
+                matches!(dst.as_ref(), Value::Register(r) if *r == reg)
+                    && matches!(instr, Instruction::GetElement { .. })
+            })
         })
     }
 
@@ -3694,7 +3722,17 @@ impl RustGenerator {
         kind: ScalarStorageKind,
     ) -> Result<String, String> {
         let (expr, actual_kind) = self.scalar_source_expr(func, value)?;
-        Ok(self.convert_scalar_expr(expr, actual_kind, kind))
+        let needs_deref = matches!(value.as_ref(), Value::Register(r) if self.is_pointer_register(func, *r));
+        let effective = if needs_deref && kind != ScalarStorageKind::Word {
+            self.convert_scalar_expr(
+                format!("memory.load_word({expr}).unwrap()"),
+                ScalarStorageKind::Word,
+                kind,
+            )
+        } else {
+            self.convert_scalar_expr(expr, actual_kind, kind)
+        };
+        Ok(effective)
     }
 
     fn runtime_scalar_expr_from_word_expr(
