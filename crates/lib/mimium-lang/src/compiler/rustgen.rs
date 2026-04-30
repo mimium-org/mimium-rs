@@ -3189,7 +3189,11 @@ impl RustGenerator {
                 && self.is_pointer_register(func, *r)
             {
                 let loaded_expr = format!("memory.load_word(reg_{r}).unwrap()");
-                return Ok(self.convert_scalar_expr(loaded_expr, ScalarStorageKind::Word, abi_kind));
+                return Ok(self.convert_scalar_expr(
+                    loaded_expr,
+                    ScalarStorageKind::Word,
+                    abi_kind,
+                ));
             }
             return self.scalar_expr_as(func, value, abi_kind);
         }
@@ -3423,8 +3427,7 @@ impl RustGenerator {
                 matches!(dst.as_ref(), Value::Register(r) if *r == reg)
                     && matches!(
                         instr,
-                        Instruction::GetElement { .. }
-                            | Instruction::TaggedUnionGetValue(..)
+                        Instruction::GetElement { .. } | Instruction::TaggedUnionGetValue(..)
                     )
             })
         })
@@ -3722,7 +3725,8 @@ impl RustGenerator {
         kind: ScalarStorageKind,
     ) -> Result<String, String> {
         let (expr, actual_kind) = self.scalar_source_expr(func, value)?;
-        let needs_deref = matches!(value.as_ref(), Value::Register(r) if self.is_pointer_register(func, *r));
+        let needs_deref =
+            matches!(value.as_ref(), Value::Register(r) if self.is_pointer_register(func, *r));
         let effective = if needs_deref && kind != ScalarStorageKind::Word {
             self.convert_scalar_expr(
                 format!("memory.load_word({expr}).unwrap()"),
