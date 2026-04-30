@@ -163,6 +163,8 @@ pub struct WasmDspRuntime {
     /// This keeps potentially expensive engine destruction (`drop`) out of the
     /// real-time callback during hot-swap.
     retired_engine_sender: Option<mpsc::Sender<WasmEngine>>,
+    /// Reusable buffer for DSP function arguments (avoids per-sample allocation).
+    dsp_args_buf: Vec<Word>,
 }
 
 impl WasmDspRuntime {
@@ -186,6 +188,7 @@ impl WasmDspRuntime {
             current_dsp_skeleton: dsp_skeleton,
             sys_plugin_workers: Vec::new(),
             retired_engine_sender: None,
+            dsp_args_buf: Vec::new(),
         }
     }
 
@@ -268,7 +271,11 @@ impl DspRuntime for WasmDspRuntime {
         }
 
         // Convert input samples to Words (bit-cast f64 → u64).
-        let args: Vec<Word> = self.input_cache.iter().map(|v| v.to_bits()).collect();
+        // Reuse a pre-allocated buffer to avoid per-sample allocation.
+        self.dsp_args_buf.clear();
+        self.dsp_args_buf
+            .extend(self.input_cache.iter().map(|v| v.to_bits()));
+        let args = &self.dsp_args_buf;
 
         let out_channels = self.io_channels.map_or(1, |io| io.output as usize);
 

@@ -151,8 +151,8 @@ impl WasmRuntime {
         // Configure Wasmtime with JIT compiler and optimizations
         let mut config = Config::new();
 
-        // Enable Cranelift JIT compiler with optimization level Speed
-        config.cranelift_opt_level(OptLevel::Speed);
+        // Enable Cranelift JIT compiler with maximum optimization
+        config.cranelift_opt_level(OptLevel::SpeedAndSize);
 
         // Enable parallel compilation for faster module loading
         config.parallel_compilation(true);
@@ -182,8 +182,8 @@ impl WasmRuntime {
         // Configure Wasmtime with JIT compiler and optimizations
         let mut config = Config::new();
 
-        // Enable Cranelift JIT compiler with optimization level Speed
-        config.cranelift_opt_level(OptLevel::Speed);
+        // Enable Cranelift JIT compiler with maximum optimization
+        config.cranelift_opt_level(OptLevel::SpeedAndSize);
 
         // Enable parallel compilation for faster module loading
         config.parallel_compilation(true);
@@ -248,6 +248,8 @@ impl WasmRuntime {
             store,
             instance,
             function_cache: std::collections::HashMap::new(),
+            call_args_buf: Vec::new(),
+            call_results_buf: Vec::new(),
         })
     }
 
@@ -740,6 +742,10 @@ pub struct WasmModule {
     instance: wasmtime::Instance,
     /// Cache of frequently called functions (e.g., dsp)
     function_cache: std::collections::HashMap<String, wasmtime::Func>,
+    /// Pre-allocated buffer for call arguments (reused to avoid allocations)
+    call_args_buf: Vec<wasmtime::Val>,
+    /// Pre-allocated buffer for call results (reused to avoid allocations)
+    call_results_buf: Vec<wasmtime::Val>,
 }
 
 impl WasmModule {
@@ -781,43 +787,49 @@ impl WasmModule {
             ));
         }
 
-        // Convert args to wasmtime values using the callee's actual signature.
-        let wasm_args: Vec<wasmtime::Val> = args
-            .iter()
-            .zip(param_types.iter())
-            .map(|(&word, ty)| match ty {
-                ValType::F64 => wasmtime::Val::F64(word),
-                ValType::F32 => wasmtime::Val::F32(word as u32),
-                ValType::I64 => wasmtime::Val::I64(word as i64),
-                ValType::I32 => wasmtime::Val::I32(word as i32),
-                _ => wasmtime::Val::I64(word as i64),
-            })
-            .collect();
+        // Reuse pre-allocated buffers to avoid per-call allocations.
+        let mut wasm_args = std::mem::take(&mut self.call_args_buf);
+        let mut results = std::mem::take(&mut self.call_results_buf);
+        wasm_args.clear();
+        results.clear();
 
-        // Prepare results buffer
-        let mut results = func_ty
-            .results()
-            .map(default_val_for_valtype)
-            .collect::<Vec<_>>();
+        // Convert args to wasmtime values using the callee's actual signature.
+        wasm_args.extend(
+            args.iter()
+                .zip(param_types.iter())
+                .map(|(&word, ty)| match ty {
+                    ValType::F64 => wasmtime::Val::F64(word),
+                    ValType::F32 => wasmtime::Val::F32(word as u32),
+                    ValType::I64 => wasmtime::Val::I64(word as i64),
+                    ValType::I32 => wasmtime::Val::I32(word as i32),
+                    _ => wasmtime::Val::I64(word as i64),
+                }),
+        );
+
+        // Prepare results buffer with default values
+        results.extend(func_ty.results().map(default_val_for_valtype));
 
         // Call function
         func.call(&mut self.store, &wasm_args, &mut results)
-            .map_err(|e| {
-                // Include detailed error chain
-                format!("Failed to call function: {e:#}")
-            })?;
+            .map_err(|e| format!("Failed to call function: {e:#}"))?;
 
         // Convert results back to Words
-        Ok(results
-            .into_iter()
+        let output: Vec<Word> = results
+            .iter()
             .map(|v| match v {
-                wasmtime::Val::I64(i) => i as u64,
-                wasmtime::Val::F64(f) => f,
-                wasmtime::Val::I32(i) => i as u64,
-                wasmtime::Val::F32(f) => f as u64,
+                wasmtime::Val::I64(i) => *i as u64,
+                wasmtime::Val::F64(f) => *f,
+                wasmtime::Val::I32(i) => *i as u64,
+                wasmtime::Val::F32(f) => *f as u64,
                 _ => 0,
             })
-            .collect())
+            .collect();
+
+        // Return buffers to self for reuse
+        self.call_args_buf = wasm_args;
+        self.call_results_buf = results;
+
+        Ok(output)
     }
 
     /// Call a function exported by the WASM module

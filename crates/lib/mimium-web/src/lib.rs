@@ -128,16 +128,19 @@ impl Context {
         let compiler = ctx
             .get_compiler()
             .ok_or_else(|| JsValue::from_str("Failed to initialize compiler context"))?;
-        compiler.emit_rust(src.as_str()).map(|output| output.source).map_err(|e| {
-            report(&src, PathBuf::from("/"), &e);
-            let message = dump_to_string(&e);
-            let message = if message.is_empty() {
-                "Rust transpilation failed".to_string()
-            } else {
-                message
-            };
-            JsValue::from_str(&message)
-        })
+        compiler
+            .emit_rust(src.as_str())
+            .map(|output| output.source)
+            .map_err(|e| {
+                report(&src, PathBuf::from("/"), &e);
+                let message = dump_to_string(&e);
+                let message = if message.is_empty() {
+                    "Rust transpilation failed".to_string()
+                } else {
+                    message
+                };
+                JsValue::from_str(&message)
+            })
     }
 
     #[wasm_bindgen]
