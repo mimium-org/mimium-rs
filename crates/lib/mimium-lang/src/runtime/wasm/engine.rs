@@ -83,6 +83,27 @@ impl WasmEngine {
         }
     }
 
+    /// Hot-path DSP execution: writes results into a caller-supplied buffer.
+    ///
+    /// Bypasses the Option checks on `current_module` and `dsp_func` via
+    /// `unwrap_unchecked` to eliminate branch overhead in the audio callback.
+    /// The caller must guarantee that `load_module` has already succeeded.
+    ///
+    /// # Safety
+    /// `current_module` and `dsp_func` must both be `Some`. This is guaranteed
+    /// after a successful `load_module` call and before any `hot_swap`.
+    #[inline]
+    pub unsafe fn execute_dsp_into_unchecked(
+        &mut self,
+        inputs: &[Word],
+        output: &mut Vec<Word>,
+    ) -> Result<(), String> {
+        // SAFETY: caller guarantees module and dsp_func are loaded.
+        let module = unsafe { self.current_module.as_mut().unwrap_unchecked() };
+        let func = unsafe { self.dsp_func.as_ref().unwrap_unchecked() };
+        module.call_func_direct_into(func, inputs, output)
+    }
+
     /// Execute a named function
     pub fn execute_function(&mut self, name: &str, args: &[Word]) -> Result<Vec<Word>, String> {
         let module = self
@@ -165,6 +186,8 @@ pub struct WasmDspRuntime {
     retired_engine_sender: Option<mpsc::Sender<WasmEngine>>,
     /// Reusable buffer for DSP function arguments (avoids per-sample allocation).
     dsp_args_buf: Vec<Word>,
+    /// Reusable buffer for DSP function return values (avoids per-sample allocation).
+    dsp_result_buf: Vec<Word>,
 }
 
 impl WasmDspRuntime {
@@ -189,6 +212,7 @@ impl WasmDspRuntime {
             sys_plugin_workers: Vec::new(),
             retired_engine_sender: None,
             dsp_args_buf: Vec::new(),
+            dsp_result_buf: Vec::new(),
         }
     }
 
@@ -275,17 +299,27 @@ impl DspRuntime for WasmDspRuntime {
         self.dsp_args_buf.clear();
         self.dsp_args_buf
             .extend(self.input_cache.iter().map(|v| v.to_bits()));
-        let args = &self.dsp_args_buf;
 
         let out_channels = self.io_channels.map_or(1, |io| io.output as usize);
 
-        let result = match self.engine.execute_dsp(&args) {
-            Ok(result) => {
+        // Take the result buffer out of self so we can borrow both `self.engine` and
+        // the buffer simultaneously (they are different fields, but the borrow checker
+        // cannot prove that through a field reference). Vec::new() is allocation-free;
+        // the buffer's heap capacity is preserved when put back below.
+        let mut result_buf = std::mem::take(&mut self.dsp_result_buf);
+
+        // Use the unchecked fast path: both module and dsp_func are guaranteed to be Some
+        // after a successful load_module and before any hot-swap.
+        let result = match unsafe {
+            self.engine
+                .execute_dsp_into_unchecked(&self.dsp_args_buf, &mut result_buf)
+        } {
+            Ok(()) => {
                 self.output_cache.clear();
                 if out_channels > 1 {
                     // Multi-channel (stereo, etc.): dsp() returns an i64 pointer
                     // to a tuple in linear memory. Dereference each element.
-                    if let Some(&ptr_word) = result.first() {
+                    if let Some(&ptr_word) = result_buf.first() {
                         let ptr = ptr_word as usize;
                         for ch in 0..out_channels {
                             let val = self.engine.read_memory_f64(ptr + ch * 8).unwrap_or(0.0);
@@ -295,7 +329,7 @@ impl DspRuntime for WasmDspRuntime {
                 } else {
                     // Mono: dsp() returns a single f64 directly.
                     self.output_cache
-                        .extend(result.iter().map(|&w| f64::from_bits(w)));
+                        .extend(result_buf.iter().map(|&w| f64::from_bits(w)));
                 }
                 0 // success
             }
@@ -304,6 +338,9 @@ impl DspRuntime for WasmDspRuntime {
                 -1
             }
         };
+
+        // Restore the result buffer (retains its heap allocation for the next sample).
+        self.dsp_result_buf = result_buf;
 
         if let Some(saved_ptr) = saved_alloc_ptr
             && let Some(module) = self.engine.current_module_mut()

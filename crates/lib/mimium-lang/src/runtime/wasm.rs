@@ -772,17 +772,24 @@ impl WasmModule {
     }
 
     /// Call a function directly using a cached Func handle (faster)
-    pub fn call_func_direct(
+    /// Call a function directly, writing results into a caller-supplied buffer.
+    ///
+    /// This is the hot-path variant used by the DSP loop: it reuses the module's
+    /// pre-allocated `call_args_buf` / `call_results_buf` and writes output words
+    /// into `output` without any heap allocation.
+    pub fn call_func_direct_into(
         &mut self,
         func: &wasmtime::Func,
         args: &[Word],
-    ) -> Result<Vec<Word>, String> {
+        output: &mut Vec<Word>,
+    ) -> Result<(), String> {
         let func_ty = func.ty(&self.store);
-        let param_types = func_ty.params().collect::<Vec<_>>();
-        if param_types.len() != args.len() {
+
+        // Use .count() instead of .collect() to avoid a Vec allocation just for the check.
+        let param_count = func_ty.params().count();
+        if param_count != args.len() {
             return Err(format!(
-                "Failed to call function: argument count mismatch: expected {}, found {}",
-                param_types.len(),
+                "Failed to call function: argument count mismatch: expected {param_count}, found {}",
                 args.len()
             ));
         }
@@ -793,42 +800,42 @@ impl WasmModule {
         wasm_args.clear();
         results.clear();
 
-        // Convert args to wasmtime values using the callee's actual signature.
-        wasm_args.extend(
-            args.iter()
-                .zip(param_types.iter())
-                .map(|(&word, ty)| match ty {
-                    ValType::F64 => wasmtime::Val::F64(word),
-                    ValType::F32 => wasmtime::Val::F32(word as u32),
-                    ValType::I64 => wasmtime::Val::I64(word as i64),
-                    ValType::I32 => wasmtime::Val::I32(word as i32),
-                    _ => wasmtime::Val::I64(word as i64),
-                }),
-        );
+        // Convert args using the callee's actual signature (re-query params iterator).
+        wasm_args.extend(args.iter().zip(func_ty.params()).map(|(&word, ty)| match ty {
+            ValType::F64 => wasmtime::Val::F64(word),
+            ValType::F32 => wasmtime::Val::F32(word as u32),
+            ValType::I64 => wasmtime::Val::I64(word as i64),
+            ValType::I32 => wasmtime::Val::I32(word as i32),
+            _ => wasmtime::Val::I64(word as i64),
+        }));
 
-        // Prepare results buffer with default values
         results.extend(func_ty.results().map(default_val_for_valtype));
 
-        // Call function
         func.call(&mut self.store, &wasm_args, &mut results)
             .map_err(|e| format!("Failed to call function: {e:#}"))?;
 
-        // Convert results back to Words
-        let output: Vec<Word> = results
-            .iter()
-            .map(|v| match v {
-                wasmtime::Val::I64(i) => *i as u64,
-                wasmtime::Val::F64(f) => *f,
-                wasmtime::Val::I32(i) => *i as u64,
-                wasmtime::Val::F32(f) => *f as u64,
-                _ => 0,
-            })
-            .collect();
+        output.clear();
+        output.extend(results.iter().map(|v| match v {
+            wasmtime::Val::I64(i) => *i as u64,
+            wasmtime::Val::F64(f) => *f,
+            wasmtime::Val::I32(i) => *i as u64,
+            wasmtime::Val::F32(f) => *f as u64,
+            _ => 0,
+        }));
 
-        // Return buffers to self for reuse
         self.call_args_buf = wasm_args;
         self.call_results_buf = results;
 
+        Ok(())
+    }
+
+    pub fn call_func_direct(
+        &mut self,
+        func: &wasmtime::Func,
+        args: &[Word],
+    ) -> Result<Vec<Word>, String> {
+        let mut output = Vec::new();
+        self.call_func_direct_into(func, args, &mut output)?;
         Ok(output)
     }
 
@@ -1300,26 +1307,37 @@ fn state_get_host(mut caller: Caller<'_, RuntimeState>, dst_ptr: i32, size_words
     log::trace!("state_get_host: dst_ptr={dst_ptr}, size_words={size_words}");
 
     let size = size_words as usize;
+    let byte_len = size * 8;
 
-    // Read from the active state storage at its current position
-    let state_values: Vec<u64> = {
+    let memory = caller.data().memory.expect("Memory not initialized");
+
+    // Obtain a raw pointer to the state data slice, then release the borrow so we can
+    // call memory.write (which needs &mut caller) without a borrow conflict.
+    let data_ptr: *const u64 = {
         let state = caller.data_mut();
         let current = state.get_current_state();
         let pos = current.pos;
         let needed = pos + size;
         if needed > current.data.len() {
-            // Grow data to accommodate the requested range (initialized to zero)
             current.data.resize(needed, 0);
         }
-        current.data[pos..pos + size].to_vec()
-    };
+        // SAFETY: pointer is valid for `size` u64 elements; data won't be freed or
+        // reallocated while we hold a Caller reference (RuntimeState lives in the Store).
+        unsafe { current.data.as_ptr().add(pos) }
+    }; // caller.data_mut() borrow released here
 
-    // Write to WASM linear memory
-    let memory = caller.data().memory.expect("Memory not initialized");
-    let bytes: Vec<u8> = state_values.iter().flat_map(|w| w.to_le_bytes()).collect();
+    // View state words as raw bytes.
+    // SAFETY:
+    // * data_ptr is valid for `size` u64 elements (ensured by the resize above).
+    // * RuntimeState lives in the Store for the entire duration of this host call.
+    // * memory.write() writes to WASM linear memory — a completely separate heap
+    //   allocation — so it cannot alias or invalidate the state data pointer.
+    // * All platforms supported by mimium (x86-64, arm64) are little-endian, so the
+    //   native u64 byte layout already matches WASM's little-endian memory model.
+    let bytes = unsafe { std::slice::from_raw_parts(data_ptr as *const u8, byte_len) };
 
     memory
-        .write(&mut caller.as_context_mut(), dst_ptr as usize, &bytes)
+        .write(&mut caller.as_context_mut(), dst_ptr as usize, bytes)
         .expect("Failed to write state to WASM memory");
 }
 
@@ -1333,67 +1351,64 @@ fn state_set_host(mut caller: Caller<'_, RuntimeState>, src_ptr: i32, size_words
     }
 
     let size = size_words as usize;
+    let byte_len = size * 8;
 
-    // Read from WASM linear memory
-    let state_values: Vec<u64> = {
-        let memory = caller.data().memory.expect("Memory not initialized");
-        let byte_len = size
-            .checked_mul(std::mem::size_of::<Word>())
-            .expect("state_set_host: byte length overflow");
-        let offset = src_ptr as u32 as usize;
-        let memory_size = memory.data_size(&caller);
-        let end = offset
-            .checked_add(byte_len)
-            .expect("state_set_host: address overflow");
-        if end > memory_size {
-            let state = caller.data();
-            let active_pos = if let Some(&closure_addr) = state.state_stack.last() {
-                state
-                    .closure_states
-                    .get(&closure_addr)
-                    .map(|s| s.pos)
-                    .unwrap_or(0)
-            } else {
-                state.global_state.pos
-            };
-            panic!(
-                "state_set_host OOB read: src_ptr(i32)={src_ptr}, src_ptr(u32)={}, size_words={size}, byte_len={byte_len}, offset={offset}, end={end}, memory_size={memory_size}, state_stack_depth={}, active_state_pos={}, current_time={}",
-                src_ptr as u32,
-                state.state_stack.len(),
-                active_pos,
-                state.current_time,
-            );
-        }
+    let memory = caller.data().memory.expect("Memory not initialized");
+    let offset = src_ptr as u32 as usize;
 
-        let mut bytes = vec![0u8; byte_len];
-        if let Err(err) = memory.read(&caller, offset, &mut bytes) {
-            panic!(
-                "state_set_host failed to read WASM memory: src_ptr(i32)={src_ptr}, src_ptr(u32)={}, size_words={size}, byte_len={byte_len}, offset={offset}, memory_size={memory_size}, err={err:?}",
-                src_ptr as u32,
-            );
-        }
-        bytes
-            .chunks(std::mem::size_of::<Word>())
-            .map(|chunk| {
-                let mut word_bytes = [0u8; 8];
-                word_bytes.copy_from_slice(chunk);
-                u64::from_le_bytes(word_bytes)
-            })
-            .collect()
-    };
+    // Bounds-check before taking any raw pointers.
+    let memory_size = memory.data_size(&caller);
+    let end = offset
+        .checked_add(byte_len)
+        .expect("state_set_host: address overflow");
+    if end > memory_size {
+        let state = caller.data();
+        let active_pos = if let Some(&closure_addr) = state.state_stack.last() {
+            state
+                .closure_states
+                .get(&closure_addr)
+                .map(|s| s.pos)
+                .unwrap_or(0)
+        } else {
+            state.global_state.pos
+        };
+        panic!(
+            "state_set_host OOB read: src_ptr(i32)={src_ptr}, src_ptr(u32)={}, size_words={size}, byte_len={byte_len}, offset={offset}, end={end}, memory_size={memory_size}, state_stack_depth={}, active_state_pos={}, current_time={}",
+            src_ptr as u32,
+            state.state_stack.len(),
+            active_pos,
+            state.current_time,
+        );
+    }
 
-    // Write to the active state storage at its current position
+    // Obtain a raw pointer into WASM linear memory at the source offset.
+    // We release the borrow immediately so we can take &mut RuntimeState below.
+    let wasm_ptr: *const u8 = {
+        let data = memory.data(&caller);
+        // SAFETY: bounds-checked above; data lives for the Store lifetime.
+        unsafe { data.as_ptr().add(offset) }
+    }; // immutable borrow of caller released here
+
+    // Write from WASM linear memory directly into the active state storage.
     let state = caller.data_mut();
     let current = state.get_current_state();
     let pos = current.pos;
     let needed = pos + size;
-
-    // Grow data if needed
     if needed > current.data.len() {
         current.data.resize(needed, 0);
     }
 
-    current.data[pos..pos + size].copy_from_slice(&state_values);
+    // SAFETY:
+    // * wasm_ptr is valid for `byte_len` bytes (bounds-checked above).
+    // * WASM linear memory and RuntimeState::global_state / closure_states are separate
+    //   heap allocations; caller.data_mut() does not touch WASM linear memory.
+    // * WASM execution is single-threaded, so no concurrent writes to either buffer.
+    // * Supported platforms (x86-64, arm64) are little-endian, so u64::from_le() is a
+    //   no-op and the copy is equivalent to a plain memcpy.
+    let dst = &mut current.data[pos..pos + size];
+    unsafe {
+        std::ptr::copy_nonoverlapping(wasm_ptr, dst.as_mut_ptr() as *mut u8, byte_len);
+    }
 }
 
 /// Ring buffer delay: reads delayed value from state, writes new input.
