@@ -9,9 +9,113 @@ use crate::runtime::primitives::Word;
 use crate::runtime::vm::heap::{self, HeapStorage};
 use std::collections::HashMap;
 use wasmtime::{
-    AsContextMut, Caller, Config, Engine, FuncType, Linker, Module, OptLevel, Store, Val, ValType,
-    WasmBacktraceDetails,
+    AsContextMut, Caller, Config, Engine, FuncType, Linker, Module, OptLevel, Store, TypedFunc,
+    Val, ValType, WasmBacktraceDetails,
 };
+
+/// Specialized DSP function caller that avoids `Val`/`Vec` overhead for common signatures.
+///
+/// At module load time, the dsp function's type is inspected once and matched to
+/// one of these typed variants. On each sample, the appropriate arm is dispatched
+/// to with stack-allocated values and no heap allocation.
+///
+/// Falls back to `Generic` for exotic signatures.
+#[allow(clippy::type_complexity)]
+pub(crate) enum DspCaller {
+    MonoOut0(TypedFunc<(), f64>),
+    MonoOut1(TypedFunc<f64, f64>),
+    MonoOut2(TypedFunc<(f64, f64), f64>),
+    MultiOut0(TypedFunc<(), i64>),
+    MultiOut1(TypedFunc<f64, i64>),
+    MultiOut2(TypedFunc<(f64, f64), i64>),
+    Generic(wasmtime::Func),
+}
+
+impl DspCaller {
+    /// Inspect `func`'s type and create the most-specific typed variant.
+    fn from_func(store: &Store<RuntimeState>, func: &wasmtime::Func) -> Self {
+        let ty = func.ty(store);
+        let params: Vec<ValType> = ty.params().collect();
+        let results: Vec<ValType> = ty.results().collect();
+        let is_f64 = |v: &ValType| matches!(v, ValType::F64);
+        let is_i64 = |v: &ValType| matches!(v, ValType::I64);
+        let mono = results.first().is_some_and(is_f64);
+        let multi = results.first().is_some_and(is_i64);
+        let p0f = params.first().is_some_and(is_f64);
+        let p1f = params.get(1).is_some_and(is_f64);
+        match (params.len(), mono, multi, p0f, p1f) {
+            (0, true, _, _, _) => Self::MonoOut0(func.typed(store).unwrap()),
+            (1, true, _, true, _) => Self::MonoOut1(func.typed(store).unwrap()),
+            (2, true, _, true, true) => Self::MonoOut2(func.typed(store).unwrap()),
+            (0, _, true, _, _) => Self::MultiOut0(func.typed(store).unwrap()),
+            (1, _, true, true, _) => Self::MultiOut1(func.typed(store).unwrap()),
+            (2, _, true, true, true) => Self::MultiOut2(func.typed(store).unwrap()),
+            _ => Self::Generic(func.clone()),
+        }
+    }
+
+    /// Call the DSP function. Results are written into `output` as Words.
+    ///
+    /// For the typed variants, calls `TypedFunc` directly (no `Val`/`Vec` overhead).
+    /// For `Generic`, falls back to `WasmModule::call_func_direct_into`.
+    #[inline]
+    pub(crate) fn call_into(
+        &self,
+        module: &mut WasmModule,
+        inputs: &[Word],
+        output: &mut Vec<Word>,
+    ) -> Result<(), String> {
+        output.clear();
+        macro_rules! get_f64 {
+            ($idx:expr) => {
+                f64::from_bits(*inputs.get($idx).unwrap_or(&0))
+            };
+        }
+        match self {
+            Self::MonoOut0(f) => {
+                let r = f
+                    .call(&mut module.store, ())
+                    .map_err(|e| format!("DSP call failed: {e:#}"))?;
+                output.push(r.to_bits());
+            }
+            Self::MonoOut1(f) => {
+                let r = f
+                    .call(&mut module.store, get_f64!(0))
+                    .map_err(|e| format!("DSP call failed: {e:#}"))?;
+                output.push(r.to_bits());
+            }
+            Self::MonoOut2(f) => {
+                let r = f
+                    .call(&mut module.store, (get_f64!(0), get_f64!(1)))
+                    .map_err(|e| format!("DSP call failed: {e:#}"))?;
+                output.push(r.to_bits());
+            }
+            Self::MultiOut0(f) => {
+                let r = f
+                    .call(&mut module.store, ())
+                    .map_err(|e| format!("DSP call failed: {e:#}"))?;
+                output.push(r as u64);
+            }
+            Self::MultiOut1(f) => {
+                let r = f
+                    .call(&mut module.store, get_f64!(0))
+                    .map_err(|e| format!("DSP call failed: {e:#}"))?;
+                output.push(r as u64);
+            }
+            Self::MultiOut2(f) => {
+                let r = f
+                    .call(&mut module.store, (get_f64!(0), get_f64!(1)))
+                    .map_err(|e| format!("DSP call failed: {e:#}"))?;
+                output.push(r as u64);
+            }
+            Self::Generic(func) => {
+                let func = func.clone();
+                module.call_func_direct_into(&func, inputs, output)?;
+            }
+        }
+        Ok(())
+    }
+}
 
 /// Upper bound of `$arityN` builtin specializations exported by the WASM host runtime.
 ///
@@ -243,6 +347,8 @@ impl WasmRuntime {
 
         store.data_mut().memory = Some(memory);
 
+        let alloc_ptr_global = instance.get_global(&mut store, "__alloc_ptr");
+
         Ok(WasmModule {
             module,
             store,
@@ -250,6 +356,7 @@ impl WasmRuntime {
             function_cache: std::collections::HashMap::new(),
             call_args_buf: Vec::new(),
             call_results_buf: Vec::new(),
+            alloc_ptr_global,
         })
     }
 
@@ -746,6 +853,8 @@ pub struct WasmModule {
     call_args_buf: Vec<wasmtime::Val>,
     /// Pre-allocated buffer for call results (reused to avoid allocations)
     call_results_buf: Vec<wasmtime::Val>,
+    /// Cached handle to the `__alloc_ptr` global (avoids per-sample string hash lookup).
+    alloc_ptr_global: Option<wasmtime::Global>,
 }
 
 impl WasmModule {
@@ -876,11 +985,9 @@ impl WasmModule {
     }
 
     /// Read current value of exported allocator pointer global.
+    /// Uses the handle cached at module load time — no string hash lookup.
     pub fn get_alloc_ptr(&mut self) -> Result<i32, String> {
-        let global = self
-            .instance
-            .get_global(&mut self.store, "__alloc_ptr")
-            .ok_or("No __alloc_ptr global export")?;
+        let global = self.alloc_ptr_global.ok_or("No __alloc_ptr global export")?;
         match global.get(&mut self.store) {
             wasmtime::Val::I32(v) => Ok(v),
             _ => Err("__alloc_ptr global type mismatch".to_string()),
@@ -888,14 +995,20 @@ impl WasmModule {
     }
 
     /// Restore allocator pointer global to a previous value.
+    /// Uses the handle cached at module load time — no string hash lookup.
     pub fn set_alloc_ptr(&mut self, value: i32) -> Result<(), String> {
         let global = self
-            .instance
-            .get_global(&mut self.store, "__alloc_ptr")
+            .alloc_ptr_global
             .ok_or("No __alloc_ptr global export")?;
         global
             .set(&mut self.store, wasmtime::Val::I32(value))
             .map_err(|e| format!("Failed to set __alloc_ptr: {e:#}"))
+    }
+
+    /// Build a [`DspCaller`] for the named export, specializing on its type.
+    pub(crate) fn make_dsp_caller(&mut self, name: &str) -> Option<DspCaller> {
+        let func = self.get_or_cache_function(name).ok()?;
+        Some(DspCaller::from_func(&self.store, &func))
     }
 }
 

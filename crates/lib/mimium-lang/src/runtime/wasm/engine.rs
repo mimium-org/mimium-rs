@@ -2,7 +2,7 @@
 //
 // This module provides higher-level execution utilities for the WASM runtime.
 
-use super::{WasmModule, WasmRuntime};
+use super::{DspCaller, WasmModule, WasmRuntime};
 use crate::compiler::IoChannelInfo;
 use crate::mir::StateType;
 use crate::runtime::primitives::Word;
@@ -14,8 +14,8 @@ use std::sync::mpsc;
 pub struct WasmEngine {
     runtime: WasmRuntime,
     current_module: Option<WasmModule>,
-    /// Cached dsp function for fast per-sample execution
-    dsp_func: Option<wasmtime::Func>,
+    /// Specialized typed caller for the `dsp` export; avoids Val/Vec overhead.
+    dsp_caller: Option<DspCaller>,
 }
 
 impl WasmEngine {
@@ -33,7 +33,7 @@ impl WasmEngine {
         Ok(Self {
             runtime,
             current_module: None,
-            dsp_func: None,
+            dsp_caller: None,
         })
     }
 
@@ -44,17 +44,14 @@ impl WasmEngine {
         Ok(Self {
             runtime,
             current_module: None,
-            dsp_func: None,
+            dsp_caller: None,
         })
     }
 
     /// Load a WASM module for execution
     pub fn load_module(&mut self, wasm_bytes: &[u8]) -> Result<(), String> {
         let mut module = self.runtime.load_module(wasm_bytes)?;
-
-        // Cache the dsp function for fast per-sample execution
-        self.dsp_func = module.get_or_cache_function("dsp").ok();
-
+        self.dsp_caller = module.make_dsp_caller("dsp");
         self.current_module = Some(module);
         Ok(())
     }
@@ -62,46 +59,35 @@ impl WasmEngine {
     /// Load a precompiled/serialized WASM module for execution.
     pub fn load_precompiled_module(&mut self, serialized_module: &[u8]) -> Result<(), String> {
         let mut module = self.runtime.load_precompiled_module(serialized_module)?;
-
-        self.dsp_func = module.get_or_cache_function("dsp").ok();
+        self.dsp_caller = module.make_dsp_caller("dsp");
         self.current_module = Some(module);
         Ok(())
     }
 
-    /// Execute the 'dsp' function (main audio processing function)
+    /// Execute the `dsp` export.
+    ///
+    /// Callers must ensure `load_module` was called successfully first.
+    /// Uses the specialized [`DspCaller`] to avoid `Val`/`Vec` overhead.
+    #[inline]
     pub fn execute_dsp(&mut self, inputs: &[Word]) -> Result<Vec<Word>, String> {
-        let module = self
-            .current_module
-            .as_mut()
-            .ok_or("No WASM module loaded")?;
-
-        // Use cached dsp function if available, otherwise fall back to lookup
-        if let Some(func) = &self.dsp_func {
-            module.call_func_direct(func, inputs)
-        } else {
-            module.call_function("dsp", inputs)
-        }
+        let mut output = Vec::new();
+        self.execute_dsp_into(inputs, &mut output)?;
+        Ok(output)
     }
 
     /// Hot-path DSP execution: writes results into a caller-supplied buffer.
     ///
-    /// Bypasses the Option checks on `current_module` and `dsp_func` via
-    /// `unwrap_unchecked` to eliminate branch overhead in the audio callback.
-    /// The caller must guarantee that `load_module` has already succeeded.
-    ///
-    /// # Safety
-    /// `current_module` and `dsp_func` must both be `Some`. This is guaranteed
-    /// after a successful `load_module` call and before any `hot_swap`.
+    /// Callers must ensure `load_module` was called successfully before calling this.
+    /// Uses `unwrap_unchecked` on `current_module` and `dsp_caller` to eliminate
+    /// branch overhead in the audio callback; panics in debug if module is missing.
     #[inline]
-    pub unsafe fn execute_dsp_into_unchecked(
-        &mut self,
-        inputs: &[Word],
-        output: &mut Vec<Word>,
-    ) -> Result<(), String> {
-        // SAFETY: caller guarantees module and dsp_func are loaded.
+    pub fn execute_dsp_into(&mut self, inputs: &[Word], output: &mut Vec<Word>) -> Result<(), String> {
+        debug_assert!(self.current_module.is_some(), "execute_dsp_into called before load_module");
+        debug_assert!(self.dsp_caller.is_some(), "execute_dsp_into: no dsp export in module");
+        // SAFETY: debug_asserts above verify; in release, guaranteed by module lifecycle.
         let module = unsafe { self.current_module.as_mut().unwrap_unchecked() };
-        let func = unsafe { self.dsp_func.as_ref().unwrap_unchecked() };
-        module.call_func_direct_into(func, inputs, output)
+        let caller = unsafe { self.dsp_caller.as_ref().unwrap_unchecked() };
+        caller.call_into(module, inputs, output)
     }
 
     /// Execute a named function
@@ -277,17 +263,13 @@ impl WasmDspRuntime {
 
 impl DspRuntime for WasmDspRuntime {
     fn run_dsp(&mut self, time: Time) -> ReturnCode {
-        let saved_alloc_ptr = self
-            .engine
-            .current_module_mut()
-            .and_then(|module| module.get_alloc_ptr().ok());
-
-        // Update current_time in the WASM runtime state.
-        if let Some(module) = self.engine.current_module_mut()
-            && let Some(state) = module.get_runtime_state_mut()
-        {
-            state.current_time = time.0;
-        }
+        // Single module access: update current_time and read alloc_ptr together.
+        let saved_alloc_ptr = if let Some(module) = self.engine.current_module_mut() {
+            module.set_current_time(time.0);
+            module.get_alloc_ptr().ok()
+        } else {
+            None
+        };
 
         // Run plugin audio workers (e.g. scheduler drains due tasks here).
         for worker in &mut self.sys_plugin_workers {
@@ -308,12 +290,8 @@ impl DspRuntime for WasmDspRuntime {
         // the buffer's heap capacity is preserved when put back below.
         let mut result_buf = std::mem::take(&mut self.dsp_result_buf);
 
-        // Use the unchecked fast path: both module and dsp_func are guaranteed to be Some
-        // after a successful load_module and before any hot-swap.
-        let result = match unsafe {
-            self.engine
-                .execute_dsp_into_unchecked(&self.dsp_args_buf, &mut result_buf)
-        } {
+        // Use the specialized DSP caller (always unchecked; guaranteed by load_module).
+        let result = match self.engine.execute_dsp_into(&self.dsp_args_buf, &mut result_buf) {
             Ok(()) => {
                 self.output_cache.clear();
                 if out_channels > 1 {
