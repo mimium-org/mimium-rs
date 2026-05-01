@@ -259,7 +259,9 @@ impl Default for RuntimeState {
             closure_state_ptrs: HashMap::new(),
             // Persistent pool starts at state_base (512); grows with each new closure.
             // alloc_offset initial value (1024) ensures the dynamic heap starts above it.
-            persistent_pool_ptr: 512,
+            // Start the persistent closure-state pool at 3MB, well above the WASM
+            // heap (alloc_ptr) region, to avoid overlap with dynamically allocated objects.
+            persistent_pool_ptr: 3 * 1024 * 1024,
             current_time: 0,
             sample_rate: 44100.0,
         }
@@ -1405,31 +1407,20 @@ fn closure_state_push_host(
         .or_insert_with(|| StateStorage::with_size(state_size as usize));
 
     // Get/allocate persistent linear-memory state region for this closure.
+    // The pool starts at 3MB (well above the WASM heap), growing monotonically.
+    // WASM linear memory is zero-initialized by spec, so no explicit zeroing needed.
     let byte_size = (state_size as u32).saturating_mul(8);
-    let (closure_state_ptr, is_new) = {
+    let closure_state_ptr = {
         let state = caller.data_mut();
         if let Some(&ptr) = state.closure_state_ptrs.get(&closure_addr) {
-            (ptr, false)
+            ptr
         } else {
             let ptr = state.persistent_pool_ptr;
             state.persistent_pool_ptr = ptr.saturating_add(byte_size);
             state.closure_state_ptrs.insert(closure_addr, ptr);
-            (ptr, true)
+            ptr
         }
     };
-
-    // Zero-initialize the state region on first allocation.
-    if is_new && byte_size > 0 {
-        let memory = caller.data().memory.expect("Memory not initialized");
-        let zeros = vec![0u8; byte_size as usize];
-        memory
-            .write(
-                &mut caller.as_context_mut(),
-                closure_state_ptr as usize,
-                &zeros,
-            )
-            .expect("closure_state_push_host: failed to zero-init state memory");
-    }
 
     // Copy global handles before any mutable borrow.
     let (base_global, pos_global) = {
@@ -1512,8 +1503,15 @@ fn state_delay_host(
     time: f64,
     max_len: i64,
 ) -> f64 {
+    // PushStateOffset/PopStateOffset update state_pos_global directly (no host call),
+    // so we must read position from the WASM global rather than Rust-side StateStorage.pos.
+    let pos_words = {
+        let pos_global = caller.data().state_pos_global_handle.expect("state_pos_global");
+        (pos_global.get(&mut caller).i32().unwrap_or(0) / 8) as usize
+    };
     let state = caller.data_mut();
     let current = state.get_current_state();
+    current.pos = pos_words;
     let pos = current.pos;
     let Some(buf_size) = usize::try_from(max_len).ok() else {
         return 0.0;
@@ -1555,8 +1553,13 @@ fn state_delay_host(
 /// One-sample delay (mem): returns previous value, stores new input.
 /// State layout at current pos: [value] (1 word)
 fn state_mem_host(mut caller: Caller<'_, RuntimeState>, input: f64) -> f64 {
+    let pos_words = {
+        let pos_global = caller.data().state_pos_global_handle.expect("state_pos_global");
+        (pos_global.get(&mut caller).i32().unwrap_or(0) / 8) as usize
+    };
     let state = caller.data_mut();
     let current = state.get_current_state();
+    current.pos = pos_words;
     let pos = current.pos;
     let needed = pos + 1;
 

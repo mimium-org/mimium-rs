@@ -3008,20 +3008,35 @@ impl WasmGenerator {
             }
 
             I::ReturnFeed(value, ty) => {
-                let memarg = MemArg {
-                    offset: 0,
-                    align: 3,
-                    memory_index: 0,
-                };
-                // Store to state_base_ptr_global + state_pos_global
-                func.instruction(&W::GlobalGet(self.state_base_ptr_global));
-                func.instruction(&W::GlobalGet(self.state_pos_global));
-                func.instruction(&W::I32Add);
-                self.emit_value_load(value, func);
-                match Self::type_to_valtype(&ty.to_type()) {
-                    ValType::F64 => func.instruction(&W::F64Store(memarg)),
-                    _ => func.instruction(&W::I64Store(memarg)),
-                };
+                let word_size = ty.word_size() as u32;
+                let val_type = Self::type_to_valtype(&ty.to_type());
+
+                if word_size == 1 {
+                    // Single-word state: store value directly.
+                    let memarg = MemArg { offset: 0, align: 3, memory_index: 0 };
+                    func.instruction(&W::GlobalGet(self.state_base_ptr_global));
+                    func.instruction(&W::GlobalGet(self.state_pos_global));
+                    func.instruction(&W::I32Add);
+                    self.emit_value_load(value, func);
+                    match val_type {
+                        ValType::F64 => func.instruction(&W::F64Store(memarg)),
+                        _ => func.instruction(&W::I64Store(memarg)),
+                    };
+                } else {
+                    // Multi-word state: value is a pointer (i64) to an N-word struct.
+                    // Copy each word from the source struct into the state region.
+                    for i in 0..word_size {
+                        func.instruction(&W::GlobalGet(self.state_base_ptr_global));
+                        func.instruction(&W::GlobalGet(self.state_pos_global));
+                        func.instruction(&W::I32Add); // state_dst as i32
+                        self.emit_value_load(value, func); // src_ptr (i64)
+                        func.instruction(&W::I32WrapI64); // src_ptr as i32
+                        let src_memarg = MemArg { offset: (i * 8) as u64, align: 3, memory_index: 0 };
+                        func.instruction(&W::I64Load(src_memarg)); // load word i from src
+                        let dst_memarg = MemArg { offset: (i * 8) as u64, align: 3, memory_index: 0 };
+                        func.instruction(&W::I64Store(dst_memarg)); // store to state+i*8
+                    }
+                }
 
                 // Entry functions restore the alloc pointer before returning.
                 if self.is_entry_function {
@@ -3564,7 +3579,7 @@ impl WasmGenerator {
                         let state_size = self
                             .resolve_mir_fn_idx(closure_ptr.as_ref())
                             .map(|idx| self.get_mir_fn_state_size(idx))
-                            .unwrap_or(64); // conservative default for dynamic calls
+                            .unwrap_or(64); // conservative default for dynamically-dispatched closures
 
                         // Push closure state onto the state stack
                         self.emit_closure_state_push(closure_ptr, state_size, func);
@@ -3945,7 +3960,7 @@ impl WasmGenerator {
                         let state_size = self
                             .resolve_mir_fn_idx(fn_ptr.as_ref())
                             .map(|idx| self.get_mir_fn_state_size(idx))
-                            .unwrap_or(64); // conservative default
+                            .unwrap_or(64); // conservative default for dynamically-dispatched closures
 
                         // Push closure state onto the state stack
                         self.emit_closure_state_push(fn_ptr, state_size, func);

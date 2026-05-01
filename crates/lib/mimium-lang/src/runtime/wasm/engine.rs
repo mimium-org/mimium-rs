@@ -522,15 +522,6 @@ fn dsp(){
         let mut generator = WasmGenerator::new(Arc::new(mir), &ext_fns);
         let wasm_bytes = generator.generate().expect("WASM gen failed");
 
-        // Print WAT for debugging
-        if let Ok(wat) = wasmprinter::print_bytes(&wasm_bytes) {
-            std::fs::write("/tmp/closure_closed.wat", &wat).ok();
-            eprintln!(
-                "WAT written to /tmp/closure_closed.wat ({} bytes)",
-                wat.len()
-            );
-        }
-
         let mut engine = WasmEngine::new(&ext_fns, None).expect("engine failed");
         engine.load_module(&wasm_bytes).expect("load failed");
         let _ = engine.execute_function("main", &[]);
@@ -549,5 +540,48 @@ fn dsp(){
             result.err()
         );
         assert_eq!(val, Some(-6.0), "expected -6.0, got {:?}", val);
+    }
+
+    #[test]
+    fn test_fb_mem_wasm() {
+        use crate::compiler::wasmgen::WasmGenerator;
+        use crate::{Config, ExecContext};
+        use std::sync::Arc;
+
+        let src = r#"
+fn counter(){
+    1.0+self
+}
+fn mem_by_hand(x){
+    let (y,ys) = self
+    (x,y)
+}
+fn dsp(){
+    mem_by_hand(counter())
+}"#;
+        let mut ctx = ExecContext::new([].into_iter(), None, Config::default());
+        ctx.prepare_compiler();
+        let ext_fns = ctx.get_extfun_types();
+        let mir = ctx.get_compiler().unwrap().emit_mir(src).expect("MIR failed");
+        let mut generator = WasmGenerator::new(Arc::new(mir), &ext_fns);
+        let wasm_bytes = generator.generate().expect("WASM gen failed");
+
+        use super::super::WasmRuntime;
+        let mut runtime = WasmRuntime::new(&ext_fns, None).expect("runtime failed");
+        let mut module = runtime.load_module(&wasm_bytes).expect("load failed");
+        let _ = module.call_function("main", &[]);
+
+        // Expected: [(1.0, 0.0), (2.0, 1.0), (3.0, 2.0), ...]
+        // stereo: dsp() returns pointer to (f64, f64) tuple
+        let expected = vec![(1.0f64, 0.0f64), (2.0, 1.0), (3.0, 2.0)];
+        for (i, (exp_l, exp_r)) in expected.iter().enumerate() {
+            let result = module.call_function("dsp", &[]).expect("dsp failed");
+            let ptr = result[0] as usize;
+            let l = module.read_memory_f64(ptr).expect("read l");
+            let r = module.read_memory_f64(ptr + 8).expect("read r");
+            eprintln!("sample {i}: ({l}, {r})  expected ({exp_l}, {exp_r})");
+            assert!((l - exp_l).abs() < 1e-10, "sample {i} left: got {l}, expected {exp_l}");
+            assert!((r - exp_r).abs() < 1e-10, "sample {i} right: got {r}, expected {exp_r}");
+        }
     }
 }
