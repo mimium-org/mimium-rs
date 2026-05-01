@@ -2366,6 +2366,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "wasm-encoder 0.221.3",
+ "wasmprinter 0.221.3",
  "wasmtime",
  "wat",
 ]
@@ -4370,6 +4371,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasmprinter"
+version = "0.221.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7343c42a97f2926c7819ff81b64012092ae954c5d83ddd30c9fcdefd97d0b283"
+dependencies = [
+ "anyhow",
+ "termcolor",
+ "wasmparser 0.221.3",
+]
+
+[[package]]
 name = "wasmtime"
 version = "27.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4524,7 +4536,7 @@ dependencies = [
  "target-lexicon",
  "wasm-encoder 0.219.2",
  "wasmparser 0.219.2",
- "wasmprinter",
+ "wasmprinter 0.219.2",
  "wasmtime-component-util",
 ]
 

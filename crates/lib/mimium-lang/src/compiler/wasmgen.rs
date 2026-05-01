@@ -58,10 +58,6 @@ struct RuntimeFunctionIndices {
     closure_call: u32,
     closure_state_push: u32,
     closure_state_pop: u32,
-    state_push: u32,
-    state_pop: u32,
-    state_get: u32,
-    state_set: u32,
     state_delay: u32,
     state_mem: u32,
     array_alloc: u32,
@@ -260,6 +256,12 @@ pub struct WasmGenerator {
     /// Number of i64 local slots for the current function.
     /// Used as offset base for f64 locals: f64 reg `r` maps to local `num_args + num_i64_locals + r`.
     current_num_i64_locals: u32,
+    /// Dense remapping from global MIR VReg to per-function i64 local index.
+    /// MIR allocates registers globally, so later functions can have sparse
+    /// high-numbered registers. This map collapses them to 0..N per function.
+    i64_reg_remap: HashMap<mir::VReg, u32>,
+    /// Dense remapping from global MIR VReg to per-function f64 local index.
+    f64_reg_remap: HashMap<mir::VReg, u32>,
 
     /// Linear memory layout manager
     mem_layout: MemoryLayout,
@@ -290,10 +292,17 @@ pub struct WasmGenerator {
     alloc_base_local: u32,
     /// WASM global index for the runtime bump allocator pointer
     alloc_ptr_global: u32,
-    /// WASM global index for the state position cursor
+    /// WASM global index for the state position cursor (bytes from state_base_ptr_global)
     state_pos_global: u32,
+    /// WASM global index for the base address of the current state context in linear memory.
+    /// For non-closure (global) context: initialized to state_base (512).
+    /// For closure context: set by closure_state_push_host to the closure's persistent state region.
+    state_base_ptr_global: u32,
     /// Local variable index for saving alloc pointer at entry-function start (i32)
     alloc_ptr_save_local: u32,
+    /// Scratch i32 local used by Mem/Delay when they are emitted as direct linear
+    /// memory operations instead of host calls.
+    scratch_i32_local: u32,
     /// Whether the current function being generated is an entry point (dsp or _mimium_global).
     /// Entry functions save/restore the alloc pointer to prevent unbounded memory growth.
     is_entry_function: bool,
@@ -312,11 +321,10 @@ pub struct WasmGenerator {
     indirect_upvalues: HashMap<usize, Vec<bool>>,
     /// MIR function index of the function currently being compiled in `generate_function_bodies`.
     current_mir_fn_idx: usize,
-    /// Whether the current MIR function should use WASM direct state access
-    /// instead of host function calls for state operations.
-    /// Only enabled for functions that do not use Delay/Mem (which still need
-    /// the Rust-side StateStorage for ring buffer management).
-    current_fn_uses_direct_state: bool,
+    /// Whether the current function being generated uses Delay/Mem instructions.
+    /// These still require Rust-side StateStorage for ring buffer management,
+    /// so state_get/state_set host calls are used instead of direct linear memory access.
+    current_fn_has_delay_or_mem: bool,
 }
 
 /// Context for emitting control flow blocks
@@ -458,6 +466,8 @@ impl WasmGenerator {
             current_arg_types: Vec::new(),
             current_arg_map: Vec::new(),
             current_num_i64_locals: 0,
+            i64_reg_remap: HashMap::new(),
+            f64_reg_remap: HashMap::new(),
             mem_layout: MemoryLayout::default(),
             // Runtime primitive indices will be set by setup_runtime_imports
             rt: RuntimeFunctionIndices::default(),
@@ -469,15 +479,17 @@ impl WasmGenerator {
             indirect_adapter_fn_indices: Vec::new(),
             closure_save_local: 0,
             alloc_base_local: 0,
-            alloc_ptr_global: 0,
-            state_pos_global: 0,
+            alloc_ptr_global: 0,      // global index 0 (set in generate())
+            state_pos_global: 1,      // global index 1 (set in generate())
+            state_base_ptr_global: 2, // global index 2 (set in generate())
             alloc_ptr_save_local: 0,
+            scratch_i32_local: 0,
             is_entry_function: false,
             use_runtime_alloc_for_current_function: false,
             call_type_cache: HashMap::new(),
             indirect_upvalues: HashMap::new(),
             current_mir_fn_idx: 0,
-            current_fn_uses_direct_state: false,
+            current_fn_has_delay_or_mem: false,
         };
 
         // Setup runtime primitive imports and memory/table
@@ -586,20 +598,6 @@ impl WasmGenerator {
         // Type 9: () -> ()  for closure_state_pop
         self.type_section.ty().function(vec![], vec![]);
         self.rt.closure_state_pop = self.add_import("closure_state_pop", type_idx);
-        type_idx += 1;
-
-        // Type 10: (i64) -> ()  for state_push, state_pop
-        self.type_section.ty().function(vec![ValType::I64], vec![]);
-        self.rt.state_push = self.add_import("state_push", type_idx);
-        self.rt.state_pop = self.add_import("state_pop", type_idx);
-        type_idx += 1;
-
-        // Type 11: (i32, i32) -> ()  for state_get, state_set
-        self.type_section
-            .ty()
-            .function(vec![ValType::I32, ValType::I32], vec![]);
-        self.rt.state_get = self.add_import("state_get", type_idx);
-        self.rt.state_set = self.add_import("state_set", type_idx);
         type_idx += 1;
 
         // Type 10: (f64, f64, i64) -> f64  for state_delay
@@ -881,11 +879,11 @@ impl WasmGenerator {
         self.export_functions()?;
 
         // Phase 3.5: Setup runtime globals
-        // Compute function state offsets before setting up alloc_ptr.
+        // Compute function state offsets for alloc_offset sizing; no longer used for GetState.
         self.mem_layout
             .compute_function_state_offsets(&self.mir.functions);
 
-        // Allocator pointer global
+        // Global 0: Allocator pointer (mutable i32, starts at alloc_offset)
         self.global_section.global(
             wasm_encoder::GlobalType {
                 val_type: wasm_encoder::ValType::I32,
@@ -894,9 +892,9 @@ impl WasmGenerator {
             },
             &wasm_encoder::ConstExpr::i32_const(self.mem_layout.alloc_offset as i32),
         );
-        self.alloc_ptr_global = 0; // first global
+        self.alloc_ptr_global = 0;
 
-        // State position global (mutable i32, initialized to 0)
+        // Global 1: State position cursor (mutable i32, byte offset from state_base_ptr, starts at 0)
         self.global_section.global(
             wasm_encoder::GlobalType {
                 val_type: wasm_encoder::ValType::I32,
@@ -905,7 +903,20 @@ impl WasmGenerator {
             },
             &wasm_encoder::ConstExpr::i32_const(0),
         );
-        self.state_pos_global = 1; // second global
+        self.state_pos_global = 1;
+
+        // Global 2: State base pointer (mutable i32, byte address of current state context).
+        // Initialized to state_base for the global (non-closure) context.
+        // closure_state_push_host updates this to the closure's persistent state region.
+        self.global_section.global(
+            wasm_encoder::GlobalType {
+                val_type: wasm_encoder::ValType::I32,
+                mutable: true,
+                shared: false,
+            },
+            &wasm_encoder::ConstExpr::i32_const(self.mem_layout.state_base as i32),
+        );
+        self.state_base_ptr_global = 2;
 
         // Phase 4: Build and encode the module
         let module = self.build_module();
@@ -1139,15 +1150,16 @@ impl WasmGenerator {
             self.use_runtime_alloc_for_current_function =
                 Self::function_has_non_external_calls(func);
 
-            // Determine whether this function can use direct WASM state access.
-            // Direct access requires: state allocated, no Delay/Mem instructions.
-            let has_state = self.mem_layout.get_function_state_offset(mir_fn_idx) > 0;
-            self.current_fn_uses_direct_state = has_state && !Self::function_has_delay_or_mem(func);
+            // Track whether the current function uses Delay/Mem instructions.
+            // Delay/Mem still use host functions for ring buffer management.
+            self.current_fn_has_delay_or_mem = Self::function_has_delay_or_mem(func);
 
             // Reset register mapping and type tracking for each function
             self.registers.clear();
             self.register_types.clear();
             self.register_constants.clear();
+            self.i64_reg_remap.clear();
+            self.f64_reg_remap.clear();
 
             // Infer argument types from body usage (same analysis as in process_mir_functions)
             let inferred_arg_types = Self::infer_argument_types(func);
@@ -1186,10 +1198,11 @@ impl WasmGenerator {
             // Scan function body to determine register types and constants
             self.analyze_register_types(func);
 
-            // Compute required local counts from actual register usage
-            let (max_i64_reg, max_f64_reg) = self.compute_max_register_indices();
-            let num_i64_locals = max_i64_reg + 1;
-            let num_f64_locals = max_f64_reg + 1;
+            // Build dense remaps so that sparse global register IDs do not
+            // create thousands of unused WASM locals.
+            self.build_register_remaps();
+            let num_i64_locals = self.i64_reg_remap.len() as u32;
+            let num_f64_locals = self.f64_reg_remap.len() as u32;
             self.current_num_i64_locals = num_i64_locals;
 
             // WASM local layout: [args(0..n)] [i64 regs(n..n+num_i64)] [f64 regs(n+num_i64..)] [closure_save: i64]
@@ -1217,6 +1230,9 @@ impl WasmGenerator {
             // Extra i32 local for saving alloc pointer at entry function start
             locals.push((1, ValType::I32));
             self.alloc_ptr_save_local = self.alloc_base_local + 1;
+            // Extra i32 scratch local for Mem/Delay direct linear memory ops
+            locals.push((1, ValType::I32));
+            self.scratch_i32_local = self.alloc_ptr_save_local + 1;
 
             // Create a new WASM function
             let mut wasm_func = Function::new(locals);
@@ -1695,13 +1711,7 @@ impl WasmGenerator {
                                 .unwrap_or(ValType::I64),
                             _ => ValType::F64,
                         });
-                    let local_idx = match reg_type {
-                        ValType::I64 => self.current_num_args + *reg_idx as u32,
-                        ValType::F64 => {
-                            self.current_num_args + self.current_num_i64_locals + *reg_idx as u32
-                        }
-                        _ => self.current_num_args + self.current_num_i64_locals + *reg_idx as u32,
-                    };
+                    let local_idx = self.get_local_index(*reg_idx, reg_type);
                     func.instruction(&W::LocalSet(local_idx));
                 }
             } else if let I::JmpIf(cond, then_bb, else_bb, merge_bb) = instr {
@@ -2197,20 +2207,59 @@ impl WasmGenerator {
         }
     }
 
-    /// Compute the maximum register index for i64 and f64 types.
-    /// Returns (max_i64_index + 1, max_f64_index + 1), i.e. the count of locals needed.
-    fn compute_max_register_indices(&self) -> (u32, u32) {
-        let mut max_i64: u32 = 0;
-        let mut max_f64: u32 = 0;
-        for (&reg_idx, &val_type) in &self.register_types {
-            let idx = reg_idx as u32 + 1; // +1 to convert index to count
-            match val_type {
-                ValType::I64 => max_i64 = max_i64.max(idx),
-                ValType::F64 => max_f64 = max_f64.max(idx),
-                _ => max_f64 = max_f64.max(idx),
+    /// Build dense per-function remaps for global MIR register IDs.
+    ///
+    /// MIR allocates `VReg` IDs monotonically across the whole program, so a
+    /// function that appears late can use register numbers in the thousands
+    /// even if it only needs a handful of locals. Without remapping we would
+    /// declare thousands of WASM locals (most never touched), blowing up
+    /// module size and compilation time.
+    fn build_register_remaps(&mut self) {
+        self.i64_reg_remap.clear();
+        self.f64_reg_remap.clear();
+
+        let mut i64_regs: Vec<mir::VReg> = self
+            .register_types
+            .iter()
+            .filter(|(_, t)| **t == ValType::I64)
+            .map(|(r, _)| *r)
+            .collect();
+        i64_regs.sort_unstable();
+        for (idx, reg) in i64_regs.into_iter().enumerate() {
+            self.i64_reg_remap.insert(reg, idx as u32);
+        }
+
+        let mut f64_regs: Vec<mir::VReg> = self
+            .register_types
+            .iter()
+            .filter(|(_, t)| **t == ValType::F64)
+            .map(|(r, _)| *r)
+            .collect();
+        f64_regs.sort_unstable();
+        for (idx, reg) in f64_regs.into_iter().enumerate() {
+            self.f64_reg_remap.insert(reg, idx as u32);
+        }
+    }
+
+    /// Map a MIR register to its WASM local variable index.
+    ///
+    /// Uses the dense remaps built by `build_register_remaps` so that only
+    /// actually-used registers consume local slots.
+    fn get_local_index(&self, reg_idx: mir::VReg, reg_type: ValType) -> u32 {
+        match reg_type {
+            ValType::I64 => {
+                let dense = self.i64_reg_remap.get(&reg_idx).copied().unwrap_or(0);
+                self.current_num_args + dense
+            }
+            ValType::F64 => {
+                let dense = self.f64_reg_remap.get(&reg_idx).copied().unwrap_or(0);
+                self.current_num_args + self.current_num_i64_locals + dense
+            }
+            _ => {
+                let dense = self.f64_reg_remap.get(&reg_idx).copied().unwrap_or(0);
+                self.current_num_args + self.current_num_i64_locals + dense
             }
         }
-        (max_i64, max_f64)
     }
 
     /// Translate a single MIR instruction with destination to WASM
@@ -2244,19 +2293,13 @@ impl WasmGenerator {
             match dest {
                 mir::Value::Register(reg_idx) => {
                     // Map register to correct local variable based on type
-                    // WASM local layout: [args(0..n)] [i64 regs(n..n+32)] [f64 regs(n+32..n+64)]
+                    // WASM local layout: [args(0..n)] [i64 regs(n..n+num_i64)] [f64 regs(n+num_i64..)]
                     let reg_type = self
                         .register_types
                         .get(reg_idx)
                         .copied()
                         .unwrap_or(ValType::I64);
-                    let local_idx = match reg_type {
-                        ValType::I64 => self.current_num_args + *reg_idx as u32,
-                        ValType::F64 => {
-                            self.current_num_args + self.current_num_i64_locals + *reg_idx as u32
-                        }
-                        _ => self.current_num_args + self.current_num_i64_locals + *reg_idx as u32,
-                    };
+                    let local_idx = self.get_local_index(*reg_idx, reg_type);
                     func.instruction(&W::LocalSet(local_idx));
                 }
                 mir::Value::None => {
@@ -2368,11 +2411,22 @@ impl WasmGenerator {
         self.export_section
             .export("memory", wasm_encoder::ExportKind::Memory, 0);
 
-        // Export runtime allocator pointer for host-side safety recovery.
+        // Export globals for host-side access.
+        // Note: indices are known constants (0, 1, 2) determined by insertion order in generate().
         self.export_section.export(
             "__alloc_ptr",
             wasm_encoder::ExportKind::Global,
-            self.alloc_ptr_global,
+            0, // alloc_ptr_global
+        );
+        self.export_section.export(
+            "__state_pos",
+            wasm_encoder::ExportKind::Global,
+            1, // state_pos_global
+        );
+        self.export_section.export(
+            "__state_base_ptr",
+            wasm_encoder::ExportKind::Global,
+            2, // state_base_ptr_global
         );
 
         Ok(())
@@ -2924,108 +2978,50 @@ impl WasmGenerator {
             }
 
             // State operations
+            // All state operations use state_base_ptr_global + state_pos_global (byte address).
+            // closure_state_push_host/pop_host set state_base_ptr_global to the closure's
+            // persistent state region in linear memory before/after each closure call.
+            // For non-closure (global) context, state_base_ptr_global = state_base (512).
+            // Delay/Mem functions still use host calls for ring buffer management.
             I::PushStateOffset(offset) => {
-                if self.current_fn_uses_direct_state {
-                    let delta = (*offset as u32).saturating_mul(8);
-                    func.instruction(&W::GlobalGet(self.state_pos_global));
-                    func.instruction(&W::I32Const(delta as i32));
-                    func.instruction(&W::I32Add);
-                    func.instruction(&W::GlobalSet(self.state_pos_global));
-                } else {
-                    func.instruction(&W::I64Const(*offset as i64));
-                    func.instruction(&W::Call(self.rt.state_push));
-                }
+                let delta = (*offset as u32).saturating_mul(8);
+                func.instruction(&W::GlobalGet(self.state_pos_global));
+                func.instruction(&W::I32Const(delta as i32));
+                func.instruction(&W::I32Add);
+                func.instruction(&W::GlobalSet(self.state_pos_global));
             }
 
             I::PopStateOffset(offset) => {
-                if self.current_fn_uses_direct_state {
-                    let delta = (*offset as u32).saturating_mul(8);
-                    func.instruction(&W::GlobalGet(self.state_pos_global));
-                    func.instruction(&W::I32Const(delta as i32));
-                    func.instruction(&W::I32Sub);
-                    func.instruction(&W::GlobalSet(self.state_pos_global));
-                } else {
-                    func.instruction(&W::I64Const(*offset as i64));
-                    func.instruction(&W::Call(self.rt.state_pop));
-                }
+                let delta = (*offset as u32).saturating_mul(8);
+                func.instruction(&W::GlobalGet(self.state_pos_global));
+                func.instruction(&W::I32Const(delta as i32));
+                func.instruction(&W::I32Sub);
+                func.instruction(&W::GlobalSet(self.state_pos_global));
             }
 
             I::GetState(_ty) => {
-                if self.current_fn_uses_direct_state {
-                    let state_off = self
-                        .mem_layout
-                        .get_function_state_offset(self.current_mir_fn_idx);
-                    let mem_base = self.mem_layout.state_base;
-                    // Push address = mem_base + state_off + state_pos
-                    func.instruction(&W::I32Const(mem_base as i32));
-                    func.instruction(&W::I32Const(state_off as i32));
-                    func.instruction(&W::I32Add);
-                    func.instruction(&W::GlobalGet(self.state_pos_global));
-                    func.instruction(&W::I32Add);
-                    func.instruction(&W::I64ExtendI32U);
-                } else {
-                    let temp_addr = self.mem_layout.alloc_offset;
-                    let size = _ty.word_size() as i32;
-                    let size_bytes = (size as u32).max(1) * 8;
-                    self.mem_layout.alloc_offset += size_bytes;
-                    func.instruction(&W::I32Const(temp_addr as i32));
-                    func.instruction(&W::I32Const(size));
-                    func.instruction(&W::Call(self.rt.state_get));
-                    func.instruction(&W::I64Const(temp_addr as i64));
-                }
+                // Push address = state_base_ptr_global + state_pos_global
+                func.instruction(&W::GlobalGet(self.state_base_ptr_global));
+                func.instruction(&W::GlobalGet(self.state_pos_global));
+                func.instruction(&W::I32Add);
+                func.instruction(&W::I64ExtendI32U);
             }
 
             I::ReturnFeed(value, ty) => {
-                let size = ty.word_size() as i32;
-
-                if self.current_fn_uses_direct_state {
-                    let state_off = self
-                        .mem_layout
-                        .get_function_state_offset(self.current_mir_fn_idx);
-                    let mem_base = self.mem_layout.state_base;
-                    let memarg = MemArg {
-                        offset: 0,
-                        align: 3,
-                        memory_index: 0,
-                    };
-                    // Compute target address: mem_base + state_off + state_pos
-                    func.instruction(&W::I32Const(mem_base as i32));
-                    func.instruction(&W::I32Const(state_off as i32));
-                    func.instruction(&W::I32Add);
-                    func.instruction(&W::GlobalGet(self.state_pos_global));
-                    func.instruction(&W::I32Add);
-                    self.emit_value_load(value, func);
-                    match Self::type_to_valtype(&ty.to_type()) {
-                        ValType::F64 => func.instruction(&W::F64Store(memarg)),
-                        _ => func.instruction(&W::I64Store(memarg)),
-                    };
-                } else if size <= 1 {
-                    // Dynamic: single-word via temp memory
-                    let size_bytes = 8u32;
-                    let temp_addr = self.mem_layout.alloc_offset;
-                    self.mem_layout.alloc_offset += size_bytes;
-
-                    let memarg = MemArg {
-                        offset: 0,
-                        align: 3,
-                        memory_index: 0,
-                    };
-                    func.instruction(&W::I32Const(temp_addr as i32));
-                    self.emit_value_load(value, func);
-                    match Self::type_to_valtype(&ty.to_type()) {
-                        ValType::F64 => func.instruction(&W::F64Store(memarg)),
-                        _ => func.instruction(&W::I64Store(memarg)),
-                    };
-                    func.instruction(&W::I32Const(temp_addr as i32));
-                    func.instruction(&W::I32Const(size));
-                    func.instruction(&W::Call(self.rt.state_set));
-                } else {
-                    // Dynamic: multi-word via host
-                    self.emit_value_load(value, func);
-                    func.instruction(&W::I32WrapI64);
-                    func.instruction(&W::I32Const(size));
-                    func.instruction(&W::Call(self.rt.state_set));
-                }
+                let memarg = MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
+                // Store to state_base_ptr_global + state_pos_global
+                func.instruction(&W::GlobalGet(self.state_base_ptr_global));
+                func.instruction(&W::GlobalGet(self.state_pos_global));
+                func.instruction(&W::I32Add);
+                self.emit_value_load(value, func);
+                match Self::type_to_valtype(&ty.to_type()) {
+                    ValType::F64 => func.instruction(&W::F64Store(memarg)),
+                    _ => func.instruction(&W::I64Store(memarg)),
+                };
 
                 // Entry functions restore the alloc pointer before returning.
                 if self.is_entry_function {
@@ -3047,9 +3043,32 @@ impl WasmGenerator {
             }
 
             I::Mem(value) => {
-                // state_mem(input: f64) -> f64
+                // Direct linear-memory implementation of mem (one-sample delay).
+                // Layout at current state pos: [old_value: f64] (1 word = 8 bytes)
+                //
+                // Stack effect: pushes the old value and stores the new input.
+                //
+                //   global.get state_base_ptr
+                //   global.get state_pos
+                //   i32.add
+                //   local.tee $scratch_i32    ;; address on stack + saved
+                //   f64.load                  ;; old_value
+                //   local.get $scratch_i32    ;; address
+                //   <input>                   ;; new value
+                //   f64.store                 ;; store new value, leave old_value on stack
+                let memarg = MemArg {
+                    offset: 0,
+                    align: 3,
+                    memory_index: 0,
+                };
+                func.instruction(&W::GlobalGet(self.state_base_ptr_global));
+                func.instruction(&W::GlobalGet(self.state_pos_global));
+                func.instruction(&W::I32Add);
+                func.instruction(&W::LocalTee(self.scratch_i32_local));
+                func.instruction(&W::F64Load(memarg));
+                func.instruction(&W::LocalGet(self.scratch_i32_local));
                 self.emit_value_load_typed(value, ValType::F64, func);
-                func.instruction(&W::Call(self.rt.state_mem));
+                func.instruction(&W::F64Store(memarg));
             }
 
             // Array operations
@@ -4175,19 +4194,13 @@ impl WasmGenerator {
         match value.as_ref() {
             V::Register(reg_idx) => {
                 // Map register to correct local variable based on type
-                // WASM local layout: [args(0..n)] [i64 regs(n..n+32)] [f64 regs(n+32..n+64)]
+                // WASM local layout: [args(0..n)] [i64 regs(n..n+num_i64)] [f64 regs(n+num_i64..)]
                 let reg_type = self
                     .register_types
                     .get(reg_idx)
                     .copied()
                     .unwrap_or(ValType::I64);
-                let local_idx = match reg_type {
-                    ValType::I64 => self.current_num_args + *reg_idx as u32,
-                    ValType::F64 => {
-                        self.current_num_args + self.current_num_i64_locals + *reg_idx as u32
-                    }
-                    _ => self.current_num_args + self.current_num_i64_locals + *reg_idx as u32,
-                };
+                let local_idx = self.get_local_index(*reg_idx, reg_type);
                 func.instruction(&W::LocalGet(local_idx));
             }
             V::Argument(arg_idx) => {
@@ -5045,10 +5058,10 @@ mod tests {
         let mir = Arc::new(Mir::default());
         let generator = WasmGenerator::new_without_plugins(mir);
         // Verify runtime primitive imports are set up
-        assert!(generator.current_fn_idx > 20); // At least 25 runtime functions imported
+        assert!(generator.current_fn_idx > 20); // At least 20 runtime functions imported
         assert!(generator.rt.heap_alloc < generator.current_fn_idx);
         assert!(generator.rt.array_alloc < generator.current_fn_idx);
-        assert!(generator.rt.state_push < generator.current_fn_idx);
+        assert!(generator.rt.state_delay < generator.current_fn_idx);
     }
 
     #[test]

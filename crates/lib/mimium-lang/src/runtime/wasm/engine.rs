@@ -81,9 +81,19 @@ impl WasmEngine {
     /// Uses `unwrap_unchecked` on `current_module` and `dsp_caller` to eliminate
     /// branch overhead in the audio callback; panics in debug if module is missing.
     #[inline]
-    pub fn execute_dsp_into(&mut self, inputs: &[Word], output: &mut Vec<Word>) -> Result<(), String> {
-        debug_assert!(self.current_module.is_some(), "execute_dsp_into called before load_module");
-        debug_assert!(self.dsp_caller.is_some(), "execute_dsp_into: no dsp export in module");
+    pub fn execute_dsp_into(
+        &mut self,
+        inputs: &[Word],
+        output: &mut Vec<Word>,
+    ) -> Result<(), String> {
+        debug_assert!(
+            self.current_module.is_some(),
+            "execute_dsp_into called before load_module"
+        );
+        debug_assert!(
+            self.dsp_caller.is_some(),
+            "execute_dsp_into: no dsp export in module"
+        );
         // SAFETY: debug_asserts above verify; in release, guaranteed by module lifecycle.
         let module = unsafe { self.current_module.as_mut().unwrap_unchecked() };
         let caller = unsafe { self.dsp_caller.as_ref().unwrap_unchecked() };
@@ -291,7 +301,10 @@ impl DspRuntime for WasmDspRuntime {
         let mut result_buf = std::mem::take(&mut self.dsp_result_buf);
 
         // Use the specialized DSP caller (always unchecked; guaranteed by load_module).
-        let result = match self.engine.execute_dsp_into(&self.dsp_args_buf, &mut result_buf) {
+        let result = match self
+            .engine
+            .execute_dsp_into(&self.dsp_args_buf, &mut result_buf)
+        {
             Ok(()) => {
                 self.output_cache.clear();
                 if out_channels > 1 {
@@ -471,5 +484,70 @@ mod tests {
         let result = engine.execute_function("add", &[10, 20]);
         assert!(result.is_ok(), "Should execute add function");
         assert_eq!(result.unwrap(), vec![30], "Should compute 10 + 20 = 30");
+    }
+
+    #[test]
+    fn test_closure_closed_wasm() {
+        use crate::compiler::wasmgen::WasmGenerator;
+        use crate::{Config, ExecContext};
+        use std::sync::Arc;
+
+        let src = r#"
+fn test(x:float){
+    let y = 5.0
+    let f = | | {
+        let z = 3.0
+        let ff = | |{
+            let a = x
+            let b = y
+            let c = z
+            a-b*c
+            }
+         ff()
+        }
+    f
+}
+fn dsp(){
+    let f2 = test(9.0)
+    f2()
+}"#;
+        let mut ctx = ExecContext::new([].into_iter(), None, Config::default());
+        ctx.prepare_compiler();
+        let ext_fns = ctx.get_extfun_types();
+        let mir = ctx
+            .get_compiler()
+            .unwrap()
+            .emit_mir(src)
+            .expect("MIR failed");
+        let mut generator = WasmGenerator::new(Arc::new(mir), &ext_fns);
+        let wasm_bytes = generator.generate().expect("WASM gen failed");
+
+        // Print WAT for debugging
+        if let Ok(wat) = wasmprinter::print_bytes(&wasm_bytes) {
+            std::fs::write("/tmp/closure_closed.wat", &wat).ok();
+            eprintln!(
+                "WAT written to /tmp/closure_closed.wat ({} bytes)",
+                wat.len()
+            );
+        }
+
+        let mut engine = WasmEngine::new(&ext_fns, None).expect("engine failed");
+        engine.load_module(&wasm_bytes).expect("load failed");
+        let _ = engine.execute_function("main", &[]);
+        let result = engine.execute_dsp(&[]);
+        eprintln!("closure_closed result: {:?}", result);
+        let val = result
+            .as_ref()
+            .ok()
+            .and_then(|v| v.first())
+            .copied()
+            .map(f64::from_bits);
+        eprintln!("closure_closed value: {:?}", val);
+        assert!(
+            result.is_ok(),
+            "closure_closed dsp failed: {:?}",
+            result.err()
+        );
+        assert_eq!(val, Some(-6.0), "expected -6.0, got {:?}", val);
     }
 }

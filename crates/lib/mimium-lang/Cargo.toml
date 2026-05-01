@@ -43,6 +43,7 @@ wasm-bindgen-test = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 wat = "1.221"
+wasmprinter = "0.221"
 
 
 [lints.clippy]

@@ -50,6 +50,9 @@ mod tests {
         engine
             .load_module(&wasm_bytes)
             .expect("Failed to load WASM module");
+        // Initialize global state (closures, global vars, etc.).
+        // "_mimium_global" is exported as "main" in the WASM module.
+        let _ = engine.execute_function("main", &[]);
 
         b.iter(move || {
             for _i in 0..times {
