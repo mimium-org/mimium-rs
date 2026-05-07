@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## v4.1.1
+
+### Performance improvement
+
+- Updated Rust Code generator for better runtime performance(#202)
+- Improved Wasm JIT code performance.
+
+
 ## v4.1.0
 
 ### Added features
