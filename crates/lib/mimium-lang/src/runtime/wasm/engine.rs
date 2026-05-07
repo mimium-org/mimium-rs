@@ -2,7 +2,7 @@
 //
 // This module provides higher-level execution utilities for the WASM runtime.
 
-use super::{WasmModule, WasmRuntime};
+use super::{DspCaller, WasmModule, WasmRuntime};
 use crate::compiler::IoChannelInfo;
 use crate::mir::StateType;
 use crate::runtime::primitives::Word;
@@ -14,8 +14,8 @@ use std::sync::mpsc;
 pub struct WasmEngine {
     runtime: WasmRuntime,
     current_module: Option<WasmModule>,
-    /// Cached dsp function for fast per-sample execution
-    dsp_func: Option<wasmtime::Func>,
+    /// Specialized typed caller for the `dsp` export; avoids Val/Vec overhead.
+    dsp_caller: Option<DspCaller>,
 }
 
 impl WasmEngine {
@@ -33,7 +33,7 @@ impl WasmEngine {
         Ok(Self {
             runtime,
             current_module: None,
-            dsp_func: None,
+            dsp_caller: None,
         })
     }
 
@@ -44,17 +44,14 @@ impl WasmEngine {
         Ok(Self {
             runtime,
             current_module: None,
-            dsp_func: None,
+            dsp_caller: None,
         })
     }
 
     /// Load a WASM module for execution
     pub fn load_module(&mut self, wasm_bytes: &[u8]) -> Result<(), String> {
         let mut module = self.runtime.load_module(wasm_bytes)?;
-
-        // Cache the dsp function for fast per-sample execution
-        self.dsp_func = module.get_or_cache_function("dsp").ok();
-
+        self.dsp_caller = module.make_dsp_caller("dsp");
         self.current_module = Some(module);
         Ok(())
     }
@@ -62,25 +59,45 @@ impl WasmEngine {
     /// Load a precompiled/serialized WASM module for execution.
     pub fn load_precompiled_module(&mut self, serialized_module: &[u8]) -> Result<(), String> {
         let mut module = self.runtime.load_precompiled_module(serialized_module)?;
-
-        self.dsp_func = module.get_or_cache_function("dsp").ok();
+        self.dsp_caller = module.make_dsp_caller("dsp");
         self.current_module = Some(module);
         Ok(())
     }
 
-    /// Execute the 'dsp' function (main audio processing function)
+    /// Execute the `dsp` export.
+    ///
+    /// Callers must ensure `load_module` was called successfully first.
+    /// Uses the specialized [`DspCaller`] to avoid `Val`/`Vec` overhead.
+    #[inline]
     pub fn execute_dsp(&mut self, inputs: &[Word]) -> Result<Vec<Word>, String> {
-        let module = self
-            .current_module
-            .as_mut()
-            .ok_or("No WASM module loaded")?;
+        let mut output = Vec::new();
+        self.execute_dsp_into(inputs, &mut output)?;
+        Ok(output)
+    }
 
-        // Use cached dsp function if available, otherwise fall back to lookup
-        if let Some(func) = &self.dsp_func {
-            module.call_func_direct(func, inputs)
-        } else {
-            module.call_function("dsp", inputs)
-        }
+    /// Hot-path DSP execution: writes results into a caller-supplied buffer.
+    ///
+    /// Callers must ensure `load_module` was called successfully before calling this.
+    /// Uses `unwrap_unchecked` on `current_module` and `dsp_caller` to eliminate
+    /// branch overhead in the audio callback; panics in debug if module is missing.
+    #[inline]
+    pub fn execute_dsp_into(
+        &mut self,
+        inputs: &[Word],
+        output: &mut Vec<Word>,
+    ) -> Result<(), String> {
+        debug_assert!(
+            self.current_module.is_some(),
+            "execute_dsp_into called before load_module"
+        );
+        debug_assert!(
+            self.dsp_caller.is_some(),
+            "execute_dsp_into: no dsp export in module"
+        );
+        // SAFETY: debug_asserts above verify; in release, guaranteed by module lifecycle.
+        let module = unsafe { self.current_module.as_mut().unwrap_unchecked() };
+        let caller = unsafe { self.dsp_caller.as_ref().unwrap_unchecked() };
+        caller.call_into(module, inputs, output)
     }
 
     /// Execute a named function
@@ -163,6 +180,10 @@ pub struct WasmDspRuntime {
     /// This keeps potentially expensive engine destruction (`drop`) out of the
     /// real-time callback during hot-swap.
     retired_engine_sender: Option<mpsc::Sender<WasmEngine>>,
+    /// Reusable buffer for DSP function arguments (avoids per-sample allocation).
+    dsp_args_buf: Vec<Word>,
+    /// Reusable buffer for DSP function return values (avoids per-sample allocation).
+    dsp_result_buf: Vec<Word>,
 }
 
 impl WasmDspRuntime {
@@ -186,6 +207,8 @@ impl WasmDspRuntime {
             current_dsp_skeleton: dsp_skeleton,
             sys_plugin_workers: Vec::new(),
             retired_engine_sender: None,
+            dsp_args_buf: Vec::new(),
+            dsp_result_buf: Vec::new(),
         }
     }
 
@@ -250,17 +273,13 @@ impl WasmDspRuntime {
 
 impl DspRuntime for WasmDspRuntime {
     fn run_dsp(&mut self, time: Time) -> ReturnCode {
-        let saved_alloc_ptr = self
-            .engine
-            .current_module_mut()
-            .and_then(|module| module.get_alloc_ptr().ok());
-
-        // Update current_time in the WASM runtime state.
-        if let Some(module) = self.engine.current_module_mut()
-            && let Some(state) = module.get_runtime_state_mut()
-        {
-            state.current_time = time.0;
-        }
+        // Single module access: update current_time and read alloc_ptr together.
+        let saved_alloc_ptr = if let Some(module) = self.engine.current_module_mut() {
+            module.set_current_time(time.0);
+            module.get_alloc_ptr().ok()
+        } else {
+            None
+        };
 
         // Run plugin audio workers (e.g. scheduler drains due tasks here).
         for worker in &mut self.sys_plugin_workers {
@@ -268,17 +287,30 @@ impl DspRuntime for WasmDspRuntime {
         }
 
         // Convert input samples to Words (bit-cast f64 → u64).
-        let args: Vec<Word> = self.input_cache.iter().map(|v| v.to_bits()).collect();
+        // Reuse a pre-allocated buffer to avoid per-sample allocation.
+        self.dsp_args_buf.clear();
+        self.dsp_args_buf
+            .extend(self.input_cache.iter().map(|v| v.to_bits()));
 
         let out_channels = self.io_channels.map_or(1, |io| io.output as usize);
 
-        let result = match self.engine.execute_dsp(&args) {
-            Ok(result) => {
+        // Take the result buffer out of self so we can borrow both `self.engine` and
+        // the buffer simultaneously (they are different fields, but the borrow checker
+        // cannot prove that through a field reference). Vec::new() is allocation-free;
+        // the buffer's heap capacity is preserved when put back below.
+        let mut result_buf = std::mem::take(&mut self.dsp_result_buf);
+
+        // Use the specialized DSP caller (always unchecked; guaranteed by load_module).
+        let result = match self
+            .engine
+            .execute_dsp_into(&self.dsp_args_buf, &mut result_buf)
+        {
+            Ok(()) => {
                 self.output_cache.clear();
                 if out_channels > 1 {
                     // Multi-channel (stereo, etc.): dsp() returns an i64 pointer
                     // to a tuple in linear memory. Dereference each element.
-                    if let Some(&ptr_word) = result.first() {
+                    if let Some(&ptr_word) = result_buf.first() {
                         let ptr = ptr_word as usize;
                         for ch in 0..out_channels {
                             let val = self.engine.read_memory_f64(ptr + ch * 8).unwrap_or(0.0);
@@ -288,7 +320,7 @@ impl DspRuntime for WasmDspRuntime {
                 } else {
                     // Mono: dsp() returns a single f64 directly.
                     self.output_cache
-                        .extend(result.iter().map(|&w| f64::from_bits(w)));
+                        .extend(result_buf.iter().map(|&w| f64::from_bits(w)));
                 }
                 0 // success
             }
@@ -297,6 +329,9 @@ impl DspRuntime for WasmDspRuntime {
                 -1
             }
         };
+
+        // Restore the result buffer (retains its heap allocation for the next sample).
+        self.dsp_result_buf = result_buf;
 
         if let Some(saved_ptr) = saved_alloc_ptr
             && let Some(module) = self.engine.current_module_mut()
@@ -449,5 +484,104 @@ mod tests {
         let result = engine.execute_function("add", &[10, 20]);
         assert!(result.is_ok(), "Should execute add function");
         assert_eq!(result.unwrap(), vec![30], "Should compute 10 + 20 = 30");
+    }
+
+    #[test]
+    fn test_closure_closed_wasm() {
+        use crate::compiler::wasmgen::WasmGenerator;
+        use crate::{Config, ExecContext};
+        use std::sync::Arc;
+
+        let src = r#"
+fn test(x:float){
+    let y = 5.0
+    let f = | | {
+        let z = 3.0
+        let ff = | |{
+            let a = x
+            let b = y
+            let c = z
+            a-b*c
+            }
+         ff()
+        }
+    f
+}
+fn dsp(){
+    let f2 = test(9.0)
+    f2()
+}"#;
+        let mut ctx = ExecContext::new([].into_iter(), None, Config::default());
+        ctx.prepare_compiler();
+        let ext_fns = ctx.get_extfun_types();
+        let mir = ctx
+            .get_compiler()
+            .unwrap()
+            .emit_mir(src)
+            .expect("MIR failed");
+        let mut generator = WasmGenerator::new(Arc::new(mir), &ext_fns);
+        let wasm_bytes = generator.generate().expect("WASM gen failed");
+
+        let mut engine = WasmEngine::new(&ext_fns, None).expect("engine failed");
+        engine.load_module(&wasm_bytes).expect("load failed");
+        let _ = engine.execute_function("main", &[]);
+        let result = engine.execute_dsp(&[]);
+        eprintln!("closure_closed result: {:?}", result);
+        let val = result
+            .as_ref()
+            .ok()
+            .and_then(|v| v.first())
+            .copied()
+            .map(f64::from_bits);
+        eprintln!("closure_closed value: {:?}", val);
+        assert!(
+            result.is_ok(),
+            "closure_closed dsp failed: {:?}",
+            result.err()
+        );
+        assert_eq!(val, Some(-6.0), "expected -6.0, got {:?}", val);
+    }
+
+    #[test]
+    fn test_fb_mem_wasm() {
+        use crate::compiler::wasmgen::WasmGenerator;
+        use crate::{Config, ExecContext};
+        use std::sync::Arc;
+
+        let src = r#"
+fn counter(){
+    1.0+self
+}
+fn mem_by_hand(x){
+    let (y,ys) = self
+    (x,y)
+}
+fn dsp(){
+    mem_by_hand(counter())
+}"#;
+        let mut ctx = ExecContext::new([].into_iter(), None, Config::default());
+        ctx.prepare_compiler();
+        let ext_fns = ctx.get_extfun_types();
+        let mir = ctx.get_compiler().unwrap().emit_mir(src).expect("MIR failed");
+        let mut generator = WasmGenerator::new(Arc::new(mir), &ext_fns);
+        let wasm_bytes = generator.generate().expect("WASM gen failed");
+
+        use super::super::WasmRuntime;
+        let mut runtime = WasmRuntime::new(&ext_fns, None).expect("runtime failed");
+        let mut module = runtime.load_module(&wasm_bytes).expect("load failed");
+        let _ = module.call_function("main", &[]);
+
+        // Expected: [(1.0, 0.0), (2.0, 1.0), (3.0, 2.0), ...]
+        // stereo: dsp() returns pointer to (f64, f64) tuple
+        let expected = vec![(1.0f64, 0.0f64), (2.0, 1.0), (3.0, 2.0)];
+        for (i, (exp_l, exp_r)) in expected.iter().enumerate() {
+            let result = module.call_function("dsp", &[]).expect("dsp failed");
+            let ptr = result[0] as usize;
+            let l = module.read_memory_f64(ptr).expect("read l");
+            let r = module.read_memory_f64(ptr + 8).expect("read r");
+            eprintln!("sample {i}: ({l}, {r})  expected ({exp_l}, {exp_r})");
+            assert!((l - exp_l).abs() < 1e-10, "sample {i} left: got {l}, expected {exp_l}");
+            assert!((r - exp_r).abs() < 1e-10, "sample {i} right: got {r}, expected {exp_r}");
+        }
     }
 }

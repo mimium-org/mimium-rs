@@ -9,9 +9,113 @@ use crate::runtime::primitives::Word;
 use crate::runtime::vm::heap::{self, HeapStorage};
 use std::collections::HashMap;
 use wasmtime::{
-    AsContextMut, Caller, Config, Engine, FuncType, Linker, Module, OptLevel, Store, Val, ValType,
-    WasmBacktraceDetails,
+    AsContextMut, Caller, Config, Engine, FuncType, Linker, Module, OptLevel, Store, TypedFunc,
+    Val, ValType, WasmBacktraceDetails,
 };
+
+/// Specialized DSP function caller that avoids `Val`/`Vec` overhead for common signatures.
+///
+/// At module load time, the dsp function's type is inspected once and matched to
+/// one of these typed variants. On each sample, the appropriate arm is dispatched
+/// to with stack-allocated values and no heap allocation.
+///
+/// Falls back to `Generic` for exotic signatures.
+#[allow(clippy::type_complexity)]
+pub(crate) enum DspCaller {
+    MonoOut0(TypedFunc<(), f64>),
+    MonoOut1(TypedFunc<f64, f64>),
+    MonoOut2(TypedFunc<(f64, f64), f64>),
+    MultiOut0(TypedFunc<(), i64>),
+    MultiOut1(TypedFunc<f64, i64>),
+    MultiOut2(TypedFunc<(f64, f64), i64>),
+    Generic(wasmtime::Func),
+}
+
+impl DspCaller {
+    /// Inspect `func`'s type and create the most-specific typed variant.
+    fn from_func(store: &Store<RuntimeState>, func: &wasmtime::Func) -> Self {
+        let ty = func.ty(store);
+        let params: Vec<ValType> = ty.params().collect();
+        let results: Vec<ValType> = ty.results().collect();
+        let is_f64 = |v: &ValType| matches!(v, ValType::F64);
+        let is_i64 = |v: &ValType| matches!(v, ValType::I64);
+        let mono = results.first().is_some_and(is_f64);
+        let multi = results.first().is_some_and(is_i64);
+        let p0f = params.first().is_some_and(is_f64);
+        let p1f = params.get(1).is_some_and(is_f64);
+        match (params.len(), mono, multi, p0f, p1f) {
+            (0, true, _, _, _) => Self::MonoOut0(func.typed(store).unwrap()),
+            (1, true, _, true, _) => Self::MonoOut1(func.typed(store).unwrap()),
+            (2, true, _, true, true) => Self::MonoOut2(func.typed(store).unwrap()),
+            (0, _, true, _, _) => Self::MultiOut0(func.typed(store).unwrap()),
+            (1, _, true, true, _) => Self::MultiOut1(func.typed(store).unwrap()),
+            (2, _, true, true, true) => Self::MultiOut2(func.typed(store).unwrap()),
+            _ => Self::Generic(func.clone()),
+        }
+    }
+
+    /// Call the DSP function. Results are written into `output` as Words.
+    ///
+    /// For the typed variants, calls `TypedFunc` directly (no `Val`/`Vec` overhead).
+    /// For `Generic`, falls back to `WasmModule::call_func_direct_into`.
+    #[inline]
+    pub(crate) fn call_into(
+        &self,
+        module: &mut WasmModule,
+        inputs: &[Word],
+        output: &mut Vec<Word>,
+    ) -> Result<(), String> {
+        output.clear();
+        macro_rules! get_f64 {
+            ($idx:expr) => {
+                f64::from_bits(*inputs.get($idx).unwrap_or(&0))
+            };
+        }
+        match self {
+            Self::MonoOut0(f) => {
+                let r = f
+                    .call(&mut module.store, ())
+                    .map_err(|e| format!("DSP call failed: {e:#}"))?;
+                output.push(r.to_bits());
+            }
+            Self::MonoOut1(f) => {
+                let r = f
+                    .call(&mut module.store, get_f64!(0))
+                    .map_err(|e| format!("DSP call failed: {e:#}"))?;
+                output.push(r.to_bits());
+            }
+            Self::MonoOut2(f) => {
+                let r = f
+                    .call(&mut module.store, (get_f64!(0), get_f64!(1)))
+                    .map_err(|e| format!("DSP call failed: {e:#}"))?;
+                output.push(r.to_bits());
+            }
+            Self::MultiOut0(f) => {
+                let r = f
+                    .call(&mut module.store, ())
+                    .map_err(|e| format!("DSP call failed: {e:#}"))?;
+                output.push(r as u64);
+            }
+            Self::MultiOut1(f) => {
+                let r = f
+                    .call(&mut module.store, get_f64!(0))
+                    .map_err(|e| format!("DSP call failed: {e:#}"))?;
+                output.push(r as u64);
+            }
+            Self::MultiOut2(f) => {
+                let r = f
+                    .call(&mut module.store, (get_f64!(0), get_f64!(1)))
+                    .map_err(|e| format!("DSP call failed: {e:#}"))?;
+                output.push(r as u64);
+            }
+            Self::Generic(func) => {
+                let func = func.clone();
+                module.call_func_direct_into(&func, inputs, output)?;
+            }
+        }
+        Ok(())
+    }
+}
 
 /// Upper bound of `$arityN` builtin specializations exported by the WASM host runtime.
 ///
@@ -93,11 +197,31 @@ pub struct RuntimeState {
     global_state: StateStorage,
     /// Per-closure state storages, keyed by closure address in linear memory.
     /// Each closure gets its own StateStorage, allocated lazily on first call.
+    /// Still used by Delay/Mem functions that need host-side ring buffer management.
     closure_states: HashMap<i64, StateStorage>,
     /// Stack of closure addresses for tracking the active state context.
-    /// When empty, global_state is active. When non-empty, the top entry's
-    /// closure state is active. Mirrors the native VM's `states_stack`.
+    /// Used by Delay/Mem functions only; mirrors the native VM's `states_stack`.
     state_stack: Vec<i64>,
+
+    // --- Direct WASM linear memory state (new unified approach) ---
+    /// Cached handle to the `__state_base_ptr` WASM global.
+    /// Points to the base byte address of the current state context in linear memory.
+    /// Set by closure_state_push_host; read/written by WASM code directly.
+    state_base_ptr_global: Option<wasmtime::Global>,
+    /// Cached handle to the `__state_pos` WASM global.
+    /// Byte offset from state_base_ptr_global for the current state cursor.
+    state_pos_global_handle: Option<wasmtime::Global>,
+    /// Stack of (state_base_ptr, state_pos) pairs saved by closure_state_push_host.
+    /// Restored by closure_state_pop_host.
+    state_context_stack: Vec<(i32, i32)>,
+    /// Maps closure address (linear memory) → byte offset in the persistent state pool.
+    /// Once allocated, a closure's state region never moves.
+    closure_state_ptrs: HashMap<i64, u32>,
+    /// Next free byte offset in the persistent state pool (starts at state_base = 512,
+    /// grows monotonically as new closures are encountered).
+    /// The persistent pool lives BELOW alloc_offset (1024) and is never freed.
+    persistent_pool_ptr: u32,
+
     /// Current time (for runtime_get_now)
     pub(crate) current_time: u64,
     /// Sample rate (for runtime_get_samplerate)
@@ -129,6 +253,15 @@ impl Default for RuntimeState {
             global_state: StateStorage::default(),
             closure_states: HashMap::new(),
             state_stack: Vec::new(),
+            state_base_ptr_global: None,
+            state_pos_global_handle: None,
+            state_context_stack: Vec::new(),
+            closure_state_ptrs: HashMap::new(),
+            // Persistent pool starts at state_base (512); grows with each new closure.
+            // alloc_offset initial value (1024) ensures the dynamic heap starts above it.
+            // Start the persistent closure-state pool at 3MB, well above the WASM
+            // heap (alloc_ptr) region, to avoid overlap with dynamically allocated objects.
+            persistent_pool_ptr: 3 * 1024 * 1024,
             current_time: 0,
             sample_rate: 44100.0,
         }
@@ -151,8 +284,8 @@ impl WasmRuntime {
         // Configure Wasmtime with JIT compiler and optimizations
         let mut config = Config::new();
 
-        // Enable Cranelift JIT compiler with optimization level Speed
-        config.cranelift_opt_level(OptLevel::Speed);
+        // Enable Cranelift JIT compiler with maximum optimization
+        config.cranelift_opt_level(OptLevel::SpeedAndSize);
 
         // Enable parallel compilation for faster module loading
         config.parallel_compilation(true);
@@ -182,8 +315,8 @@ impl WasmRuntime {
         // Configure Wasmtime with JIT compiler and optimizations
         let mut config = Config::new();
 
-        // Enable Cranelift JIT compiler with optimization level Speed
-        config.cranelift_opt_level(OptLevel::Speed);
+        // Enable Cranelift JIT compiler with maximum optimization
+        config.cranelift_opt_level(OptLevel::SpeedAndSize);
 
         // Enable parallel compilation for faster module loading
         config.parallel_compilation(true);
@@ -243,11 +376,22 @@ impl WasmRuntime {
 
         store.data_mut().memory = Some(memory);
 
+        let alloc_ptr_global = instance.get_global(&mut store, "__alloc_ptr");
+
+        // Get and cache handles to the state globals for use in closure_state_push/pop_host.
+        let state_base_ptr_global = instance.get_global(&mut store, "__state_base_ptr");
+        let state_pos_global = instance.get_global(&mut store, "__state_pos");
+        store.data_mut().state_base_ptr_global = state_base_ptr_global;
+        store.data_mut().state_pos_global_handle = state_pos_global;
+
         Ok(WasmModule {
             module,
             store,
             instance,
             function_cache: std::collections::HashMap::new(),
+            call_args_buf: Vec::new(),
+            call_results_buf: Vec::new(),
+            alloc_ptr_global,
         })
     }
 
@@ -286,11 +430,7 @@ impl WasmRuntime {
             // Closure state stack operations (per-closure state isolation)
             "closure_state_push" => closure_state_push_host,
             "closure_state_pop" => closure_state_pop_host,
-            // State operations
-            "state_push" => state_push_host,
-            "state_pop" => state_pop_host,
-            "state_get" => state_get_host,
-            "state_set" => state_set_host,
+            // State operations (delay/mem still use host-side ring buffer management)
             "state_delay" => state_delay_host,
             "state_mem" => state_mem_host,
             // Array operations
@@ -740,6 +880,12 @@ pub struct WasmModule {
     instance: wasmtime::Instance,
     /// Cache of frequently called functions (e.g., dsp)
     function_cache: std::collections::HashMap<String, wasmtime::Func>,
+    /// Pre-allocated buffer for call arguments (reused to avoid allocations)
+    call_args_buf: Vec<wasmtime::Val>,
+    /// Pre-allocated buffer for call results (reused to avoid allocations)
+    call_results_buf: Vec<wasmtime::Val>,
+    /// Cached handle to the `__alloc_ptr` global (avoids per-sample string hash lookup).
+    alloc_ptr_global: Option<wasmtime::Global>,
 }
 
 impl WasmModule {
@@ -766,58 +912,75 @@ impl WasmModule {
     }
 
     /// Call a function directly using a cached Func handle (faster)
+    /// Call a function directly, writing results into a caller-supplied buffer.
+    ///
+    /// This is the hot-path variant used by the DSP loop: it reuses the module's
+    /// pre-allocated `call_args_buf` / `call_results_buf` and writes output words
+    /// into `output` without any heap allocation.
+    pub fn call_func_direct_into(
+        &mut self,
+        func: &wasmtime::Func,
+        args: &[Word],
+        output: &mut Vec<Word>,
+    ) -> Result<(), String> {
+        let func_ty = func.ty(&self.store);
+
+        // Use .count() instead of .collect() to avoid a Vec allocation just for the check.
+        let param_count = func_ty.params().count();
+        if param_count != args.len() {
+            return Err(format!(
+                "Failed to call function: argument count mismatch: expected {param_count}, found {}",
+                args.len()
+            ));
+        }
+
+        // Reuse pre-allocated buffers to avoid per-call allocations.
+        let mut wasm_args = std::mem::take(&mut self.call_args_buf);
+        let mut results = std::mem::take(&mut self.call_results_buf);
+        wasm_args.clear();
+        results.clear();
+
+        // Convert args using the callee's actual signature (re-query params iterator).
+        wasm_args.extend(
+            args.iter()
+                .zip(func_ty.params())
+                .map(|(&word, ty)| match ty {
+                    ValType::F64 => wasmtime::Val::F64(word),
+                    ValType::F32 => wasmtime::Val::F32(word as u32),
+                    ValType::I64 => wasmtime::Val::I64(word as i64),
+                    ValType::I32 => wasmtime::Val::I32(word as i32),
+                    _ => wasmtime::Val::I64(word as i64),
+                }),
+        );
+
+        results.extend(func_ty.results().map(default_val_for_valtype));
+
+        func.call(&mut self.store, &wasm_args, &mut results)
+            .map_err(|e| format!("Failed to call function: {e:#}"))?;
+
+        output.clear();
+        output.extend(results.iter().map(|v| match v {
+            wasmtime::Val::I64(i) => *i as u64,
+            wasmtime::Val::F64(f) => *f,
+            wasmtime::Val::I32(i) => *i as u64,
+            wasmtime::Val::F32(f) => *f as u64,
+            _ => 0,
+        }));
+
+        self.call_args_buf = wasm_args;
+        self.call_results_buf = results;
+
+        Ok(())
+    }
+
     pub fn call_func_direct(
         &mut self,
         func: &wasmtime::Func,
         args: &[Word],
     ) -> Result<Vec<Word>, String> {
-        let func_ty = func.ty(&self.store);
-        let param_types = func_ty.params().collect::<Vec<_>>();
-        if param_types.len() != args.len() {
-            return Err(format!(
-                "Failed to call function: argument count mismatch: expected {}, found {}",
-                param_types.len(),
-                args.len()
-            ));
-        }
-
-        // Convert args to wasmtime values using the callee's actual signature.
-        let wasm_args: Vec<wasmtime::Val> = args
-            .iter()
-            .zip(param_types.iter())
-            .map(|(&word, ty)| match ty {
-                ValType::F64 => wasmtime::Val::F64(word),
-                ValType::F32 => wasmtime::Val::F32(word as u32),
-                ValType::I64 => wasmtime::Val::I64(word as i64),
-                ValType::I32 => wasmtime::Val::I32(word as i32),
-                _ => wasmtime::Val::I64(word as i64),
-            })
-            .collect();
-
-        // Prepare results buffer
-        let mut results = func_ty
-            .results()
-            .map(default_val_for_valtype)
-            .collect::<Vec<_>>();
-
-        // Call function
-        func.call(&mut self.store, &wasm_args, &mut results)
-            .map_err(|e| {
-                // Include detailed error chain
-                format!("Failed to call function: {e:#}")
-            })?;
-
-        // Convert results back to Words
-        Ok(results
-            .into_iter()
-            .map(|v| match v {
-                wasmtime::Val::I64(i) => i as u64,
-                wasmtime::Val::F64(f) => f,
-                wasmtime::Val::I32(i) => i as u64,
-                wasmtime::Val::F32(f) => f as u64,
-                _ => 0,
-            })
-            .collect())
+        let mut output = Vec::new();
+        self.call_func_direct_into(func, args, &mut output)?;
+        Ok(output)
     }
 
     /// Call a function exported by the WASM module
@@ -857,10 +1020,10 @@ impl WasmModule {
     }
 
     /// Read current value of exported allocator pointer global.
+    /// Uses the handle cached at module load time — no string hash lookup.
     pub fn get_alloc_ptr(&mut self) -> Result<i32, String> {
         let global = self
-            .instance
-            .get_global(&mut self.store, "__alloc_ptr")
+            .alloc_ptr_global
             .ok_or("No __alloc_ptr global export")?;
         match global.get(&mut self.store) {
             wasmtime::Val::I32(v) => Ok(v),
@@ -869,14 +1032,20 @@ impl WasmModule {
     }
 
     /// Restore allocator pointer global to a previous value.
+    /// Uses the handle cached at module load time — no string hash lookup.
     pub fn set_alloc_ptr(&mut self, value: i32) -> Result<(), String> {
         let global = self
-            .instance
-            .get_global(&mut self.store, "__alloc_ptr")
+            .alloc_ptr_global
             .ok_or("No __alloc_ptr global export")?;
         global
             .set(&mut self.store, wasmtime::Val::I32(value))
             .map_err(|e| format!("Failed to set __alloc_ptr: {e:#}"))
+    }
+
+    /// Build a [`DspCaller`] for the named export, specializing on its type.
+    pub(crate) fn make_dsp_caller(&mut self, name: &str) -> Option<DspCaller> {
+        let func = self.get_or_cache_function(name).ok()?;
+        Some(DspCaller::from_func(&self.store, &func))
     }
 }
 
@@ -1215,174 +1384,116 @@ fn closure_call_host(
 /// Push a closure's state onto the state stack, making it the active state context.
 /// Called before a closure call (CallCls/CallIndirect).
 /// `closure_addr` is the closure's address in WASM linear memory (used as a unique key).
-/// `state_size` is the number of words needed for this closure's state storage
+/// `state_size` is the number of WORDS needed for this closure's state storage
 /// (computed from state_skeleton.total_size() at compile time).
+///
+/// This function:
+/// 1. Lazily allocates a persistent state region in WASM linear memory for the closure.
+/// 2. Saves the current (state_base_ptr, state_pos) globals to the context stack.
+/// 3. Sets state_base_ptr_global to the closure's state region and resets state_pos to 0.
 fn closure_state_push_host(
     mut caller: Caller<'_, RuntimeState>,
     closure_addr: i64,
     state_size: i64,
 ) {
     log::trace!("closure_state_push_host: closure_addr={closure_addr}, state_size={state_size}");
-    let state = caller.data_mut();
 
-    // Push closure address onto the state stack
-    state.state_stack.push(closure_addr);
-    // Lazily allocate state storage for this closure if it doesn't exist yet
-    state
+    // Also maintain the legacy state_stack for Delay/Mem host functions.
+    caller.data_mut().state_stack.push(closure_addr);
+    caller
+        .data_mut()
         .closure_states
         .entry(closure_addr)
         .or_insert_with(|| StateStorage::with_size(state_size as usize));
+
+    // Get/allocate persistent linear-memory state region for this closure.
+    // The pool starts at 3MB (well above the WASM heap), growing monotonically.
+    // WASM linear memory is zero-initialized by spec, so no explicit zeroing needed.
+    let byte_size = (state_size as u32).saturating_mul(8);
+    let closure_state_ptr = {
+        let state = caller.data_mut();
+        if let Some(&ptr) = state.closure_state_ptrs.get(&closure_addr) {
+            ptr
+        } else {
+            let ptr = state.persistent_pool_ptr;
+            state.persistent_pool_ptr = ptr.saturating_add(byte_size);
+            state.closure_state_ptrs.insert(closure_addr, ptr);
+            ptr
+        }
+    };
+
+    // Copy global handles before any mutable borrow.
+    let (base_global, pos_global) = {
+        let state = caller.data();
+        (
+            state
+                .state_base_ptr_global
+                .expect("state_base_ptr_global not initialized"),
+            state
+                .state_pos_global_handle
+                .expect("state_pos_global not initialized"),
+        )
+    };
+
+    // Save current state context and switch to this closure's state region.
+    let current_base = base_global.get(&mut caller).i32().unwrap_or(512);
+    let current_pos = pos_global.get(&mut caller).i32().unwrap_or(0);
+    caller
+        .data_mut()
+        .state_context_stack
+        .push((current_base, current_pos));
+    base_global
+        .set(&mut caller, wasmtime::Val::I32(closure_state_ptr as i32))
+        .expect("closure_state_push_host: failed to set state_base_ptr_global");
+    pos_global
+        .set(&mut caller, wasmtime::Val::I32(0))
+        .expect("closure_state_push_host: failed to reset state_pos_global");
 }
 
 /// Pop the closure state stack, restoring the previous state context.
 /// Called after a closure call returns.
 fn closure_state_pop_host(mut caller: Caller<'_, RuntimeState>) {
     log::trace!("closure_state_pop_host");
-    let state = caller.data_mut();
-    // Reset pos of the outgoing closure's state for next call
-    if let Some(&closure_addr) = state.state_stack.last()
-        && let Some(cls_state) = state.closure_states.get_mut(&closure_addr)
+
+    // Reset pos of the outgoing closure's state for next call (legacy Delay/Mem path).
     {
-        cls_state.pos = 0;
+        let state = caller.data_mut();
+        if let Some(&closure_addr) = state.state_stack.last()
+            && let Some(cls_state) = state.closure_states.get_mut(&closure_addr)
+        {
+            cls_state.pos = 0;
+        }
+        state.state_stack.pop();
     }
-    state.state_stack.pop();
+
+    // Copy global handles before any mutable borrow.
+    let (base_global, pos_global) = {
+        let state = caller.data();
+        (
+            state
+                .state_base_ptr_global
+                .expect("state_base_ptr_global not initialized"),
+            state
+                .state_pos_global_handle
+                .expect("state_pos_global not initialized"),
+        )
+    };
+
+    // Restore the saved state context.
+    let (saved_base, saved_pos) = caller
+        .data_mut()
+        .state_context_stack
+        .pop()
+        .unwrap_or((512, 0));
+    base_global
+        .set(&mut caller, wasmtime::Val::I32(saved_base))
+        .expect("closure_state_pop_host: failed to restore state_base_ptr_global");
+    pos_global
+        .set(&mut caller, wasmtime::Val::I32(saved_pos))
+        .expect("closure_state_pop_host: failed to restore state_pos_global");
 }
 
 // State operations
-
-/// Push the state position cursor forward by `offset` words.
-/// Mirrors the native VM's `PushStatePos` instruction.
-fn state_push_host(mut caller: Caller<'_, RuntimeState>, offset: i64) {
-    log::trace!("state_push_host: offset={offset}");
-    let state = caller.data_mut();
-    let current = state.get_current_state();
-    if offset >= 0 {
-        let delta = usize::try_from(offset).unwrap_or(usize::MAX);
-        current.pos = current.pos.saturating_add(delta);
-    } else {
-        let delta_u64 = offset.unsigned_abs();
-        let delta = usize::try_from(delta_u64).unwrap_or(usize::MAX);
-        current.pos = current.pos.saturating_sub(delta);
-    }
-}
-
-/// Pop the state position cursor back by `offset` words.
-/// Mirrors the native VM's `PopStatePos` instruction.
-fn state_pop_host(mut caller: Caller<'_, RuntimeState>, offset: i64) {
-    log::trace!("state_pop_host: offset={offset}");
-    let state = caller.data_mut();
-    let current = state.get_current_state();
-    if offset >= 0 {
-        let delta = usize::try_from(offset).unwrap_or(usize::MAX);
-        current.pos = current.pos.saturating_sub(delta);
-    } else {
-        let delta_u64 = offset.unsigned_abs();
-        let delta = usize::try_from(delta_u64).unwrap_or(usize::MAX);
-        current.pos = current.pos.saturating_add(delta);
-    }
-}
-
-/// Read state data from the current state storage and write to WASM linear memory.
-/// Mirrors the native VM's `GetState` instruction.
-fn state_get_host(mut caller: Caller<'_, RuntimeState>, dst_ptr: i32, size_words: i32) {
-    log::trace!("state_get_host: dst_ptr={dst_ptr}, size_words={size_words}");
-
-    let size = size_words as usize;
-
-    // Read from the active state storage at its current position
-    let state_values: Vec<u64> = {
-        let state = caller.data_mut();
-        let current = state.get_current_state();
-        let pos = current.pos;
-        let needed = pos + size;
-        if needed > current.data.len() {
-            // Grow data to accommodate the requested range (initialized to zero)
-            current.data.resize(needed, 0);
-        }
-        current.data[pos..pos + size].to_vec()
-    };
-
-    // Write to WASM linear memory
-    let memory = caller.data().memory.expect("Memory not initialized");
-    let bytes: Vec<u8> = state_values.iter().flat_map(|w| w.to_le_bytes()).collect();
-
-    memory
-        .write(&mut caller.as_context_mut(), dst_ptr as usize, &bytes)
-        .expect("Failed to write state to WASM memory");
-}
-
-/// Write values from WASM linear memory to the current state storage.
-/// Mirrors the native VM's `SetState` instruction.
-fn state_set_host(mut caller: Caller<'_, RuntimeState>, src_ptr: i32, size_words: i32) {
-    log::trace!("state_set_host: src_ptr={src_ptr}, size_words={size_words}");
-
-    if size_words < 0 {
-        panic!("state_set_host: negative size_words={size_words}, src_ptr={src_ptr}");
-    }
-
-    let size = size_words as usize;
-
-    // Read from WASM linear memory
-    let state_values: Vec<u64> = {
-        let memory = caller.data().memory.expect("Memory not initialized");
-        let byte_len = size
-            .checked_mul(std::mem::size_of::<Word>())
-            .expect("state_set_host: byte length overflow");
-        let offset = src_ptr as u32 as usize;
-        let memory_size = memory.data_size(&caller);
-        let end = offset
-            .checked_add(byte_len)
-            .expect("state_set_host: address overflow");
-        if end > memory_size {
-            let state = caller.data();
-            let active_pos = if let Some(&closure_addr) = state.state_stack.last() {
-                state
-                    .closure_states
-                    .get(&closure_addr)
-                    .map(|s| s.pos)
-                    .unwrap_or(0)
-            } else {
-                state.global_state.pos
-            };
-            panic!(
-                "state_set_host OOB read: src_ptr(i32)={src_ptr}, src_ptr(u32)={}, size_words={size}, byte_len={byte_len}, offset={offset}, end={end}, memory_size={memory_size}, state_stack_depth={}, active_state_pos={}, current_time={}",
-                src_ptr as u32,
-                state.state_stack.len(),
-                active_pos,
-                state.current_time,
-            );
-        }
-
-        let mut bytes = vec![0u8; byte_len];
-        if let Err(err) = memory.read(&caller, offset, &mut bytes) {
-            panic!(
-                "state_set_host failed to read WASM memory: src_ptr(i32)={src_ptr}, src_ptr(u32)={}, size_words={size}, byte_len={byte_len}, offset={offset}, memory_size={memory_size}, err={err:?}",
-                src_ptr as u32,
-            );
-        }
-        bytes
-            .chunks(std::mem::size_of::<Word>())
-            .map(|chunk| {
-                let mut word_bytes = [0u8; 8];
-                word_bytes.copy_from_slice(chunk);
-                u64::from_le_bytes(word_bytes)
-            })
-            .collect()
-    };
-
-    // Write to the active state storage at its current position
-    let state = caller.data_mut();
-    let current = state.get_current_state();
-    let pos = current.pos;
-    let needed = pos + size;
-
-    // Grow data if needed
-    if needed > current.data.len() {
-        current.data.resize(needed, 0);
-    }
-
-    current.data[pos..pos + size].copy_from_slice(&state_values);
-}
 
 /// Ring buffer delay: reads delayed value from state, writes new input.
 /// State layout at current pos: [read_idx, write_idx, data[0..max_len]]
@@ -1392,8 +1503,15 @@ fn state_delay_host(
     time: f64,
     max_len: i64,
 ) -> f64 {
+    // PushStateOffset/PopStateOffset update state_pos_global directly (no host call),
+    // so we must read position from the WASM global rather than Rust-side StateStorage.pos.
+    let pos_words = {
+        let pos_global = caller.data().state_pos_global_handle.expect("state_pos_global");
+        (pos_global.get(&mut caller).i32().unwrap_or(0) / 8) as usize
+    };
     let state = caller.data_mut();
     let current = state.get_current_state();
+    current.pos = pos_words;
     let pos = current.pos;
     let Some(buf_size) = usize::try_from(max_len).ok() else {
         return 0.0;
@@ -1435,8 +1553,13 @@ fn state_delay_host(
 /// One-sample delay (mem): returns previous value, stores new input.
 /// State layout at current pos: [value] (1 word)
 fn state_mem_host(mut caller: Caller<'_, RuntimeState>, input: f64) -> f64 {
+    let pos_words = {
+        let pos_global = caller.data().state_pos_global_handle.expect("state_pos_global");
+        (pos_global.get(&mut caller).i32().unwrap_or(0) / 8) as usize
+    };
     let state = caller.data_mut();
     let current = state.get_current_state();
+    current.pos = pos_words;
     let pos = current.pos;
     let needed = pos + 1;
 
