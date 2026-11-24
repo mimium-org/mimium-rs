@@ -136,7 +136,7 @@ impl Default for AudioSetting {
         Self {
             input_device: String::new(),
             output_device: String::new(),
-            buffer_size: 512,
+            buffer_size: 2048,
             sample_rate: 48000,
         }
     }
