@@ -13,7 +13,7 @@ permissions:
 jobs:
   cargo_test_setup:
     name: "setup test for web"
-    runs-on: ubuntu-latest 
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
     steps:
