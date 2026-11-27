@@ -1042,6 +1042,60 @@ impl WasmModule {
             .map_err(|e| format!("Failed to set __alloc_ptr: {e:#}"))
     }
 
+    /// Move the host-side global state (delay/mem buffers) out, leaving it empty.
+    pub fn take_global_state_data(&mut self) -> Vec<u64> {
+        let st = &mut self.store.data_mut().global_state;
+        st.pos = 0;
+        std::mem::take(&mut st.data)
+    }
+
+    /// Install host-side global state by moving `data` in (no copy).
+    pub fn put_global_state_data(&mut self, data: Vec<u64>) {
+        let st = &mut self.store.data_mut().global_state;
+        st.data = data;
+        st.pos = 0;
+    }
+
+    /// Linear memory and the byte address of the global (`dsp`) state region.
+    ///
+    /// The WASM backend keeps `self` (Feed) values directly in linear memory at
+    /// `__state_base_ptr + word offset * 8`, using the same word offsets as the
+    /// state skeleton; delay/mem buffers live in the host-side global state instead.
+    fn state_region(&mut self) -> Option<(wasmtime::Memory, usize)> {
+        let memory = self.instance.get_memory(&mut self.store, "memory")?;
+        let base = match self
+            .instance
+            .get_global(&mut self.store, "__state_base_ptr")?
+            .get(&mut self.store)
+        {
+            wasmtime::Val::I32(v) => usize::try_from(v).ok()?,
+            _ => return None,
+        };
+        Some((memory, base))
+    }
+
+    /// Copy `self` (Feed) state words from `old` into this module's linear memory.
+    ///
+    /// `patches` are word ranges relative to the state region (see
+    /// `StateStoragePatchPlan::feed_patches`); parts outside either memory are skipped.
+    /// Allocation-free, so it can run on the audio thread.
+    pub fn copy_feed_state_from(
+        &mut self,
+        old: &mut WasmModule,
+        patches: &[state_tree::patch::CopyFromPatch],
+    ) {
+        let (Some((new_mem, new_base)), Some((old_mem, old_base))) =
+            (self.state_region(), old.state_region())
+        else {
+            return;
+        };
+        let src = old_mem.data(&old.store).get(old_base..).unwrap_or(&[]);
+        let dst = new_mem.data_mut(&mut self.store).get_mut(new_base..).unwrap_or(&mut []);
+        for p in patches {
+            state_tree::patch::copy_clamped(dst, src, p, 8);
+        }
+    }
+
     /// Build a [`DspCaller`] for the named export, specializing on its type.
     pub(crate) fn make_dsp_caller(&mut self, name: &str) -> Option<DspCaller> {
         let func = self.get_or_cache_function(name).ok()?;

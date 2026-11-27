@@ -22,6 +22,51 @@ use wasm_encoder::{
     TableSection, TableType, TypeSection, ValType,
 };
 
+/// Name of the custom section holding the DSP state skeleton (see [`state_tree::codec`]).
+pub const STATE_SKELETON_SECTION: &str = "mimium.dsp_state_skeleton";
+
+/// Read the DSP state skeleton that [`WasmGenerator`] stores in a module's custom section.
+///
+/// Returns `None` if the module has no such section (no stateful `dsp`, or a module
+/// from an older compiler) or if the bytes are malformed.
+pub fn read_dsp_state_skeleton(
+    wasm: &[u8],
+) -> Option<state_tree::tree::StateTreeSkeleton<crate::mir::StateType>> {
+    fn leb_u32(b: &[u8], pos: &mut usize) -> Option<u32> {
+        let mut result = 0u32;
+        for shift in (0..35).step_by(7) {
+            let byte = *b.get(*pos)?;
+            *pos += 1;
+            result |= u32::from(byte & 0x7f).checked_shl(shift)?;
+            if byte & 0x80 == 0 {
+                return Some(result);
+            }
+        }
+        None
+    }
+    if wasm.get(0..4)? != b"\0asm" {
+        return None;
+    }
+    let mut pos = 8;
+    while pos < wasm.len() {
+        let id = wasm[pos];
+        pos += 1;
+        let size = leb_u32(wasm, &mut pos)? as usize;
+        let end = pos.checked_add(size)?;
+        let body = wasm.get(pos..end)?;
+        if id == 0 {
+            let mut p = 0;
+            let name_len = leb_u32(body, &mut p)? as usize;
+            let name = body.get(p..p.checked_add(name_len)?)?;
+            if name == STATE_SKELETON_SECTION.as_bytes() {
+                return state_tree::codec::decode(&body[p + name_len..], crate::mir::StateType);
+            }
+        }
+        pos = end;
+    }
+    None
+}
+
 /// Upper bound of `$arityN` builtin specializations imported for WASM.
 ///
 /// We predeclare a finite set of imports (`split_head$arityN`, `split_tail$arityN`,
@@ -4654,6 +4699,14 @@ impl WasmGenerator {
         module.section(&self.data_section);
         let name_section = self.build_name_section();
         module.section(&name_section);
+        // Carry the DSP state layout inside the module, so a host that only has the
+        // bytes (e.g. compiled in a subprocess) can still migrate state on hot-swap.
+        if let Some(skeleton) = self.mir.get_dsp_state_skeleton() {
+            module.section(&wasm_encoder::CustomSection {
+                name: std::borrow::Cow::Borrowed(STATE_SKELETON_SECTION),
+                data: std::borrow::Cow::Owned(state_tree::codec::encode(skeleton)),
+            });
+        }
 
         module
     }

@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## Unreleased
+
+### Fixed bugs
+
+- WASM hot-swap from mimium-cli (subprocess compile) now migrates state by the state-tree diff instead of a raw copy, so delay tails survive edits that insert or remove stateful code. The DSP state skeleton is embedded in the module as a custom section.
+- `self` (feed) state is now carried over on WASM hot-swap (it lives in linear memory and was reset on every swap).
+- State patching no longer panics when the old storage is shorter than its skeleton (lazily grown delay buffers).
+- WASM hot-swap no longer clones the whole state on the audio thread: buffers are moved, allocation happens beforehand, and old buffers are freed off the audio thread.
+
 ## v4.1.0
 
 ### Added features
