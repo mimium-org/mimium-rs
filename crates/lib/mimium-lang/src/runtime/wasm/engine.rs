@@ -370,70 +370,81 @@ impl DspRuntime for WasmDspRuntime {
     /// This stage swaps in the prepared engine, applies state migration,
     /// and forwards the old engine to a non-RT thread for deferred drop.
     fn try_hot_swap(&mut self, new_program: ProgramPayload) -> bool {
-        if let ProgramPayload::WasmModule {
+        let ProgramPayload::WasmModule {
             bytes: _,
             prepared_engine,
             dsp_state_skeleton,
             state_patch_plan,
             prewarmed_global_state,
         } = new_program
-        {
-            // Snapshot the old global state before loading the new module.
-            let old_global_data: Option<Vec<u64>> =
-                self.engine.get_global_state_data().map(|d| d.to_vec());
+        else {
+            return false;
+        };
+        // This runs on the audio thread. State can be hundreds of MB (every delay
+        // owns its whole buffer), so buffers are moved rather than cloned, at most one
+        // copy of the matched state is made, and the buffers that are no longer needed
+        // go back to the old engine, which is dropped on a non-RT thread.
+        let mut old_engine = std::mem::replace(&mut self.engine, *prepared_engine);
+        self.set_sample_rate(self.sample_rate);
 
-            let old_engine = std::mem::replace(&mut self.engine, *prepared_engine);
+        let old_data = old_engine
+            .current_module_mut()
+            .map(|m| m.take_global_state_data())
+            .unwrap_or_default();
 
-            if let Some(sender) = &self.retired_engine_sender {
-                if let Err(err) = sender.send(old_engine) {
-                    log::warn!("Failed to defer old WASM engine drop to non-RT thread");
-                    std::mem::forget(err.0);
-                }
-            }
-
-            self.set_sample_rate(self.sample_rate);
-
-            {
-                let mut next_global_state = prewarmed_global_state;
-
-                // Attempt state migration when both old and new skeletons exist.
-                if let (Some(old_data), Some(old_skel), Some(new_skel)) = (
-                    &old_global_data,
-                    &self.current_dsp_skeleton,
-                    &dsp_state_skeleton,
-                ) {
-                    debug_assert_eq!(
-                        state_patch_plan.total_size,
-                        new_skel.total_size() as usize,
-                        "state_patch_plan.total_size must match new skeleton total size"
-                    );
-                    if old_skel == new_skel && state_patch_plan.patches.is_empty() {
-                        log::info!("No state structure change detected, copying buffer");
-                        next_global_state = old_data.clone();
+        let (next, unused) = match (&self.current_dsp_skeleton, &dsp_state_skeleton) {
+            (Some(old_skel), Some(new_skel)) => {
+                let feed_patches: std::borrow::Cow<[state_tree::patch::CopyFromPatch]> =
+                    if old_skel == new_skel && state_patch_plan.feed_patches.is_empty() {
+                        // Caller gave no feed plan for an unchanged layout (rare): build it here.
+                        state_tree::StateStoragePatchPlan::identity(new_skel)
+                            .feed_patches
+                            .into()
                     } else {
-                        if next_global_state.len() != state_patch_plan.total_size {
-                            next_global_state.resize(state_patch_plan.total_size, 0);
-                        }
-                        state_tree::patch::apply_patches(
-                            next_global_state.as_mut_slice(),
-                            old_data,
-                            state_patch_plan.patches.as_slice(),
-                        );
-                    }
-                } else if let Some(old_data) = &old_global_data {
-                    // No skeletons available; best-effort: copy old data.
-                    next_global_state = old_data.clone();
+                        state_patch_plan.feed_patches.as_slice().into()
+                    };
+                if let (Some(new_m), Some(old_m)) =
+                    (self.engine.current_module_mut(), old_engine.current_module_mut())
+                {
+                    new_m.copy_feed_state_from(old_m, &feed_patches);
                 }
-
-                self.engine.set_global_state_data(&next_global_state);
-
-                // Update stored skeleton for subsequent hot-swaps.
-                self.current_dsp_skeleton = dsp_state_skeleton;
-                true
+                if old_skel == new_skel {
+                    log::info!("No state structure change detected, reusing state buffers");
+                    (old_data, prewarmed_global_state)
+                } else {
+                    let mut next = prewarmed_global_state;
+                    if next.len() < state_patch_plan.total_size {
+                        // Normally done off-RT by the caller; allocation here is a fallback.
+                        next.resize(state_patch_plan.total_size, 0);
+                    }
+                    state_tree::patch::apply_patches(
+                        next.as_mut_slice(),
+                        &old_data,
+                        state_patch_plan.patches.as_slice(),
+                    );
+                    (next, old_data)
+                }
             }
-        } else {
-            false
+            // No skeletons available; best-effort: keep the old data as is.
+            _ => (old_data, prewarmed_global_state),
+        };
+
+        if let Some(m) = self.engine.current_module_mut() {
+            m.put_global_state_data(next);
         }
+        if let Some(m) = old_engine.current_module_mut() {
+            m.put_global_state_data(unused);
+        }
+        if let Some(sender) = &self.retired_engine_sender {
+            if let Err(err) = sender.send(old_engine) {
+                log::warn!("Failed to defer old WASM engine drop to non-RT thread");
+                std::mem::forget(err.0);
+            }
+        }
+
+        // Update stored skeleton for subsequent hot-swaps.
+        self.current_dsp_skeleton = dsp_state_skeleton;
+        true
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

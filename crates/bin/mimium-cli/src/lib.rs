@@ -46,8 +46,6 @@ use mimium_lang::plugin::ExtFunTypeInfo;
 #[cfg(not(target_arch = "wasm32"))]
 use state_tree::StateStoragePatchPlan;
 #[cfg(not(target_arch = "wasm32"))]
-use state_tree::patch::CopyFromPatch;
-#[cfg(not(target_arch = "wasm32"))]
 use state_tree::tree::StateTreeSkeleton;
 
 #[derive(clap::Parser, Debug, Clone)]
@@ -691,12 +689,18 @@ impl FileRunner {
             dsp_state_skeleton.as_ref(),
             prepared_swap_data.prewarmed_global_state.len(),
         );
+        // Size the new state buffer here, off the audio thread, so that the swap
+        // itself does not allocate.
+        let mut prewarmed_global_state = prepared_swap_data.prewarmed_global_state;
+        if prewarmed_global_state.len() < state_patch_plan.total_size {
+            prewarmed_global_state.resize(state_patch_plan.total_size, 0);
+        }
         let payload = ProgramPayload::WasmModule {
             bytes,
             prepared_engine: prepared_swap_data.prepared_engine,
             dsp_state_skeleton: dsp_state_skeleton.clone(),
             state_patch_plan,
-            prewarmed_global_state: prepared_swap_data.prewarmed_global_state,
+            prewarmed_global_state,
         };
         self.update_old_program(dsp_state_skeleton, ext_fns.to_vec(), plugin_fns);
 
@@ -713,23 +717,13 @@ impl FileRunner {
         {
             let maybe_plan =
                 state_tree::build_state_storage_patch_plan(old_skeleton, new_skeleton.clone());
-            if let Some(plan) = maybe_plan {
-                return plan;
-            }
-            let total_size = new_skeleton.total_size() as usize;
-            return StateStoragePatchPlan {
-                total_size,
-                patches: vec![CopyFromPatch {
-                    src_addr: 0,
-                    dst_addr: 0,
-                    size: total_size,
-                }],
-            };
+            return maybe_plan.unwrap_or_else(|| StateStoragePatchPlan::identity(&new_skeleton));
         }
 
         StateStoragePatchPlan {
             total_size: prewarmed_state_size,
             patches: vec![],
+            feed_patches: vec![],
         }
     }
 
@@ -820,7 +814,16 @@ impl FileRunner {
                                     bytes.len()
                                 );
                                 if let Some(tx) = &self.tx_prog {
-                                    match self.prepare_hot_swap_wasm_payload(bytes, None, None) {
+                                    // The subprocess only returns bytes; the state layout
+                                    // travels in a custom section of the module.
+                                    let skeleton =
+                                        compiler::wasmgen::read_dsp_state_skeleton(&bytes);
+                                    if skeleton.is_none() {
+                                        log::warn!(
+                                            "no state skeleton in compiled module; state migration falls back to a raw copy"
+                                        );
+                                    }
+                                    match self.prepare_hot_swap_wasm_payload(bytes, skeleton, None) {
                                         Ok(payload) => {
                                             let _ = tx.send(payload);
                                         }
